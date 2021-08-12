@@ -177,9 +177,14 @@ class JovianISCSIDriver(object):
 
         for r in data:
             try:
-                ret.append(jcom.idname(r['name']))
+
+                ret.append({
+                'name': jcom.idname(r['name']),
+                'id' : r['san:volume_id'],
+                'size': r['volsize']})
+
             except Exception as err:
-                print(err)
+                pass
         return ret
 
     def _hide_object(self, vname):

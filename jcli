@@ -1,60 +1,22 @@
 #!/usr/bin/python3
 
 import argparse
-import json
 import logging as log
-import time
 import uuid
 
-import datetime
-import os
-import time
+import yaml
 
 from jovian_common import iscsi
 
 import pool
-#def parse_pool(args):
-#    if 'volume' in args:
-#        volume = argparse.ArgumentParser(description='Volume related actions')
-#
-#        volume_create = volume.add_parser('create')
-#            
-#        volume_create.add_argument('-n', dest='volume_name', type=str, help='New volume name')
-#        volume_create.add_argument('-s', dest='volume_size', type=str, help='New volume size in format <number><dimension>')
-#        volume_create.block_size('-b', dest='block_size', type=str, help='Block size')
-#    pass
 
  
 def get_config():
     parser = argparse.ArgumentParser(description='JDSS simple CLI')
 
-    #parser.add_argument('-a','--address', dest='address', type=str,
-    #                    action='store',
-    #                    default='192.168.0.100',
-    #                    help='JovianDSS fqdn or ip addrss')
+    parser.add_argument('-c', '--config', dest='config', required=True, help='Path of configuration file')
+    parser.add_argument('-p', '--plain', dest='config', required=True, help='Path of configuration file')
 
-    #parser.add_argument('-p','--port', dest='port', type=int,
-    #                    action='store',
-    #                    default=5672,
-    #                    help='JovianDSS port number')
-
-    #parser.add_argument('--user', dest='username', type=str,
-    #                    action='store',
-    #                    default='admin',
-    #                    help='JovianDSS user name')
-
-    #parser.add_argument('--password', dest='password', type=str,
-    #                    action='store',
-    #                    default='password',
-    #                    help='JovianDSS user password')
-
-    #parser.add_argument('-d', dest='debug', type=str,
-    #                    action='store',
-    #                    default='WARNING',
-    #                    help='Specify debuging level like: INFO, DEBUG, WARNING...')
-    #parser.add_argument('command', nargs='*')
-
-    parser.add_argument('-c', '--config', dest='config', help='Path of configuration file')
     
     command = parser.add_subparsers(required=True, dest='command')
 
@@ -64,8 +26,6 @@ def get_config():
     pool_parser = command.add_parser('pool')
 
     pool_parser.add_argument('pool_name', type=str, default='Pool-0', help='Pool name')
-    #pool_parser.add_argument('pool_command', type=str, nargs='*', help='Pool command')
-    #pool_parser.add_argument('volume', nargs='+', help='Volume specific command')
 
     pool_sub_object_parsers = pool_parser.add_subparsers(required=True, dest='pool_sub_object')
     pool_volume_parser = pool_sub_object_parsers.add_parser('volume')
@@ -87,36 +47,6 @@ def get_config():
 
     ###########################################################################
 
-
-
-
-    #cmd pool Pool-0 volume -c/-d/-s/
-    #volume.add_argument('-p', dest='pool_name', type=str, help='Pool name')
-    ## create volume
-    #volume_create = volume.add_parser('create')
-    #
-    #volume_create.add_argument('-n', dest='volume_name', type=str, help='New volume name')
-    #volume_create.add_argument('-s', dest='volume_size', type=str, help='New volume size in format <number><dimension>')
-    #volume_create.block_size('-b', dest='block_size', type=str, help='Block size')
-
-
-    #mount = subparsers.add_parser('mount')
-    #mount.add_argument('-o', dest='out',
-    #                   type=str, 
-    #                   action='store',
-    #                   default=None,
-    #                   help='Specify output file for statistic')
-    #umount = subparsers.add_parser('umount')
-    #terminate = subparsers.add_parser('terminate')
-
-    #parser.add_argument('-f','--first', dest='first', type=int, action='store',
-    #                    default=1,
-    #                    help='First slave to send cmd')
-
-    #parser.add_argument('-l','--last', dest='last', type=int, action='store',
-    #                    default=1000,
-    #                    help='Last slave to send cmd')
-
     args = parser.parse_args()
     return args
 
@@ -124,29 +54,17 @@ def get_config():
 def main():
     args = get_config()
 
+    #cfgFile = open(args['config'])
+    
+    config = yaml.safe_load(open(args.config))
+    
     # list available commands
     cmd = {'pool': pool.pool}
     
-    config = {
-        'volume_backend_name':'jdss-0',
-        'chap_password_len':'14',
-        'driver_use_ssl':'True',
-        'iscsi_target_prefix':'iqn.2016-04.com.open-e.cinder:',
-        'jovian_pool':'Pool-0',
-        'jovian_block_size':'64K',
-        'jovian_rest_send_repeats': 1,
-        'san_api_port':11582,
-        'target_port':11582,
-        'san_hosts': ['85.14.118.246'],
-        'san_login':'admin',
-        'san_password':'4%2fdJ6Ds0lns762sd8s5u25gjy',
-        'san_thin_provision':True
-    }
     jdss = iscsi.JovianISCSIDriver(config)
     jdss.do_setup('')
 
     args = vars(args)
-    print(args)
     # Run command
     cmd[args.pop('command')](args, jdss)
     #cmd['pool'](args, jdss)

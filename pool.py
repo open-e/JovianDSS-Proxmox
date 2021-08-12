@@ -18,7 +18,6 @@
 
 def volume_create(args, jdss):
   
-    print(args) 
     volume_size = args['volume_size']
     block_size = args['block_size']
     volume_name = args['volume_name']
@@ -26,13 +25,15 @@ def volume_create(args, jdss):
     volume = {'id': volume_name,
               'size': int(volume_size)}
 
-    print(volume)    
     jdss.create_volume(volume)
 
 def volume_list(args, jdss):
     data = jdss.list_volumes()
     for v in data:
-        print(v)
+        print("%(name)s %(id)s %(size)s " % {
+            'name': v['name'],
+            'id': v['id'],
+            'size': v['size']})
 
 def volume_delete(args, jdss):
 
@@ -41,7 +42,7 @@ def volume_delete(args, jdss):
     jdss.delete_volume(volume, cascade=args['cascade'])
 
 def volume(args, jdss):
-   
+
     volume_sub_objects = {
         'create': volume_create,
         'list': volume_list,
@@ -52,6 +53,3 @@ def pool(args, jdss):
     
     pool_sub_objects = {'volume': volume}
     pool_sub_objects[args.pop('pool_sub_object')](args, jdss)
-    #pool_cmd = args.pop('pool_sub_object') 
-    #print(pool_sub_objects[pool_cmd])
-    #print(args)

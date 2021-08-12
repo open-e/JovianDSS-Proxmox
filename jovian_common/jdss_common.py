@@ -32,7 +32,6 @@ def idname(name):
     if name.startswith(('s_', 'v_', 't_')):
         return name[2:]
 
-    msg = ('Object name %s is incorrect') % name
     raise Exception(msg)
 
 
