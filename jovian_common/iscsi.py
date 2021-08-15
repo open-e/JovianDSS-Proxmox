@@ -139,7 +139,7 @@ class JovianISCSIDriver(object):
 
         try:
             self.ra.create_lun(vname,
-                               volume['size'] * o_units.Gi,
+                               volume['size'],
                                sparse=self.jovian_sparse,
                                block_size=self.block_size)
 
@@ -422,8 +422,7 @@ class JovianISCSIDriver(object):
         LOG.debug("Extend volume %s", volume.id)
 
         try:
-            self.ra.extend_lun(jcom.vname(volume.id),
-                               new_size * o_units.Gi)
+            self.ra.extend_lun(jcom.vname(volume.id), new_size)
         except jexc.JDSSException as err:
             raise cexc.VolumeBackendAPIException(
                 (_('Failed to extend volume %s.'), volume.id)) from err

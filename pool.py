@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import sys
 
 """Pool related commands."""
 
@@ -23,17 +24,19 @@ def volume_create(args, jdss):
     volume_name = args['volume_name']
 
     volume = {'id': volume_name,
-              'size': int(volume_size)}
+              'size': volume_size}
 
     jdss.create_volume(volume)
 
 def volume_list(args, jdss):
     data = jdss.list_volumes()
+    lines = []
     for v in data:
-        print("%(name)s %(id)s %(size)s " % {
+        line = ("%(name)s %(id)s %(size)s\n" % {
             'name': v['name'],
             'id': v['id'],
             'size': v['size']})
+        sys.stdout.write(line)
 
 def volume_delete(args, jdss):
 
@@ -52,4 +55,4 @@ def volume(args, jdss):
 def pool(args, jdss):
     
     pool_sub_objects = {'volume': volume}
-    pool_sub_objects[args.pop('pool_sub_object')](args, jdss)
+    return pool_sub_objects[args.pop('pool_sub_object')](args, jdss)
