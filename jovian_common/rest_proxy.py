@@ -27,7 +27,7 @@ from jovian_common import exception as jexc
 
 LOG = logging.getLogger(__name__)
 
-LOG.setLevel(logging.DEBUG)
+#LOG.setLevel(logging.DEBUG)
 
 class JovianRESTProxy(object):
     """Jovian REST API proxy."""

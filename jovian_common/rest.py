@@ -24,7 +24,7 @@ from jovian_common import rest_proxy
 
 LOG = logging.getLogger(__name__)
 
-LOG.setLevel(logging.DEBUG)
+#LOG.setLevel(logging.DEBUG)
 
 class JovianRESTAPI(object):
     """Jovian REST API proxy."""

@@ -1,7 +1,7 @@
 #!/usr/bin/python3
 
 import argparse
-import logging as log
+#import logging as log
 import uuid
 
 import yaml
@@ -11,6 +11,24 @@ from jovian_common import iscsi
 
 import pool
 
+from oslo_config import cfg
+from oslo_log import log as logging
+
+
+CONF = cfg.CONF
+
+#rate_limit_except_level
+logging.register_options(CONF)
+logging.setup(CONF, "joviandss-cli")
+
+LOG = logging.getLogger(__name__)
+LOG.setLevel(logging.DEBUG)
+
+#lvls = logging.get_default_log_levels()
+#
+#lvls =['amqp=WARN', 'amqplib=WARN', 'boto=WARN', 'qpid=WARN', 'sqlalchemy=WARN', 'suds=WARN', 'oslo.messaging=WARN', 'oslo_messaging=WARN', 'iso8601=WARN', 'requests.packages.urllib3.connectionpool=WARN', 'urllib3.connectionpool=WARN', 'websocket=WARN', 'requests.packages.urllib3.util.retry=WARN', 'urllib3.util.retry=WARN', 'keystonemiddleware=WARN', 'routes.middleware=WARN', 'stevedore=WARN', 'taskflow=WARN', 'keystoneauth=WARN', 'oslo.cache=WARN', 'dogpile.core.dogpile=WARN'] 
+#
+#logging.set_defaults(default_log_levels=lvls)
  
 def get_config():
     parser = argparse.ArgumentParser(description='JDSS simple CLI')
@@ -35,7 +53,7 @@ def get_config():
     volume_create = pool_volume_actions.add_parser('create')
     volume_create.add_argument('-s', dest='volume_size', type=str, default='1G', help='New volume size in format <number><dimension>')
     volume_create.add_argument('-b', dest='block_size', type=str, default='64K', help='Block size')
-    volume_create.add_argument('volume_name', nargs='?', type=str, help='New volume name')
+    volume_create.add_argument('volume_name', nargs=1, type=str, help='New volume name')
 
     volume_list = pool_volume_actions.add_parser('list')
 
@@ -73,5 +91,6 @@ def main():
 if __name__ == "__main__":
     try:
         main()
-    except:
+    except Exception as err:
+        LOG.error(err)
         sys.exit(1)
