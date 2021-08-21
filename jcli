@@ -22,7 +22,7 @@ logging.register_options(CONF)
 logging.setup(CONF, "joviandss-cli")
 
 LOG = logging.getLogger(__name__)
-LOG.setLevel(logging.DEBUG)
+#LOG.setLevel(logging.DEBUG)
 
 #lvls = logging.get_default_log_levels()
 #
@@ -56,6 +56,11 @@ def get_config():
     volume_create.add_argument('volume_name', nargs=1, type=str, help='New volume name')
 
     volume_list = pool_volume_actions.add_parser('list')
+    volume_list.add_argument('--vmid',
+                             dest='vmid',
+                             action='store_true',
+                             default=False,
+                             help='Show only volumes with VM ID')
 
     volume_delete = pool_volume_actions.add_parser('delete')
     volume_delete.add_argument('-c', '--cascade', dest='cascade', 

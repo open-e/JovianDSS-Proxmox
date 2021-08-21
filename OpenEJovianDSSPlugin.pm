@@ -192,116 +192,34 @@ sub clone_image {
 sub alloc_image {
     my ( $class, $storeid, $scfg, $vmid, $fmt, $name, $size ) = @_;
 
-    # check if it is the controller, which always has exactly "disk-1"
-    #my $retname = $name;
-    #if ( !defined($name) ) {
-    #    $retname = "vm-$vmid-disk-1";
-    #}
-    #return $retname if ignore_volume( $scfg, $retname );
-
-    #die "unsupported format '$fmt'" if $fmt ne 'raw';
-
-    #die "illegal name '$name' - should be 'vm-$vmid-*'\n"
-    #  if defined($name) && $name !~ m/^vm-$vmid-/;
-
-    #my $lsc       = linstor($scfg);
-    #my $resources = $lsc->get_resources();
-
-    #my $nodename = PVE::INotify::nodename();
     my $volume_name =  "vm-$vmid-$name";
 
-    print "$storeid | $scfg | $vmid | $fmt | $name | $size | $volume_name";
-    print "\n";
-    
-	#die "terminate for test";
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
 
-    open(LIST_VOLUMES, "jcli -p -c $config pool $pool volume create -s $size $name|");
-
-    #return $name;
-    #my $res = [];
-  
-    #while (<LIST_VOLUMES>) {
-    #  my ($volid,$uid,$size) = split;
-    #  #print "$uid $pid $ppid\n "
-    #  push @$res,
-    #    {
-    #      format => 'image',
-    #      volid  => $volid,
-    #      size   => $size,
-    #      vmid   => 1, #$owner,
-    #    };
-    #}
-    #
-    #close(LIST_VOLUMES);
-
-    #die "volume '$name' already exists\n";
-#      if defined($name) && exists $resources->{$name};
-
-    #if ( !defined($name) ) {
-    #    for ( my $i = 1 ; $i < 100 ; $i++ ) {
-    #        my $tn = "vm-$vmid-disk-$i";
-    #        if ( !exists( $resources->{$tn} ) ) {
-    #            $name = $tn;
-    #            last;
-    #        }
-    #    }
-    #}
-
-    #die "unable to allocate an image name for VM $vmid in storage '$storeid'\n"
-    #  if !defined($name);
-
-    #eval {
-    #    my $res_grp         = get_joviandss_address($scfg);
-    #    my $local_node_name = get_pool($scfg);
-    #    if ( defined($local_node_name) ) {
-    #        print "\nNOTICE\n"
-    #          . "  Trying to create diskful resource ($name) on ($local_node_name).\n";
-    #    }
-    #    $lsc->create_resource( $name, $size, $res_grp, $local_node_name );
-    #};
-    #confess $@ if $@;
-
+    open my $jcli, '-|' or 
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "volume", "create", "-s", $size * 1024, $volume_name or
+        die "jcli failed: $!\n";
+    close $jcli;
+    
     return $volume_name;
 }
 
 sub free_image {
     my ( $class, $storeid, $scfg, $volname, $isBase ) = @_;
 
-    print "$storeid | $scfg | $volname | $isBase";
-    print "\n";
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
 
-    open(LIST_VOLUMES, "jcli -p -c $config pool $pool volume delete $volname|");
+    #open(LIST_VOLUMES, "jcli -p -c $config pool $pool volume delete $volname|");
 
+    open my $jcli, '-|' or 
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "volume", "delete", $volname or
+        die "jcli failed: $!\n";
+    close $jcli;
     return undef;
-
-
-   # die() does not really help in that case, the VM definition is still removed
-   # so we could just return undef, still this looks a bit cleaner
-   # die "Not freeing contoller VM" if ignore_volume( $scfg, $volname );
-
-   # my $lsc = linstor($scfg);
-   # my $in_use = 1;
-
-   # foreach (0..9) {
-   #   my $resources = $lsc->update_resources();
-   #   $in_use = $resources->{$volname}->{in_use};
-   #   last if (! $in_use);
-   #   sleep(1);
-   # }
-
-   # warn "Resource $volname still in use after giving it some time" if ($in_use);
-
-   # # yolo, what else should we do...
-   # eval { $lsc->delete_resource($volname); };
-   # confess $@ if $@;
-
-   # return undef;
 }
 
 sub list_images {
@@ -309,29 +227,28 @@ sub list_images {
 
     my $nodename = PVE::INotify::nodename();
 
-    print "$vmid | $vollist | $cache";
-    print "\n";
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
 
-    open(LIST_VOLUMES, "jcli -p -c $config pool $pool volume list|");
-    
+    open my $jcli, '-|' or 
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "volume", "list", "--vmid" or
+        die "jcli failed: $!\n";
+ 
     my $res = [];
-  
-    while (<LIST_VOLUMES>) {
-      my ($volid,$uid,$size) = split;
+
+    while (<$jcli>) {
+      my ($volid,$vmid,$size) = split;
       #print "$uid $pid $ppid\n "
       push @$res,
         {
-          format => 'image',
+          format => 'raw',
           volid  => $volid,
           size   => $size,
-          vmid   => 1, #$owner,
+          vmid   => $vmid, #$owner,
         };
     }
-    
-    close(LIST_VOLUMES);
+    close $jcli;
 
     return $res;
 }

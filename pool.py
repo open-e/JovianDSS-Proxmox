@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import re
 import sys
 
 """Pool related commands."""
@@ -31,12 +32,28 @@ def volume_create(args, jdss):
 def volume_list(args, jdss):
     data = jdss.list_volumes()
     lines = []
+
+    vmid_re = None
+    if args['vmid']:
+        vmid_re = re.compile(r'^vm-[0-9]+-')
+
     for v in data:
-        line = ("%(name)s %(id)s %(size)s\n" % {
-            'name': v['name'],
-            'id': v['id'],
-            'size': v['size']})
-        sys.stdout.write(line)
+        if vmid_re:
+            match = vmid_re.match(v['name'])
+            if not match:
+                continue
+
+            line = ("%(name)s %(vmid)s %(size)s\n" % {
+                'name': v['name'],
+                'vmid': v['name'][3:match.end()-1],
+                'size': v['size']})
+            sys.stdout.write(line)
+        else:
+
+            line = ("%(name)s %(size)s\n" % {
+                'name': v['name'],
+                'size': v['size']})
+            sys.stdout.write(line)
 
 def volume_delete(args, jdss):
 
