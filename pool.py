@@ -13,63 +13,47 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import argparse
 import re
 import sys
 
+import volumes
 """Pool related commands."""
+        
+class Pools():
+    def __init__(self, args, uargs, jdss):
 
-def volume_create(args, jdss):
-  
-    volume_size = args['volume_size']
-    block_size = args['block_size']
-    volume_name = args['volume_name'][0]
+        #self.sa = {'create': self.create,
+        #           'list': self.list}
+        self.a = {'volumes': volumes.Volumes}
 
-    volume = {'id': volume_name,
-              'size': volume_size}
+        self.args = args
+        
+        argst = self.__parse(uargs)
 
-    jdss.create_volume(volume)
+        self.args.update(vars(argst[0]))
+        self.uargs = argst[1]
+        self.jdss = jdss
+        
+        print(self.args)
+         
+        if 'pool-action' in self.args:
+            self.a[self.args.pop('pool-action')](self.args, self.uargs, self.jdss)
 
-def volume_list(args, jdss):
-    data = jdss.list_volumes()
-    lines = []
+    def __parse(self, args):
 
-    vmid_re = None
-    if args['vmid']:
-        vmid_re = re.compile(r'^vm-[0-9]+-')
+        parser = argparse.ArgumentParser(prog="Pool")
 
-    for v in data:
-        if vmid_re:
-            match = vmid_re.match(v['name'])
-            if not match:
-                continue
+        parser.add_argument('pool_name', help='Pool name')
+        parsers = parser.add_subparsers(dest='pool-action')
+        volumes = parsers.add_parser('volumes', add_help=False)
 
-            line = ("%(name)s %(vmid)s %(size)s\n" % {
-                'name': v['name'],
-                'vmid': v['name'][3:match.end()-1],
-                'size': v['size']})
-            sys.stdout.write(line)
-        else:
+        return parser.parse_known_args(args)
 
-            line = ("%(name)s %(size)s\n" % {
-                'name': v['name'],
-                'size': v['size']})
-            sys.stdout.write(line)
+#.parse_known_args(args)
 
-def volume_delete(args, jdss):
+#def pool(args, uargs, jdss):
+#
+#    pool_sub_objects = {'volumes': volumes.Volumes}
+#    return pool_sub_objects[args.pop('pool_sub_object')](args, uargs, jdss)
 
-    volume = {'id': args['volume_name'][0]}
-
-    jdss.delete_volume(volume, cascade=args['cascade'])
-
-def volume(args, jdss):
-
-    volume_sub_objects = {
-        'create': volume_create,
-        'list': volume_list,
-        'delete': volume_delete}
-    volume_sub_objects[args.pop('volume_sub_object')](args, jdss) 
-
-def pool(args, jdss):
-
-    pool_sub_objects = {'volume': volume}
-    return pool_sub_objects[args.pop('pool_sub_object')](args, jdss)
