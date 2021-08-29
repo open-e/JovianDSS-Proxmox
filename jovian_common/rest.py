@@ -45,7 +45,7 @@ class JovianRESTAPI(object):
             code = resp.get('code', 'Unknown')
             msg = resp.get('message', 'Unknown')
 
-            reason = _("Request to %(url)s failed with code: %(code)s "
+            reason = ("Request to %(url)s failed with code: %(code)s "
                        "of type:%(eclass)s reason:%(message)s")
             reason = (reason % {'url': url,
                                 'code': code,

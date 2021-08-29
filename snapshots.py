@@ -14,6 +14,7 @@
 #    under the License.
 
 import argparse
+import hashlib
 import re
 import sys
 
@@ -22,10 +23,10 @@ import sys
 class Snapshots():
     def __init__(self, args, uargs, jdss):
         
-        self.vsa = {'create': self.create,
-                   'list': self.list}
-        self.va = {'delete': self.delete,
-                   'snapshots': self.snapshots}
+        self.ssa = {'create': self.create,
+                    'list': self.list}
+        self.sa = {'clone': self.clone,
+                   'delete': self.delete}
 
         self.args = args
         argst = self.__parse(uargs)
@@ -33,80 +34,64 @@ class Snapshots():
         self.uargs = argst[1]
         self.jdss = jdss
        
-        if 'volumes-action' in self.args:
-            self.vsa[self.args.pop('volumes-action')]()
-        elif 'volume-actions' in self.args:
-            self.va[self.args.pop('volume-actions')]()            
+        if 'snapshots-actions' in self.args:
+            self.ssa[self.args.pop('snapshots-actions')]()
+        elif 'snapshot-actions' in self.args:
+            self.sa[self.args.pop('snapshot-actions')]()
 
     def __parse(self, args):
 
         parser = argparse.ArgumentParser(prog="Volume")
        
-        if args[0] in self.vsa:
-            parsers = parser.add_subparsers(dest='volumes-action')
+        if args[0] in self.ssa:
+            parsers = parser.add_subparsers(dest='snapshots-actions')
 
             create = parsers.add_parser('create')
-            create.add_argument('-s', dest='volume_size', type=str, default='1G', help='New volume size in format <number><dimension>')
-            create.add_argument('-b', dest='block_size', type=str, default='64K', help='Block size')
-            create.add_argument('volume_name', nargs=1, type=str, help='New volume name')
+            create.add_argument('snapshot_name', type=str, help='New snapshot name')
 
             listp = parsers.add_parser('list')
-            listp.add_argument('--vmid',
-                               dest='vmid',
-                               action='store_true',
-                               default=False,
-                               help='Show only volumes with VM ID')
-        else:  
-            parser.add_argument('volume_name', help='Volume name')
-            parsers = parser.add_subparsers(dest='volume-action')
+        else:
+            parser.add_argument('snapshot_name', help='Snapshot name')
+            parsers = parser.add_subparsers(dest='snapshot-actions')
             clone = parsers.add_parser('clone')
             delete = parsers.add_parser('delete')
-            delete.add_argument('volume_name', nargs=1, type=str, help='Name of volume to delete')
             properties = parsers.add_parser('properties')
-            
-            snapshots = parsers.add_parser('snapshots')
        
         return parser.parse_known_args(args)
 
+    def _get_snapshot(self):
+        snapshot_name = self.args['snapshot_name']
+        volume_name = self.args['volume_name']
+
+        name_bytes = bytes(self.args['volume_name'] + self.args['snapshot_name'], 'ascii')
+        name_uuid = hashlib.md5(name_bytes).hexdigest()
+        snapshot = {'id': "{}_{}".format(name_uuid, snapshot_name),
+                    'volume_id': volume_name,
+                    'volume_name': volume_name}
+
+        return snapshot
+
     def create(self):
-      
-        volume_size = self.args['volume_size']
-        block_size = self.args['block_size']
-        volume_name = self.args['volume_name'][0]
-    
-        volume = {'id': volume_name,
-                  'size': volume_size}
-    
-        self.jdss.create_volume(volume)
-    
+
+        snapshot = self._get_snapshot()
+
+        self.jdss.create_snapshot(snapshot)
+
     def list(self):
-        data = self.jdss.list_volumes()
-        lines = []
-    
-        vmid_re = None
-        if self.args['vmid']:
-            vmid_re = re.compile(r'^vm-[0-9]+-')
+        
+        volume = {'id': self.args['volume_name']}
+
+        data = self.jdss.list_snapshots(volume)
     
         for v in data:
-            if vmid_re:
-                match = vmid_re.match(v['name'])
-                if not match:
-                    continue
-    
-                line = ("%(name)s %(vmid)s %(size)s\n" % {
-                    'name': v['name'],
-                    'vmid': v['name'][3:match.end()-1],
-                    'size': v['size']})
-                sys.stdout.write(line)
-            else:
-    
-                line = ("%(name)s %(size)s\n" % {
-                    'name': v['name'],
-                    'size': v['size']})
-                sys.stdout.write(line)
-    
+            name = "_".join(v['name'].split("_")[1:])
+            line = "{}\n".format(name)
+            sys.stdout.write(line)
+
     def delete(self):
-    
-        volume = {'id': self.args['volume_name'][0]}
-    
-        self.jdss.delete_volume(volume, cascade=self.args['cascade'])
+
+        snapshot = self._get_snapshot()
+        self.jdss.delete_snapshot(snapshot)
+
+    def clone(self):
+        pass

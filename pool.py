@@ -18,6 +18,8 @@ import re
 import sys
 
 import volumes
+import targets
+
 """Pool related commands."""
         
 class Pools():
@@ -25,7 +27,8 @@ class Pools():
 
         #self.sa = {'create': self.create,
         #           'list': self.list}
-        self.a = {'volumes': volumes.Volumes}
+        self.a = {'volumes': volumes.Volumes,
+                  'targets': targets.Targets}
 
         self.args = args
         
@@ -35,8 +38,6 @@ class Pools():
         self.uargs = argst[1]
         self.jdss = jdss
         
-        print(self.args)
-         
         if 'pool-action' in self.args:
             self.a[self.args.pop('pool-action')](self.args, self.uargs, self.jdss)
 
@@ -47,13 +48,7 @@ class Pools():
         parser.add_argument('pool_name', help='Pool name')
         parsers = parser.add_subparsers(dest='pool-action')
         volumes = parsers.add_parser('volumes', add_help=False)
+        volumes = parsers.add_parser('targets', add_help=False)
 
         return parser.parse_known_args(args)
-
-#.parse_known_args(args)
-
-#def pool(args, uargs, jdss):
-#
-#    pool_sub_objects = {'volumes': volumes.Volumes}
-#    return pool_sub_objects[args.pop('pool_sub_object')](args, uargs, jdss)
 

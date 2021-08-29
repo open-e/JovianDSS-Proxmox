@@ -18,7 +18,8 @@
 
 class JDSSException(Exception):
     """Unknown error"""
-    message = ("%(reason)s")
+    def __init__(self, reason=''):
+        self.message = ("%(reason)s" % {"reason": reason})
 
 
 class JDSSRESTException(JDSSException):

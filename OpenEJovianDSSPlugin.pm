@@ -8,9 +8,8 @@ use JSON::XS qw( decode_json );
 use Data::Dumper;
 use REST::Client;
 use Storable qw(lock_store lock_retrieve);
+use UUID "uuid";
 
-use LINBIT::Linstor;
-use LINBIT::PluginHelper;
 
 use PVE::Tools qw(run_command trim);
 use PVE::INotify;
@@ -55,7 +54,9 @@ sub type {
 }
 
 sub plugindata {
-    return { content => [ { images => 1, rootdir => 1 }, { images => 1 } ], };
+    return {
+	content => [ {images => 1}, { images => 1 }],
+    };
 }
 
 sub properties {
@@ -105,23 +106,7 @@ sub get_config {
 
     return $scfg->{config} || $default_config;
 }
-# check if connection is working
-# and return cli object
-sub linstor {
-    my ($scfg) = @_;
 
-    my @controllers = split( /,/, get_joviandss_address($scfg) );
-
-    foreach my $controller (@controllers) {
-        $controller = trim($controller);
-        my $cli = REST::Client->new( { host => "http://${controller}:3370" } );
-        $cli->addHeader('User-Agent', 'linstor-proxmox/' . $PLUGIN_VERSION);
-        return LINBIT::Linstor->new( { cli => $cli } )
-          if $cli->GET('/health')->responseCode() eq '200';
-   }
-
-    die("could not connect to any LINSTOR controller");
-}
 
 sub get_storagepool {
     my ($scfg) = @_;
@@ -134,47 +119,52 @@ sub get_storagepool {
     return $sp;
 }
 
-sub get_dev_path {
-    return "/dev/drbd/by-res/$_[0]/0";
-}
+#sub get_dev_path {
+#    return "/dev/drbd/by-res/$_[0]/0";
+#}
 
 
 # Storage implementation
 #
 # For APIVER 2
-sub map_volume {
-    my ( $class, $storeid, $scfg, $volname, $snap ) = @_;
+#sub map_volume {
+#    my ( $class, $storeid, $scfg, $volname, $snap ) = @_;
+#
+#    $volname = volname_and_snap_to_snapname( $volname, $snap ) if defined($snap);
+#
+#    return get_dev_path "$volname";
+#}
+#
+## For APIVER 2
+#sub unmap_volume {
+#    return 1;
+#}
 
-    $volname = volname_and_snap_to_snapname( $volname, $snap ) if defined($snap);
+sub path {
+    my ($class, $scfg, $volname, $storeid, $snapname) = @_;
 
-    return get_dev_path "$volname";
-}
+    die "direct access to snapshots not implemented"
+	if defined($snapname);
 
-# For APIVER 2
-sub unmap_volume {
-    return 1;
-}
+    my $config = $scfg->{config};
 
-sub parse_volname {
-    my ( $class, $volname ) = @_;
+    my $pool = $scfg->{pool_name};
 
-    if ( $volname =~ m/^(vm-(\d+)-[a-z][a-z0-9\-\_\.]*[a-z0-9]+)$/ ) {
-        return ( 'images', $1, $2, undef, undef, undef, 'raw' );
+    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+    
+    open my $jcli, '-|' or
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--lun" or
+        die "jcli failed: $!\n";
+ 
+    my $path = "";
+
+    while (<$jcli>) {
+      my ($target, $host, $lun) = split;
+      $path =  "iscsi://$host/$target/$lun";
     }
+    close $jcli;
 
-    die "unable to parse lvm volume name '$volname'\n";
-}
-
-sub filesystem_path {
-    my ( $class, $scfg, $volname, $snapname ) = @_;
-
-    die "filesystem_path: snapshot is not implemented ($snapname)\n" if defined($snapname);
-
-    my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
-
-    my $path = get_dev_path "$volname";
-
-    return wantarray ? ( $path, $vmid, $vtype ) : $path;
+    return ($path, $vmid, $vtype);
 }
 
 sub create_base {
@@ -192,18 +182,26 @@ sub clone_image {
 sub alloc_image {
     my ( $class, $storeid, $scfg, $vmid, $fmt, $name, $size ) = @_;
 
-    my $volume_name =  "vm-$vmid-$name";
+    my $volume_name;
+
+    if ( !defined($name) ) {
+        my $uuid = uuid();
+        $uuid =~ tr/-//d;
+        $volume_name = "vm-$vmid-$uuid";
+    } else {
+        $volume_name = "vm-$vmid-$name";
+    }
 
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
 
     open my $jcli, '-|' or 
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "volume", "create", "-s", $size * 1024, $volume_name or
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "volumes", "create", "-s", $size * 1024, $volume_name or
         die "jcli failed: $!\n";
     close $jcli;
-    
-    return $volume_name;
+
+    return "$volume_name";
 }
 
 sub free_image {
@@ -214,9 +212,9 @@ sub free_image {
     my $pool = $scfg->{pool_name};
 
     #open(LIST_VOLUMES, "jcli -p -c $config pool $pool volume delete $volname|");
-
+    
     open my $jcli, '-|' or 
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "volume", "delete", $volname or
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "delete" or
         die "jcli failed: $!\n";
     close $jcli;
     return undef;
@@ -231,26 +229,76 @@ sub list_images {
 
     my $pool = $scfg->{pool_name};
 
-    open my $jcli, '-|' or 
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "volume", "list", "--vmid" or
+    open my $jcli, '-|' or
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "volumes", "list", "--vmid" or
         die "jcli failed: $!\n";
  
     my $res = [];
 
+
     while (<$jcli>) {
-      my ($volid,$vmid,$size) = split;
+      my ($volname,$vmid,$size) = split;
       #print "$uid $pid $ppid\n "
-      push @$res,
-        {
+      my $volid = "joviandss:$volname";
+      #die $volid;
+      push @$res, {
           format => 'raw',
           volid  => $volid,
           size   => $size,
-          vmid   => $vmid, #$owner,
+          vmid   => $vmid,
         };
     }
     close $jcli;
-
+    
+    #my $i = 1;
+    #while ( (my @call_details = (caller($i++))) ){
+    #    print STDERR $call_details[1].":".$call_details[2]." in function ".$call_details[3]."\n";
+    #}
+    #foreach my $hash (@$res) {
+    #    print "$hash->{'volid'}\n";
+    #}
     return $res;
+}
+
+sub volume_snapshot {
+    my ($class, $scfg, $storeid, $volname, $snap) = @_;
+
+    print "$scfg, $storeid, $volname, $snap";
+    die "lvm snapshot is not implemented";
+}
+
+sub volume_snapshot_rollback {
+    my ($class, $scfg, $storeid, $volname, $snap) = @_;
+
+    die "lvm snapshot rollback is not implemented";
+}
+
+sub volume_snapshot_delete {
+    my ($class, $scfg, $storeid, $volname, $snap) = @_;
+
+    die "lvm snapshot delete is not implemented";
+}
+
+sub volume_snapshot_list {
+    my ($class, $scfg, $storeid, $volname) = @_;
+
+    my $config = $scfg->{config};
+
+    my $pool = $scfg->{pool_name};
+
+    open my $jcli, '-|' or 
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "volume", "$volname", "snapshot", "list" or
+        die "jcli failed: $!\n";
+    
+    my $res = [];
+ 
+    while (<$jcli>) {
+      my ($sname) = split;
+      #print "$uid $pid $ppid\n "
+      push @$res, { 'name' => '$sname'};
+    }
+    #die "deactivate_volume: snapshot not implemented ($snapname)\n" if $snapname;
+    return $res
 }
 
 sub status {
@@ -259,7 +307,7 @@ sub status {
 
     # they want it in bytes
     my $total = 1024;
-    my $avail = 1024;
+    my $avail = 1024*1024*1024;
     return ( $total, $avail, $total - $avail, 1 );
 }
 
@@ -278,22 +326,40 @@ sub deactivate_storage {
 sub activate_volume {
     my ( $class, $storeid, $scfg, $volname, $snap, $cache ) = @_;
 
-    return undef if ignore_volume( $scfg, $volname );
+    my $config = $scfg->{config};
 
-    if ($snap) {    # need to create this resource from snapshot
-        my $snapname = volname_and_snap_to_snapname( $volname, $snap );
-        my $new_volname = $snapname;
-        eval { linstor($scfg)->restore_snapshot( $volname, $snapname, $new_volname ); };
-        confess $@ if $@;
-        $volname = $new_volname; # for the rest of this function switch the name
-    }
+    my $pool = $scfg->{pool_name};
 
-    my $nodename = PVE::INotify::nodename();
+    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+    
+    open my $jcli, '-|' or
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "targets", "create", $volname or
+        die "jcli failed: $!\n";
+ 
+    
+    #while (<$jcli>) {
+    #  my ($target, $host, $lun) = split;
+    #  $path =  "iscsi://$host/$target/$lun";
+    #}
+    close $jcli;
+    #die "Activating volume $volname";
+    return 1;
+    #return undef if ignore_volume( $scfg, $volname );
 
-    eval { linstor($scfg)->activate_resource( $volname, $nodename ); };
-    confess $@ if $@;
+    #if ($snap) {    # need to create this resource from snapshot
+    #    my $snapname = volname_and_snap_to_snapname( $volname, $snap );
+    #    my $new_volname = $snapname;
+    #    eval { linstor($scfg)->restore_snapshot( $volname, $snapname, $new_volname ); };
+    #    confess $@ if $@;
+    #    $volname = $new_volname; # for the rest of this function switch the name
+    #}
 
-    system ('blockdev --setrw ' . get_dev_path $volname);
+    #my $nodename = PVE::INotify::nodename();
+
+    #eval { linstor($scfg)->activate_resource( $volname, $nodename ); };
+    #confess $@ if $@;
+
+    #system ('blockdev --setrw ' . get_dev_path $volname);
 
     return undef;
 }
@@ -301,6 +367,7 @@ sub activate_volume {
 sub deactivate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
 
+    return 1;
     die "deactivate_volume: snapshot not implemented ($snapname)\n" if $snapname;
 
     return undef if ignore_volume( $scfg, $volname );
@@ -339,45 +406,55 @@ sub volume_resize {
     return 1;
 }
 
-sub volume_snapshot {
-    my ( $class, $scfg, $storeid, $volname, $snap ) = @_;
-    my $snapname = volname_and_snap_to_snapname( $volname, $snap );
+#sub volume_snapshot {
+#    my ( $class, $scfg, $storeid, $volname, $snap ) = @_;
+#    my $snapname = volname_and_snap_to_snapname( $volname, $snap );
+#
+#    eval { linstor($scfg)->create_snapshot( $volname, $snapname ); };
+#    confess $@ if $@;
+#
+#    return 1;
+#}
+#
+#sub volume_snapshot_rollback {
+#    my ( $class, $scfg, $storeid, $volname, $snap ) = @_;
+#
+#    my $snapname = volname_and_snap_to_snapname( $volname, $snap );
+#
+#    eval { linstor($scfg)->rollback_snapshot( $volname, $snapname ); };
+#    confess $@ if $@;
+#
+#    return 1;
+#}
+#
+#sub volume_snapshot_delete {
+#    my ( $class, $scfg, $storeid, $volname, $snap ) = @_;
+#    my $snapname = volname_and_snap_to_snapname( $volname, $snap );
+#
+#    my $lsc = linstor($scfg);
+#
+#    # on backup we created a resource from the given snapshot
+#    # on cleanup we as plugin only get a volume_snapshot_delete
+#    # so we have to do some "heuristic" to also clean up the resource we created
+#    if ( $snap eq 'vzdump' ) {
+#        eval { $lsc->delete_resource( $snapname ); };
+#        confess $@ if $@;
+#    }
+#
+#    eval { $lsc->delete_snapshot( $volname, $snapname ); };
+#    confess $@ if $@;
+#
+#    return 1;
+#}
 
-    eval { linstor($scfg)->create_snapshot( $volname, $snapname ); };
-    confess $@ if $@;
+sub parse_volname {
+    my ($class, $volname) = @_;
 
-    return 1;
-}
-
-sub volume_snapshot_rollback {
-    my ( $class, $scfg, $storeid, $volname, $snap ) = @_;
-
-    my $snapname = volname_and_snap_to_snapname( $volname, $snap );
-
-    eval { linstor($scfg)->rollback_snapshot( $volname, $snapname ); };
-    confess $@ if $@;
-
-    return 1;
-}
-
-sub volume_snapshot_delete {
-    my ( $class, $scfg, $storeid, $volname, $snap ) = @_;
-    my $snapname = volname_and_snap_to_snapname( $volname, $snap );
-
-    my $lsc = linstor($scfg);
-
-    # on backup we created a resource from the given snapshot
-    # on cleanup we as plugin only get a volume_snapshot_delete
-    # so we have to do some "heuristic" to also clean up the resource we created
-    if ( $snap eq 'vzdump' ) {
-        eval { $lsc->delete_resource( $snapname ); };
-        confess $@ if $@;
+    if ($volname =~ m/^((\S+):vm-(\d+)-(\S+))?(vm-(\d+)-(\S+))$/) {
+	return ('images', $2, $1, undef, undef, undef, 'raw');
     }
 
-    eval { $lsc->delete_snapshot( $volname, $snapname ); };
-    confess $@ if $@;
-
-    return 1;
+    die "unable to parse joviandss volume name '$volname'\n";
 }
 
 sub volume_has_feature {
@@ -385,8 +462,13 @@ sub volume_has_feature {
       @_;
 
     my $features = {
-        copy     => { base    => 1, current => 1 },
-        snapshot => { current => 1 },
+	    snapshot => { current => { raw => 1, qcow2 => 1}, snap => { raw => 1, qcow => 1} },
+	    clone => { base => { qcow2 => 1, raw => 1, vmdk => 1} },
+	    template => { current => 1},
+	    copy => { base => 1, current => 1},
+	    sparseinit => { base => {qcow2 => 1, raw => 1, vmdk => 1},
+			current => {qcow2 => 1, raw => 1, vmdk => 1} },
+	    replicate => { base => 1, current => 1},
     };
 
     my ( $vtype, $name, $vmid, $basename, $basevmid, $isBase ) =

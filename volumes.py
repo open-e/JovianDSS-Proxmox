@@ -27,7 +27,8 @@ class Volumes():
         self.vsa = {'create': self.create,
                    'list': self.list}
         self.va = {'delete': self.delete,
-                   'snapshots': self.snapshots}
+                   'snapshots': self.snapshots,
+                   'clone': self.clone}
 
         self.args = args
         argst = self.__parse(uargs)
@@ -35,11 +36,10 @@ class Volumes():
         self.uargs = argst[1]
         self.jdss = jdss
       
-        print(self.args)
         if 'volumes-action' in self.args:
             self.vsa[self.args.pop('volumes-action')]()
         elif 'volume-action' in self.args:
-            self.va[self.args.pop('volume-actions')]()            
+            self.va[self.args.pop('volume-action')]()
 
     def __parse(self, args):
 
@@ -51,7 +51,8 @@ class Volumes():
             create = parsers.add_parser('create')
             create.add_argument('-s', dest='volume_size', type=str, default='1G', help='New volume size in format <number><dimension>')
             create.add_argument('-b', dest='block_size', type=str, default='64K', help='Block size')
-            create.add_argument('volume_name', nargs=1, type=str, help='New volume name')
+
+            create.add_argument('volume_name', type=str, help='New volume name')
 
             listp = parsers.add_parser('list')
             listp.add_argument('--vmid',
@@ -62,11 +63,19 @@ class Volumes():
         else:  
             parser.add_argument('volume_name', help='Volume name')
             parsers = parser.add_subparsers(dest='volume-action')
+
             clone = parsers.add_parser('clone')
+            clone.add_argument('-s', dest='volume_size', type=str, default='1G', help='New volume size in format <number><dimension>')
+            clone.add_argument('-b', dest='block_size', type=str, default='64K', help='Block size')
+            clone.add_argument('clone_name', nargs=1, type=str, help='Clone volume name')
+
             delete = parsers.add_parser('delete')
-            delete.add_argument('volume_name', nargs=1, type=str, help='Name of volume to delete')
+            delete.add_argument('-c', '--cascade', dest='cascade', 
+                                action='store_true',
+                                default=False,
+                                help='Remove snapshots along side with volume')
             properties = parsers.add_parser('properties')
-            
+
             snapshots = parsers.add_parser('snapshots')
        
         return parser.parse_known_args(args)
@@ -75,12 +84,26 @@ class Volumes():
       
         volume_size = self.args['volume_size']
         block_size = self.args['block_size']
+        volume_name = self.args['volume_name']
+    
+        volume = {'size': volume_size}
+   
+        if 'volume_name' in self.args:
+            volume['id'] = self.args['volume_name']
+        else:
+            volume['id'] = str(uuid.uuid1())
+
+        self.jdss.create_volume(volume)
+
+    def clone(self):
+      
+        volume_size = self.args['volume_size']
+        block_size = self.args['block_size']
         volume_name = self.args['volume_name'][0]
     
         volume = {'id': volume_name,
                   'size': volume_size}
-    
-        self.jdss.create_volume(volume)
+        self.jdss.create_cloned_volume(volume, src_vref)
     
     def list(self):
         data = self.jdss.list_volumes()
@@ -107,15 +130,15 @@ class Volumes():
                     'name': v['name'],
                     'size': v['size']})
                 sys.stdout.write(line)
-    
+
     def delete(self):
     
-        volume = {'id': self.args['volume_name'][0]}
-    
+        volume = {'id': self.args['volume_name']}
         self.jdss.delete_volume(volume, cascade=self.args['cascade'])
 
     def snapshots(self):
-        pass        
+        snapshots.Snapshots(self.args, self.uargs, self.jdss)
+        pass
 
 #def pool(args, uargs, jdss):
 #

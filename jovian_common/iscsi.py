@@ -33,7 +33,7 @@ from jovian_common import rest
 #from cinder.volume import volume_utils
 
 LOG = logging.getLogger(__name__)
-logging.getLogger().setLevel(logging.DEBUG)
+#logging.getLogger().setLevel(logging.DEBUG)
 
 class JovianISCSIDriver(object):
     """Executes volume driver commands on Open-E JovianDSS.
@@ -644,11 +644,11 @@ class JovianISCSIDriver(object):
         :param snapshot: snapshot reference
         """
         LOG.debug('create snapshot %(snap)s for volume %(vol)s', {
-            'snap': snapshot.id,
-            'vol': snapshot.volume_id})
+            'snap': snapshot['id'],
+            'vol': snapshot['volume_id']})
 
-        vname = jcom.vname(snapshot.volume_id)
-        sname = jcom.sname(snapshot.id)
+        vname = jcom.vname(snapshot['volume_id'])
+        sname = jcom.sname(snapshot['id'])
 
         self._clone_object(vname, sname)
 
@@ -660,12 +660,41 @@ class JovianISCSIDriver(object):
             self._delete_back_recursively(vname, sname)
             raise cexc.VolumeBackendAPIException(err)
 
+    def list_snapshots(self, volume):
+        """List snapshots related to this volume.
+
+        :return: list of volumes
+        """
+        #vname = jcom.vname(volume.id)
+        #LOG.debug('creating volume %s.', vname)
+
+        #provider_location = self._get_provider_location(volume.id)
+        #provider_auth = self._get_provider_auth()
+
+        ret = []
+        vname = jcom.vname(volume['id'])
+        try:
+            data = self.ra.get_snapshots(vname)
+
+        except jexc.JDSSException as ex:
+            LOG.error("List snapshots error. Because %(err)s",
+                      {"err": ex})
+            raise Exception(('Failed to list snapshots %s.') % volume.id)
+
+        for r in data:
+            try:
+                ret.append({'name': jcom.idname(r['name'])})
+            except Exception as err:
+                pass
+        return ret
+
     def delete_snapshot(self, snapshot):
         """Delete snapshot of existing volume.
 
         :param snapshot: snapshot reference
         """
-        sname = jcom.sname(snapshot.id)
+        sname = jcom.sname(snapshot['id'])
+        vname = jcom.vname(snapshot['volume_name'])
 
         LOG.debug('deleating snapshot %s.', sname)
 
@@ -711,6 +740,11 @@ class JovianISCSIDriver(object):
             'user': chap_user,
             'passwd': chap_password}
 
+    def get_provider_location(self, volume):
+        """Get target description"""
+        
+        return self._get_provider_location(volume)
+
     def _get_provider_location(self, volume_name):
         """Return volume iscsiadm-formatted provider location string."""
         return '%(host)s:%(port)s,1 %(name)s 0' % {
@@ -724,18 +758,18 @@ class JovianISCSIDriver(object):
         :param volume: reference of volume to be exported
         :return: iscsiadm-formatted provider location string
         """
-        LOG.debug("create export for volume: %s.", volume.id)
+        LOG.debug("create export for volume: %s.", volume['id'])
 
         self._ensure_target_volume(volume)
 
-        return {'provider_location': self._get_provider_location(volume.id)}
+        return {'provider_location': self._get_provider_location(volume['id'])}
 
     def ensure_export(self, _ctx, volume):
         """Recreate parts of export if necessary.
 
         :param volume: reference of volume to be exported
         """
-        LOG.debug("ensure export for volume: %s.", volume.id)
+        LOG.debug("ensure export for volume: %s.", volume['id'])
         self._ensure_target_volume(volume)
 
     def remove_export(self, _ctx, volume):
@@ -743,7 +777,7 @@ class JovianISCSIDriver(object):
 
         :param volume: reference of volume to be unexported
         """
-        LOG.debug("remove_export for volume: %s.", volume.id)
+        LOG.debug("remove_export for volume: %s.", volume['id'])
 
         self._remove_target_volume(volume)
 
@@ -854,7 +888,7 @@ class JovianISCSIDriver(object):
 
             LOG.debug(err_msg)
 
-            raise cexc.VolumeBackendAPIException(_(err_msg))
+            raise Exception(err_msg)
 
     def _create_target_volume(self, volume):
         """Creates target and attach volume to it
@@ -862,15 +896,15 @@ class JovianISCSIDriver(object):
         :param volume: volume id
         :return:
         """
-        LOG.debug("create target and attach volume %s to it", volume.id)
+        LOG.debug("create target and attach volume %s to it", volume['id'])
 
-        target_name = self.jovian_target_prefix + volume.id
-        vname = jcom.vname(volume.id)
+        target_name = self.jovian_target_prefix + volume['id']
+        vname = jcom.vname(volume['id'])
 
-        auth = volume.provider_auth
+        auth = volume['provider_auth']
 
         if not auth:
-            msg = _("Volume %s is missing provider_auth") % volume.id
+            msg = _("Volume %s is missing provider_auth") % volume['id']
             raise cexc.VolumeDriverException(msg)
 
         (__, auth_username, auth_secret) = auth.split()
@@ -878,24 +912,24 @@ class JovianISCSIDriver(object):
                      "password": auth_secret}
 
         # Create target
-        self._create_target(target_name, True)
+        self._create_target(target_name, False)
 
         # Attach volume
         self._attach_target_volume(target_name, vname)
 
         # Set credentials
-        self._set_target_credentials(target_name, chap_cred)
+        #self._set_target_credentials(target_name, chap_cred)
 
     def _ensure_target_volume(self, volume):
         """Checks if target configured properly and volume is attached to it
 
         param: volume: volume structure
         """
-        LOG.debug("ensure volume %s assigned to a proper target", volume.id)
+        LOG.debug("ensure volume %s assigned to a proper target", volume['id'])
 
-        target_name = self.jovian_target_prefix + volume.id
+        target_name = self.jovian_target_prefix + volume['id']
 
-        auth = volume.provider_auth
+        auth = volume['provider_auth']
 
         if not auth:
             msg = _("volume %s is missing provider_auth") % volume.id
@@ -909,41 +943,43 @@ class JovianISCSIDriver(object):
             self._create_target_volume(volume)
             return
 
-        vname = jcom.vname(volume.id)
+        vname = jcom.vname(volume['id'])
         if not self.ra.is_target_lun(target_name, vname):
             self._attach_target_volume(target_name, vname)
 
-        try:
-            users = self.ra.get_target_user(target_name)
-            if len(users) == 1:
-                if users[0]['name'] == chap_cred['name']:
-                    return
-                self.ra.delete_target_user(
-                    target_name,
-                    users[0]['name'])
-            for user in users:
-                self.ra.delete_target_user(
-                    target_name,
-                    user['name'])
-            self._set_target_credentials(target_name, chap_cred)
+        #try:
+        #    users = self.ra.get_target_user(target_name)
+        #    if len(users) == 1:
+        #        if users[0]['name'] == chap_cred['name']:
+        #            return
+        #        self.ra.delete_target_user(
+        #            target_name,
+        #            users[0]['name'])
+        #    for user in users:
+        #        self.ra.delete_target_user(
+        #            target_name,
+        #            user['name'])
 
-        except jexc.JDSSException as err:
-            self.ra.delete_target(target_name)
-            raise cexc.VolumeBackendAPIException(err)
+        #except jexc.JDSSResourceNotFoundException as err:
+        #    self._set_target_credentials(target_name, chap_cred)
+
+        #except jexc.JDSSException as err:
+        #    self.ra.delete_target(target_name)
+        #    raise cexc.VolumeBackendAPIException(err)
 
     def _remove_target_volume(self, volume):
         """_remove_target_volume
 
         Ensure that volume is not attached to target and target do not exists.
         """
-        target_name = self.jovian_target_prefix + volume.id
+        target_name = self.jovian_target_prefix + volume['id']
         LOG.debug("remove export")
         LOG.debug("detach volume:%(vol)s from target:%(targ)s.", {
             'vol': volume,
             'targ': target_name})
 
         try:
-            self.ra.detach_target_vol(target_name, jcom.vname(volume.id))
+            self.ra.detach_target_vol(target_name, jcom.vname(volume['id']))
         except jexc.JDSSResourceNotFoundException as ex:
             LOG.debug('failed to remove resource %(t)s because of %(err)s', {
                 't': target_name,
