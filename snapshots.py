@@ -26,7 +26,8 @@ class Snapshots():
         self.ssa = {'create': self.create,
                     'list': self.list}
         self.sa = {'clone': self.clone,
-                   'delete': self.delete}
+                   'delete': self.delete,
+                   'rollback': self.rollback}
 
         self.args = args
         argst = self.__parse(uargs)
@@ -55,7 +56,7 @@ class Snapshots():
             parsers = parser.add_subparsers(dest='snapshot-actions')
             clone = parsers.add_parser('clone')
             delete = parsers.add_parser('delete')
-            properties = parsers.add_parser('properties')
+            delete = parsers.add_parser('rollback')
        
         return parser.parse_known_args(args)
 
@@ -78,11 +79,11 @@ class Snapshots():
         self.jdss.create_snapshot(snapshot)
 
     def list(self):
-        
+
         volume = {'id': self.args['volume_name']}
 
         data = self.jdss.list_snapshots(volume)
-    
+
         for v in data:
             name = "_".join(v['name'].split("_")[1:])
             line = "{}\n".format(name)
@@ -92,6 +93,13 @@ class Snapshots():
 
         snapshot = self._get_snapshot()
         self.jdss.delete_snapshot(snapshot)
+    
+    def rollback(self):
+
+        volume = {'id': self.args['volume_name']}
+        snapshot = self._get_snapshot()
+
+        self.jdss.revert_to_snapshot('', volume, snapshot)
 
     def clone(self):
         pass

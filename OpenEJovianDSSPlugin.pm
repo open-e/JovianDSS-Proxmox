@@ -19,7 +19,7 @@ use PVE::JSONSchema qw(get_standard_option);
 
 use base qw(PVE::Storage::Plugin);
 
-my $PLUGIN_VERSION = '0.0.1';
+my $PLUGIN_VERSION = '0.4.1';
 
 # Configuration
 
@@ -262,21 +262,51 @@ sub list_images {
 
 sub volume_snapshot {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
+    
+    my $config = $scfg->{config};
 
-    print "$scfg, $storeid, $volname, $snap";
-    die "lvm snapshot is not implemented";
+    my $pool = $scfg->{pool_name};
+
+    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+    
+    open my $jcli, '-|' or
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "snapshots", "create", $snap or
+        die "jcli failed: $!\n";
+ 
+    close $jcli;
+
 }
 
 sub volume_snapshot_rollback {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
+    
+    my $config = $scfg->{config};
 
-    die "lvm snapshot rollback is not implemented";
+    my $pool = $scfg->{pool_name};
+
+    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+
+    open my $jcli, '-|' or
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "snapshots", $snap, "rollback" or
+        die "jcli failed: $!\n";
+ 
+    close $jcli;
 }
 
 sub volume_snapshot_delete {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
 
-    die "lvm snapshot delete is not implemented";
+    my $config = $scfg->{config};
+
+    my $pool = $scfg->{pool_name};
+
+    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+
+    open my $jcli, '-|' or
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "snapshots", $snap, "delete" or
+        die "jcli failed: $!\n";
+ 
+    close $jcli;
 }
 
 sub volume_snapshot_list {
@@ -297,7 +327,7 @@ sub volume_snapshot_list {
       #print "$uid $pid $ppid\n "
       push @$res, { 'name' => '$sname'};
     }
-    #die "deactivate_volume: snapshot not implemented ($snapname)\n" if $snapname;
+    #die "volume snapshot list: snapshot not implemented ($snapname)\n" if $snapname;
     return $res
 }
 
@@ -336,60 +366,27 @@ sub activate_volume {
         exec "jcli", "-p", "-c", $config, "pool", $pool, "targets", "create", $volname or
         die "jcli failed: $!\n";
  
-    
-    #while (<$jcli>) {
-    #  my ($target, $host, $lun) = split;
-    #  $path =  "iscsi://$host/$target/$lun";
-    #}
     close $jcli;
-    #die "Activating volume $volname";
+
     return 1;
-    #return undef if ignore_volume( $scfg, $volname );
-
-    #if ($snap) {    # need to create this resource from snapshot
-    #    my $snapname = volname_and_snap_to_snapname( $volname, $snap );
-    #    my $new_volname = $snapname;
-    #    eval { linstor($scfg)->restore_snapshot( $volname, $snapname, $new_volname ); };
-    #    confess $@ if $@;
-    #    $volname = $new_volname; # for the rest of this function switch the name
-    #}
-
-    #my $nodename = PVE::INotify::nodename();
-
-    #eval { linstor($scfg)->activate_resource( $volname, $nodename ); };
-    #confess $@ if $@;
-
-    #system ('blockdev --setrw ' . get_dev_path $volname);
-
-    return undef;
 }
 
 sub deactivate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
 
+    my $config = $scfg->{config};
+
+    my $pool = $scfg->{pool_name};
+
+    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+    
+    open my $jcli, '-|' or
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "targets", $volname, "delete" or
+        die "jcli failed: $!\n";
+    
+    close $jcli;
+    #die "Activating volume $volname";
     return 1;
-    die "deactivate_volume: snapshot not implemented ($snapname)\n" if $snapname;
-
-    return undef if ignore_volume( $scfg, $volname );
-
-    my $nodename = PVE::INotify::nodename();
-
-# deactivate_resource only removes the assignment if diskless, so this could be a single call.
-# We do all this unnecessary dance to print the NOTICE.
-    my $lsc = linstor($scfg);
-    my $was_diskless_client =
-      $lsc->resource_exists_intentionally_diskless( $volname, $nodename );
-
-    if ($was_diskless_client) {
-        print "\nNOTICE\n"
-          . "  Intentionally removing diskless assignment ($volname) on ($nodename).\n"
-          . "  It will be re-created when the resource is actually used on this node.\n";
-
-        eval { $lsc->deactivate_resource( $volname, $nodename ); };
-        confess $@ if $@;
-    }
-
-    return undef;
 }
 
 sub volume_resize {
@@ -405,47 +402,6 @@ sub volume_resize {
 
     return 1;
 }
-
-#sub volume_snapshot {
-#    my ( $class, $scfg, $storeid, $volname, $snap ) = @_;
-#    my $snapname = volname_and_snap_to_snapname( $volname, $snap );
-#
-#    eval { linstor($scfg)->create_snapshot( $volname, $snapname ); };
-#    confess $@ if $@;
-#
-#    return 1;
-#}
-#
-#sub volume_snapshot_rollback {
-#    my ( $class, $scfg, $storeid, $volname, $snap ) = @_;
-#
-#    my $snapname = volname_and_snap_to_snapname( $volname, $snap );
-#
-#    eval { linstor($scfg)->rollback_snapshot( $volname, $snapname ); };
-#    confess $@ if $@;
-#
-#    return 1;
-#}
-#
-#sub volume_snapshot_delete {
-#    my ( $class, $scfg, $storeid, $volname, $snap ) = @_;
-#    my $snapname = volname_and_snap_to_snapname( $volname, $snap );
-#
-#    my $lsc = linstor($scfg);
-#
-#    # on backup we created a resource from the given snapshot
-#    # on cleanup we as plugin only get a volume_snapshot_delete
-#    # so we have to do some "heuristic" to also clean up the resource we created
-#    if ( $snap eq 'vzdump' ) {
-#        eval { $lsc->delete_resource( $snapname ); };
-#        confess $@ if $@;
-#    }
-#
-#    eval { $lsc->delete_snapshot( $volname, $snapname ); };
-#    confess $@ if $@;
-#
-#    return 1;
-#}
 
 sub parse_volname {
     my ($class, $volname) = @_;

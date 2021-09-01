@@ -178,6 +178,9 @@ class JovianISCSIDriver(object):
         for r in data:
             try:
 
+                if not jcom.is_volume(r['name']):
+                    continue
+
                 ret.append({
                 'name': jcom.idname(r['name']),
                 'id' : r['san:volume_id'],
@@ -435,8 +438,8 @@ class JovianISCSIDriver(object):
         the volume during the process, it should extend the
         volume internally.
         """
-        vname = jcom.vname(volume.id)
-        sname = jcom.sname(snapshot.id)
+        vname = jcom.vname(volume['id'])
+        sname = jcom.sname(snapshot['id'])
         LOG.debug('reverting %(vname)s to %(sname)s', {
             "vname": vname,
             "sname": sname})
