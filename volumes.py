@@ -28,7 +28,9 @@ class Volumes():
                    'list': self.list}
         self.va = {'delete': self.delete,
                    'snapshots': self.snapshots,
-                   'clone': self.clone}
+                   'clone': self.clone,
+                   'properties': self.properties,
+                   'resize': self.resize}
 
         self.args = args
         argst = self.__parse(uargs)
@@ -74,7 +76,14 @@ class Volumes():
                                 action='store_true',
                                 default=False,
                                 help='Remove snapshots along side with volume')
+
             properties = parsers.add_parser('properties')
+            properties.add_argument('--name', dest='propertie_name', type=str, help='Volume propertie name')
+            properties.add_argument('--value', dest='propertie_value', type=str, help='Volume propertie value')
+            
+            resize = parsers.add_parser('resize')
+            resize.add_argument('--add', dest="add_size", action="store_true", default=False, help='Add new size to existing volume size')
+            resize.add_argument('new_size', type=int, help='New volume size')
 
             snapshots = parsers.add_parser('snapshots')
        
@@ -99,7 +108,7 @@ class Volumes():
       
         volume_size = self.args['volume_size']
         block_size = self.args['block_size']
-        volume_name = self.args['volume_name'][0]
+        volume_name = self.args['volume_name']
     
         volume = {'id': volume_name,
                   'size': volume_size}
@@ -132,7 +141,7 @@ class Volumes():
                 sys.stdout.write(line)
 
     def delete(self):
-    
+ 
         volume = {'id': self.args['volume_name']}
         self.jdss.delete_volume(volume, cascade=self.args['cascade'])
 
@@ -140,7 +149,19 @@ class Volumes():
         snapshots.Snapshots(self.args, self.uargs, self.jdss)
         pass
 
-#def pool(args, uargs, jdss):
-#
-#    pool_sub_objects = {'volumes': Volumes}
-#    return pool_sub_objects[args.pop('pool_sub_object')](args, uargs, jdss)
+    def properties(self):
+        pass
+
+    def resize(self):
+
+        volume_name = self.args['volume_name']
+
+        volume = {'id': volume_name}
+        size = self.args['new_size']
+        
+        if self.args['add_size']:
+            d = self.jdss.get_volume(volume)
+            size += int(d['size'])
+
+        self.jdss.extend_volume(volume, size)
+

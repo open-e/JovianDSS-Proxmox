@@ -142,6 +142,8 @@ sub get_storagepool {
 
 sub path {
     my ($class, $scfg, $volname, $storeid, $snapname) = @_;
+    
+    die "get path $volname | $storeid | $snapname";
 
     die "direct access to snapshots not implemented"
 	if defined($snapname);
@@ -165,6 +167,12 @@ sub path {
     close $jcli;
 
     return ($path, $vmid, $vtype);
+}
+
+sub get_subdir {
+    my ($class, $scfg, $vtype) = @_;
+
+    return undef;
 }
 
 sub create_base {
@@ -392,13 +400,17 @@ sub deactivate_volume {
 sub volume_resize {
     my ( $class, $scfg, $storeid, $volname, $size, $running ) = @_;
 
-    my $size_kib = ( $size / 1024 );
+    my $config = $scfg->{config};
 
-    eval { linstor($scfg)->resize_resource( $volname, $size_kib ); };
-    confess $@ if $@;
+    my $pool = $scfg->{pool_name};
 
-    # TODO: remove, temporary fix for non-synchronous LINSTOR resize
-    sleep(10);
+    #my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+    open my $jcli, '-|' or
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "volumes",
+                $volname, "resize", $size or
+        die "jcli failed: $!\n";
+ 
+    close $jcli;
 
     return 1;
 }

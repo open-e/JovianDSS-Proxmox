@@ -165,7 +165,7 @@ class JovianRESTAPI(object):
 
         if resp["error"]:
             raise jexc.JDSSRESTException(
-                _('Failed to extend volume %s' % resp['error']['message']))
+                ('Failed to extend volume %s' % resp['error']['message']))
 
         raise jexc.JDSSRESTException('Failed to extend volume.')
 

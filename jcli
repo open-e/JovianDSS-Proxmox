@@ -92,8 +92,8 @@ def main():
     #cmd['pool'](args, jdss)
 
 if __name__ == "__main__":
-    #try:
-    main()
-    #except Exception as err:
-    #    LOG.error(err)
-    #    sys.exit(1)
+    try:
+        main()
+    except Exception as err:
+        LOG.error(err)
+        sys.exit(1)

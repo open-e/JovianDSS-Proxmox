@@ -173,7 +173,7 @@ class JovianISCSIDriver(object):
         except jexc.JDSSException as ex:
             LOG.error("List volume error. Because %(err)s",
                       {"err": ex})
-            raise Exception(('Failed to list volume %s.') % volume.id)
+            raise Exception(('Failed to list volumes %s.') % ex)
 
         for r in data:
             try:
@@ -188,6 +188,34 @@ class JovianISCSIDriver(object):
 
             except Exception as err:
                 pass
+        return ret
+
+    def get_volume(self, volume):
+        """List volumes related to this pool.
+
+        :return: list of volumes
+        """
+        #vname = jcom.vname(volume.id)
+        #LOG.debug('creating volume %s.', vname)
+
+        #provider_location = self._get_provider_location(volume.id)
+        #provider_auth = self._get_provider_auth()
+
+        try:
+            data = self.ra.get_lun(jcom.vname(volume['id']))
+
+        except jexc.JDSSException as ex:
+            LOG.error("Get volume error. Because %(err)s",
+                      {"err": ex})
+            raise Exception(('Failed to get volume %s.') % volume['id'])
+
+        if not jcom.is_volume(data['name']):
+            return dict()
+
+        ret = {'name': jcom.idname(data['name']),
+               'id' : data['san:volume_id'],
+               'size': data['volsize']}
+
         return ret
 
     def _hide_object(self, vname):
@@ -422,13 +450,13 @@ class JovianISCSIDriver(object):
         :param volume: volume reference
         :param new_size: volume new size in GB
         """
-        LOG.debug("Extend volume %s", volume.id)
+        LOG.debug("Extend volume %s", volume['id'])
 
         try:
-            self.ra.extend_lun(jcom.vname(volume.id), new_size)
+            self.ra.extend_lun(jcom.vname(volume['id']), new_size)
         except jexc.JDSSException as err:
-            raise cexc.VolumeBackendAPIException(
-                (_('Failed to extend volume %s.'), volume.id)) from err
+            raise Exception(
+                (('Failed to extend volume %s.'), volume['id'])) from err
 
     def revert_to_snapshot(self, context, volume, snapshot):
         """Revert volume to snapshot.
