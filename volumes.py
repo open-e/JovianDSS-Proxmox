@@ -147,7 +147,6 @@ class Volumes():
 
     def snapshots(self):
         snapshots.Snapshots(self.args, self.uargs, self.jdss)
-        pass
 
     def properties(self):
         pass
@@ -164,4 +163,3 @@ class Volumes():
             size += int(d['size'])
 
         self.jdss.extend_volume(volume, size)
-

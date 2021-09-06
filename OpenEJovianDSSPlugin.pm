@@ -108,17 +108,6 @@ sub get_config {
 }
 
 
-sub get_storagepool {
-    my ($scfg) = @_;
-
-    my $res_grp = get_resource_group($scfg);
-
-    my $sp = linstor($scfg)->get_storagepool_for_resource_group($res_grp);
-    die "Have resource group, but storage pool is undefined for resource group $res_grp"
-      unless defined($sp);
-    return $sp;
-}
-
 #sub get_dev_path {
 #    return "/dev/drbd/by-res/$_[0]/0";
 #}
@@ -143,7 +132,7 @@ sub get_storagepool {
 sub path {
     my ($class, $scfg, $volname, $storeid, $snapname) = @_;
     
-    die "get path $volname | $storeid | $snapname";
+    #die "get path $volname | $storeid | $snapname";
 
     die "direct access to snapshots not implemented"
 	if defined($snapname);
@@ -341,12 +330,23 @@ sub volume_snapshot_list {
 
 sub status {
     my ( $class, $storeid, $scfg, $cache ) = @_;
-    my $nodename = PVE::INotify::nodename();
+    
+    my $config = $scfg->{config};
 
-    # they want it in bytes
-    my $total = 1024;
-    my $avail = 1024*1024*1024;
-    return ( $total, $avail, $total - $avail, 1 );
+    my $pool = $scfg->{pool_name};
+
+    open my $jcli, '-|' or 
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "get" or
+        die "jcli failed: $!\n";
+
+    my $total = "";
+    my $used = "";
+    my $avail = "";
+    my $gb = 1024*1024*1024;
+    while (<$jcli>) {
+      ($total, $avail, $used) = split;
+    }
+    return ($total * $gb, $avail * $gb, $used * $gb, 1 );
 }
 
 sub activate_storage {

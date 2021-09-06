@@ -852,6 +852,16 @@ class JovianISCSIDriver(object):
                   self._stats['total_capacity_gb'],
                   self._stats['free_capacity_gb'])
 
+    def get_volume_stats(self):
+        """Return information about pool capacity
+        
+        return (total_gb, free_gb)
+        """
+        self._update_volume_stats()
+
+        return (self._stats['total_capacity_gb'],
+                self._stats['free_capacity_gb'])
+        
     def _create_target(self, target_name, use_chap=True):
         """Creates target and handles exceptions
 
