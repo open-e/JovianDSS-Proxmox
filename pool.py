@@ -63,5 +63,5 @@ class Pools():
     def volumes(self):
         volumes.Volumes(self.args, self.uargs, self.jdss)
 
-    def targets():
+    def targets(self):
         targets.Targets(self.args, self.uargs, self.jdss)

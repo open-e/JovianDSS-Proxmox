@@ -79,8 +79,9 @@ class Targets():
             out += ' ' + ':'.join(provider_location.split()[0].split(':')[:-1])
         if self.args['lun']:
             out += ' ' + provider_location.split()[2]
-        out = provider_location.split()[1] + out + '\n'
-        sys.stdout.write(out)
+        out = provider_location.split()[1] + out
+        #sys.stdout.write(out.encode("ascii"))
+        print(out)
 
     def list(self):
         pass
@@ -100,5 +101,7 @@ class Targets():
             out += ' ' + ':'.join(provider_location.split()[0].split(':')[:-1])
         if self.args['lun']:
             out += ' ' + provider_location.split()[2]
-        out = provider_location.split()[1] + out + '\n'
-        sys.stdout.write(out)
+        out = provider_location.split()[1] + out
+        #sys.stdout.write(out.encode("ascii"))
+
+        print(out)

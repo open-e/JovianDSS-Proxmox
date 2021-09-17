@@ -10,6 +10,7 @@ use REST::Client;
 use Storable qw(lock_store lock_retrieve);
 use UUID "uuid";
 
+use Encode qw(decode encode);
 
 use PVE::Tools qw(run_command trim);
 use PVE::INotify;
@@ -107,28 +108,31 @@ sub get_config {
     return $scfg->{config} || $default_config;
 }
 
+sub filesystem_path {
+    my ($class, $scfg, $volname, $snapname) = @_;
 
-#sub get_dev_path {
-#    return "/dev/drbd/by-res/$_[0]/0";
-#}
+    #die "get filesystem path $volname | $snapname";
 
+    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-# Storage implementation
-#
-# For APIVER 2
-#sub map_volume {
-#    my ( $class, $storeid, $scfg, $volname, $snap ) = @_;
-#
-#    $volname = volname_and_snap_to_snapname( $volname, $snap ) if defined($snap);
-#
-#    return get_dev_path "$volname";
-#}
-#
-## For APIVER 2
-#sub unmap_volume {
-#    return 1;
-#}
+    my $config = $scfg->{config};
 
+    my $pool = $scfg->{pool_name};
+
+    open my $jcli, '-|' or
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--lun" or
+        die "jcli failed: $!\n";
+ 
+    my $path = "";
+
+    while (<$jcli>) {
+      my ($target, $host, $lun) = split;
+      $path =  "iscsi://$host/$target/$lun";
+    }
+    close $jcli;
+
+    return wantarray ? ($path, $vmid, $vtype) : $path;
+}
 sub path {
     my ($class, $scfg, $volname, $storeid, $snapname) = @_;
     
@@ -151,9 +155,18 @@ sub path {
 
     while (<$jcli>) {
       my ($target, $host, $lun) = split;
-      $path =  "iscsi://$host/$target/$lun";
+        $path =  "iscsi://$host/$target/$lun";
+        last;
     }
     close $jcli;
+    #$path = decode('UTF-8', $path);
+    #print $path;
+    #print "Get path";
+    #print "iscsi://172.16.0.220/iqn.2020-04.com.open-e.cinder:vm-101-cdb52cd73a1345dd890207fe64075d88/0";
+    #die "error $path"
+    #if $path ne "iscsi://172.16.0.220/iqn.2020-04.com.open-e.cinder:vm-101-cdb52cd73a1345dd890207fe64075d88/0";
+    #        iscsi://172.16.0.220/iqn.2020-04.com.open-e.cinder:vm-101-cdb52cd73a1345dd890207fe64075d88/0
+    #$path = "iscsi://172.16.0.220/iqn.2020-04.com.open-e.cinder:vm-101-cdb52cd73a1345dd890207fe64075d88/0";
 
     return ($path, $vmid, $vtype);
 }
@@ -167,11 +180,13 @@ sub get_subdir {
 sub create_base {
     my ( $class, $storeid, $scfg, $volname ) = @_;
 
-    die "can't create base images in drbd storage\n";
+    die "can't create base images in Open-E JovianDSS storage\n";
 }
 
 sub clone_image {
-    my ( $class, $scfg, $storeid, $volname, $vmid, $snap ) = @_;
+    my ($class, $scfg, $storeid, $volname, $vmid, $snap) = @_;
+
+    die "$class, $scfg, $storeid, $volname, $vmid, $snap ";
 
     die "can't clone images in drbd storage\n";
 }
@@ -208,10 +223,12 @@ sub free_image {
 
     my $pool = $scfg->{pool_name};
 
-    #open(LIST_VOLUMES, "jcli -p -c $config pool $pool volume delete $volname|");
-    
+    #remove associated target before removing volume
+    open my $jclidelete, '-|' or
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "targets", $volname, "delete"; 
+ 
     open my $jcli, '-|' or 
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "delete" or
+        exec "jcli", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "delete", "-c" or
         die "jcli failed: $!\n";
     close $jcli;
     return undef;
@@ -246,7 +263,9 @@ sub list_images {
         };
     }
     close $jcli;
-    
+   
+    # TODO: delete this comment section
+    # its purpouse is to store means of debuging
     #my $i = 1;
     #while ( (my @call_details = (caller($i++))) ){
     #    print STDERR $call_details[1].":".$call_details[2]." in function ".$call_details[3]."\n";
@@ -316,7 +335,7 @@ sub volume_snapshot_list {
     open my $jcli, '-|' or 
         exec "jcli", "-p", "-c", $config, "pool", $pool, "volume", "$volname", "snapshot", "list" or
         die "jcli failed: $!\n";
-    
+
     my $res = [];
  
     while (<$jcli>) {
@@ -330,7 +349,7 @@ sub volume_snapshot_list {
 
 sub status {
     my ( $class, $storeid, $scfg, $cache ) = @_;
-    
+
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
@@ -367,14 +386,24 @@ sub activate_volume {
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
+    print "Activate volume $volname";
+    
+    #my $i = 1;
+    #while ( (my @call_details = (caller($i++))) ){
+    #    print STDERR $call_details[1].":".$call_details[2]." in function ".$call_details[3]."\n";
+    #}
+    #foreach my $hash (@$res) {
+    #    print "$hash->{'volid'}\n";
+    #}
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
-    
+
     open my $jcli, '-|' or
         exec "jcli", "-p", "-c", $config, "pool", $pool, "targets", "create", $volname or
         die "jcli failed: $!\n";
  
     close $jcli;
+    #die "Volume activate call with arguments $volname, $snap, $cache";
 
     return 1;
 }
@@ -385,6 +414,7 @@ sub deactivate_volume {
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
+    print "Deactivate volume $volname";
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
     
@@ -393,6 +423,7 @@ sub deactivate_volume {
         die "jcli failed: $!\n";
     
     close $jcli;
+    #die "Volume deactivate call with arguments $volname, $snapname, $cache";
     #die "Activating volume $volname";
     return 1;
 }
@@ -419,7 +450,7 @@ sub parse_volname {
     my ($class, $volname) = @_;
 
     if ($volname =~ m/^((\S+):vm-(\d+)-(\S+))?(vm-(\d+)-(\S+))$/) {
-	return ('images', $2, $1, undef, undef, undef, 'raw');
+	return ('images', $2, $1, undef, undef, 'current', 'raw');
     }
 
     die "unable to parse joviandss volume name '$volname'\n";
@@ -430,12 +461,12 @@ sub volume_has_feature {
       @_;
 
     my $features = {
-	    snapshot => { current => { raw => 1, qcow2 => 1}, snap => { raw => 1, qcow => 1} },
-	    clone => { base => { qcow2 => 1, raw => 1, vmdk => 1} },
-	    template => { current => 1},
-	    copy => { base => 1, current => 1},
-	    sparseinit => { base => {qcow2 => 1, raw => 1, vmdk => 1},
-			current => {qcow2 => 1, raw => 1, vmdk => 1} },
+	    snapshot => { base => 1, current => 1, snap => 1 },
+	    clone => { base => 1, current => 1, snap => 1, images => 1},
+	    template => { current => 1 },
+	    copy => { snap => 1 },
+	    #copy => { base => 1, current => 1, snap => 1},
+	    sparseinit => { base => { raw => 1 }, current => { raw => 1} },
 	    replicate => { base => 1, current => 1},
     };
 
@@ -454,5 +485,135 @@ sub volume_has_feature {
     return undef;
 }
 
+# Export a volume into a file handle as a stream of desired format.
+sub volume_export {
+    my ($class, $scfg, $storeid, $fh, $volname, $format, $snapshot, $base_snapshot, $with_snapshots) = @_;
+
+    die "Volume export call with arguments $fh, $volname, $format, $snapshot, $base_snapshot, $with_snapshots";
+
+#    if ($scfg->{path} && !defined($snapshot) && !defined($base_snapshot)) {
+#	my $file = $class->path($scfg, $volname, $storeid)
+#	    or goto unsupported;
+#	my ($size, $file_format) = file_size_info($file);
+#
+#	if ($format eq 'raw+size') {
+#	    goto unsupported if $with_snapshots || $file_format eq 'subvol';
+#	    write_common_header($fh, $size);
+#	    if ($file_format eq 'raw') {
+#		run_command(['dd', "if=$file", "bs=4k"], output => '>&'.fileno($fh));
+#	    } else {
+#		run_command(['qemu-img', 'convert', '-f', $file_format, '-O', 'raw', $file, '/dev/stdout'],
+#		            output => '>&'.fileno($fh));
+#	    }
+#	    return;
+#	} elsif ($format =~ /^(qcow2|vmdk)\+size$/) {
+#	    my $data_format = $1;
+#	    goto unsupported if !$with_snapshots || $file_format ne $data_format;
+#	    write_common_header($fh, $size);
+#	    run_command(['dd', "if=$file", "bs=4k"], output => '>&'.fileno($fh));
+#	    return;
+#	} elsif ($format eq 'tar+size') {
+#	    goto unsupported if $file_format ne 'subvol';
+#	    write_common_header($fh, $size);
+#	    run_command(['tar', @COMMON_TAR_FLAGS, '-cf', '-', '-C', $file, '.'],
+#	                output => '>&'.fileno($fh));
+#	    return;
+#	}
+#    }
+# unsupported:
+#    die "volume export format $format not available for $class";
+}
+
+sub volume_export_formats {
+    my ($class, $scfg, $storeid, $volname, $snapshot, $base_snapshot, $with_snapshots) = @_;
+    if ($scfg->{path} && !defined($snapshot) && !defined($base_snapshot)) {
+	my $file = $class->path($scfg, $volname, $storeid)
+	    or return;
+	my ($size, $format) = file_size_info($file);
+
+	if ($with_snapshots) {
+	    return ($format.'+size') if ($format eq 'qcow2' || $format eq 'vmdk');
+	    return ();
+	}
+	return ('tar+size') if $format eq 'subvol';
+	return ('raw+size');
+    }
+    return ();
+}
+
+# Import data from a stream, creating a new or replacing or adding to an existing volume.
+sub volume_import {
+    my ($class, $scfg, $storeid, $fh, $volname, $format, $base_snapshot, $with_snapshots, $allow_rename) = @_;
+
+    die "volume import format '$format' not available for $class\n";
+	#if $format !~ /^(raw|tar|qcow2|vmdk)\+size$/;
+    #my $data_format = $1;
+
+    #die "format $format cannot be imported without snapshots\n"
+	#if !$with_snapshots && ($data_format eq 'qcow2' || $data_format eq 'vmdk');
+    #die "format $format cannot be imported with snapshots\n"
+	#if $with_snapshots && ($data_format eq 'raw' || $data_format eq 'tar');
+
+    #my ($vtype, $name, $vmid, $basename, $basevmid, $isBase, $file_format) =
+	#$class->parse_volname($volname);
+
+    ## XXX: Should we bother with conversion routines at this level? This won't
+    ## happen without manual CLI usage, so for now we just error out...
+    #die "cannot import format $format into a file of format $file_format\n"
+	#if $data_format ne $file_format && !($data_format eq 'tar' && $file_format eq 'subvol');
+
+    ## Check for an existing file first since interrupting alloc_image doesn't
+    ## free it.
+    #my $file = $class->path($scfg, $volname, $storeid);
+    #if (-e $file) {
+	#die "file '$file' already exists\n" if !$allow_rename;
+	#warn "file '$file' already exists - importing with a different name\n";
+	#$name = undef;
+    #}
+
+    #my ($size) = read_common_header($fh);
+    #$size = int($size/1024);
+
+    #eval {
+	#my $allocname = $class->alloc_image($storeid, $scfg, $vmid, $file_format, $name, $size);
+	#my $oldname = $volname;
+	#$volname = $allocname;
+	#if (defined($name) && $allocname ne $oldname) {
+	#    die "internal error: unexpected allocated name: '$allocname' != '$oldname'\n";
+	#}
+	#my $file = $class->path($scfg, $volname, $storeid)
+	#    or die "internal error: failed to get path to newly allocated volume $volname\n";
+	#if ($data_format eq 'raw' || $data_format eq 'qcow2' || $data_format eq 'vmdk') {
+	#    run_command(['dd', "of=$file", 'conv=sparse', 'bs=64k'],
+	#                input => '<&'.fileno($fh));
+	#} elsif ($data_format eq 'tar') {
+	#    run_command(['tar', @COMMON_TAR_FLAGS, '-C', $file, '-xf', '-'],
+	#                input => '<&'.fileno($fh));
+	#} else {
+	#    die "volume import format '$format' not available for $class";
+	#}
+    #};
+    #if (my $err = $@) {
+	#eval { $class->free_image($storeid, $scfg, $volname, 0, $file_format) };
+	#warn $@ if $@;
+	#die $err;
+    #}
+
+    return "$storeid:$volname";
+}
+
+sub volume_import_formats {
+    my ($class, $scfg, $storeid, $volname, $base_snapshot, $with_snapshots) = @_;
+    if ($scfg->{path} && !defined($base_snapshot)) {
+	my $format = ($class->parse_volname($volname))[6];
+	if ($with_snapshots) {
+	    return ($format.'+size') if ($format eq 'qcow2' || $format eq 'vmdk');
+	    return ();
+	}
+	return ('tar+size') if $format eq 'subvol';
+	return ('raw+size');
+    }
+    return ();
+}
 1;
 # vim: set et sw=4 :

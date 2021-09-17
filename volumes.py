@@ -141,7 +141,7 @@ class Volumes():
                 sys.stdout.write(line)
 
     def delete(self):
- 
+
         volume = {'id': self.args['volume_name']}
         self.jdss.delete_volume(volume, cascade=self.args['cascade'])
 

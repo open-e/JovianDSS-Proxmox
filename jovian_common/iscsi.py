@@ -18,13 +18,9 @@ import math
 import string
 import secrets
 
-from oslo_log import log as logging
+import logging
 from oslo_utils import units as o_units
 
-#from cinder import exception as cexc
-
-#from cinder import interface
-#from cinder.volume import driver
 from jovian_common import exception as jexc
 from jovian_common import jdss_common as jcom
 from jovian_common import rest
@@ -33,7 +29,6 @@ from jovian_common import rest
 #from cinder.volume import volume_utils
 
 LOG = logging.getLogger(__name__)
-#logging.getLogger().setLevel(logging.DEBUG)
 
 class JovianISCSIDriver(object):
     """Executes volume driver commands on Open-E JovianDSS.
@@ -146,7 +141,7 @@ class JovianISCSIDriver(object):
         except jexc.JDSSException as ex:
             LOG.error("Create volume error. Because %(err)s",
                       {"err": ex})
-            raise Exception(('Failed to create volume %s.') % volume.id)
+            raise Exception(('Failed to create volume %s.') % volume['id'])
         ret = {}
         if provider_auth is not None:
             ret['provider_auth'] = provider_auth
@@ -314,6 +309,7 @@ class JovianISCSIDriver(object):
         :param cascade: remove snapshots of a volume as well
         """
         vname = jcom.vname(volume['id'])
+        print("d") 
 
         LOG.debug('deleating volume %s', vname)
 
@@ -344,6 +340,7 @@ class JovianISCSIDriver(object):
         parent and cals recursive deletion on storage side
         """
         vol = None
+        LOG.debug('gc deleating %s.', vname)
         try:
             vol = self.ra.get_lun(vname)
         except jexc.JDSSResourceNotFoundException:
@@ -378,6 +375,7 @@ class JovianISCSIDriver(object):
         :param ovname: origin phisical volume name
         :param osname: origin phisical snapshot name
         """
+        LOG.debug('deleating back volume %s snapshot %s.', opvname, opsname)
 
         if jcom.is_hidden(opvname):
             # Resource is hidden
