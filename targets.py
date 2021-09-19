@@ -59,6 +59,8 @@ class Targets():
             parsers = parser.add_subparsers(dest='target-action')
 
             get = parsers.add_parser('get')
+            get.add_argument('--path', dest='path_format', action='store_true', default=False,
+                                help='Print in path format')
             get.add_argument('--host', action='store_true', default=False,
                                 help='Print host address')
             get.add_argument('--lun', action='store_true', default=False,
@@ -95,12 +97,29 @@ class Targets():
     def get(self):
 
         provider_location = self.jdss.get_provider_location(self.args['target_name'])
+        pvs = provider_location.split()
+        ip = ''.join(pvs[0].split(':')[:-1])
+        target_port = pvs[0].split(':')[-1].split(',')[0]
+        target = pvs[1]
+        lun = pvs[2]
+        #print(provider_location)
+        #eturn
+        if self.args['path_format']:
+            out = "ip-{ip}:{port}-iscsi-{target}-lun-{lun}".format(
+                ip = ip, 
+                port = target_port,
+                target = target,
+                lun = lun)
+            #ip-10.0.0.245:3260-iscsi-iqn.2020-04.com.open-e.cinder:vm-100-19cf298b9c454d84b8423d3c30da78cb-lun-0
+            out = [ chr(ord(c))  for c in out]
+            print(''.join(out))
+            return
 
         out = ''
         if self.args['host']:
             out += ' ' + ':'.join(provider_location.split()[0].split(':')[:-1])
         if self.args['lun']:
-            out += ' ' + provider_location.split()[2]
+            out += ' ' + lun
         out = provider_location.split()[1] + out
         #sys.stdout.write(out.encode("ascii"))
 

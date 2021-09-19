@@ -17,14 +17,13 @@
 """REST cmd interoperation class for JovianDSS driver."""
 import re
 
-from oslo_log import log as logging
+import logging
 
 from jovian_common import exception as jexc
 from jovian_common import rest_proxy
 
 LOG = logging.getLogger(__name__)
 
-#LOG.setLevel(logging.DEBUG)
 
 class JovianRESTAPI(object):
     """Jovian REST API proxy."""

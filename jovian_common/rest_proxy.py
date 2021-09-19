@@ -17,7 +17,7 @@
 
 import json
 
-from oslo_log import log as logging
+import logging
 from oslo_utils import netutils as o_netutils
 import requests
 import urllib3

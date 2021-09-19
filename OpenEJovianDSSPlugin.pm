@@ -6,7 +6,6 @@ use Carp qw( confess );
 use IO::File;
 use JSON::XS qw( decode_json );
 use Data::Dumper;
-use REST::Client;
 use Storable qw(lock_store lock_retrieve);
 use UUID "uuid";
 
@@ -42,11 +41,11 @@ sub api {
 
    my $apiver = PVE::Storage::APIVER;
 
-   if ($apiver >= 2 and $apiver <= 8) {
+   if ($apiver >= 3 and $apiver <= 9) {
       return $apiver;
    }
 
-   return 3;
+   return 6;
 }
 
 # we have to name it drbd, there is a hardcoded 'drbd' in Plugin.pm
@@ -108,6 +107,24 @@ sub get_config {
     return $scfg->{config} || $default_config;
 }
 
+sub joviandss_cmd {
+    my ($class, $cmd, $outfunc) = @_;
+
+    my $msg = '';
+    my $func;
+    if (defined($outfunc)) {
+	$func = sub {
+	    my $part = &$outfunc(@_);
+	    $msg .= $part if defined($part);
+	};
+    } else {
+	$func = sub { $msg .= "$_[0]\n" };
+    }
+    run_command(['jcli', @$cmd], errmsg => 'joviandss error', outfunc => $func);
+
+    return $msg;
+}
+
 sub filesystem_path {
     my ($class, $scfg, $volname, $snapname) = @_;
 
@@ -147,26 +164,42 @@ sub path {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
     
-    open my $jcli, '-|' or
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--lun" or
-        die "jcli failed: $!\n";
- 
-    my $path = "";
-
-    while (<$jcli>) {
-      my ($target, $host, $lun) = split;
-        $path =  "iscsi://$host/$target/$lun";
-        last;
+    #open my $jcli, '-|' or
+    #    exec "jcli", "-p", "-c", $config, "pool", $pool, "targets", $volname, "get", "--path" or
+    #    die "jcli failed: $!\n";
+    my $dpath = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--path"]); 
+    #my @out = qx(jcli -p -c $config pool $pool targets  $volname  get --path);
+    #my $dpath = join("", @out);
+    
+    chomp($dpath);
+    $dpath =~ s/[^[:ascii:]]//;
+    my $path = "/dev/disk/by-path/${dpath}";
+    chomp($path);
+    
+    #$path = lc($path);
+    #while (<$jcli>) {
+    #    chomp;
+    #    my ($target) = split;
+    #    $path =  "/dev/disk/by-path/$target";
+    #    last;
+    #}
+    #close $jcli;
+    #           "/dev/disk/by-path/ip-10.0.0.245:3260-iscsi-iqn.2020-04.com.open-e.cinder:vm-100-19cf298b9c454d84b8423d3c30da78cb-lun-0";
+    my $bpath = "/dev/disk/by-path/ip-10.0.0.245:3260-iscsi-iqn.2020-04.com.open-e.cinder:vm-100-19cf298b9c454d84b8423d3c30da78cb-lun-0";
+    
+    my $c = $path eq $bpath;
+      
+    if($c == 1)
+    {
+            print"String1 is equal to String2";
     }
-    close $jcli;
-    #$path = decode('UTF-8', $path);
-    #print $path;
-    #print "Get path";
-    #print "iscsi://172.16.0.220/iqn.2020-04.com.open-e.cinder:vm-101-cdb52cd73a1345dd890207fe64075d88/0";
-    #die "error $path"
-    #if $path ne "iscsi://172.16.0.220/iqn.2020-04.com.open-e.cinder:vm-101-cdb52cd73a1345dd890207fe64075d88/0";
-    #        iscsi://172.16.0.220/iqn.2020-04.com.open-e.cinder:vm-101-cdb52cd73a1345dd890207fe64075d88/0
-    #$path = "iscsi://172.16.0.220/iqn.2020-04.com.open-e.cinder:vm-101-cdb52cd73a1345dd890207fe64075d88/0";
+    else
+    {
+            print"String1 is not equal to String2\n";
+            print"str1:${path}\n";
+            print"str2:${bpath}\n";
+            #die "err";
+    }
 
     return ($path, $vmid, $vtype);
 }
@@ -416,13 +449,13 @@ sub deactivate_volume {
     my $pool = $scfg->{pool_name};
     print "Deactivate volume $volname";
 
-    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
-    
-    open my $jcli, '-|' or
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "targets", $volname, "delete" or
-        die "jcli failed: $!\n";
-    
-    close $jcli;
+    #my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+    #
+    #open my $jcli, '-|' or
+    #    exec "jcli", "-p", "-c", $config, "pool", $pool, "targets", $volname, "delete" or
+    #    die "jcli failed: $!\n";
+    #
+    #close $jcli;
     #die "Volume deactivate call with arguments $volname, $snapname, $cache";
     #die "Activating volume $volname";
     return 1;
