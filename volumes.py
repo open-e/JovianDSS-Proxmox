@@ -25,10 +25,11 @@ class Volumes():
     def __init__(self, args, uargs, jdss):
         
         self.vsa = {'create': self.create,
-                   'list': self.list}
-        self.va = {'delete': self.delete,
+                    'list': self.list}
+        self.va = {'clone': self.clone,
+                   'delete': self.delete,
+                   'get': self.get,
                    'snapshots': self.snapshots,
-                   'clone': self.clone,
                    'properties': self.properties,
                    'resize': self.resize}
 
@@ -66,13 +67,16 @@ class Volumes():
             parser.add_argument('volume_name', help='Volume name')
             parsers = parser.add_subparsers(dest='volume-action')
 
+            clone = parsers.add_parser('get')
+            clone.add_argument('-s', dest='volume_size', action='store_true', default=False, help='Print volume size')
+
             clone = parsers.add_parser('clone')
             clone.add_argument('-s', dest='volume_size', type=str, default='1G', help='New volume size in format <number><dimension>')
             clone.add_argument('-b', dest='block_size', type=str, default='64K', help='Block size')
             clone.add_argument('clone_name', nargs=1, type=str, help='Clone volume name')
 
             delete = parsers.add_parser('delete')
-            delete.add_argument('-c', '--cascade', dest='cascade', 
+            delete.add_argument('-c', '--cascade', dest='cascade',
                                 action='store_true',
                                 default=False,
                                 help='Remove snapshots along side with volume')
@@ -80,23 +84,23 @@ class Volumes():
             properties = parsers.add_parser('properties')
             properties.add_argument('--name', dest='propertie_name', type=str, help='Volume propertie name')
             properties.add_argument('--value', dest='propertie_value', type=str, help='Volume propertie value')
-            
+
             resize = parsers.add_parser('resize')
             resize.add_argument('--add', dest="add_size", action="store_true", default=False, help='Add new size to existing volume size')
             resize.add_argument('new_size', type=int, help='New volume size')
 
             snapshots = parsers.add_parser('snapshots')
-       
+ 
         return parser.parse_known_args(args)
 
     def create(self):
-      
+
         volume_size = self.args['volume_size']
         block_size = self.args['block_size']
         volume_name = self.args['volume_name']
-    
+
         volume = {'size': volume_size}
-   
+
         if 'volume_name' in self.args:
             volume['id'] = self.args['volume_name']
         else:
@@ -105,7 +109,7 @@ class Volumes():
         self.jdss.create_volume(volume)
 
     def clone(self):
-      
+
         volume_size = self.args['volume_size']
         block_size = self.args['block_size']
         volume_name = self.args['volume_name']
@@ -113,7 +117,18 @@ class Volumes():
         volume = {'id': volume_name,
                   'size': volume_size}
         self.jdss.create_cloned_volume(volume, src_vref)
-    
+   
+    def get(self):
+
+        volume_name = self.args['volume_name']
+
+        volume = {'id': volume_name}
+        
+        d = self.jdss.get_volume(volume)
+
+        if self.args['volume_size']:
+            print(d['size'])
+
     def list(self):
         data = self.jdss.list_volumes()
         lines = []
