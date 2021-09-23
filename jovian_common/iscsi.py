@@ -563,13 +563,12 @@ class JovianISCSIDriver(object):
         :param volume: new volume reference
         :param src_vref: source volume reference
         """
-        cvname = jcom.vname(volume.id)
+        LOG.debug('clone volume %(id)s to %(id_clone)s', {
+            "id": src_vref['id'],
+            "id_clone": volume['id']})
+        cvname = jcom.vname(volume['id'])
 
-        vname = jcom.vname(src_vref.id)
-
-        LOG.debug('cloned volume %(id)s to %(id_clone)s', {
-            "id": src_vref.id,
-            "id_clone": volume.id})
+        vname = jcom.vname(src_vref['id'])
 
         self._clone_object(vname, cvname)
 
@@ -582,11 +581,11 @@ class JovianISCSIDriver(object):
             self._delete_back_recursively(vname, cvname)
             raise cexc.VolumeBackendAPIException(
                 _("Fail in cloning volume %(vol)s to %(clone)s.") % {
-                    'vol': src_vref.id, 'clone': volume.id}) from jerr
+                    'vol': src_vref['id'], 'clone': volume['id']}) from jerr
 
         try:
-            if int(clone_size) < o_units.Gi * int(volume.size):
-                self.extend_volume(volume, int(volume.size))
+            if int(clone_size) < o_units.Gi * int(volume['size']):
+                self.extend_volume(volume, int(volume['size']))
 
         except cexc.VolumeBackendAPIException:
             # If volume can't be set to a proper size make sure to clean it
@@ -601,7 +600,7 @@ class JovianISCSIDriver(object):
                             vname)
             raise
 
-        provider_location = self._get_provider_location(volume.id)
+        provider_location = self._get_provider_location(volume['id'])
         provider_auth = self._get_provider_auth()
 
         ret = {}

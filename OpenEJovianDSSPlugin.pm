@@ -55,7 +55,12 @@ sub type {
 
 sub plugindata {
     return {
-	content => [ {images => 1}, { images => 1 }],
+	content => [ {
+        images => 1,
+		iso => 1,
+		backup => 1,
+    }, 
+        { images => 1 }],
     };
 }
 
@@ -180,9 +185,9 @@ sub device_id_from_path {
     my $cmd = [];
     push @$cmd, "udevadm", "info", "-q", "symlink", $path;
 
-    foreach (@$cmd) {
-        print "$_\n";
-    }
+    #foreach (@$cmd) {
+    #    print "$_\n";
+    #}
 
     run_command($cmd, errmsg => 'joviandss error', outfunc => $func);
 
@@ -304,9 +309,9 @@ sub path {
     $dpath =~ s/[^[:ascii:]]//;
     my $path = "/dev/disk/by-path/${dpath}";
 
-    my $did = device_id_from_path($path); 
+    #my $did = device_id_from_path($path); 
 
-    return ($did, $vmid, $vtype);
+    return ($path, $vmid, $vtype);
 }
 
 sub get_subdir {
@@ -324,9 +329,23 @@ sub create_base {
 sub clone_image {
     my ($class, $scfg, $storeid, $volname, $vmid, $snap) = @_;
 
-    die "$class, $scfg, $storeid, $volname, $vmid, $snap ";
+    my $config = $scfg->{config};
 
-    die "can't clone images in drbd storage\n";
+    my $pool = $scfg->{pool_name};
+    #die "$class, $scfg, $storeid, $volname, $vmid, $snap ";
+    my $volume_name;
+
+    my $uuid = uuid();
+    $uuid =~ tr/-//d;
+    $volume_name = "vm-$vmid-$uuid";
+
+    my $size = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "get", "-s"]);
+    chomp($size);
+    $size =~ s/[^[:ascii:]]//;
+
+    print"${volname} ${size} ${volume_name}\n";
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "clone", "-s", $size, $volume_name]);
+    return $volume_name;
 }
 
 sub alloc_image {
@@ -342,9 +361,9 @@ sub alloc_image {
         $volume_name = "vm-$vmid-$name";
     }
 
-    if ( !defined($size) ) {
-        $size = 1024
-    }
+    #if ( !defined($size) ) {
+    #    $size = 1024
+    #}
 
     my $config = $scfg->{config};
 

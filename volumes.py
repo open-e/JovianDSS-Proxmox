@@ -47,7 +47,7 @@ class Volumes():
     def __parse(self, args):
 
         parser = argparse.ArgumentParser(prog="Volume")
-       
+ 
         if args[0] in self.vsa:
             parsers = parser.add_subparsers(dest='volumes-action')
 
@@ -63,7 +63,7 @@ class Volumes():
                                action='store_true',
                                default=False,
                                help='Show only volumes with VM ID')
-        else:  
+        else:
             parser.add_argument('volume_name', help='Volume name')
             parsers = parser.add_subparsers(dest='volume-action')
 
@@ -73,7 +73,7 @@ class Volumes():
             clone = parsers.add_parser('clone')
             clone.add_argument('-s', dest='volume_size', type=str, default='1G', help='New volume size in format <number><dimension>')
             clone.add_argument('-b', dest='block_size', type=str, default='64K', help='Block size')
-            clone.add_argument('clone_name', nargs=1, type=str, help='Clone volume name')
+            clone.add_argument('clone_name', type=str, help='Clone volume name')
 
             delete = parsers.add_parser('delete')
             delete.add_argument('-c', '--cascade', dest='cascade',
@@ -110,12 +110,14 @@ class Volumes():
 
     def clone(self):
 
-        volume_size = self.args['volume_size']
         block_size = self.args['block_size']
         volume_name = self.args['volume_name']
     
-        volume = {'id': volume_name,
-                  'size': volume_size}
+        volume = {'id': self.args['clone_name'],
+                  'size': self.args['volume_size']}
+        
+        src_vref = {'id': self.args['volume_name']}
+
         self.jdss.create_cloned_volume(volume, src_vref)
    
     def get(self):
