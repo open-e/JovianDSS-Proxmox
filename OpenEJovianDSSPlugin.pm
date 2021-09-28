@@ -125,7 +125,7 @@ sub joviandss_cmd {
     } else {
 	$func = sub { $msg .= "$_[0]\n" };
     }
-    run_command(['jcli', @$cmd], errmsg => 'joviandss error', outfunc => $func);
+    run_command(['jdssc', @$cmd], errmsg => 'joviandss error', outfunc => $func);
 
     return $msg;
 }
@@ -271,8 +271,8 @@ sub filesystem_path {
     my $pool = $scfg->{pool_name};
 
     open my $jcli, '-|' or
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--lun" or
-        die "jcli failed: $!\n";
+        exec "jdssc", "-p", "-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--lun" or
+        die "jdssc failed: $!\n";
  
     my $path = "";
 
@@ -298,18 +298,11 @@ sub path {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-    #open my $jcli, '-|' or
-    #    exec "jcli", "-p", "-c", $config, "pool", $pool, "targets", $volname, "get", "--path" or
-    #    die "jcli failed: $!\n";
-    #my @out = qx(jcli -p -c $config pool $pool targets  $volname  get --path);
-    #my $dpath = join("", @out);
-    
+
     my $dpath = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--path"]); 
     chomp($dpath);
     $dpath =~ s/[^[:ascii:]]//;
     my $path = "/dev/disk/by-path/${dpath}";
-
-    #my $did = device_id_from_path($path); 
 
     return ($path, $vmid, $vtype);
 }
@@ -361,17 +354,13 @@ sub alloc_image {
         $volume_name = "vm-$vmid-$name";
     }
 
-    #if ( !defined($size) ) {
-    #    $size = 1024
-    #}
-
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
 
     open my $jcli, '-|' or 
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "volumes", "create", "-s", $size * 1024, $volume_name or
-        die "jcli failed: $!\n";
+        exec "jdssc", "-p", "-c", $config, "pool", $pool, "volumes", "create", "-s", $size * 1024, $volume_name or
+        die "jdssc failed: $!\n";
     close $jcli;
 
     return "$volume_name";
@@ -386,11 +375,11 @@ sub free_image {
 
     #remove associated target before removing volume
     open my $jclidelete, '-|' or
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "targets", $volname, "delete"; 
+        exec "jdssc", "-p", "-c", $config, "pool", $pool, "targets", $volname, "delete"; 
  
     open my $jcli, '-|' or 
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "delete", "-c" or
-        die "jcli failed: $!\n";
+        exec "jdssc", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "delete", "-c" or
+        die "jdssc failed: $!\n";
     close $jcli;
     return undef;
 }
@@ -405,8 +394,8 @@ sub list_images {
     my $pool = $scfg->{pool_name};
 
     open my $jcli, '-|' or
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "volumes", "list", "--vmid" or
-        die "jcli failed: $!\n";
+        exec "jdssc", "-p", "-c", $config, "pool", $pool, "volumes", "list", "--vmid" or
+        die "jdssc failed: $!\n";
  
     my $res = [];
 
@@ -424,16 +413,7 @@ sub list_images {
         };
     }
     close $jcli;
-   
-    # TODO: delete this comment section
-    # its purpouse is to store means of debuging
-    #my $i = 1;
-    #while ( (my @call_details = (caller($i++))) ){
-    #    print STDERR $call_details[1].":".$call_details[2]." in function ".$call_details[3]."\n";
-    #}
-    #foreach my $hash (@$res) {
-    #    print "$hash->{'volid'}\n";
-    #}
+
     return $res;
 }
 
@@ -447,8 +427,8 @@ sub volume_snapshot {
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
     
     open my $jcli, '-|' or
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "snapshots", "create", $snap or
-        die "jcli failed: $!\n";
+        exec "jdssc", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "snapshots", "create", $snap or
+        die "jdssc failed: $!\n";
  
     close $jcli;
 
@@ -464,8 +444,8 @@ sub volume_snapshot_rollback {
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
     open my $jcli, '-|' or
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "snapshots", $snap, "rollback" or
-        die "jcli failed: $!\n";
+        exec "jdssc", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "snapshots", $snap, "rollback" or
+        die "jdssc failed: $!\n";
  
     close $jcli;
 }
@@ -480,8 +460,8 @@ sub volume_snapshot_delete {
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
     open my $jcli, '-|' or
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "snapshots", $snap, "delete" or
-        die "jcli failed: $!\n";
+        exec "jdssc", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "snapshots", $snap, "delete" or
+        die "jdssc failed: $!\n";
  
     close $jcli;
 }
@@ -494,8 +474,8 @@ sub volume_snapshot_list {
     my $pool = $scfg->{pool_name};
 
     open my $jcli, '-|' or 
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "volume", "$volname", "snapshot", "list" or
-        die "jcli failed: $!\n";
+        exec "jdssc", "-p", "-c", $config, "pool", $pool, "volume", "$volname", "snapshot", "list" or
+        die "jdssc failed: $!\n";
 
     my $res = [];
  
@@ -530,8 +510,8 @@ sub status {
     my $pool = $scfg->{pool_name};
 
     open my $jcli, '-|' or 
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "get" or
-        die "jcli failed: $!\n";
+        exec "jdssc", "-p", "-c", $config, "pool", $pool, "get" or
+        die "jdssc failed: $!\n";
 
     my $total = "";
     my $used = "";
@@ -594,16 +574,6 @@ sub activate_volume {
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname]); 
     
     iscsi_login($target, $host);
-    #run_command([$ISCSIADM, "--mode", "node", "-p", $host, "-T", $target, "-o", "new"]);
-    #run_command([$ISCSIADM, '--mode', 'node', '--targetname',  $target, '--login']);
-    #class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname]); 
-    #iscsiadm -m node -p 10.0.0.245 -T iqn.2020-04.com.open-e.cinder:vm-100-19cf298b9c454d84b8423d3c30da78cb --login
-    #open my $jcli, '-|' or
-    #    exec "jcli", "-p", "-c", $config, "pool", $pool, "targets", "create", $volname or
-    #    die "jcli failed: $!\n";
- 
-    #close $jcli;
-    #die "Volume activate call with arguments $volname, $snap, $cache";
 
     return 1;
 }
@@ -624,15 +594,6 @@ sub deactivate_volume {
     iscsi_logout($target, $host);
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]);
     
-    #my ($vtype, $name, $vmid) = $class->parse_volname($volname);
-    #
-    #open my $jcli, '-|' or
-    #    exec "jcli", "-p", "-c", $config, "pool", $pool, "targets", $volname, "delete" or
-    #    die "jcli failed: $!\n";
-    #
-    #close $jcli;
-    #die "Volume deactivate call with arguments $volname, $snapname, $cache";
-    #die "Activating volume $volname";
     return 1;
 }
 
@@ -645,9 +606,9 @@ sub volume_resize {
 
     #my ($vtype, $name, $vmid) = $class->parse_volname($volname);
     open my $jcli, '-|' or
-        exec "jcli", "-p", "-c", $config, "pool", $pool, "volumes",
+        exec "jdssc", "-p", "-c", $config, "pool", $pool, "volumes",
                 $volname, "resize", $size or
-        die "jcli failed: $!\n";
+        die "jdssc failed: $!\n";
  
     close $jcli;
 
@@ -672,7 +633,6 @@ sub volume_has_feature {
 	    snapshot => { base => 1, current => 1, snap => 1 },
 	    clone => { base => 1, current => 1, snap => 1, images => 1},
 	    template => { current => 1 },
-	    #copy => { snap => 1 },
 	    copy => { base => 1, current => 1, snap => 1},
 	    sparseinit => { base => { raw => 1 }, current => { raw => 1} },
 	    replicate => { base => 1, current => 1},

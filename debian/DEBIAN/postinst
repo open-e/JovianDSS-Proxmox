@@ -1,0 +1,4 @@
+#!/bin/sh
+chmod +x /usr/share/joviandsscli/jdssc
+ln -s /usr/share/joviandsscli/jdssc /usr/bin/jdssc
+exit 0
