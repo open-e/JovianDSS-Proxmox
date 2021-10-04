@@ -17,8 +17,8 @@ import argparse
 import re
 import sys
 
-import volumes
-import targets
+import jdssc.volumes as volumes
+import jdssc.targets as targets
 
 """Pool related commands."""
         

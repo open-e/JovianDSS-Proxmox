@@ -19,8 +19,8 @@ import re
 
 import logging
 
-from jovian_common import exception as jexc
-from jovian_common import rest_proxy
+from jdssc.jovian_common import exception as jexc
+from jdssc.jovian_common import rest_proxy
 
 LOG = logging.getLogger(__name__)
 

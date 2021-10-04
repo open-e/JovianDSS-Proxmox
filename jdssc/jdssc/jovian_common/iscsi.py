@@ -21,12 +21,9 @@ import secrets
 import logging
 from oslo_utils import units as o_units
 
-from jovian_common import exception as jexc
-from jovian_common import jdss_common as jcom
-from jovian_common import rest
-#from cinder.volume.drivers.open_e import options
-#from cinder.volume.drivers.san import san
-#from cinder.volume import volume_utils
+from jdssc.jovian_common import exception as jexc
+from jdssc.jovian_common import jdss_common as jcom
+from jdssc.jovian_common import rest
 
 LOG = logging.getLogger(__name__)
 
@@ -52,7 +49,7 @@ class JovianISCSIDriver(object):
         self.configuration = cfg
         self._stats = None
         self.jovian_iscsi_target_portal_port = "3260"
-        self.jovian_target_prefix = 'iqn.2020-04.com.open-e.cinder:'
+        self.jovian_target_prefix = 'iqn.2020-04.com.open-e'
         self.jovian_chap_pass_len = 12
         self.jovian_sparse = False
         self.jovian_ignore_tpath = None

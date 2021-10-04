@@ -22,8 +22,7 @@ from oslo_utils import netutils as o_netutils
 import requests
 import urllib3
 
-#from cinder.utils import retry
-from jovian_common import exception as jexc
+from jdssc.jovian_common import exception as jexc
 
 LOG = logging.getLogger(__name__)
 

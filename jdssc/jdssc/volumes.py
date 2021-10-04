@@ -17,7 +17,7 @@ import argparse
 import re
 import sys
 
-import snapshots
+import jdssc.snapshots as snaphosts
 
 """Volume related commands."""
 

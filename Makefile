@@ -1,9 +1,10 @@
-SHARE=/usr/share
-PERLDIR=/perl5
+LOCAL_BIN=/usr/local/bin
+PYTHON_PACKAGE=/usr/lib/python3/dist-packages
+PERLDIR=/usr/share/perl5
 
-.PHONY: all, install
+.PHONY: all, install, uninstall
 
-all: deb 
+all: deb
 	@echo "The only useful target is 'deb'"
 
 deb:
@@ -12,15 +13,21 @@ deb:
 	dh_clean
 	debuild -us -uc -i -b
 
+#SHELL = /bin/bash
+
 install:
-	@echo "Installing"
-	install -D -m 0644 ./OpenEJovianDSSPlugin.pm ${SHARE}$(PERLDIR)/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
-	$(shell find ./jdssc -type f -exec  install -Dm 644 "{}" "${SHARE}/{}" \;)
-	$(shell chmod +x ${SHARE}/jdssc/jdssc)
-	$(shell ln -s $(SHARE)/jdssc/jdssc /usr/bin/jdssc)
+	@echo "Installing proxmox plugin"
+	install -D -m 0644 ./OpenEJovianDSSPlugin.pm $(PERLDIR)/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
+	$(MAKE) -C jdssc install
 
 uninstall:
-	@echo "Cleaning up"
-	rm ${SHARE}$(PERLDIR)/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
-	rm -rvf ${SHARE}/jdssc
-	rm /usr/bin/jdssc
+	@echo "Cleaning up proxmox plugin"
+	rm $(PERLDIR)/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
+	$(MAKE) -C jdssc uninstall
+
+
+#garbo:
+	#install -D -m 0645 jdssc/bin/jdssc /usr/local/bin/
+	#`ls -l | awk ' /^d/ { print $NF } '`
+	#$(shell chmod +x ${LOCAL_SHARE}/jdssc/jdssc)
+	#$(shell ln -n $(LOCAL_SHARE)/jdssc/jdssc $(LOCAL_BIN)/jdssc)

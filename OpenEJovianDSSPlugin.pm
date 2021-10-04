@@ -48,7 +48,6 @@ sub api {
    return 6;
 }
 
-# we have to name it drbd, there is a hardcoded 'drbd' in Plugin.pm
 sub type {
     return 'open-e';
 }
@@ -125,7 +124,7 @@ sub joviandss_cmd {
     } else {
 	$func = sub { $msg .= "$_[0]\n" };
     }
-    run_command(['jdssc', @$cmd], errmsg => 'joviandss error', outfunc => $func);
+    run_command(['/usr/local/bin/jdssc', @$cmd], errmsg => 'joviandss error', outfunc => $func);
 
     return $msg;
 }
@@ -184,10 +183,6 @@ sub device_id_from_path {
 
     my $cmd = [];
     push @$cmd, "udevadm", "info", "-q", "symlink", $path;
-
-    #foreach (@$cmd) {
-    #    print "$_\n";
-    #}
 
     run_command($cmd, errmsg => 'joviandss error', outfunc => $func);
 
@@ -358,10 +353,7 @@ sub alloc_image {
 
     my $pool = $scfg->{pool_name};
 
-    open my $jcli, '-|' or 
-        exec "jdssc", "-p", "-c", $config, "pool", $pool, "volumes", "create", "-s", $size * 1024, $volume_name or
-        die "jdssc failed: $!\n";
-    close $jcli;
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "-s", $size * 1024, $volume_name]);
 
     return "$volume_name";
 }
@@ -374,13 +366,9 @@ sub free_image {
     my $pool = $scfg->{pool_name};
 
     #remove associated target before removing volume
-    open my $jclidelete, '-|' or
-        exec "jdssc", "-p", "-c", $config, "pool", $pool, "targets", $volname, "delete"; 
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]);
  
-    open my $jcli, '-|' or 
-        exec "jdssc", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "delete", "-c" or
-        die "jdssc failed: $!\n";
-    close $jcli;
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "delete", "-c"]);
     return undef;
 }
 
@@ -393,14 +381,13 @@ sub list_images {
 
     my $pool = $scfg->{pool_name};
 
-    open my $jcli, '-|' or
-        exec "jdssc", "-p", "-c", $config, "pool", $pool, "volumes", "list", "--vmid" or
+    open my $jdssc, '-|' or
+        exec "/usr/local/bin/jdssc", "-p", "-c", $config, "pool", $pool, "volumes", "list", "--vmid" or
         die "jdssc failed: $!\n";
  
     my $res = [];
 
-
-    while (<$jcli>) {
+    while (<$jdssc>) {
       my ($volname,$vmid,$size) = split;
       #print "$uid $pid $ppid\n "
       my $volid = "joviandss:$volname";
@@ -412,7 +399,7 @@ sub list_images {
           vmid   => $vmid,
         };
     }
-    close $jcli;
+    close $jdssc;
 
     return $res;
 }
@@ -426,11 +413,7 @@ sub volume_snapshot {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
     
-    open my $jcli, '-|' or
-        exec "jdssc", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "snapshots", "create", $snap or
-        die "jdssc failed: $!\n";
- 
-    close $jcli;
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "snapshots", "create", $snap]);
 
 }
 
@@ -442,12 +425,8 @@ sub volume_snapshot_rollback {
     my $pool = $scfg->{pool_name};
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
-
-    open my $jcli, '-|' or
-        exec "jdssc", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "snapshots", $snap, "rollback" or
-        die "jdssc failed: $!\n";
- 
-    close $jcli;
+    
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "snapshots", $snap, "rollback"]);
 }
 
 sub volume_snapshot_delete {
@@ -459,11 +438,7 @@ sub volume_snapshot_delete {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-    open my $jcli, '-|' or
-        exec "jdssc", "-p", "-c", $config, "pool", $pool, "volumes", $volname, "snapshots", $snap, "delete" or
-        die "jdssc failed: $!\n";
- 
-    close $jcli;
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "snapshots", $snap, "delete"]);
 }
 
 sub volume_snapshot_list {
@@ -473,8 +448,9 @@ sub volume_snapshot_list {
 
     my $pool = $scfg->{pool_name};
 
+
     open my $jcli, '-|' or 
-        exec "jdssc", "-p", "-c", $config, "pool", $pool, "volume", "$volname", "snapshot", "list" or
+        exec "/usr/local/bin/jdssc", "-p", "-c", $config, "pool", $pool, "volume", "$volname", "snapshot", "list" or
         die "jdssc failed: $!\n";
 
     my $res = [];
@@ -510,7 +486,7 @@ sub status {
     my $pool = $scfg->{pool_name};
 
     open my $jcli, '-|' or 
-        exec "jdssc", "-p", "-c", $config, "pool", $pool, "get" or
+        exec "/usr/local/bin/jdssc", "-p", "-c", $config, "pool", $pool, "get" or
         die "jdssc failed: $!\n";
 
     my $total = "";
@@ -604,13 +580,7 @@ sub volume_resize {
 
     my $pool = $scfg->{pool_name};
 
-    #my ($vtype, $name, $vmid) = $class->parse_volname($volname);
-    open my $jcli, '-|' or
-        exec "jdssc", "-p", "-c", $config, "pool", $pool, "volumes",
-                $volname, "resize", $size or
-        die "jdssc failed: $!\n";
- 
-    close $jcli;
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "resize", $size]);
 
     return 1;
 }
