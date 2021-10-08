@@ -501,13 +501,11 @@ sub status {
 
 sub activate_storage {
     my ( $class, $storeid, $scfg, $cache ) = @_;
-    print"Activate storage\n";
     return undef;
 }
 
 sub deactivate_storage {
     my ( $class, $storeid, $scfg, $cache ) = @_;
-    print"Deactivate storage\n";
 
     return undef;
 }
@@ -518,7 +516,6 @@ sub activate_volume {
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
-    print "Activate volume $volname";
     
     #my $i = 1;
     #while ( (my @call_details = (caller($i++))) ){
@@ -560,7 +557,6 @@ sub deactivate_volume {
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
-    print "Deactivate volume $volname";
     
     my $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host"]);
 

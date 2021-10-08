@@ -1018,12 +1018,12 @@ class JovianISCSIDriver(object):
         except jexc.JDSSResourceNotFoundException as ex:
             LOG.debug('failed to remove resource %(t)s because of %(err)s', {
                 't': target_name,
-                'err': ex.args[0]})
+                'err': ex.message})
         except jexc.JDSSException as ex:
             LOG.debug('failed to Terminate_connection for target %(targ)s'
                       'because of: %(err)s', {
                           'targ': target_name,
-                          'err': ex.args[0]})
+                          'err': ex.message})
             raise cexc.VolumeBackendAPIException(ex)
 
         LOG.debug("delete target: %s", target_name)
@@ -1033,13 +1033,13 @@ class JovianISCSIDriver(object):
         except jexc.JDSSResourceNotFoundException as ex:
             LOG.debug('failed to remove resource %(target)s because '
                       'of %(err)s', {'target': target_name,
-                                     'err': ex.args[0]})
+                                     'err': ex.message})
 
         except jexc.JDSSException as ex:
             LOG.debug('Failed to Terminate_connection for target %(targ)s'
                       'because of: %(err)s', {
                           'targ': target_name,
-                          'err': ex.args[0]})
+                          'err': ex.message})
 
             raise cexc.VolumeBackendAPIException(ex)
 

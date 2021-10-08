@@ -37,7 +37,9 @@ class JDSSRESTProxyException(JDSSException):
 class JDSSResourceNotFoundException(JDSSException):
     """Resource does not exist"""
 
-    message = ("JDSS resource %(res)s DNE.")
+    def __init__(self, res):
+        self.message = "JDSS resource %(res)s DNE." % {'res': res}
+        super().__init__(self.message)
 
 
 class JDSSVolumeNotFoundException(JDSSResourceNotFoundException):
