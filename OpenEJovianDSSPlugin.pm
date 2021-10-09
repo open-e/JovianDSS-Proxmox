@@ -54,12 +54,9 @@ sub type {
 
 sub plugindata {
     return {
-	content => [ {
-        images => 1,
-		iso => 1,
-		backup => 1,
-    }, 
-        { images => 1 }],
+    content => [ { images => 1, rootdir => 1, vztmpl => 1, iso => 1, backup => 1, snippets => 1, none => 1 },
+             { images => 1,  rootdir => 1 }],
+    format => [ { raw => 1, subvol => 1 } , 'raw' ],
     };
 }
 
@@ -339,15 +336,17 @@ sub clone_image {
 sub alloc_image {
     my ( $class, $storeid, $scfg, $vmid, $fmt, $name, $size ) = @_;
 
-    my $volume_name;
+    my $volume_name = $name;
 
-    if ( !defined($name) ) {
-        my $uuid = uuid();
-        $uuid =~ tr/-//d;
-        $volume_name = "vm-$vmid-$uuid";
-    } else {
-        $volume_name = "vm-$vmid-$name";
-    }
+    $volume_name = $class->find_free_diskname($storeid, $scfg, $vmid, $fmt)
+        if !$volume_name;
+    #if ( !defined($name) ) {
+    #    my $uuid = uuid();
+    #    $uuid =~ tr/-//d;
+    #    $volume_name = "vm-$vmid-disk-$uuid";
+    #} else {
+    #    $volume_name = "vm-$vmid-$name";
+    #}
 
     my $config = $scfg->{config};
 
