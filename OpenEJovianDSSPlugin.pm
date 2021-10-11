@@ -19,25 +19,16 @@ use PVE::JSONSchema qw(get_standard_option);
 
 use base qw(PVE::Storage::Plugin);
 
-my $PLUGIN_VERSION = '0.4.1';
+my $PLUGIN_VERSION = '0.6.1';
 
 # Configuration
 
 my $default_joviandss_address = "192.168.0.100";
 my $default_pool = "Pool-0";
 my $default_config = "/etc/pve/joviandss.cfg";
+my $default_debug = 0;
 
 sub api {
-   # PVE 5: APIVER 2
-   # PVE 6: APIVER 3
-   # PVE 6: APIVER 4 e6f4eed43581de9b9706cc2263c9631ea2abfc1a / volume_has_feature
-   # PVE 6: APIVER 5 a97d3ee49f21a61d3df10d196140c95dde45ec27 / allow rename
-   # PVE 6: APIVER 6 8f26b3910d7e5149bfa495c3df9c44242af989d5 / prune_backups (fine, we don't support that content type)
-   # PVE 6: APIVER 7 2c036838ed1747dabee1d2c79621c7d398d24c50 / volume_snapshot_needs_fsfreeze (guess we are fine, upstream only implemented it for RDBPlugin; we are not that different to let's say LVM in this regard)
-   # PVE 6: APIVER 8 343ca2570c3972f0fa1086b020bc9ab731f27b11 / prune_backups (fine again, see APIVER 6)
-   #
-   # we support all (not all features), we just have to be careful what we return
-   # as for example PVE5 would not like a APIVER 3
 
    my $apiver = PVE::Storage::APIVER;
 
@@ -54,9 +45,10 @@ sub type {
 
 sub plugindata {
     return {
-    content => [ { images => 1, rootdir => 1, vztmpl => 1, iso => 1, backup => 1, snippets => 1, none => 1 },
+    content => [ { images => 1, rootdir => 1, vztmpl => 0, iso => 0, backup => 0, snippets => 0, none => 1 },
              { images => 1,  rootdir => 1 }],
-    format => [ { raw => 1, subvol => 1 } , 'raw' ],
+    # TODO: check subvol and add to supported formats
+    format => [ { raw => 1, subvol => 0 } , 'raw' ],
     };
 }
 
@@ -77,6 +69,11 @@ sub properties {
             type        => 'string',
             default     => $default_config,
         },
+        debug => {
+            description => "Allow debug prints",
+            type => 'boolean',
+            default     => $default_debug,
+        },
     };
 }
 
@@ -84,7 +81,8 @@ sub options {
     return {
         joviandss_address  => { optional => 1 },
         pool_name        => { optional => 1 },
-        config        => { optional => 1 },
+        config        => { fixed => 1 },
+        debug       => { optional => 1},
     };
 }
 
@@ -106,6 +104,12 @@ sub get_config {
     my ($scfg) = @_;
 
     return $scfg->{config} || $default_config;
+}
+
+sub get_debug {
+    my ($scfg) = @_;
+
+    return $scfg->{debug} || $default_debug;
 }
 
 sub joviandss_cmd {
@@ -189,9 +193,7 @@ sub device_id_from_path {
     foreach (@devs) {
         $devid = "/dev/$_"; 
         last if index($_, "disk/by-id") == 0;
-        print "$_\n";
     }
-    #die "term $devid";
     return $devid;
 }
 
@@ -251,38 +253,39 @@ sub iscsi_session {
     return $cache->{iscsi_sessions}->{$target};
 }
 
-sub filesystem_path {
-    my ($class, $scfg, $volname, $snapname) = @_;
+#sub filesystem_path {
+#    my ($class, $scfg, $volname, $snapname) = @_;
+#
+#    #die "get filesystem path $volname | $snapname";
+#
+#    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+#
+#    my $config = $scfg->{config};
+#
+#    my $pool = $scfg->{pool_name};
+#
+#    open my $jcli, '-|' or
+#        exec "jdssc", "-p", "-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--lun" or
+#        die "jdssc failed: $!\n";
+#
+#    my $path = "";
+#
+#    while (<$jcli>) {
+#      my ($target, $host, $lun) = split;
+#      $path =  "iscsi://$host/$target/$lun";
+#    }
+#    close $jcli;
+#
+#    return wantarray ? ($path, $vmid, $vtype) : $path;
+#}
 
-    #die "get filesystem path $volname | $snapname";
-
-    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
-
-    my $config = $scfg->{config};
-
-    my $pool = $scfg->{pool_name};
-
-    open my $jcli, '-|' or
-        exec "jdssc", "-p", "-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--lun" or
-        die "jdssc failed: $!\n";
- 
-    my $path = "";
-
-    while (<$jcli>) {
-      my ($target, $host, $lun) = split;
-      $path =  "iscsi://$host/$target/$lun";
-    }
-    close $jcli;
-
-    return wantarray ? ($path, $vmid, $vtype) : $path;
-}
 sub path {
     my ($class, $scfg, $volname, $storeid, $snapname) = @_;
     
     #die "get path $volname | $storeid | $snapname";
 
-    die "direct access to snapshots not implemented"
-	if defined($snapname);
+    #die "direct access to snapshots not implemented"
+	#if defined($snapname);
 
     my $config = $scfg->{config};
 
@@ -290,6 +293,7 @@ sub path {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
+    print"Getting path of volume ${volname} snapshot ${snapname}\n" if $scfg->{debug};
 
     my $dpath = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--path"]); 
     chomp($dpath);
@@ -299,6 +303,7 @@ sub path {
     return ($path, $vmid, $vtype);
 }
 
+#TODO: implement this for iso and backups
 sub get_subdir {
     my ($class, $scfg, $vtype) = @_;
 
@@ -320,15 +325,16 @@ sub clone_image {
     #die "$class, $scfg, $storeid, $volname, $vmid, $snap ";
     my $volume_name;
 
-    my $uuid = uuid();
-    $uuid =~ tr/-//d;
-    $volume_name = "vm-$vmid-$uuid";
+    $volume_name = $class->find_free_diskname($storeid, $scfg, $vmid, $fmt)
+        if !$volume_name;
 
     my $size = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "get", "-s"]);
     chomp($size);
     $size =~ s/[^[:ascii:]]//;
 
-    print"${volname} ${size} ${volume_name}\n";
+    print"Clone ${volname} with size ${size} to ${volume_name} with snapshot ${snap}\n";
+    #TODO: implement cloning from snapshot
+    die "Cloning from snapshot is not supported yet" if $snap;
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "clone", "-s", $size, $volume_name]);
     return $volume_name;
 }
@@ -347,7 +353,7 @@ sub alloc_image {
     #} else {
     #    $volume_name = "vm-$vmid-$name";
     #}
-
+    print"Allocating image ${volume_name} format ${fmt}\n";
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
@@ -364,8 +370,11 @@ sub free_image {
 
     my $pool = $scfg->{pool_name};
 
+    #print"Abort volume removal";
+    #return undef;
     #remove associated target before removing volume
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]);
+    #$class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]);
+    $class->deactivate_volume($storeid, $scfg, $volname, '', '');
  
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "delete", "-c"]);
     return undef;
@@ -379,6 +388,8 @@ sub list_images {
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
+
+    print"List images vmid ${vmid}, vollist ${vollist}, cache ${cache}\n" if $scfg->{debug};
 
     open my $jdssc, '-|' or
         exec "/usr/local/bin/jdssc", "-p", "-c", $config, "pool", $pool, "volumes", "list", "--vmid" or
@@ -416,16 +427,27 @@ sub volume_snapshot {
 
 }
 
+sub volume_snapshot_needs_fsfreeze {
+
+    return 0;
+}
+
 sub volume_snapshot_rollback {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
-    
+
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
-    
+
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "snapshots", $snap, "rollback"]);
+}
+
+sub volume_rollback_is_possible {
+    my ($class, $scfg, $storeid, $volname, $snap) = @_;
+
+    return 1;
 }
 
 sub volume_snapshot_delete {
@@ -537,7 +559,7 @@ sub activate_volume {
 
     my $session = iscsi_session($cache, $target);
     if (defined ($session)) {
-        print"Nothing to do, exiting";
+        print"Nothing to do, exiting" if $scfg->{debug};
         return 1;
     }
 
@@ -556,7 +578,7 @@ sub deactivate_volume {
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
-    
+
     my $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host"]);
 
     my @tmp = split(" ", $target_info, 2);
@@ -564,7 +586,7 @@ sub deactivate_volume {
     my $target = $tmp[0];
     iscsi_logout($target, $host);
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]);
-    
+
     return 1;
 }
 
@@ -584,10 +606,20 @@ sub parse_volname {
     my ($class, $volname) = @_;
 
     if ($volname =~ m/^((\S+):vm-(\d+)-(\S+))?(vm-(\d+)-(\S+))$/) {
-	return ('images', $2, $1, undef, undef, 'current', 'raw');
+	return ('images', $2, $1, undef, undef, undef, 'raw');
     }
 
     die "unable to parse joviandss volume name '$volname'\n";
+}
+
+sub storage_can_replicate {
+    my ($class, $scfg, $storeid, $format) = @_;
+
+    return 1 if $format eq 'raw';
+    # TODO: additional testing of subvolumes is required
+    #return 1 if $format eq 'raw' || $format eq 'subvol';
+
+    return 0;
 }
 
 sub volume_has_feature {
