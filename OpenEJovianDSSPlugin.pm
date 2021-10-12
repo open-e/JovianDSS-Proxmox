@@ -322,21 +322,19 @@ sub clone_image {
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
-    #die "$class, $scfg, $storeid, $volname, $vmid, $snap ";
-    my $volume_name;
 
-    $volume_name = $class->find_free_diskname($storeid, $scfg, $vmid, $fmt)
-        if !$volume_name;
+    my (undef, undef, undef, undef, undef, undef, $fmt) = $class->parse_volname($volname);
+    my $clone_name = $class->find_free_diskname($storeid, $scfg, $vmid, $fmt);
 
     my $size = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "get", "-s"]);
     chomp($size);
     $size =~ s/[^[:ascii:]]//;
 
-    print"Clone ${volname} with size ${size} to ${volume_name} with snapshot ${snap}\n";
+    print"Clone ${volname} with size ${size} to ${clone_name} with snapshot ${snap}\n" if $scfg->{debug};
     #TODO: implement cloning from snapshot
     die "Cloning from snapshot is not supported yet" if $snap;
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "clone", "-s", $size, $volume_name]);
-    return $volume_name;
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "clone", "-s", $size, $clone_name]);
+    return $clone_name;
 }
 
 sub alloc_image {
@@ -388,8 +386,11 @@ sub list_images {
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
-
-    print"List images vmid ${vmid}, vollist ${vollist}, cache ${cache}\n" if $scfg->{debug};
+    
+    #if $scfg->{debug} {
+    #    print"List images vmid ${vmid}" if $vmid;
+    #}
+   #print"Vollist ${vollist}, cache ${cache}\n" ;
 
     open my $jdssc, '-|' or
         exec "/usr/local/bin/jdssc", "-p", "-c", $config, "pool", $pool, "volumes", "list", "--vmid" or
@@ -399,9 +400,7 @@ sub list_images {
 
     while (<$jdssc>) {
       my ($volname,$vmid,$size) = split;
-      #print "$uid $pid $ppid\n "
       my $volid = "joviandss:$volname";
-      #die $volid;
       push @$res, {
           format => 'raw',
           volid  => $volid,
