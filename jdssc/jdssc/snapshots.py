@@ -18,7 +18,9 @@ import hashlib
 import re
 import sys
 
-"""Pool related commands."""
+"""Snapshot related commands."""
+
+
 
 class Snapshots():
     def __init__(self, args, uargs, jdss):
@@ -40,6 +42,17 @@ class Snapshots():
         elif 'snapshot-actions' in self.args:
             self.sa[self.args.pop('snapshot-actions')]()
 
+    @staticmethod
+    def get_snapshot(self, volume_name, snapshot_name):
+    
+        name_bytes = bytes(volume_name + snapshot_name, 'ascii')
+        name_uuid = hashlib.md5(name_bytes).hexdigest()
+        snapshot = {'id': "{}_{}".format(name_uuid, snapshot_name),
+                    'volume_id': volume_name,
+                    'volume_name': volume_name}
+    
+        return snapshot
+
     def __parse(self, args):
 
         parser = argparse.ArgumentParser(prog="Volume")
@@ -60,21 +73,12 @@ class Snapshots():
        
         return parser.parse_known_args(args)
 
-    def _get_snapshot(self):
-        snapshot_name = self.args['snapshot_name']
-        volume_name = self.args['volume_name']
 
-        name_bytes = bytes(self.args['volume_name'] + self.args['snapshot_name'], 'ascii')
-        name_uuid = hashlib.md5(name_bytes).hexdigest()
-        snapshot = {'id': "{}_{}".format(name_uuid, snapshot_name),
-                    'volume_id': volume_name,
-                    'volume_name': volume_name}
-
-        return snapshot
 
     def create(self):
 
-        snapshot = self._get_snapshot()
+        snapshot = Snapshots.get_snapshot(self.args['volume_name'],
+                                          self.args['snapshot_name'])
 
         self.jdss.create_snapshot(snapshot)
 
@@ -91,13 +95,15 @@ class Snapshots():
 
     def delete(self):
 
-        snapshot = self._get_snapshot()
+        snapshot = Snapshots.get_snapshot(self.args['volume_name'],
+                                          self.args['snapshot_name'])
         self.jdss.delete_snapshot(snapshot)
     
     def rollback(self):
 
         volume = {'id': self.args['volume_name']}
-        snapshot = self._get_snapshot()
+        snapshot = Snapshots.get_snapshot(self.args['volume_name'],
+                                          self.args['snapshot_name'])
 
         self.jdss.revert_to_snapshot('', volume, snapshot)
 

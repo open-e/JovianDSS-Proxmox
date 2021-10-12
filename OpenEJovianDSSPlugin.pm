@@ -332,8 +332,12 @@ sub clone_image {
 
     print"Clone ${volname} with size ${size} to ${clone_name} with snapshot ${snap}\n" if $scfg->{debug};
     #TODO: implement cloning from snapshot
-    die "Cloning from snapshot is not supported yet" if $snap;
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "clone", "-s", $size, $clone_name]);
+    #die "Cloning from snapshot is not supported yet" if $snap;
+    if ($snap){
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "clone", "-s", $size, "--snapshot", $snap, $clone_name]);
+    } else {
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "clone", "-s", $size, $clone_name]);
+    }
     return $clone_name;
 }
 
@@ -344,14 +348,8 @@ sub alloc_image {
 
     $volume_name = $class->find_free_diskname($storeid, $scfg, $vmid, $fmt)
         if !$volume_name;
-    #if ( !defined($name) ) {
-    #    my $uuid = uuid();
-    #    $uuid =~ tr/-//d;
-    #    $volume_name = "vm-$vmid-disk-$uuid";
-    #} else {
-    #    $volume_name = "vm-$vmid-$name";
-    #}
-    print"Allocating image ${volume_name} format ${fmt}\n";
+    
+    print"Allocating image ${volume_name} format ${fmt}\n" if $scfg->{debug};
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
@@ -399,13 +397,21 @@ sub list_images {
     my $res = [];
 
     while (<$jdssc>) {
-      my ($volname,$vmid,$size) = split;
-      my $volid = "joviandss:$volname";
-      push @$res, {
-          format => 'raw',
-          volid  => $volid,
-          size   => $size,
-          vmid   => $vmid,
+        my ($volname,$vm,$size) = split;
+        my $volid = "joviandss:$volname";
+
+        #if ($vollist) {
+        #    my $found = grep { $_ eq $volid } @$vollist;
+        #    next if !$found;
+        #} else {
+        #    next if defined ($vmid) && ($vm ne $vmid);
+        #}
+
+        push @$res, {
+            format => 'raw',
+            volid  => $volid,
+            size   => $size,
+            vmid   => $vm,
         };
     }
     close $jdssc;

@@ -71,7 +71,8 @@ class Volumes():
             clone.add_argument('-s', dest='volume_size', action='store_true', default=False, help='Print volume size')
 
             clone = parsers.add_parser('clone')
-            clone.add_argument('-s', dest='volume_size', type=str, default='1G', help='New volume size in format <number><dimension>')
+            clone.add_argument('--snapshot', dest='snapshot_name', type=str, help='Use snapshot for cloning')
+            clone.add_argument('-s', '--size', dest='volume_size', type=str, default='1G', help='New volume size in format <number><dimension>')
             clone.add_argument('-b', dest='block_size', type=str, default='64K', help='Block size')
             clone.add_argument('clone_name', type=str, help='Clone volume name')
 
@@ -116,10 +117,18 @@ class Volumes():
         volume = {'id': self.args['clone_name'],
                   'size': self.args['volume_size']}
         
-        src_vref = {'id': self.args['volume_name']}
+        if self.args['snapshot_name']:
+            snapshot = snapshots.Snapsho.get_snapshot(
+                self.args['volume_name'],
+                self.args['snapshot_name'])
 
+            self.jdss.create_volume_from_snapshot(volume, snapshot)
+
+            return 
+
+        src_vref = {'id': self.args['volume_name']}
         self.jdss.create_cloned_volume(volume, src_vref)
-   
+ 
     def get(self):
 
         volume_name = self.args['volume_name']
