@@ -43,7 +43,7 @@ class Snapshots():
             self.sa[self.args.pop('snapshot-actions')]()
 
     @staticmethod
-    def get_snapshot(self, volume_name, snapshot_name):
+    def get_snapshot(volume_name, snapshot_name):
     
         name_bytes = bytes(volume_name + snapshot_name, 'ascii')
         name_uuid = hashlib.md5(name_bytes).hexdigest()

@@ -22,8 +22,10 @@ import logging
 from oslo_utils import units as o_units
 
 from jdssc.jovian_common import exception as jexc
+from jdssc.jovian_common import cexception as cexc
 from jdssc.jovian_common import jdss_common as jcom
 from jdssc.jovian_common import rest
+from jdssc.jovian_common.stub import _
 
 LOG = logging.getLogger(__name__)
 
@@ -889,7 +891,7 @@ class JovianISCSIDriver(object):
         except jexc.JDSSException as ex:
             msg = ('Unable to attach volume to target %(target)s '
                    'because of %(error)s.')
-            emsg = msg % {'target': target_name, 'error': ex}
+            emsg = msg % {'target': target_name, 'error': ex.message}
             LOG.debug(msg)
             try:
                 self.ra.delete_target(target_name)

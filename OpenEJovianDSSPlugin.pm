@@ -385,10 +385,13 @@ sub list_images {
 
     my $pool = $scfg->{pool_name};
     
-    #if $scfg->{debug} {
-    #    print"List images vmid ${vmid}" if $vmid;
-    #}
-   #print"Vollist ${vollist}, cache ${cache}\n" ;
+    if ($scfg->{debug}) {
+        print"list images ${storeid}\n" if $storeid;
+        print"scfg ${scfg}\n" if $scfg;
+        print"vmid ${vmid}" if $vmid;
+        print"vollist ${vollist}" if $vollist;
+        print"cache ${cache}" if $cache;
+    }
 
     open my $jdssc, '-|' or
         exec "/usr/local/bin/jdssc", "-p", "-c", $config, "pool", $pool, "volumes", "list", "--vmid" or
@@ -400,18 +403,19 @@ sub list_images {
         my ($volname,$vm,$size) = split;
         my $volid = "joviandss:$volname";
 
-        #if ($vollist) {
-        #    my $found = grep { $_ eq $volid } @$vollist;
-        #    next if !$found;
-        #} else {
-        #    next if defined ($vmid) && ($vm ne $vmid);
-        #}
+        if ($vollist) {
+            my $found = grep { $_ eq $volid } @$vollist;
+            next if !$found;
+        } else {
+            next if defined ($vmid) && ($vm ne $vmid);
+        }
+        my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
         push @$res, {
             format => 'raw',
             volid  => $volid,
             size   => $size,
-            vmid   => $vm,
+            vmid   => $vmid,
         };
     }
     close $jdssc;
@@ -589,7 +593,9 @@ sub deactivate_volume {
     my @tmp = split(" ", $target_info, 2);
     my $host = $tmp[1];
     my $target = $tmp[0];
-    iscsi_logout($target, $host);
+    
+    eval{ iscsi_logout($target, $host)};
+    warn $@ if $@; 
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]);
 
     return 1;
