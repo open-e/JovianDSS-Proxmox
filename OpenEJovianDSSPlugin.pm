@@ -409,13 +409,12 @@ sub list_images {
         } else {
             next if defined ($vmid) && ($vm ne $vmid);
         }
-        my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
         push @$res, {
             format => 'raw',
             volid  => $volid,
             size   => $size,
-            vmid   => $vmid,
+            vmid   => $vm,
         };
     }
     close $jdssc;
