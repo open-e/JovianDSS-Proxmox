@@ -1,6 +1,6 @@
-LOCAL_BIN=/usr/local/bin
-PYTHON_PACKAGE=/usr/lib/python3/dist-packages
-PERLDIR=/usr/share/perl5
+LOCAL_BIN=$(DESTDIR)/usr/local/bin
+PYTHON_PACKAGE=$(DESTDIR)/usr/lib/python3/dist-packages
+PERLDIR=$(DESTDIR)/usr/share/perl5
 
 .PHONY: all, install, uninstall
 
@@ -16,7 +16,7 @@ deb:
 install:
 	@echo "Installing proxmox plugin"
 	install -D -m 0644 ./OpenEJovianDSSPlugin.pm $(PERLDIR)/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
-	$(MAKE) -C jdssc install
+	$(MAKE) -C jdssc install DESTDIR=$(DESTDIR)
 
 uninstall:
 	@echo "Cleaning up proxmox plugin"
