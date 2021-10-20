@@ -9,9 +9,18 @@ all: deb
 
 deb:
 	@echo "Making deb package"
-	dpkg-deb --build deb-test
-	dh_clean
-	debuild -us -uc -i -b
+	$(eval debdir := $(shell mktemp -d))
+
+	@echo "Using tmp dir $(debdir)"
+	make install DESTDIR=$(debdir)
+	
+	install -D -m 0555 ./DEBIAN/control $(debdir)/DEBIAN/control
+	install -D -m 0555 ./DEBIAN/postinst $(debdir)/DEBIAN/postinst
+	install -D -m 0555 ./DEBIAN/postrm $(debdir)/DEBIAN/postrm
+	
+	dpkg-deb --build $(debdir)
+	@mv $(debdir).deb ./open-e-joviandss-proxmox_0.7.2-1.deb	
+	rm -rf $(debdir)
 
 install:
 	@echo "Installing proxmox plugin"
@@ -21,4 +30,4 @@ install:
 uninstall:
 	@echo "Cleaning up proxmox plugin"
 	rm $(PERLDIR)/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
-	$(MAKE) -C jdssc uninstall
+	$(MAKE) -C jdssc uninstall DESTDIR=$(DESTDIR)

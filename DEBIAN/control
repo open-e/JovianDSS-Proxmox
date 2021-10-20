@@ -1,5 +1,5 @@
 Package: proxmox-open-e-joviandss-plugin
-Version: 0.6.1
+Version: 0.7.2
 Section: development
 Priority: optional
 Architecture: all
