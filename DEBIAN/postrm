@@ -1,3 +1,2 @@
 #!/bin/sh
-rm /usr/bin/jdssc
 exit 0

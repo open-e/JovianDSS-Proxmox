@@ -1,9 +1,9 @@
-Package: proxmox-open-e-joviandss-plugin
-Version: 0.7.2
+Package: open-e-joviandss-proxmox-plugin
+Version: 0.7.3
 Section: development
 Priority: optional
 Architecture: all
-Depends: python3-oslo.utils
+Depends: python3-oslo.utils (>= 3.36)
 Maintainer: andrei.perepiolkin@open-e.com
 Homepage: https://github.com/open-e/JovianDSS-Proxmox
 Description: Open-E JovianDSS plugin for proxmox
