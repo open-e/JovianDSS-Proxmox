@@ -31,6 +31,7 @@ class Volumes():
                    'get': self.get,
                    'snapshots': self.snapshots,
                    'properties': self.properties,
+                   'rename': self.rename,
                    'resize': self.resize}
 
         self.args = args
@@ -83,9 +84,12 @@ class Volumes():
                                 help='Remove snapshots along side with volume')
 
             properties = parsers.add_parser('properties')
-            properties.add_argument('--name', dest='propertie_name', type=str, help='Volume propertie name')
-            properties.add_argument('--value', dest='propertie_value', type=str, help='Volume propertie value')
+            properties.add_argument('--name', dest='property_name', type=str, help='Volume propertie name')
+            properties.add_argument('--value', dest='property_value', type=str, help='Volume propertie value')
 
+            resize = parsers.add_parser('rename')
+            resize.add_argument('new_name', type=str, help='New volume name')
+            
             resize = parsers.add_parser('resize')
             resize.add_argument('--add', dest="add_size", action="store_true", default=False, help='Add new size to existing volume size')
             resize.add_argument('new_size', type=int, help='New volume size')
@@ -143,20 +147,22 @@ class Volumes():
     def list(self):
         data = self.jdss.list_volumes()
         lines = []
-    
+  
         vmid_re = None
         if self.args['vmid']:
-            vmid_re = re.compile(r'^vm-[0-9]+-')
+            vmid_re = re.compile(r'^(vm|base)-[0-9]+-')
     
         for v in data:
+
             if vmid_re:
                 match = vmid_re.match(v['name'])
                 if not match:
                     continue
-    
+                
+                vmid = v['name'][0:match.end()].split('-')[1]
                 line = ("%(name)s %(vmid)s %(size)s\n" % {
                     'name': v['name'],
-                    'vmid': v['name'][3:match.end()-1],
+                    'vmid': vmid,
                     'size': v['size']})
                 sys.stdout.write(line)
             else:
@@ -175,7 +181,16 @@ class Volumes():
         snapshots.Snapshots(self.args, self.uargs, self.jdss)
 
     def properties(self):
-        pass
+        volume = {'id': self.args['volume_name']}
+        new_prop = {'name': self.args['property_name'],
+                    'value': self.args['property_value']}
+
+        self.jdss.modify_volume(volume, new_prop)
+
+    def rename(self):
+        volume = {'id': self.args['volume_name']}
+
+        self.jdss.rename_volume(volume, self.args['new_name'])
 
     def resize(self):
 
@@ -183,7 +198,7 @@ class Volumes():
 
         volume = {'id': volume_name}
         size = self.args['new_size']
-        
+ 
         if self.args['add_size']:
             d = self.jdss.get_volume(volume)
             size += int(d['size'])

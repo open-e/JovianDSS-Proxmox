@@ -454,6 +454,35 @@ class JovianISCSIDriver(object):
         except jexc.JDSSException as err:
             raise Exception(
                 (('Failed to extend volume %s.'), volume['id'])) from err
+    
+    def rename_volume(self, volume, new_name):
+        LOG.debug("Rename volume %s to %s",
+                  volume['id'],
+                  new_name)
+        
+        new_prop = {'name': jcom.vname(new_name)}
+        try:
+            self.ra.modify_lun(jcom.vname(volume['id']), new_prop)
+        except jexc.JDSSException as err:
+            emsg = "Failed to rename volume %(vol)s to %(new_name)s" % {
+                              'vol': volume['id'],
+                              'new_name': new_name}
+            raise Exception(emsg) from err
+
+    def modify_volume(self, volume, new_property):
+        LOG.debug("Rename volume %s with property %s with value %s",
+                  volume['id'],
+                  new_property['name'],
+                  new_property['value'])
+        prop = { new_property['name']: new_property['value'] }
+        try:
+            self.ra.modify_lun(jcom.vname(volume['id']), prop=prop)
+        except jexc.JDSSException as err:
+            emsg = "Failed to set volume %(vol)s property %(pname)s with value %(pval)s" % {
+                              'vol': volume['id'],
+                              'pname': new_property['name'],
+                              'pval': new_property['value']}
+            raise Exception(emsg) from err
 
     def revert_to_snapshot(self, context, volume, snapshot):
         """Revert volume to snapshot.

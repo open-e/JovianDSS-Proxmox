@@ -19,7 +19,7 @@ use PVE::JSONSchema qw(get_standard_option);
 
 use base qw(PVE::Storage::Plugin);
 
-my $PLUGIN_VERSION = '0.6.1';
+my $PLUGIN_VERSION = '0.7.4';
 
 # Configuration
 
@@ -313,7 +313,25 @@ sub get_subdir {
 sub create_base {
     my ( $class, $storeid, $scfg, $volname ) = @_;
 
-    die "can't create base images in Open-E JovianDSS storage\n";
+    my ($vtype, $name, $vmid, $basename, $basevmid, $isBase) =
+        $class->parse_volname($volname);
+
+    die "create_base not possible with base image\n" if $isBase;
+    
+    $class->deactivate_volume($storeid, $scfg, $volname, '', '');
+    
+    my $config = $scfg->{config};
+
+    my $pool = $scfg->{pool_name};
+
+    my $newname = $name;
+    $newname =~ s/^vm-/base-/;
+
+    my $newvolname = $basename ? "$basename/$newname" : "$newname";
+    
+	my $size = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "rename", $newname]);
+
+    return $newvolname;
 }
 
 sub clone_image {
@@ -614,10 +632,13 @@ sub volume_resize {
 
 sub parse_volname {
     my ($class, $volname) = @_;
-
-    if ($volname =~ m/^((\S+):vm-(\d+)-(\S+))?(vm-(\d+)-(\S+))$/) {
-	return ('images', $2, $1, undef, undef, undef, 'raw');
+    if ($volname =~ m/^((base-(\d+)-\S+)\/)?((base)?(vm)?-(\d+)-\S+)$/) {
+        return ('images', $4, $7, $2, $3, $5, 'raw');
     }
+               #
+    #if ($volname =~ m/^((\S+):(base)?(vm)?-(\d+)-(\S+))?((base)?(vm)?-(\d+)-(\S+))$/) {
+	#return ('images', $2, $1, undef, undef, undef, 'raw');
+    #}
 
     die "unable to parse joviandss volume name '$volname'\n";
 }
