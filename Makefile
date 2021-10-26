@@ -19,7 +19,7 @@ deb:
 	install -D -m 0555 ./DEBIAN/postrm $(debdir)/DEBIAN/postrm
 	
 	dpkg-deb --build $(debdir)
-	@mv $(debdir).deb ./open-e-joviandss-proxmox-plugin_0.7.3-1.deb	
+	@mv $(debdir).deb ./open-e-joviandss-proxmox-plugin_0.8.1-1.deb	
 	rm -rf $(debdir)
 
 install:

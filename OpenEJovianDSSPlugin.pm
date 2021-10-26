@@ -324,14 +324,14 @@ sub create_base {
 
     my $pool = $scfg->{pool_name};
 
-    my $newname = $name;
-    $newname =~ s/^vm-/base-/;
+    my $newnameprefix = join '', 'base-', $vmid, '-disk-';
 
-    my $newvolname = $basename ? "$basename/$newname" : "$newname";
-    
-	my $size = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "rename", $newname]);
+	my $newname = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "getfreename", "--prefix", $newnameprefix]);
+    chomp($newname);
+    $newname =~ s/[^[:ascii:]]//;
+	$class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "rename", $newname]);
 
-    return $newvolname;
+    return $newname;
 }
 
 sub clone_image {

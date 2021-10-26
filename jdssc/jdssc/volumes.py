@@ -25,6 +25,7 @@ class Volumes():
     def __init__(self, args, uargs, jdss):
         
         self.vsa = {'create': self.create,
+                    'getfreename': self.getfreename,
                     'list': self.list}
         self.va = {'clone': self.clone,
                    'delete': self.delete,
@@ -55,8 +56,10 @@ class Volumes():
             create = parsers.add_parser('create')
             create.add_argument('-s', dest='volume_size', type=str, default='1G', help='New volume size in format <number><dimension>')
             create.add_argument('-b', dest='block_size', type=str, default='64K', help='Block size')
-
             create.add_argument('volume_name', type=str, help='New volume name')
+
+            freename = parsers.add_parser('getfreename')
+            freename.add_argument('--prefix', required=True, dest='volume_prefix', help='Get free volume name that will start with prefix')
 
             listp = parsers.add_parser('list')
             listp.add_argument('--vmid',
@@ -68,8 +71,9 @@ class Volumes():
             parser.add_argument('volume_name', help='Volume name')
             parsers = parser.add_subparsers(dest='volume-action')
 
-            clone = parsers.add_parser('get')
-            clone.add_argument('-s', dest='volume_size', action='store_true', default=False, help='Print volume size')
+            get = parsers.add_parser('get')
+            get.add_argument('-s', dest='volume_size', action='store_true', default=False, help='Print volume size')
+            
 
             clone = parsers.add_parser('clone')
             clone.add_argument('--snapshot', dest='snapshot_name', type=str, help='Use snapshot for cloning')
@@ -87,8 +91,8 @@ class Volumes():
             properties.add_argument('--name', dest='property_name', type=str, help='Volume propertie name')
             properties.add_argument('--value', dest='property_value', type=str, help='Volume propertie value')
 
-            resize = parsers.add_parser('rename')
-            resize.add_argument('new_name', type=str, help='New volume name')
+            rename = parsers.add_parser('rename')
+            rename.add_argument('new_name', type=str, help='New volume name')
             
             resize = parsers.add_parser('resize')
             resize.add_argument('--add', dest="add_size", action="store_true", default=False, help='Add new size to existing volume size')
@@ -143,6 +147,30 @@ class Volumes():
 
         if self.args['volume_size']:
             print(d['size'])
+
+    def getfreename(self):
+        
+        volume_prefix = None
+        
+        if 'volume_prefix' in self.args:
+            volume_prefix = self.args['volume_prefix']
+        
+        present_volumes = []
+        data = self.jdss.list_all_volumes()
+
+        for v in data:
+            if v['name'].startswith(volume_prefix):
+                present_volumes.append(v['name'])
+                continue
+
+        for i in range(0, sys.maxsize):
+            nname = volume_prefix + str(i)
+            if nname not in present_volumes:
+                print(nname)
+                #sys.stdout.write(nname)
+                return
+
+        raise Exception("Unable to find free volume name") 
 
     def list(self):
         data = self.jdss.list_volumes()

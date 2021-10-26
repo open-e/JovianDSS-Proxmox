@@ -184,6 +184,38 @@ class JovianISCSIDriver(object):
                 pass
         return ret
 
+    def list_all_volumes(self):
+        """List all volumes related to this pool.
+
+        :return: list of volumes
+        """
+        #vname = jcom.vname(volume.id)
+        #LOG.debug('creating volume %s.', vname)
+
+        #provider_location = self._get_provider_location(volume.id)
+        #provider_auth = self._get_provider_auth()
+
+        ret = []
+        try:
+            data = self.ra.get_luns()
+
+        except jexc.JDSSException as ex:
+            LOG.error("List volume error. Because %(err)s",
+                      {"err": ex})
+            raise Exception(('Failed to list volumes %s.') % ex)
+
+        for r in data:
+            try:
+
+                ret.append({
+                'name': jcom.idname(r['name']),
+                'id' : r['san:volume_id'],
+                'size': r['volsize']})
+
+            except Exception as err:
+                pass
+        return ret
+
     def get_volume(self, volume):
         """List volumes related to this pool.
 
