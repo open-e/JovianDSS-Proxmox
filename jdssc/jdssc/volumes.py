@@ -126,7 +126,7 @@ class Volumes():
                   'size': self.args['volume_size']}
         
         if self.args['snapshot_name']:
-            snapshot = snapshots.Snapsho.get_snapshot(
+            snapshot = snapshots.Snapshot.get_snapshot(
                 self.args['volume_name'],
                 self.args['snapshot_name'])
 

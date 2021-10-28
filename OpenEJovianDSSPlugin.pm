@@ -295,7 +295,14 @@ sub path {
 
     print"Getting path of volume ${volname} snapshot ${snapname}\n" if $scfg->{debug};
 
-    my $dpath = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--path"]); 
+    my $dpath = "";
+
+    if ($snapname){
+        $dpath = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--path", "--snapshot", $snapname]);
+    } else {
+        $dpath = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--path"]);
+    }
+
     chomp($dpath);
     $dpath =~ s/[^[:ascii:]]//;
     my $path = "/dev/disk/by-path/${dpath}";
@@ -571,10 +578,17 @@ sub activate_volume {
     #foreach my $hash (@$res) {
     #    print "$hash->{'volid'}\n";
     #}
-    my $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host"]);
+
+    my $target_info = "";
+
+    if ($snap){
+        $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--snapshot", $snap]);
+    } else {
+        $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host"]);
+    }
 
     my @tmp = split(" ", $target_info, 2);
-    
+
     my $host = $tmp[1];
     chomp($host);
     $host =~ s/[^[:ascii:]]//;
@@ -590,9 +604,13 @@ sub activate_volume {
     }
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
-    
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname]); 
-    
+
+    if ($snap){
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname, "--snapshot", $snap]); 
+    } else {
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname]); 
+    }
+
     iscsi_login($target, $host);
 
     return 1;
@@ -604,8 +622,14 @@ sub deactivate_volume {
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
+    
+    my $target_info = "";
 
-    my $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host"]);
+    if ($snapname){
+        $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--snapshot", $snapname]);
+    } else {
+        $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host"]);
+    }
 
     my @tmp = split(" ", $target_info, 2);
     my $host = $tmp[1];
@@ -615,6 +639,11 @@ sub deactivate_volume {
     warn $@ if $@; 
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]);
 
+    if ($snapname){
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete", "--snapshot", $snapname]); 
+    } else {
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]); 
+    }
     return 1;
 }
 

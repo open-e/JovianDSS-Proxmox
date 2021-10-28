@@ -47,7 +47,7 @@ class Snapshots():
     
         name_bytes = bytes(volume_name + snapshot_name, 'ascii')
         name_uuid = hashlib.md5(name_bytes).hexdigest()
-        snapshot = {'id': "{}_{}".format(name_uuid, snapshot_name),
+        snapshot = {'id': "{}-{}".format(name_uuid, snapshot_name),
                     'volume_id': volume_name,
                     'volume_name': volume_name}
     
@@ -89,7 +89,7 @@ class Snapshots():
         data = self.jdss.list_snapshots(volume)
 
         for v in data:
-            name = "_".join(v['name'].split("_")[1:])
+            name = "-".join(v['name'].split("-")[1:])
             line = "{}\n".format(name)
             sys.stdout.write(line)
 

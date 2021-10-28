@@ -17,6 +17,7 @@ import argparse
 import re
 import sys
 
+import jdssc.snapshots as snapshots
 
 """Volume related commands."""
 
@@ -52,6 +53,8 @@ class Targets():
                                 help='Print host address')
             create.add_argument('--lun', action='store_true', default=False,
                                 help='Print lun')
+            create.add_argument('--snapshot', dest='volume_snapshot', default=None,
+                                help='Create target based on snapshot')
 
             listp = parsers.add_parser('list')
         else:
@@ -65,16 +68,27 @@ class Targets():
                                 help='Print host address')
             get.add_argument('--lun', action='store_true', default=False,
                                 help='Print lun')
+            get.add_argument('--snapshot', dest='volume_snapshot', default=None,
+                                help='Get target based on snapshot')
+            
             delete = parsers.add_parser('delete')
+            delete.add_argument('--snapshot', dest='volume_snapshot', default=None,
+                                help='Delete target based on snapshot')
 
         return parser.parse_known_args(args)
 
     def create(self):
-
-        volume = {'id': self.args['target_name'],
-                  'provider_auth': 'CHAP 123456 123456789012'}
-
-        provider_location = self.jdss.create_export('', volume, '')['provider_location']
+        provider_location = None
+        if self.args['volume_snapshot']:
+            snapshot = snapshots.Snapshots.get_snapshot(self.args['target_name'],
+                                                      self.args['volume_snapshot'])['id']
+            volume = {'id': snapshot,
+                      'provider_auth': 'CHAP 123456 123456789012'}
+            provider_location = self.jdss.create_export('', volume, '', isSnapshot=True)['provider_location']
+        else:
+            volume = {'id': self.args['target_name'],
+                      'provider_auth': 'CHAP 123456 123456789012'}
+            provider_location = self.jdss.create_export('', volume, '')['provider_location']
         #output = self.jdss.jovian_target_prefix + self.args['target_name'] + "\n"
         out = ''
         if self.args['host']:
@@ -90,13 +104,25 @@ class Targets():
 
     def delete(self):
     
-        volume = {'id': self.args['target_name']}
-
-        self.jdss.remove_export('', volume)
+        if self.args['volume_snapshot']:
+            snapshot = snapshots.Snapshots.get_snapshot(self.args['target_name'],
+                                                      self.args['volume_snapshot'])['id']
+            volume = {'id': snapshot}
+            self.jdss.remove_export('', volume, isSnapshot=True)
+        else:
+            volume = {'id': self.args['target_name']}
+            self.jdss.remove_export('', volume)
 
     def get(self):
 
-        provider_location = self.jdss.get_provider_location(self.args['target_name'])
+        provider_location = None
+        if self.args['volume_snapshot']:
+            snapshot = snapshots.Snapshots.get_snapshot(self.args['target_name'],
+                                                      self.args['volume_snapshot'])['id']
+            provider_location = self.jdss.get_provider_location(snapshot)
+        else:
+            provider_location = self.jdss.get_provider_location(self.args['target_name'])
+
         pvs = provider_location.split()
         ip = ''.join(pvs[0].split(':')[:-1])
         target_port = pvs[0].split(':')[-1].split(',')[0]
@@ -111,7 +137,7 @@ class Targets():
                 target = target,
                 lun = lun)
             #ip-10.0.0.245:3260-iscsi-iqn.2020-04.com.open-e.cinder:vm-100-19cf298b9c454d84b8423d3c30da78cb-lun-0
-            out = [ chr(ord(c))  for c in out]
+            out = [ chr(ord(c)) for c in out]
             print(''.join(out))
             return
 

@@ -561,17 +561,22 @@ class JovianRESTAPI(object):
 
         self._general_error(req, resp)
 
-    def attach_target_vol(self, target_name, lun_name, lun_id=0):
+    def attach_target_vol(self, target_name, lun_name, lun_id=0, mode=None):
         """attach_target_vol.
 
         POST /san/iscsi/targets/<target_name>/luns
         :param target_name:
         :param lun_name:
+        :param mode: access mode for volume, avaiilable: ro, wt, wb
         :return:
         """
         req = '/san/iscsi/targets/%s/luns' % target_name
 
         jbody = {"name": lun_name, "lun": lun_id}
+
+        if mode:
+            jbody['mode'] = mode
+
         LOG.debug("atach volume %(vol)s to target %(tar)s",
                   {'vol': lun_name,
                    'tar': target_name})

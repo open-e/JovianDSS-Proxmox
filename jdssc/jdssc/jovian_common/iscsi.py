@@ -840,7 +840,7 @@ class JovianISCSIDriver(object):
             'port': self.jovian_iscsi_target_portal_port,
             'name': self._get_target_name(volume_name)}
 
-    def create_export(self, _ctx, volume, connector):
+    def create_export(self, _ctx, volume, connector, isSnapshot=False):
         """Create new export for zvol.
 
         :param volume: reference of volume to be exported
@@ -848,7 +848,7 @@ class JovianISCSIDriver(object):
         """
         LOG.debug("create export for volume: %s.", volume['id'])
 
-        self._ensure_target_volume(volume)
+        self._ensure_target_volume(volume, isSnapshot=isSnapshot)
 
         return {'provider_location': self._get_provider_location(volume['id'])}
 
@@ -860,14 +860,14 @@ class JovianISCSIDriver(object):
         LOG.debug("ensure export for volume: %s.", volume['id'])
         self._ensure_target_volume(volume)
 
-    def remove_export(self, _ctx, volume):
+    def remove_export(self, _ctx, volume, isSnapshot=False):
         """Destroy all resources created to export zvol.
 
         :param volume: reference of volume to be unexported
         """
         LOG.debug("remove_export for volume: %s.", volume['id'])
 
-        self._remove_target_volume(volume)
+        self._remove_target_volume(volume, isSnapshot=isSnapshot)
 
     def _update_volume_stats(self):
         """Retrieve stats info."""
@@ -939,7 +939,7 @@ class JovianISCSIDriver(object):
                                                  'error': ex})
             raise cexc.VolumeBackendAPIException(msg)
 
-    def _attach_target_volume(self, target_name, vname):
+    def _attach_target_volume(self, target_name, vname, isSnapshot=False):
         """Attach target to volume and handles exceptions
 
         Tryes to set attach volume to specific target.
@@ -947,8 +947,12 @@ class JovianISCSIDriver(object):
         :param target_name: name of target
         :param use_chap: flag for using chap
         """
+ 
+        mode='wt'
+        if isSnapshot:
+            mode = 'ro'
         try:
-            self.ra.attach_target_vol(target_name, vname)
+            self.ra.attach_target_vol(target_name, vname, mode=mode)
         except jexc.JDSSException as ex:
             msg = ('Unable to attach volume to target %(target)s '
                    'because of %(error)s.')
@@ -988,7 +992,7 @@ class JovianISCSIDriver(object):
 
             raise Exception(err_msg)
 
-    def _create_target_volume(self, volume):
+    def _create_target_volume(self, volume, isSnapshot=False):
         """Creates target and attach volume to it
 
         :param volume: volume id
@@ -997,7 +1001,12 @@ class JovianISCSIDriver(object):
         LOG.debug("create target and attach volume %s to it", volume['id'])
 
         target_name = self.jovian_target_prefix + volume['id']
-        vname = jcom.vname(volume['id'])
+
+        vname = None
+        if isSnapshot:
+            vname = jcom.sname(volume['id'])
+        else:
+            vname = jcom.vname(volume['id'])
 
         auth = volume['provider_auth']
 
@@ -1013,12 +1022,12 @@ class JovianISCSIDriver(object):
         self._create_target(target_name, False)
 
         # Attach volume
-        self._attach_target_volume(target_name, vname)
+        self._attach_target_volume(target_name, vname, isSnapshot=isSnapshot)
 
         # Set credentials
         #self._set_target_credentials(target_name, chap_cred)
 
-    def _ensure_target_volume(self, volume):
+    def _ensure_target_volume(self, volume, isSnapshot=False):
         """Checks if target configured properly and volume is attached to it
 
         param: volume: volume structure
@@ -1038,12 +1047,17 @@ class JovianISCSIDriver(object):
                      "password": auth_secret}
 
         if not self.ra.is_target(target_name):
-            self._create_target_volume(volume)
+            self._create_target_volume(volume, isSnapshot=isSnapshot)
             return
 
-        vname = jcom.vname(volume['id'])
+        vname = None
+        if isSnapshot:
+            vname = jcom.sname(volume['id'])
+        else:
+            vname = jcom.vname(volume['id'])
+
         if not self.ra.is_target_lun(target_name, vname):
-            self._attach_target_volume(target_name, vname)
+            self._attach_target_volume(target_name, vname, isSnapshot=isSnapshot)
 
         #try:
         #    users = self.ra.get_target_user(target_name)
@@ -1065,7 +1079,7 @@ class JovianISCSIDriver(object):
         #    self.ra.delete_target(target_name)
         #    raise cexc.VolumeBackendAPIException(err)
 
-    def _remove_target_volume(self, volume):
+    def _remove_target_volume(self, volume, isSnapshot=False):
         """_remove_target_volume
 
         Ensure that volume is not attached to target and target do not exists.
@@ -1075,9 +1089,16 @@ class JovianISCSIDriver(object):
         LOG.debug("detach volume:%(vol)s from target:%(targ)s.", {
             'vol': volume,
             'targ': target_name})
+        
+        vname = None
+        if isSnapshot:
+            vname = jcom.sname(volume['id'])
+        else:
+            vname = jcom.vname(volume['id'])
 
         try:
-            self.ra.detach_target_vol(target_name, jcom.vname(volume['id']))
+            self.ra.detach_target_vol(target_name, vname)
+
         except jexc.JDSSResourceNotFoundException as ex:
             LOG.debug('failed to remove resource %(t)s because of %(err)s', {
                 't': target_name,
