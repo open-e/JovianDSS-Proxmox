@@ -19,6 +19,8 @@ use PVE::JSONSchema qw(get_standard_option);
 
 use base qw(PVE::Storage::Plugin);
 
+use constant COMPRESSOR_RE => 'gz|lzo|zst';
+
 my $PLUGIN_VERSION = '0.7.4';
 
 # Configuration
@@ -27,6 +29,8 @@ my $default_joviandss_address = "192.168.0.100";
 my $default_pool = "Pool-0";
 my $default_config = "/etc/pve/joviandss.cfg";
 my $default_debug = 0;
+my $default_path = "/mnt/joviandss";
+my $default_content = "iso,backup";
 
 sub api {
 
@@ -45,7 +49,7 @@ sub type {
 
 sub plugindata {
     return {
-    content => [ { images => 1, rootdir => 1, vztmpl => 0, iso => 0, backup => 0, snippets => 0, none => 1 },
+    content => [ { images => 1, rootdir => 1, vztmpl => 0, iso => 1, backup => 1, snippets => 0, none => 1 },
              { images => 1,  rootdir => 1 }],
     # TODO: check subvol and add to supported formats
     format => [ { raw => 1, subvol => 0 } , 'raw' ],
@@ -83,6 +87,8 @@ sub options {
         pool_name        => { optional => 1 },
         config        => { fixed => 1 },
         debug       => { optional => 1},
+        path        => { optional => 1},
+        content     => { optional => 1},
     };
 }
 
@@ -313,8 +319,8 @@ sub path {
 #TODO: implement this for iso and backups
 sub get_subdir {
     my ($class, $scfg, $vtype) = @_;
-
-    return undef;
+    print"get_subdir\n" if $scfg->{debug};
+    return "/mnt/joviandss/template/iso";
 }
 
 sub create_base {
@@ -570,7 +576,7 @@ sub activate_volume {
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
-    
+
     #my $i = 1;
     #while ( (my @call_details = (caller($i++))) ){
     #    print STDERR $call_details[1].":".$call_details[2]." in function ".$call_details[3]."\n";
@@ -661,13 +667,24 @@ sub volume_resize {
 
 sub parse_volname {
     my ($class, $volname) = @_;
+
+    print"parse volname $volname\n";
+	
     if ($volname =~ m/^((base-(\d+)-\S+)\/)?((base)?(vm)?-(\d+)-\S+)$/) {
         return ('images', $4, $7, $2, $3, $5, 'raw');
+    } elsif ($volname =~ m!^iso/([^/]+$PVE::Storage::iso_extension_re)$!) {
+    	return ('iso', $1);
+    } elsif ($volname =~ m!^vztmpl/([^/]+$PVE::Storage::vztmpl_extension_re)$!) {
+    	return ('vztmpl', $1);
+    } elsif ($volname =~ m!^rootdir/(\d+)$!) {
+    	return ('rootdir', $1, $1);
+    } elsif ($volname =~ m!^backup/([^/]+(?:\.(?:tgz|(?:(?:tar|vma)(?:\.(?:${\COMPRESSOR_RE}))?))))$!) {
+    	my $fn = $1;
+    	if ($fn =~ m/^vzdump-(openvz|lxc|qemu)-(\d+)-.+/) {
+    	    return ('backup', $fn, $2);
+    	}
+    	return ('backup', $fn);
     }
-               #
-    #if ($volname =~ m/^((\S+):(base)?(vm)?-(\d+)-(\S+))?((base)?(vm)?-(\d+)-(\S+))$/) {
-	#return ('images', $2, $1, undef, undef, undef, 'raw');
-    #}
 
     die "unable to parse joviandss volume name '$volname'\n";
 }
