@@ -91,6 +91,46 @@ class JovianRESTAPI(object):
             return resp['data']
         raise jexc.JDSSRESTException(resp['error']['message'])
 
+    def get_nas_volume():
+        pass
+
+    def create_nas_volume(self, volume_name):
+        """create_nas_volumes.
+
+        POST
+        .../nas_volumes
+
+        :param volume_name:
+        :param volume_size:
+        :return:
+        """
+        volume_size_str = str(volume_size)
+        jbody = {
+            'name': volume_name,
+        }
+
+        req = '/nas_volumes'
+
+        LOG.debug("create nas volume %s", str(jbody))
+        resp = self.rproxy.pool_request('POST', req, json_data=jbody)
+
+        if not resp["error"] and resp["code"] in (200, 201):
+            return
+
+        if resp["error"] is not None:
+            if resp["error"]["errno"] == str(5):
+                raise jexc.JDSSRESTException(
+                    'Failed to create nas volume. %s.' % resp['error']['message'])
+
+        raise jexc.JDSSRESTException('Failed to create nas volume.')
+
+    def delete_nas_volume():
+        pass
+    def create_share():
+        pass
+    def delete_share():
+        pass
+
     def get_luns(self):
         """get_all_pool_volumes.
 

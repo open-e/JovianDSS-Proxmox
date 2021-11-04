@@ -340,7 +340,6 @@ class JovianISCSIDriver(object):
         :param cascade: remove snapshots of a volume as well
         """
         vname = jcom.vname(volume['id'])
-        print("d") 
 
         LOG.debug('deleating volume %s', vname)
 

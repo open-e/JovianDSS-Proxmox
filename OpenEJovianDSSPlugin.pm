@@ -30,7 +30,6 @@ my $default_pool = "Pool-0";
 my $default_config = "/etc/pve/joviandss.cfg";
 my $default_debug = 0;
 my $default_path = "/mnt/joviandss";
-my $default_content = "iso,backup";
 
 sub api {
 
@@ -116,6 +115,12 @@ sub get_debug {
     my ($scfg) = @_;
 
     return $scfg->{debug} || $default_debug;
+}
+
+sub get_path {
+    my ($scfg) = @_;
+
+    return $scfg->{path} || $default_path;
 }
 
 sub joviandss_cmd {
@@ -316,9 +321,16 @@ sub path {
     return ($path, $vmid, $vtype);
 }
 
-#TODO: implement this for iso and backups
+my $vtype_subdirs = {
+    iso => 'iso',
+    vztmpl => 'vztmpl',
+    backup => 'backup',
+};
+
 sub get_subdir {
     my ($class, $scfg, $vtype) = @_;
+
+	if ($vtype
     print"get_subdir\n" if $scfg->{debug};
     return "/mnt/joviandss/template/iso";
 }
@@ -559,8 +571,36 @@ sub status {
     return ($total * $gb, $avail * $gb, $used * $gb, 1 );
 }
 
+sub disk_for_target{
+    my ( $class, $storeid, $scfg, $target ) = @_;
+	return undef
+}
+
+sub storage_mounted {
+    my ($path, $disk) = @_;
+
+    my $mounts = PVE::ProcFSTools::parse_proc_mounts();
+    for my $mp (@$mounts) {
+    my ($dev, $dir, $fs) = $mp->@*;
+
+    	next if $dir !~ m!^$mounts(?:/|$)!;
+    	next if $dev ne $disk;
+    	return 1;
+    }
+    return 0;
+}
+
 sub activate_storage {
     my ( $class, $storeid, $scfg, $cache ) = @_;
+
+    if (!defined($scfg->{path}) ){
+    	return 0;
+    }
+
+    my $path = $scfg->{path};
+	my $disk = $class->disk_for_target();
+	return 1 if storage_mounted($path, $disk);
+
     return undef;
 }
 
