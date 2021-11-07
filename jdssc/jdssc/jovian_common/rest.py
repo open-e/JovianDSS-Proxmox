@@ -50,7 +50,7 @@ class JovianRESTAPI(object):
                                 'code': code,
                                 'eclass': eclass,
                                 'message': msg})
-        raise jexc.JDSSException(reason=reason)
+        raise jexc.JDSSException(reason)
 
     def get_active_host(self):
         """Return address of currently used host."""
@@ -91,8 +91,29 @@ class JovianRESTAPI(object):
             return resp['data']
         raise jexc.JDSSRESTException(resp['error']['message'])
 
-    def get_nas_volume():
-        pass
+    def get_nas_volume(self, nas_volume):
+        """delete_nas_volumes.
+
+        POST
+        .../nas_volumes
+
+        :return:
+        """
+
+        req = '/nas-volumes/' + nas_volume
+
+        LOG.debug("get nas volume %s", str(nas_volume))
+        resp = self.rproxy.pool_request('GET', req)
+
+        if not resp["error"] and resp["code"] == 200:
+            return resp['data']
+
+        if resp['error']:
+            if 'message' in resp['error']:
+                if self.resource_dne_msg.match(resp['error']['message']):
+                    raise jexc.JDSSResourceNotFoundException(res=nas_volume)
+
+        self._general_error(req, resp)
 
     def create_nas_volume(self, volume_name):
         """create_nas_volumes.
@@ -104,32 +125,184 @@ class JovianRESTAPI(object):
         :param volume_size:
         :return:
         """
-        volume_size_str = str(volume_size)
+
         jbody = {
-            'name': volume_name,
+            'name': str(volume_name)
         }
 
-        req = '/nas_volumes'
+        req = '/nas-volumes'
 
-        LOG.debug("create nas volume %s", str(jbody))
+        LOG.debug("create nas volume %s", str(volume_name))
         resp = self.rproxy.pool_request('POST', req, json_data=jbody)
 
         if not resp["error"] and resp["code"] in (200, 201):
+            return resp["data"]
+        
+        self._general_error(req, resp)
+
+    def delete_nas_volume(self, volume_name):
+        """delete_nas_volumes.
+
+        POST
+        .../nas_volumes
+
+        :param volume_name:
+        :param volume_size:
+        :return:
+        """
+        req = '/nas-volumes/' + volume_name
+
+        LOG.debug("delete nas-volume %s", volume_name)
+
+        resp = self.rproxy.pool_request('DELETE', req)
+
+        if resp["code"] in (200, 201, 204):
+            LOG.debug(
+                "volume %s deleted", volume_name)
             return
 
-        if resp["error"] is not None:
-            if resp["error"]["errno"] == str(5):
-                raise jexc.JDSSRESTException(
-                    'Failed to create nas volume. %s.' % resp['error']['message'])
+        not_found_err = "opene.exceptions.ItemNotFoundError"
+        if (resp["code"] == 404) or \
+                (resp["error"]["class"] == not_found_err):
+            raise jexc.JDSSResourceNotFoundException(res=target_name)
 
-        raise jexc.JDSSRESTException('Failed to create nas volume.')
+        self._general_error(req, resp)
 
-    def delete_nas_volume():
-        pass
-    def create_share():
-        pass
-    def delete_share():
-        pass
+    def get_share_users(self, share):
+        req = '/shares/' + share + "/users"
+        
+        LOG.debug("get share users %s", share)
+
+        resp = self.rproxy.request('GET', req)
+
+        if not resp["error"] and resp["code"] == 200:
+            return resp['data']
+
+        self._general_error(req, resp)
+
+    def get_share(self, share):
+        req = '/shares/' + share
+        
+        LOG.debug("get share %s", share)
+
+        resp = self.rproxy.request('GET', req)
+
+        if not resp["error"] and resp["code"] == 200:
+            return resp['data']
+
+        if (resp["code"] == 404) or \
+                (resp["error"]["class"] == not_found_err):
+            raise jexc.JDSSResourceNotFoundException(res=share)
+        
+        self._general_error(req, resp)
+
+    def create_share(self, nas_volume, share):
+        req = '/shares'
+
+        LOG.debug("create share %s", share)
+        json_data = {"path": "{}/{}/{}".format(self.pool, nas_volume, share),
+                     "name": share,
+                     "smb": {"enabled": True, 
+                             "visible": True,
+                             "access_mode": "user"}}
+
+        resp = self.rproxy.request('POST', req, json_data=json_data)
+
+        if resp['code'] == 201:
+            return
+
+        self._general_error(req, resp)
+
+    def delete_share(self, share):
+        req = '/shares/' + share
+
+        resp = self.rproxy.request('DELETE', req)
+
+        if resp['code'] == 204:
+            return
+
+        self._general_error(req, resp)
+
+    def get_share_users(self, share):
+        req = '/shares/' + share + "/users"
+        
+        LOG.debug("get share users %s", share)
+
+        resp = self.rproxy.request('GET', req)
+
+        if not resp["error"] and resp["code"] == 200:
+            return resp['data']
+
+        self._general_error(req, resp)
+
+    def set_share_user(self, share, user):
+        req = '/shares/{}/users'.format(share)
+
+        json_data = [{'name': user, 'readonly': False}]
+        resp = self.rproxy.request('PUT', req, json_data=json_data)
+
+        if resp['code'] == 201:
+            return resp['data']
+
+        self._general_error(req, resp)
+
+    def delete_share_users(self, share, users):
+        req = '/shares/{}/users'.format(share)
+
+        resp = self.rproxy.request('DELETE', req, json_data=users)
+
+        if resp['code'] == 204:
+            return
+
+        self._general_error(req, resp)
+
+    def get_user(self, user):
+
+        req = '/users/' + user
+
+        resp = self.rproxy.request('GET', req)
+        if not resp["error"] and resp["code"] == 200:
+            return resp['data']
+
+        if resp['code'] == 404:
+            raise jexc.JDSSResourceNotFoundException(res=user)
+
+        self._general_error(req, resp)
+
+    def create_user(self, user, password, backend="LDAP"):
+        req = '/users'
+
+        json_data = {"name": user, "password": password, "backend_name": backend}
+
+        resp = self.rproxy.request('POST', req, json_data=json_data)
+
+        if resp['code'] == 201:
+            return resp['data']
+
+        self._general_error(req, resp)
+
+    def delete_user(self, user):
+        req = '/users/' + user
+
+        resp = self.rproxy.request('DELETE', req)
+
+        if resp['code'] != 204:
+            print(resp['error'])
+        
+        self._general_error(req, resp)
+
+    def set_user_pass(self, user, password):
+        
+        req = '/users/' + user
+
+        json_data = {"password": password}
+
+        resp = self.rproxy.request('PUT', req, json_data=json_data)
+
+        if resp['code'] == 200:
+            return
+
+        self._general_error(req, resp)
 
     def get_luns(self):
         """get_all_pool_volumes.

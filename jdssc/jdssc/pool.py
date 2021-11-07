@@ -17,6 +17,7 @@ import argparse
 import re
 import sys
 
+import jdssc.cifs as cifs
 import jdssc.nas_volumes as nas_volumes
 import jdssc.volumes as volumes
 import jdssc.targets as targets
@@ -28,11 +29,12 @@ class Pools():
 
         #self.sa = {'create': self.create,
         #           'list': self.list}
-        self.pa = {'get': self.get,
+
+        self.pa = {'cifs': self.cifs,
+                   'get': self.get,
                    'nas_volumes': self.nas_volumes,
                    'targets': self.targets,
                    'volumes': self.volumes}
-
 
         self.args = args
         
@@ -52,6 +54,7 @@ class Pools():
         parser.add_argument('pool_name', help='Pool name')
         parsers = parser.add_subparsers(dest='pool-action')
         info = parsers.add_parser('get', add_help=False)
+        cifs = parsers.add_parser('cifs', add_help=False)
         nas_volumes = parsers.add_parser('nas_volumes', add_help=False)
         target = parsers.add_parser('targets', add_help=False)
         volumes = parsers.add_parser('volumes', add_help=False)
@@ -59,6 +62,9 @@ class Pools():
 
         return parser.parse_known_args(args)
    
+    def cifs(self):
+        cifs.CIFS(self.args, self.uargs, self.jdss)
+
     def get(self):
         (total_gb, free_gb) = self.jdss.get_volume_stats()
         line = "{total} {free} {used}\n".format(
@@ -66,7 +72,7 @@ class Pools():
         sys.stdout.write(line)
     
     def nas_volumes(self):
-        nas_volumes.Volumes(self.args, self.uargs, self.jdss)
+        nas_volumes.NASVolumes(self.args, self.uargs, self.jdss)
 
     def volumes(self):
         volumes.Volumes(self.args, self.uargs, self.jdss)

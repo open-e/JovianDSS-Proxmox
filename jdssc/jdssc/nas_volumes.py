@@ -24,9 +24,8 @@ from jdssc.jovian_common import rest
 class NASVolumes():
     def __init__(self, args, uargs, jdss):
         
-        self.vsa = {'create': self.create,
-                    'list': self.list}
-        self.va = {
+        self.nvsa = {'create': self.create}
+        self.nva = {
                    'delete': self.delete,
                    'get': self.get}
 
@@ -36,70 +35,61 @@ class NASVolumes():
         self.uargs = argst[1]
         self.jdss = jdss
       
-        if 'volumes-action' in self.args:
-            self.vsa[self.args.pop('volumes-action')]()
-        elif 'volume-action' in self.args:
-            self.va[self.args.pop('volume-action')]()
+        if 'nas-volumes-action' in self.args:
+            self.nvsa[self.args.pop('nas-volumes-action')]()
+        elif 'nas-volume-action' in self.args:
+            self.nva[self.args.pop('nas-volume-action')]()
 
     def __parse(self, args):
 
-        parser = argparse.ArgumentParser(prog="Volume")
+        nas_volumes_parser = argparse.ArgumentParser(prog="NASVolumes")
+        nas_volume_parser = argparse.ArgumentParser(prog="NASVolume")
+
+
+
+        parsers = nas_volumes_parser.add_subparsers(dest='nas-volumes-action')
+
+        create = parsers.add_parser('create')
+        create.add_argument('nas_volume_name', type=str, help='New nas volume name')
+        
+        nas_volume_parser.add_argument('nas_volume_name', help='NSA volume name')
+        parsers = nas_volume_parser.add_subparsers(dest='nas-volume-action')
+
+        get = parsers.add_parser('get')
+        get.add_argument('-s', dest='volume_size', action='store_true', default=False, help='Print volume size')
+
+        delete = parsers.add_parser('delete')
+        delete.add_argument('-c', '--cascade', dest='cascade',
+                            action='store_true',
+                            default=False,
+                            help='Remove snapshots along side with volume')
  
-        if args[0] in self.vsa:
-            parsers = parser.add_subparsers(dest='volumes-action')
+        if len(args) == 0:
+            nas_volumes_parser.print_help()
+            print("\n")
+            nas_volume_parser.print_help()
+            exit(0)
 
-            create = parsers.add_parser('create')
-            create.add_argument('volume_name', type=str, help='New nas volume name')
-
-            listp = parsers.add_parser('list')
+        if args[0] in self.nvsa:
+            return nas_volumes_parser.parse_known_args(args)
         else:
-            parser.add_argument('volume_name', help='Volume name')
-            parsers = parser.add_subparsers(dest='volume-action')
-
-            get = parsers.add_parser('get')
-            get.add_argument('-s', dest='volume_size', action='store_true', default=False, help='Print volume size')
-
-            delete = parsers.add_parser('delete')
-            delete.add_argument('-c', '--cascade', dest='cascade',
-                                action='store_true',
-                                default=False,
-                                help='Remove snapshots along side with volume')
- 
-        return parser.parse_known_args(args)
+            return nas_volume_parser.parse_known_args(args)
 
     def create(self):
 
-        volume = {'name': self.args['volume_name']}
-
-        self.jdss.ra.create_nas_volume(volume)
-
-    def clone(self):
-
-        block_size = self.args['block_size']
-        volume_name = self.args['volume_name']
-    
-        volume = {'id': self.args['clone_name'],
-                  'size': self.args['volume_size']}
-        
-        if self.args['snapshot_name']:
-            snapshot = snapshots.Snapshot.get_snapshot(
-                self.args['volume_name'],
-                self.args['snapshot_name'])
-
-            self.jdss.create_volume_from_snapshot(volume, snapshot)
-
-            return 
-
-        src_vref = {'id': self.args['volume_name']}
-        self.jdss.create_cloned_volume(volume, src_vref)
+        self.jdss.ra.create_nas_volume(self.args['nas_volume_name'])
  
     def get(self):
 
         volume_name = self.args['volume_name']
 
         volume = {'id': volume_name}
-        
+ 
         d = self.jdss.get_volume(volume)
 
         if self.args['volume_size']:
             print(d['size'])
+
+    def delete(self):
+
+        self.jdss.ra.delete_nas_volume(self.args['nas_volume_name'])
