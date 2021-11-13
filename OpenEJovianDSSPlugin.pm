@@ -88,6 +88,8 @@ sub options {
         debug       => { optional => 1},
         path        => { optional => 1},
         content     => { optional => 1},
+        username    => { optional => 1},
+        password    => { optional => 1},
     };
 }
 
@@ -330,9 +332,15 @@ my $vtype_subdirs = {
 sub get_subdir {
     my ($class, $scfg, $vtype) = @_;
 
-	if ($vtype
-    print"get_subdir\n" if $scfg->{debug};
-    return "/mnt/joviandss/template/iso";
+    my $path = $scfg->{path};
+
+    die "storage definition has no path\n" if !$path;
+
+    my $subdir = $vtype_subdirs->{$vtype};
+
+    die "unknown vtype '$vtype'\n" if !defined($subdir);
+
+    return "$path/$subdir";
 }
 
 sub create_base {
@@ -590,6 +598,37 @@ sub storage_mounted {
     return 0;
 }
 
+sub cifs_is_mounted {
+    my ($share, $mountpoint) = @_;
+
+    #$server = "[$server]" if Net::IP::ip_is_ipv6($server);
+    #my $source = "//${server}/$share";
+    my $mountdata = PVE::ProcFSTools::parse_proc_mounts();
+
+    return $mountpoint if grep {
+    $_->[2] =~ /^cifs/ &&
+	$_->[0] =~ /$share/ &&
+	#$_->[0] =~ m|^\Q$source\E/?$| &&
+    $_->[1] eq $mountpoint
+    } @$mountdata;
+    return undef;
+}
+
+sub cifs_mount {
+    my ($server, $share, $mountpoint, $username, $password, $smbver) = @_;
+
+    $server = "[$server]" if Net::IP::ip_is_ipv6($server);
+    my $source = "//${server}/$share";
+
+    my $cmd = ['/bin/mount', '-t', 'cifs', $source, $mountpoint];
+    push @$cmd, '-o', 'soft';
+    push @$cmd, '-o', "username=$username", '-o', "password=$password";
+    push @$cmd, '-o', "domain=workgroup";
+    push @$cmd, '-o', defined($smbver) ? "vers=$smbver" : "vers=3.0";
+
+    run_command($cmd, errmsg => "mount error");
+}
+
 sub activate_storage {
     my ( $class, $storeid, $scfg, $cache ) = @_;
 
@@ -597,15 +636,46 @@ sub activate_storage {
     	return 0;
     }
 
+    my $config = $scfg->{config};
+    my $share = "proxmox-internal-data";
+    my $pool = $scfg->{pool_name};
     my $path = $scfg->{path};
-	my $disk = $class->disk_for_target();
-	return 1 if storage_mounted($path, $disk);
+    my $joviandss_address = $scfg->{joviandss_address};
+    my $username = "proxmox";
+    my $password = "proxmox_1";
+
+    return 1 if (cifs_is_mounted($share, $path));
+
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "cifs",  $share, "ensure", "-u", $username, "-p", $password, "-n", $share]);
+    
+    cifs_mount($joviandss_address, $share, $path, $username, $password);
+    
+	# Make dirs
+    
+	my $dir_path = "$path/iso";
+	mkdir $dir_path;
+	$dir_path = "$path/vztmpl";
+	mkdir $dir_path;
+	$dir_path = "$path/backup";
+	mkdir $dir_path;
 
     return undef;
 }
 
 sub deactivate_storage {
     my ( $class, $storeid, $scfg, $cache ) = @_;
+
+    $cache->{mountdata} = PVE::ProcFSTools::parse_proc_mounts()
+    if !$cache->{mountdata};
+
+    my $path = $scfg->{path};
+    my $server = $scfg->{server};
+    my $share = $scfg->{share};
+
+    return 1 if (cifs_is_mounted($share, $path));
+    
+    my $cmd = ['/bin/umount', $path];
+    run_command($cmd, errmsg => 'umount error');
 
     return undef;
 }

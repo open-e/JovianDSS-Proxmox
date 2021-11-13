@@ -122,6 +122,9 @@ class CIFS():
         if self.args['volume_size']:
             print(d['size'])
 
+    def extend(self):
+        pass
+
     def delete(self):
 
         self.jdss.ra.delete_nas_volume(self.args['nas_volume_name'])
