@@ -21,7 +21,7 @@ use base qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.8.1';
+my $PLUGIN_VERSION = '0.9.1';
 
 # Configuration
 
@@ -657,6 +657,7 @@ sub activate_storage {
 
     return 1 if (cifs_is_mounted($share, $path));
 
+	mkdir $path;
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "cifs",  $share, "ensure", "-u", $username, "-p", $password, "-n", $share]);
     
     cifs_mount($joviandss_address, $share, $path, $username, $password);
@@ -789,8 +790,6 @@ sub volume_resize {
 sub parse_volname {
     my ($class, $volname) = @_;
 
-    print"parse volname $volname\n";
-	
     if ($volname =~ m/^((base-(\d+)-\S+)\/)?((base)?(vm)?-(\d+)-\S+)$/) {
         return ('images', $4, $7, $2, $3, $5, 'raw');
     } elsif ($volname =~ m!^iso/([^/]+$PVE::Storage::iso_extension_re)$!) {

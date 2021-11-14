@@ -74,7 +74,7 @@ san_thin_provision: True
 
 ## Installing/Uninstalling
 
-Installatiuon can be done by `make` utilit.
+Installatiuon can be done by `make` utilit inside source code folder
 
 ```bash
 make install
@@ -85,6 +85,19 @@ Removing proxmox plugin with `jdssc`
 make uninstall
 ```
 
+Or by installing it from debian package
+
+```bash
+apt install ./open-e-joviandss-proxmox-plugin_0.9.1-1.deb
+```
+
+Once installation is done, provide configuration.
+
+After installation and configuration restart proxmox service
+
+```bash
+systemctl restart pvedaemon.service
+```
 
 ## Supported features
 
@@ -95,6 +108,6 @@ make uninstall
 - [x] Restore snapshot
 - [x] Create template
 - [x] Delete template
-- [ ] ISO support
-- [ ] Backup volume
+- [x] ISO support
+- [x] Backup volume
 - [x] Container support
