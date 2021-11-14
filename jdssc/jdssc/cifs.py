@@ -43,7 +43,7 @@ class CIFS():
         cifs_parser = argparse.ArgumentParser(prog="CIFS volume manager")
 
         cifs_parser.add_argument('cifs_share_name', type=str, help='Name of CIFS share')
-        
+
         parser = cifs_parser.add_subparsers(dest='cifs-action')
 
         ensure = parser.add_parser('ensure')

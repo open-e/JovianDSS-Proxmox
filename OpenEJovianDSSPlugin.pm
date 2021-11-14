@@ -21,7 +21,7 @@ use base qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.7.4';
+my $PLUGIN_VERSION = '0.8.1';
 
 # Configuration
 
@@ -77,6 +77,14 @@ sub properties {
             type => 'boolean',
             default     => $default_debug,
         },
+        share_user => {
+            description => "User name proxmox dedicated storage",
+            type => 'string',
+        },
+        share_pass => {
+            description => "Password for proxmox dedicated storage",
+            type => 'string',
+        },
     };
 }
 
@@ -88,8 +96,8 @@ sub options {
         debug       => { optional => 1},
         path        => { optional => 1},
         content     => { optional => 1},
-        username    => { optional => 1},
-        password    => { optional => 1},
+        share_user    => { optional => 1},
+        share_pass    => { optional => 1},
     };
 }
 
@@ -632,17 +640,20 @@ sub cifs_mount {
 sub activate_storage {
     my ( $class, $storeid, $scfg, $cache ) = @_;
 
-    if (!defined($scfg->{path}) ){
+    if (!defined($scfg->{path})){
     	return 0;
     }
+
+    die "Path property requires share_user property\n" if !defined($scfg->{share_user});
+    my $username = $scfg->{share_user};
+    die "Path property requires share_user property\n" if !defined($scfg->{share_pass});
+    my $password = $scfg->{share_user};
 
     my $config = $scfg->{config};
     my $share = "proxmox-internal-data";
     my $pool = $scfg->{pool_name};
     my $path = $scfg->{path};
     my $joviandss_address = $scfg->{joviandss_address};
-    my $username = "proxmox";
-    my $password = "proxmox_1";
 
     return 1 if (cifs_is_mounted($share, $path));
 
