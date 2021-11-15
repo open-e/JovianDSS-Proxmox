@@ -19,7 +19,9 @@ use PVE::JSONSchema qw(get_standard_option);
 
 use base qw(PVE::Storage::Plugin);
 
-my $PLUGIN_VERSION = '0.7.4';
+use constant COMPRESSOR_RE => 'gz|lzo|zst';
+
+my $PLUGIN_VERSION = '0.9.1';
 
 # Configuration
 
@@ -27,6 +29,7 @@ my $default_joviandss_address = "192.168.0.100";
 my $default_pool = "Pool-0";
 my $default_config = "/etc/pve/joviandss.cfg";
 my $default_debug = 0;
+my $default_path = "/mnt/joviandss";
 
 sub api {
 
@@ -45,9 +48,8 @@ sub type {
 
 sub plugindata {
     return {
-    content => [ { images => 1, rootdir => 1, vztmpl => 0, iso => 0, backup => 0, snippets => 0, none => 1 },
+    content => [ { images => 1, rootdir => 1, vztmpl => 0, iso => 1, backup => 1, snippets => 0, none => 1 },
              { images => 1,  rootdir => 1 }],
-    # TODO: check subvol and add to supported formats
     format => [ { raw => 1, subvol => 0 } , 'raw' ],
     };
 }
@@ -74,6 +76,14 @@ sub properties {
             type => 'boolean',
             default     => $default_debug,
         },
+        share_user => {
+            description => "User name proxmox dedicated storage",
+            type => 'string',
+        },
+        share_pass => {
+            description => "Password for proxmox dedicated storage",
+            type => 'string',
+        },
     };
 }
 
@@ -83,6 +93,10 @@ sub options {
         pool_name        => { optional => 1 },
         config        => { fixed => 1 },
         debug       => { optional => 1},
+        path        => { optional => 1},
+        content     => { optional => 1},
+        share_user    => { optional => 1},
+        share_pass    => { optional => 1},
     };
 }
 
@@ -110,6 +124,12 @@ sub get_debug {
     my ($scfg) = @_;
 
     return $scfg->{debug} || $default_debug;
+}
+
+sub get_path {
+    my ($scfg) = @_;
+
+    return $scfg->{path} || $default_path;
 }
 
 sub joviandss_cmd {
@@ -295,7 +315,14 @@ sub path {
 
     print"Getting path of volume ${volname} snapshot ${snapname}\n" if $scfg->{debug};
 
-    my $dpath = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--path"]); 
+    my $dpath = "";
+
+    if ($snapname){
+        $dpath = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--path", "--snapshot", $snapname]);
+    } else {
+        $dpath = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--path"]);
+    }
+
     chomp($dpath);
     $dpath =~ s/[^[:ascii:]]//;
     my $path = "/dev/disk/by-path/${dpath}";
@@ -303,11 +330,24 @@ sub path {
     return ($path, $vmid, $vtype);
 }
 
-#TODO: implement this for iso and backups
+my $vtype_subdirs = {
+    iso => 'iso',
+    vztmpl => 'vztmpl',
+    backup => 'backup',
+};
+
 sub get_subdir {
     my ($class, $scfg, $vtype) = @_;
 
-    return undef;
+    my $path = $scfg->{path};
+
+    die "storage definition has no path\n" if !$path;
+
+    my $subdir = $vtype_subdirs->{$vtype};
+
+    die "unknown vtype '$vtype'\n" if !defined($subdir);
+
+    return "$path/$subdir";
 }
 
 sub create_base {
@@ -349,8 +389,6 @@ sub clone_image {
     $size =~ s/[^[:ascii:]]//;
 
     print"Clone ${volname} with size ${size} to ${clone_name} with snapshot ${snap}\n" if $scfg->{debug};
-    #TODO: implement cloning from snapshot
-    #die "Cloning from snapshot is not supported yet" if $snap;
     if ($snap){
         $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "clone", "-s", $size, "--snapshot", $snap, $clone_name]);
     } else {
@@ -504,10 +542,8 @@ sub volume_snapshot_list {
  
     while (<$jcli>) {
       my ($sname) = split;
-      #print "$uid $pid $ppid\n "
       push @$res, { 'name' => '$sname'};
     }
-    #die "volume snapshot list: snapshot not implemented ($snapname)\n" if $snapname;
     return $res
 }
 
@@ -546,13 +582,107 @@ sub status {
     return ($total * $gb, $avail * $gb, $used * $gb, 1 );
 }
 
+sub disk_for_target{
+    my ( $class, $storeid, $scfg, $target ) = @_;
+	return undef
+}
+
+sub storage_mounted {
+    my ($path, $disk) = @_;
+
+    my $mounts = PVE::ProcFSTools::parse_proc_mounts();
+    for my $mp (@$mounts) {
+    my ($dev, $dir, $fs) = $mp->@*;
+
+    	next if $dir !~ m!^$mounts(?:/|$)!;
+    	next if $dev ne $disk;
+    	return 1;
+    }
+    return 0;
+}
+
+sub cifs_is_mounted {
+    my ($share, $mountpoint) = @_;
+
+    #$server = "[$server]" if Net::IP::ip_is_ipv6($server);
+    #my $source = "//${server}/$share";
+    my $mountdata = PVE::ProcFSTools::parse_proc_mounts();
+
+    return $mountpoint if grep {
+    $_->[2] =~ /^cifs/ &&
+	$_->[0] =~ /$share/ &&
+	#$_->[0] =~ m|^\Q$source\E/?$| &&
+    $_->[1] eq $mountpoint
+    } @$mountdata;
+    return undef;
+}
+
+sub cifs_mount {
+    my ($server, $share, $mountpoint, $username, $password, $smbver) = @_;
+
+    $server = "[$server]" if Net::IP::ip_is_ipv6($server);
+    my $source = "//${server}/$share";
+
+    my $cmd = ['/bin/mount', '-t', 'cifs', $source, $mountpoint];
+    push @$cmd, '-o', 'soft';
+    push @$cmd, '-o', "username=$username", '-o', "password=$password";
+    push @$cmd, '-o', "domain=workgroup";
+    push @$cmd, '-o', defined($smbver) ? "vers=$smbver" : "vers=3.0";
+
+    run_command($cmd, errmsg => "mount error");
+}
+
 sub activate_storage {
     my ( $class, $storeid, $scfg, $cache ) = @_;
+
+    if (!defined($scfg->{path})){
+    	return 0;
+    }
+
+    die "Path property requires share_user property\n" if !defined($scfg->{share_user});
+    my $username = $scfg->{share_user};
+    die "Path property requires share_user property\n" if !defined($scfg->{share_pass});
+    my $password = $scfg->{share_user};
+
+    my $config = $scfg->{config};
+    my $share = "proxmox-internal-data";
+    my $pool = $scfg->{pool_name};
+    my $path = $scfg->{path};
+    my $joviandss_address = $scfg->{joviandss_address};
+
+    return 1 if (cifs_is_mounted($share, $path));
+
+	mkdir $path;
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "cifs",  $share, "ensure", "-u", $username, "-p", $password, "-n", $share]);
+    
+    cifs_mount($joviandss_address, $share, $path, $username, $password);
+    
+	# Make dirs
+    
+	my $dir_path = "$path/iso";
+	mkdir $dir_path;
+	$dir_path = "$path/vztmpl";
+	mkdir $dir_path;
+	$dir_path = "$path/backup";
+	mkdir $dir_path;
+
     return undef;
 }
 
 sub deactivate_storage {
     my ( $class, $storeid, $scfg, $cache ) = @_;
+
+    $cache->{mountdata} = PVE::ProcFSTools::parse_proc_mounts()
+    if !$cache->{mountdata};
+
+    my $path = $scfg->{path};
+    my $server = $scfg->{server};
+    my $share = $scfg->{share};
+
+    return 1 if (cifs_is_mounted($share, $path));
+    
+    my $cmd = ['/bin/umount', $path];
+    run_command($cmd, errmsg => 'umount error');
 
     return undef;
 }
@@ -563,18 +693,17 @@ sub activate_volume {
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
-    
-    #my $i = 1;
-    #while ( (my @call_details = (caller($i++))) ){
-    #    print STDERR $call_details[1].":".$call_details[2]." in function ".$call_details[3]."\n";
-    #}
-    #foreach my $hash (@$res) {
-    #    print "$hash->{'volid'}\n";
-    #}
-    my $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host"]);
+
+    my $target_info = "";
+
+    if ($snap){
+        $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--snapshot", $snap]);
+    } else {
+        $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host"]);
+    }
 
     my @tmp = split(" ", $target_info, 2);
-    
+
     my $host = $tmp[1];
     chomp($host);
     $host =~ s/[^[:ascii:]]//;
@@ -590,9 +719,13 @@ sub activate_volume {
     }
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
-    
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname]); 
-    
+
+    if ($snap){
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname, "--snapshot", $snap]); 
+    } else {
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname]); 
+    }
+
     iscsi_login($target, $host);
 
     return 1;
@@ -604,8 +737,14 @@ sub deactivate_volume {
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
+    
+    my $target_info = "";
 
-    my $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host"]);
+    if ($snapname){
+        $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--snapshot", $snapname]);
+    } else {
+        $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host"]);
+    }
 
     my @tmp = split(" ", $target_info, 2);
     my $host = $tmp[1];
@@ -615,6 +754,11 @@ sub deactivate_volume {
     warn $@ if $@; 
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]);
 
+    if ($snapname){
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete", "--snapshot", $snapname]); 
+    } else {
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]); 
+    }
     return 1;
 }
 
@@ -632,13 +776,22 @@ sub volume_resize {
 
 sub parse_volname {
     my ($class, $volname) = @_;
+
     if ($volname =~ m/^((base-(\d+)-\S+)\/)?((base)?(vm)?-(\d+)-\S+)$/) {
         return ('images', $4, $7, $2, $3, $5, 'raw');
+    } elsif ($volname =~ m!^iso/([^/]+$PVE::Storage::iso_extension_re)$!) {
+    	return ('iso', $1);
+    } elsif ($volname =~ m!^vztmpl/([^/]+$PVE::Storage::vztmpl_extension_re)$!) {
+    	return ('vztmpl', $1);
+    } elsif ($volname =~ m!^rootdir/(\d+)$!) {
+    	return ('rootdir', $1, $1);
+    } elsif ($volname =~ m!^backup/([^/]+(?:\.(?:tgz|(?:(?:tar|vma)(?:\.(?:${\COMPRESSOR_RE}))?))))$!) {
+    	my $fn = $1;
+    	if ($fn =~ m/^vzdump-(openvz|lxc|qemu)-(\d+)-.+/) {
+    	    return ('backup', $fn, $2);
+    	}
+    	return ('backup', $fn);
     }
-               #
-    #if ($volname =~ m/^((\S+):(base)?(vm)?-(\d+)-(\S+))?((base)?(vm)?-(\d+)-(\S+))$/) {
-	#return ('images', $2, $1, undef, undef, undef, 'raw');
-    #}
 
     die "unable to parse joviandss volume name '$volname'\n";
 }

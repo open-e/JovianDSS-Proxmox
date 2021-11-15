@@ -31,7 +31,7 @@ def get_config():
                         default='debug',
                         help='Logging level')
     parser.add_argument('--logfile', dest='jcli_log_file', help='File to store log to', required=False)
-    parser.add_argument('-p', '--plain', dest='plain', required=False, action='store_true', default=False, help='Plain format')
+    parser.add_argument('-p', '--plain', dest='plain_mode', required=False, action='store_true', default=False, help='Plain format')
 
     command = parser.add_subparsers(required=True, dest='command')
 
@@ -46,7 +46,7 @@ def main():
         numeric_level = getattr(logging, args.jcli_logging.upper(), None)
         if not isinstance(numeric_level, int):
                 raise ValueError('Invalid log level: %s' % loglevel)
-        logging.basicConfig(format='%(asctime)s %(message)s', filename='/tmp/jcli.log', level=numeric_level)
+        #logging.basicConfig(format='%(asctime)s %(message)s', filename='/tmp/jcli.log', level=numeric_level)
 
     cfgFile = open(args.config)
 
