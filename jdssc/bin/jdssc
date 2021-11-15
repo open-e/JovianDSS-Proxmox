@@ -46,7 +46,7 @@ def main():
         numeric_level = getattr(logging, args.jcli_logging.upper(), None)
         if not isinstance(numeric_level, int):
                 raise ValueError('Invalid log level: %s' % loglevel)
-        logging.basicConfig(format='%(asctime)s %(message)s', filename='/tmp/jcli.log', level=numeric_level)
+        #logging.basicConfig(format='%(asctime)s %(message)s', filename='/tmp/jcli.log', level=numeric_level)
 
     cfgFile = open(args.config)
 
