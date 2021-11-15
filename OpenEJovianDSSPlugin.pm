@@ -50,7 +50,6 @@ sub plugindata {
     return {
     content => [ { images => 1, rootdir => 1, vztmpl => 0, iso => 1, backup => 1, snippets => 0, none => 1 },
              { images => 1,  rootdir => 1 }],
-    # TODO: check subvol and add to supported formats
     format => [ { raw => 1, subvol => 0 } , 'raw' ],
     };
 }
@@ -390,8 +389,6 @@ sub clone_image {
     $size =~ s/[^[:ascii:]]//;
 
     print"Clone ${volname} with size ${size} to ${clone_name} with snapshot ${snap}\n" if $scfg->{debug};
-    #TODO: implement cloning from snapshot
-    #die "Cloning from snapshot is not supported yet" if $snap;
     if ($snap){
         $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "clone", "-s", $size, "--snapshot", $snap, $clone_name]);
     } else {
@@ -545,10 +542,8 @@ sub volume_snapshot_list {
  
     while (<$jcli>) {
       my ($sname) = split;
-      #print "$uid $pid $ppid\n "
       push @$res, { 'name' => '$sname'};
     }
-    #die "volume snapshot list: snapshot not implemented ($snapname)\n" if $snapname;
     return $res
 }
 
@@ -698,14 +693,6 @@ sub activate_volume {
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
-
-    #my $i = 1;
-    #while ( (my @call_details = (caller($i++))) ){
-    #    print STDERR $call_details[1].":".$call_details[2]." in function ".$call_details[3]."\n";
-    #}
-    #foreach my $hash (@$res) {
-    #    print "$hash->{'volid'}\n";
-    #}
 
     my $target_info = "";
 
