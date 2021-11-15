@@ -8,7 +8,7 @@ And the second is a config used by a minimal joviandss cli `jdssc`.
 
 ### Proxmox config
 
-This config provides brief introduce Open-E JovianDSS plugin to proxmos storage sub-system.
+This config provides brief introduce Open-E JovianDSS plugin to proxmox storage sub-system.
 And contains minimal set of information required by perl part to run.
 
 `/etc/pve/storage.cfg` 
@@ -18,6 +18,11 @@ open-e: joviandss
         joviandss_address 172.16.0.220
         pool_name Pool-0
         config /etc/pve/joviandss.cfg
+        path /mnt/joviandss
+        content iso,backup,images,rootdir
+        share_user proxmox
+        share_pass proxmox_1
+
 ```
 
 | Option                     | Default value                     | Description                                                         |
@@ -25,13 +30,23 @@ open-e: joviandss
 | `joviandss_address`        | 172.16.0.220                      | IP address of Open-E JovianDSS storage                              |
 | `pool_name`                | Pool-0                            | Pool name that is going to be used. Must be created in \[1\]        |
 | `config`                   | /etc/pve/joviandss.cfg            | `jdssc` configuration file                                          |
+| `path`                     | None                              | Location that would be used to mount proxmox dedicated volume       |
+| `content`                  | None                              | List content type that you expect JovianDSS to store                | 
+| `share_user`               | None                              | Share user                                                          | 
+| `share_pass`               | None                              | Share password                                                      |
 
 [1] [Can be created by going to JovianDSS Web interface/Storage](https://www.open-e.com/site_media/download/documents/Open-E-JovianDSS-Advanced-Metro-High-Avability-Cluster-Step-by-Step-2rings.pdf)
+
+Options `path`, `content`, `share_user` and `share_pass` are optional.
+They are responsible for creation of a dedicated storage that gets attached to proxmox to store iso images and backups.
+Specify this option in configuration file if you want to enable this dedicated storage.
+Plugin will create it for you automatically.
+If you want to change size of or modify this storage in other way, please find it in `Storage/Shares/proxmox-internal-data`.
 
 ### Jdssc config
 
 This config file should be placed according to the path provided in `storage.cfg` file mentioned in the section above.
-`joviandss.yaml` provides detailed information on interraction with storage.
+`joviandss.yaml` provides detailed information on interaction with storage.
 
 ```yaml
 driver_use_ssl: True
@@ -60,7 +75,7 @@ san_thin_provision: True
 | `volume_driver`            |                                   | Location of the driver source code                                  |
 | `san_hosts`                |                                   | Comma separated list of IP address of the JovianDSS                 |
 | `san_login`                | admin                             | Must be set according to the settings in \[1\]                      |
-| `san_password`             | admin                             | Jovian password \[1\], **should be changed** for security purpouses |
+| `san_password`             | admin                             | Jovian password \[1\], **should be changed** for security purposes  |
 | `san_thin_provision`       | False                             | Using thin provisioning for new volumes                             |
 
 
@@ -74,7 +89,7 @@ san_thin_provision: True
 
 ## Installing/Uninstalling
 
-Installatiuon can be done by `make` utilit inside source code folder
+Installation can be done by `make` inside source code folder
 
 ```bash
 make install
