@@ -17,7 +17,7 @@ And contains minimal set of information required by perl part to run.
 open-e: joviandss
         joviandss_address 172.16.0.220
         pool_name Pool-0
-        config /etc/pve/joviandss.cfg
+        config /etc/pve/joviandss.yaml
         path /mnt/joviandss
         content iso,backup,images,rootdir
         share_user proxmox
@@ -29,7 +29,7 @@ open-e: joviandss
 |----------------------------|-----------------------------------|---------------------------------------------------------------------|
 | `joviandss_address`        | 172.16.0.220                      | IP address of Open-E JovianDSS storage                              |
 | `pool_name`                | Pool-0                            | Pool name that is going to be used. Must be created in \[1\]        |
-| `config`                   | /etc/pve/joviandss.yaml           | `jdssc` configuration file                                          |
+| `config`                   | /etc/pve/joviandss.yaml           | path to `jdssc` configuration file                                  |
 | `path`                     | None                              | Location that would be used to mount proxmox dedicated volume       |
 | `content`                  | None                              | List content type that you expect JovianDSS to store                | 
 | `share_user`               | None                              | Share user                                                          | 
@@ -108,10 +108,10 @@ apt install ./open-e-joviandss-proxmox-plugin_0.9.1-1.deb
 
 Once installation is done, provide configuration.
 
-After installation and configuration restart proxmox service
+After installation and configuration restart proxmox server.
 
 ```bash
-systemctl restart pvedaemon.service
+reboot
 ```
 
 ## Supported features
