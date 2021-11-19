@@ -48,7 +48,7 @@ sub type {
 
 sub plugindata {
     return {
-    content => [ { images => 1, rootdir => 1, vztmpl => 0, iso => 1, backup => 1, snippets => 0, none => 1 },
+    content => [ { images => 1, rootdir => 1, vztmpl => 1, iso => 1, backup => 1, snippets => 1, none => 1 },
              { images => 1,  rootdir => 1 }],
     format => [ { raw => 1, subvol => 0 } , 'raw' ],
     };
@@ -309,6 +309,7 @@ my $vtype_subdirs = {
     vztmpl => 'vztmpl',
     backup => 'backup',
     rootdir => 'rootdir',
+    snippets => 'snippets',
 };
 
 sub get_subdir {
@@ -654,6 +655,8 @@ sub activate_storage {
 	$dir_path = "$path/backup";
 	mkdir $dir_path;
 	$dir_path = "$path/rootdir";
+	mkdir $dir_path;
+	$dir_path = "$path/snippets";
 	mkdir $dir_path;
     return undef;
 }
