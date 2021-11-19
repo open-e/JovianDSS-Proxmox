@@ -29,7 +29,7 @@ open-e: joviandss
 |----------------------------|-----------------------------------|---------------------------------------------------------------------|
 | `joviandss_address`        | 172.16.0.220                      | IP address of Open-E JovianDSS storage                              |
 | `pool_name`                | Pool-0                            | Pool name that is going to be used. Must be created in \[1\]        |
-| `config`                   | /etc/pve/joviandss.cfg            | `jdssc` configuration file                                          |
+| `config`                   | /etc/pve/joviandss.yaml           | `jdssc` configuration file                                          |
 | `path`                     | None                              | Location that would be used to mount proxmox dedicated volume       |
 | `content`                  | None                              | List content type that you expect JovianDSS to store                | 
 | `share_user`               | None                              | Share user                                                          | 
