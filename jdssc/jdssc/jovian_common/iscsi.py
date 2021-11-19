@@ -263,15 +263,17 @@ class JovianISCSIDriver(object):
         """Delete physical snapshots that have no descendents"""
         garbage = []
         for snap in snapshots:
-            if snap['clones'] == '':
-                try:
-                    self.ra.delete_snapshot(vname, snap['name'])
-                except jexc.JDSSException as err:
-                    args = {'obj': jcom.idname(vname), 'err': err}
-                    msg = (_("Unable to clean garbage for "
-                             "%(obj)s: %(err)s") % args)
-                    raise Exception(msg)
-                garbage.append(snap)
+            if 'clones' in snap and len(snap['clones']) > 0:
+                continue
+
+            try:
+                self.ra.delete_snapshot(vname, snap['name'])
+            except jexc.JDSSException as err:
+                args = {'obj': jcom.idname(vname), 'err': err}
+                msg = (_("Unable to clean garbage for "
+                         "%(obj)s: %(err)s") % args)
+                raise Exception(msg)
+            garbage.append(snap)
         for snap in garbage:
             snapshots.remove(snap)
 
@@ -288,6 +290,8 @@ class JovianISCSIDriver(object):
 
         for snap in o_snaps:
             if jcom.is_snapshot(snap['name']):
+                if 'clones' not in snap:
+                    continue
                 vsnaps += [(snap['name'],
                             jcom.full_name_volume(snap['clones']))]
 

@@ -932,10 +932,11 @@ class JovianRESTAPI(object):
 
         if resp["code"] == 500:
             if resp["error"]:
-                if resp["error"]["errno"] == 1:
-                    raise jexc.JDSSResourceNotFoundException(
-                        res="%(vol)s@%(snap)s" % {'vol': volume_name,
-                                                  'snap': snapshot_name})
+                if 'errno' in resp['error']:
+                    if resp["error"]["errno"] == 1:
+                        raise jexc.JDSSResourceNotFoundException(
+                            res="%(vol)s@%(snap)s" % {'vol': volume_name,
+                                                      'snap': snapshot_name})
 
         self._general_error(req, resp)
 

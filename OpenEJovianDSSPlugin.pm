@@ -273,39 +273,8 @@ sub iscsi_session {
     return $cache->{iscsi_sessions}->{$target};
 }
 
-#sub filesystem_path {
-#    my ($class, $scfg, $volname, $snapname) = @_;
-#
-#    #die "get filesystem path $volname | $snapname";
-#
-#    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
-#
-#    my $config = $scfg->{config};
-#
-#    my $pool = $scfg->{pool_name};
-#
-#    open my $jcli, '-|' or
-#        exec "jdssc", "-p", "-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--lun" or
-#        die "jdssc failed: $!\n";
-#
-#    my $path = "";
-#
-#    while (<$jcli>) {
-#      my ($target, $host, $lun) = split;
-#      $path =  "iscsi://$host/$target/$lun";
-#    }
-#    close $jcli;
-#
-#    return wantarray ? ($path, $vmid, $vtype) : $path;
-#}
-
 sub path {
     my ($class, $scfg, $volname, $storeid, $snapname) = @_;
-    
-    #die "get path $volname | $storeid | $snapname";
-
-    #die "direct access to snapshots not implemented"
-	#if defined($snapname);
 
     my $config = $scfg->{config};
 
@@ -313,27 +282,33 @@ sub path {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-    print"Getting path of volume ${volname} snapshot ${snapname}\n" if $scfg->{debug};
+    if ($vtype eq "images") {
+        print"Getting path of volume ${volname} snapshot ${snapname}\n" if $scfg->{debug};
 
-    my $dpath = "";
+        my $dpath = "";
 
-    if ($snapname){
-        $dpath = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--path", "--snapshot", $snapname]);
-    } else {
-        $dpath = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--path"]);
+        if ($snapname){
+            $dpath = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--path", "--snapshot", $snapname]);
+        } else {
+            $dpath = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--path"]);
+        }
+
+        chomp($dpath);
+        $dpath =~ s/[^[:ascii:]]//;
+        my $path = "/dev/disk/by-path/${dpath}";
+
+        return ($path, $vmid, $vtype);
     }
 
-    chomp($dpath);
-    $dpath =~ s/[^[:ascii:]]//;
-    my $path = "/dev/disk/by-path/${dpath}";
-
-    return ($path, $vmid, $vtype);
+    return $class->filesystem_path($scfg, $volname, $snapname);
 }
 
 my $vtype_subdirs = {
+    images => 'images',
     iso => 'iso',
     vztmpl => 'vztmpl',
     backup => 'backup',
+    rootdir => 'rootdir',
 };
 
 sub get_subdir {
@@ -344,10 +319,13 @@ sub get_subdir {
     die "storage definition has no path\n" if !$path;
 
     my $subdir = $vtype_subdirs->{$vtype};
+    
+    return "$path/$subdir" if defined($subdir);
 
-    die "unknown vtype '$vtype'\n" if !defined($subdir);
+    return undef;
+    #die "unknown vtype '$vtype'\n" if !defined($subdir);
 
-    return "$path/$subdir";
+    #return "$path/$subdir";
 }
 
 sub create_base {
@@ -383,6 +361,9 @@ sub clone_image {
 
     my (undef, undef, undef, undef, undef, undef, $fmt) = $class->parse_volname($volname);
     my $clone_name = $class->find_free_diskname($storeid, $scfg, $vmid, $fmt);
+
+    #my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+    #die"Only images can be cloned" if ('images' cmp "$vtype");
 
     my $size = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "get", "-s"]);
     chomp($size);
@@ -422,10 +403,6 @@ sub free_image {
 
     my $pool = $scfg->{pool_name};
 
-    #print"Abort volume removal";
-    #return undef;
-    #remove associated target before removing volume
-    #$class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]);
     $class->deactivate_volume($storeid, $scfg, $volname, '', '');
  
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "delete", "-c"]);
@@ -554,6 +531,17 @@ sub volume_size_info {
 
     my $pool = $scfg->{pool_name};
 
+    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+
+    if ('images' cmp "$vtype") {
+        return $class->SUPER::volume_size_info($scfg, $storeid, $volname, $timeout);
+        #    my $path = $class->filesystem_path($scfg, $volname);
+        #        return file_size_info($path, $timeout);
+
+        #my $path = $class->filesystem_path($scfg, $volname);
+        #return file_size_info($path, $timeout);
+    }
+
     my $size = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "get", "-s"]);
     chomp($size);
     $size =~ s/[^[:ascii:]]//;
@@ -665,7 +653,8 @@ sub activate_storage {
 	mkdir $dir_path;
 	$dir_path = "$path/backup";
 	mkdir $dir_path;
-
+	$dir_path = "$path/rootdir";
+	mkdir $dir_path;
     return undef;
 }
 
@@ -695,6 +684,10 @@ sub activate_volume {
     my $pool = $scfg->{pool_name};
 
     my $target_info = "";
+    
+    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+
+    return 0 if ('images' cmp "$vtype");
 
     if ($snap){
         $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--snapshot", $snap]);
@@ -718,8 +711,6 @@ sub activate_volume {
         return 1;
     }
 
-    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
-
     if ($snap){
         $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname, "--snapshot", $snap]); 
     } else {
@@ -728,7 +719,7 @@ sub activate_volume {
 
     iscsi_login($target, $host);
 
-    return 1;
+    return 0;
 }
 
 sub deactivate_volume {
@@ -739,6 +730,9 @@ sub deactivate_volume {
     my $pool = $scfg->{pool_name};
     
     my $target_info = "";
+
+    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+    return 0 if ('images' cmp "$vtype");
 
     if ($snapname){
         $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--snapshot", $snapname]);
