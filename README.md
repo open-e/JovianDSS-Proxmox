@@ -61,22 +61,26 @@ san_hosts:
 san_login: 'admin'
 san_password: 'admin'
 san_thin_provision: True
+loglevel: debug
+logfile: /tmp/jdss.log
 ```
 
-| Option                     | Default value                     | Description                                                         |
-|----------------------------|-----------------------------------|---------------------------------------------------------------------|
-| `driver_use_ssl`           | True                              | Use SSL to send requests to JovianDSS\[1\]                          |
-| `iscsi_target_prefix`      | iqn.2021-10.com.open-e:           | Prefix that will be used to form target name for volume             |
-| `jovian_pool`              | Pool-0                            | Pool name that is going to be used. Must be created in \[2\]        |
-| `jovian_block_size`        | 64K                               | Block size of a new volume, can be: 32K, 64K, 128K, 256K, 512K, 1M  |
-| `jovian_rest_send_repeats` | 3                                 | Number of times that driver will try to send REST request           |
-| `san_api_port`             | 82                                | Rest port according to the settings in \[1\]                        |
-| `target_port`              | 3260                              | Port for iSCSI connections                                          |
-| `volume_driver`            |                                   | Location of the driver source code                                  |
-| `san_hosts`                |                                   | Comma separated list of IP address of the JovianDSS                 |
-| `san_login`                | admin                             | Must be set according to the settings in \[1\]                      |
-| `san_password`             | admin                             | Jovian password \[1\], **should be changed** for security purposes  |
-| `san_thin_provision`       | False                             | Using thin provisioning for new volumes                             |
+| Option                     | Default value           | Description                                                         |
+|----------------------------|-------------------------|---------------------------------------------------------------------|
+| `driver_use_ssl`           | True                    | Use SSL to send requests to JovianDSS\[1\]                          |
+| `iscsi_target_prefix`      | iqn.2021-10.com.open-e: | Prefix that will be used to form target name for volume             |
+| `jovian_pool`              | Pool-0                  | Pool name that is going to be used. Must be created in \[2\]        |
+| `jovian_block_size`        | 64K                     | Block size of a new volume, can be: 32K, 64K, 128K, 256K, 512K, 1M  |
+| `jovian_rest_send_repeats` | 3                       | Number of times that driver will try to send REST request           |
+| `san_api_port`             | 82                      | Rest port according to the settings in \[1\]                        |
+| `target_port`              | 3260                    | Port for iSCSI connections                                          |
+| `volume_driver`            |                         | Location of the driver source code                                  |
+| `san_hosts`                |                         | Comma separated list of IP address of the JovianDSS                 |
+| `san_login`                | admin                   | Must be set according to the settings in \[1\]                      |
+| `san_password`             | admin                   | Jovian password \[1\], **should be changed** for security purposes  |
+| `san_thin_provision`       | False                   | Using thin provisioning for new volumes                             |
+| `loglevel`                 |                         | Logging level. Both `loglvl` and `logfile` have to be specified in order to make logging operational |
+| `logfile`                  |                         | Path to file to store logs.                                         |
 
 
 [1] Can be enabled by going to JovianDSS Web interface/System Settings/REST Access
