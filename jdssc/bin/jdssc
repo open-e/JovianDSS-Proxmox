@@ -1,7 +1,6 @@
 #!/usr/bin/python3
 
 import argparse
-#import logging as log
 import uuid
 
 import yaml
@@ -12,6 +11,7 @@ from jdssc.jovian_common import iscsi
 import jdssc.pool as pool
 
 import logging
+from logging.handlers import RotatingFileHandler
 
 LOG = logging.getLogger(__name__)
 LOG.setLevel(logging.DEBUG)
@@ -24,13 +24,13 @@ def get_config():
     parser.add_argument('-c', '--config', dest='config', required=True, help='Path of configuration file')
     log_levels = ['critical', 'error', 'warning', 'info', 'debug']
     parser.add_argument('-l',
-                        '--logging',
-                        dest='jcli_logging',
+                        '--loglvl',
+                        dest='cli_log_lvl',
                         required=False,
                         choices=log_levels,
                         default='debug',
                         help='Logging level')
-    parser.add_argument('--logfile', dest='jcli_log_file', help='File to store log to', required=False)
+    parser.add_argument('--logfile', dest='cli_log_file', help='File to store log to', required=False)
     parser.add_argument('-p', '--plain', dest='plain_mode', required=False, action='store_true', default=False, help='Plain format')
 
     command = parser.add_subparsers(required=True, dest='command')
@@ -42,11 +42,17 @@ def get_config():
 
 def main():
     (args, uargs) = get_config()
-    if args.jcli_logging:
-        numeric_level = getattr(logging, args.jcli_logging.upper(), None)
+    if args.cli_log_lvl and args.cli_log_file:
+        numeric_level = getattr(logging, args.cli_log_lvl.upper(), None)
         if not isinstance(numeric_level, int):
                 raise ValueError('Invalid log level: %s' % loglevel)
-        #logging.basicConfig(format='%(asctime)s %(message)s', filename='/tmp/jcli.log', level=numeric_level)
+        handler = RotatingFileHandler(args.cli_log_file, maxBytes=1024*1024*16, backupCount=5)
+        formatter = logging.Formatter('%(asctime)s %(message)s')
+        handler.setFormatter(formatter)
+       
+        log = logging.getLogger()
+        log.setLevel(numeric_level)
+        log.addHandler(handler)
 
     cfgFile = open(args.config)
 
