@@ -40,6 +40,34 @@ def get_config():
     args = parser.parse_known_args()
     return args
 
+def setup_logging(args, cfg):
+
+    loglvl = None
+
+    if args.cli_log_lvl:
+        loglvl = args.cli_log_lvl
+    elif 'loglvl' in cfg:
+        loglvl = cfg['loglvl']
+
+    logfile = None
+
+    if args.cli_log_file:
+        logfile = args.cli_log_file
+    elif 'logfile' in cfg:
+        logfile = cfg['logfile']
+
+    if loglvl and logfile:
+        numeric_level = getattr(logging, loglvl.upper(), None)
+        if not isinstance(numeric_level, int):
+                raise ValueError('Invalid log level: %s' % loglevel)
+        handler = RotatingFileHandler(logfile, maxBytes=1024*1024*16, backupCount=5)
+        formatter = logging.Formatter('%(asctime)s %(message)s')
+        handler.setFormatter(formatter)
+
+        log = logging.getLogger()
+        log.setLevel(numeric_level)
+        log.addHandler(handler)
+
 def main():
     (args, uargs) = get_config()
     if args.cli_log_lvl and args.cli_log_file:
@@ -58,6 +86,7 @@ def main():
 
     config = yaml.safe_load(open(args.config))
 
+    setup_logging(args, config)
     # list available commands
     cmd = {'pool': pool.Pools}
     
