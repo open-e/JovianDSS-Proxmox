@@ -133,20 +133,23 @@ sub get_path {
 }
 
 sub joviandss_cmd {
-    my ($class, $cmd, $outfunc) = @_;
+    my ($class, $cmd, $timeout) = @_;
 
     my $msg = '';
-    my $func;
-    if (defined($outfunc)) {
-	$func = sub {
-	    my $part = &$outfunc(@_);
-	    $msg .= $part if defined($part);
-	};
-    } else {
-	$func = sub { $msg .= "$_[0]\n" };
-    }
-    run_command(['/usr/local/bin/jdssc', @$cmd], errmsg => 'joviandss error', outfunc => $func);
+    my $err = undef;
+    my $target;
+    my $res = ();
 
+    $timeout = 10 if !$timeout;
+
+    my $output = sub { $msg .= "$_[0]\n" };
+    my $errfunc = sub { $err .= "$_[0]\n" };
+    eval {
+	    run_command(['/usr/local/bin/jdssc', @$cmd], outfunc => $output, errfunc => $errfunc, timeout => $timeout);
+    };
+    if ($@) {
+	    die $err;
+    }
     return $msg;
 }
 
@@ -199,7 +202,7 @@ sub device_id_from_path {
     my ($path) = @_;
 
     my $msg = '';
-	
+
     my $func = sub { $msg .= "$_[0]\n" };
 
     my $cmd = [];
@@ -211,7 +214,7 @@ sub device_id_from_path {
 
     my $devid = "";
     foreach (@devs) {
-        $devid = "/dev/$_"; 
+        $devid = "/dev/$_";
         last if index($_, "disk/by-id") == 0;
     }
     return $devid;
@@ -320,7 +323,7 @@ sub get_subdir {
     die "storage definition has no path\n" if !$path;
 
     my $subdir = $vtype_subdirs->{$vtype};
-    
+
     return "$path/$subdir" if defined($subdir);
 
     return undef;
@@ -336,9 +339,9 @@ sub create_base {
         $class->parse_volname($volname);
 
     die "create_base not possible with base image\n" if $isBase;
-    
+
     $class->deactivate_volume($storeid, $scfg, $volname, '', '');
-    
+
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
@@ -363,9 +366,6 @@ sub clone_image {
     my (undef, undef, undef, undef, undef, undef, $fmt) = $class->parse_volname($volname);
     my $clone_name = $class->find_free_diskname($storeid, $scfg, $vmid, $fmt);
 
-    #my ($vtype, $name, $vmid) = $class->parse_volname($volname);
-    #die"Only images can be cloned" if ('images' cmp "$vtype");
-
     my $size = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "get", "-s"]);
     chomp($size);
     $size =~ s/[^[:ascii:]]//;
@@ -386,7 +386,7 @@ sub alloc_image {
 
     $volume_name = $class->find_free_diskname($storeid, $scfg, $vmid, $fmt)
         if !$volume_name;
-    
+
     print"Allocating image ${volume_name} format ${fmt}\n" if $scfg->{debug};
     my $config = $scfg->{config};
 
@@ -405,9 +405,18 @@ sub free_image {
     my $pool = $scfg->{pool_name};
 
     $class->deactivate_volume($storeid, $scfg, $volname, '', '');
- 
+
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "delete", "-c"]);
     return undef;
+}
+
+sub clean_word {
+    my ($word) = @_;
+
+    chomp($word);
+    $word =~ s/[^[:ascii:]]//;
+
+    return $word;
 }
 
 sub list_images {
@@ -418,7 +427,7 @@ sub list_images {
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
-    
+
     if ($scfg->{debug}) {
         print"list images ${storeid}\n" if $storeid;
         print"scfg ${scfg}\n" if $scfg;
@@ -427,14 +436,16 @@ sub list_images {
         print"cache ${cache}" if $cache;
     }
 
-    open my $jdssc, '-|' or
-        exec "/usr/local/bin/jdssc", "-p", "-c", $config, "pool", $pool, "volumes", "list", "--vmid" or
-        die "jdssc failed: $!\n";
- 
-    my $res = [];
+    my $jdssc =  $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "list", "--vmid"]);
 
-    while (<$jdssc>) {
+    my $res = [];
+    foreach (split(/\n/, $jdssc)) {
         my ($volname,$vm,$size) = split;
+
+        $volname = clean_word($volname);
+        $vm = clean_word($vm);
+        $size = clean_word($size);
+
         my $volid = "joviandss:$volname";
 
         if ($vollist) {
@@ -451,20 +462,19 @@ sub list_images {
             vmid   => $vm,
         };
     }
-    close $jdssc;
 
     return $res;
 }
 
 sub volume_snapshot {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
-    
+
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
-    
+
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "snapshots", "create", $snap]);
 
 }
@@ -511,17 +521,14 @@ sub volume_snapshot_list {
 
     my $pool = $scfg->{pool_name};
 
-
-    open my $jcli, '-|' or 
-        exec "/usr/local/bin/jdssc", "-p", "-c", $config, "pool", $pool, "volume", "$volname", "snapshot", "list" or
-        die "jdssc failed: $!\n";
+    my $jdssc =  $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "$volname", "snapshot", "list"]);
 
     my $res = [];
- 
-    while (<$jcli>) {
+    foreach (split(/\n/, $jdssc)) {
       my ($sname) = split;
       push @$res, { 'name' => '$sname'};
     }
+
     return $res
 }
 
@@ -536,11 +543,6 @@ sub volume_size_info {
 
     if ('images' cmp "$vtype") {
         return $class->SUPER::volume_size_info($scfg, $storeid, $volname, $timeout);
-        #    my $path = $class->filesystem_path($scfg, $volname);
-        #        return file_size_info($path, $timeout);
-
-        #my $path = $class->filesystem_path($scfg, $volname);
-        #return file_size_info($path, $timeout);
     }
 
     my $size = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "get", "-s"]);
@@ -557,17 +559,11 @@ sub status {
 
     my $pool = $scfg->{pool_name};
 
-    open my $jcli, '-|' or 
-        exec "/usr/local/bin/jdssc", "-p", "-c", $config, "pool", $pool, "get" or
-        die "jdssc failed: $!\n";
+    my $jdssc =  $class->joviandss_cmd(["-c", $config, "pool", $pool, "get"]);
 
-    my $total = "";
-    my $used = "";
-    my $avail = "";
     my $gb = 1024*1024*1024;
-    while (<$jcli>) {
-      ($total, $avail, $used) = split;
-    }
+    my ($total, $avail, $used) = split(" ", $jdssc);
+
     return ($total * $gb, $avail * $gb, $used * $gb, 1 );
 }
 
@@ -643,11 +639,11 @@ sub activate_storage {
 
 	mkdir $path;
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "cifs",  $share, "ensure", "-u", $username, "-p", $password, "-n", $share]);
-    
+
     cifs_mount($joviandss_address, $share, $path, $username, $password);
-    
+
 	# Make dirs
-    
+
 	my $dir_path = "$path/iso";
 	mkdir $dir_path;
 	$dir_path = "$path/vztmpl";
@@ -672,7 +668,7 @@ sub deactivate_storage {
     my $share = $scfg->{share};
 
     return 1 if (cifs_is_mounted($share, $path));
-    
+
     my $cmd = ['/bin/umount', $path];
     run_command($cmd, errmsg => 'umount error');
 
@@ -687,7 +683,7 @@ sub activate_volume {
     my $pool = $scfg->{pool_name};
 
     my $target_info = "";
-    
+
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
     return 0 if ('images' cmp "$vtype");
@@ -715,9 +711,9 @@ sub activate_volume {
     }
 
     if ($snap){
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname, "--snapshot", $snap]); 
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname, "--snapshot", $snap]);
     } else {
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname]); 
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname]);
     }
 
     iscsi_login($target, $host);
@@ -731,7 +727,7 @@ sub deactivate_volume {
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
-    
+
     my $target_info = "";
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
@@ -746,15 +742,15 @@ sub deactivate_volume {
     my @tmp = split(" ", $target_info, 2);
     my $host = $tmp[1];
     my $target = $tmp[0];
-    
+
     eval{ iscsi_logout($target, $host)};
-    warn $@ if $@; 
+    warn $@ if $@;
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]);
 
     if ($snapname){
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete", "--snapshot", $snapname]); 
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete", "--snapshot", $snapname]);
     } else {
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]); 
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]);
     }
     return 1;
 }
@@ -808,12 +804,12 @@ sub volume_has_feature {
       @_;
 
     my $features = {
-	    snapshot => { base => 1, current => 1, snap => 1 },
-	    clone => { base => 1, current => 1, snap => 1, images => 1},
-	    template => { current => 1 },
-	    copy => { base => 1, current => 1, snap => 1},
-	    sparseinit => { base => { raw => 1 }, current => { raw => 1} },
-	    replicate => { base => 1, current => 1},
+        snapshot => { base => 1, current => 1, snap => 1 },
+        clone => { base => 1, current => 1, snap => 1, images => 1},
+        template => { current => 1 },
+        copy => { base => 1, current => 1, snap => 1},
+        sparseinit => { base => { raw => 1 }, current => { raw => 1} },
+        replicate => { base => 1, current => 1},
     };
 
     my ( $vtype, $name, $vmid, $basename, $basevmid, $isBase ) =
