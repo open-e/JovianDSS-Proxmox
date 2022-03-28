@@ -75,7 +75,7 @@ logfile: /tmp/jdss.log
 | `san_api_port`             | 82                      | Rest port according to the settings in \[1\]                        |
 | `target_port`              | 3260                    | Port for iSCSI connections                                          |
 | `volume_driver`            |                         | Location of the driver source code                                  |
-| `san_hosts`                |                         | Comma separated list of IP address of the JovianDSS                 |
+| `san_hosts`                |                         | Yaml list of IP address of the JovianDSS                 |
 | `san_login`                | admin                   | Must be set according to the settings in \[1\]                      |
 | `san_password`             | admin                   | Jovian password \[1\], **should be changed** for security purposes  |
 | `san_thin_provision`       | False                   | Using thin provisioning for new volumes                             |
