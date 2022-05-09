@@ -20,8 +20,6 @@ import sys
 
 """Snapshot related commands."""
 
-
-
 class Snapshots():
     def __init__(self, args, uargs, jdss):
         
