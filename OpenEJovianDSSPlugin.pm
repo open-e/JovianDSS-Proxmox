@@ -36,7 +36,7 @@ use base qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.9.1';
+my $PLUGIN_VERSION = '0.9.3';
 
 # Configuration
 
@@ -50,11 +50,11 @@ sub api {
 
    my $apiver = PVE::Storage::APIVER;
 
-   if ($apiver >= 3 and $apiver <= 9) {
+   if ($apiver >= 3 and $apiver <= 10) {
       return $apiver;
    }
 
-   return 6;
+   return 9;
 }
 
 sub type {
@@ -413,7 +413,7 @@ sub alloc_image {
 }
 
 sub free_image {
-    my ( $class, $storeid, $scfg, $volname, $isBase ) = @_;
+    my ( $class, $storeid, $scfg, $volname, $isBase, $format) = @_;
 
     my $config = $scfg->{config};
 
@@ -518,11 +518,13 @@ sub volume_rollback_is_possible {
 }
 
 sub volume_snapshot_delete {
-    my ($class, $scfg, $storeid, $volname, $snap) = @_;
+    my ($class, $scfg, $storeid, $volname, $snap, $running) = @_;
 
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
+
+    return 1 if $running;
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
@@ -536,7 +538,7 @@ sub volume_snapshot_list {
 
     my $pool = $scfg->{pool_name};
 
-    my $jdssc =  $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "$volname", "snapshot", "list"]);
+    my $jdssc =  $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "$volname", "snapshots", "list"]);
 
     my $res = [];
     foreach (split(/\n/, $jdssc)) {
@@ -815,7 +817,7 @@ sub storage_can_replicate {
 }
 
 sub volume_has_feature {
-    my ( $class, $scfg, $feature, $storeid, $volname, $snapname, $running ) =
+    my ( $class, $scfg, $feature, $storeid, $volname, $snapname, $running, $opts) =
       @_;
 
     my $features = {

@@ -6,6 +6,14 @@ Enabling JovianDSS for `proxmox` require 2 configuration files.
 First is a proxmox storage configuration file that gives basic information about storage.
 And the second is a config used by a minimal joviandss cli `jdssc`.
 
+### JovianDSS configuration
+
+Prior to installation please ensure that services mentioned below are enabled on JovianDSS storage:
+1. LDAP in `User managment->Share users/groups`
+2. SMB in `Storage Settings->NAS Settings`
+3. REST in `System Settings->Administration`
+
+
 ### Proxmox config
 
 This config provides brief introduce Open-E JovianDSS plugin to proxmox storage sub-system.
