@@ -36,7 +36,7 @@ use base qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.9.3';
+my $PLUGIN_VERSION = '0.9.4';
 
 # Configuration
 
@@ -91,6 +91,10 @@ sub properties {
             type => 'boolean',
             default     => $default_debug,
         },
+        share_name => {
+            description => "Name of proxmox dedicated storage share",
+            type => 'string',
+        },
         share_user => {
             description => "User name proxmox dedicated storage",
             type => 'string',
@@ -104,14 +108,15 @@ sub properties {
 
 sub options {
     return {
-        joviandss_address  => { optional => 1 },
-        pool_name        => { optional => 1 },
-        config        => { fixed => 1 },
-        debug       => { optional => 1},
-        path        => { optional => 1},
-        content     => { optional => 1},
-        share_user    => { optional => 1},
-        share_pass    => { optional => 1},
+        joviandss_address  => { fixed => 1 },
+        pool_name          => { fixed => 1 },
+        config             => { fixed => 1 },
+        debug              => { optional => 1 },
+        path               => { optional => 1 },
+        content            => { optional => 1 },
+        share_name         => { fixed => 1 },
+        share_user         => { optional => 1 },
+        share_pass         => { optional => 1 },
     };
 }
 
@@ -644,10 +649,10 @@ sub activate_storage {
     die "Path property requires share_user property\n" if !defined($scfg->{share_user});
     my $username = $scfg->{share_user};
     die "Path property requires share_user property\n" if !defined($scfg->{share_pass});
-    my $password = $scfg->{share_user};
+    my $password = $scfg->{share_pass};
 
     my $config = $scfg->{config};
-    my $share = "proxmox-internal-data";
+    my $share = $scfg->{share_name};
     my $pool = $scfg->{pool_name};
     my $path = $scfg->{path};
     my $joviandss_address = $scfg->{joviandss_address};

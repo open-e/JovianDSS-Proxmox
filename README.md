@@ -40,6 +40,7 @@ open-e: joviandss
 | `config`                   | /etc/pve/joviandss.yaml           | path to `jdssc` configuration file                                  |
 | `path`                     | None                              | Location that would be used to mount proxmox dedicated volume       |
 | `content`                  | None                              | List content type that you expect JovianDSS to store                | 
+| `share_name`               | None                              | Name of proxmox dedicated storage share                             |
 | `share_user`               | None                              | Share user                                                          | 
 | `share_pass`               | None                              | Share password                                                      |
 
