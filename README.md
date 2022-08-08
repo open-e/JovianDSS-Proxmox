@@ -126,6 +126,10 @@ After installation and configuration restart proxmox server.
 ```bash
 reboot
 ```
+### Clustering
+
+Plugin have to be installed and configured on all nodes in cluster.
+
 
 ## Supported features
 
