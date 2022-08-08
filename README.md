@@ -28,6 +28,7 @@ open-e: joviandss
         config /etc/pve/joviandss.yaml
         path /mnt/joviandss
         content iso,backup,images,rootdir
+        share_name proxmox-internal-data-0
         share_user proxmox
         share_pass proxmox_1
 
