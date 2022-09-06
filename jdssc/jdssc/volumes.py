@@ -44,6 +44,7 @@ class Volumes():
         if 'volumes-action' in self.args:
             self.vsa[self.args.pop('volumes-action')]()
         elif 'volume-action' in self.args:
+            print(self.args)
             self.va[self.args.pop('volume-action')]()
 
     def __parse(self, args):
@@ -73,7 +74,7 @@ class Volumes():
 
             get = parsers.add_parser('get')
             get.add_argument('-s', dest='volume_size', action='store_true', default=False, help='Print volume size')
-            
+            get.add_argument('-d', dest='direct_mode', action='store_true', default=False, help='Use real volume name')
 
             clone = parsers.add_parser('clone')
             clone.add_argument('--snapshot', dest='snapshot_name', type=str, help='Use snapshot for cloning')
@@ -93,10 +94,11 @@ class Volumes():
 
             rename = parsers.add_parser('rename')
             rename.add_argument('new_name', type=str, help='New volume name')
-            
+
             resize = parsers.add_parser('resize')
             resize.add_argument('--add', dest="add_size", action="store_true", default=False, help='Add new size to existing volume size')
             resize.add_argument('new_size', type=int, help='New volume size')
+            resize.add_argument('-d', dest='direct_mode', action='store_true', default=False, help='Use real volume name')
 
             snapshots = parsers.add_parser('snapshots')
  
@@ -143,8 +145,8 @@ class Volumes():
 
         volume = {'id': volume_name}
         
-        d = self.jdss.get_volume(volume)
-
+        d = self.jdss.get_volume(volume, direct_mode=self.args['direct_mode'])
+        print(d)
         if self.args['volume_size']:
             print(d['size'])
 
@@ -231,4 +233,4 @@ class Volumes():
             d = self.jdss.get_volume(volume)
             size += int(d['size'])
 
-        self.jdss.extend_volume(volume, size)
+        self.jdss.extend_volume(volume, size, direct_mode=self.args['direct_mode'])

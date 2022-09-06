@@ -3,7 +3,7 @@ Version: 0.9.1
 Section: admin
 Priority: optional
 Architecture: all
-Depends: python3-oslo.utils (>= 3.36), python3-yaml (>= 3.13)
+Depends: python3-oslo.utils (>= 3.36), python3-yaml (>= 3.13), multipath-tools
 Maintainer: andrei.perepiolkin@open-e.com
 Homepage: https://github.com/open-e/JovianDSS-Proxmox
 Description: Open-E JovianDSS plugin for proxmox

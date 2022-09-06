@@ -24,6 +24,8 @@ use Data::Dumper;
 use Storable qw(lock_store lock_retrieve);
 use UUID "uuid";
 
+use File::Path qw(make_path);
+
 use Encode qw(decode encode);
 
 use PVE::Tools qw(run_command file_read_firstline trim dir_glob_regex dir_glob_foreach $IPV4RE $IPV6RE);
@@ -103,20 +105,30 @@ sub properties {
             description => "Password for proxmox dedicated storage",
             type => 'string',
         },
+        content_volume_name => {
+            description => "Name of proxmox dedicated storage volume",
+            type => 'string',
+        },
+        content_volume_size => {
+            description => "Name of proxmox dedicated storage size",
+            type => 'string',
+        },
     };
 }
 
 sub options {
     return {
-        joviandss_address  => { fixed => 1 },
-        pool_name          => { fixed => 1 },
-        config             => { fixed => 1 },
-        debug              => { optional => 1 },
-        path               => { optional => 1 },
-        content            => { optional => 1 },
-        share_name         => { fixed => 1 },
-        share_user         => { optional => 1 },
-        share_pass         => { optional => 1 },
+        joviandss_address   => { fixed => 1 },
+        pool_name           => { fixed => 1 },
+        config              => { fixed => 1 },
+        debug               => { optional => 1 },
+        path                => { optional => 1 },
+        content             => { optional => 1 },
+        content_volume_name => { optional => 1 },
+        content_volume_size => { optional => 1 },
+        share_name          => { fixed => 1 },
+        share_user          => { optional => 1 },
+        share_pass          => { optional => 1 },
     };
 }
 
@@ -165,12 +177,30 @@ sub joviandss_cmd {
     my $output = sub { $msg .= "$_[0]\n" };
     my $errfunc = sub { $err .= "$_[0]\n" };
     eval {
-	    run_command(['/usr/local/bin/jdssc', @$cmd], outfunc => $output, errfunc => $errfunc, timeout => $timeout);
+        run_command(['/usr/local/bin/jdssc', @$cmd], outfunc => $output, errfunc => $errfunc, timeout => $timeout);
     };
     if ($@) {
-	    die $err;
+        die $err;
     }
     return $msg;
+}
+
+sub joviandss_cmde {
+    my ($class, $cmd, $timeout) = @_;
+
+    my $msg = '';
+    my $err = undef;
+    my $target;
+    my $res = ();
+
+    $timeout = 10 if !$timeout;
+
+    my $output = sub { $msg .= "$_[0]" };
+    my $errfunc = sub { $err .= "$_[0]" };
+    eval {
+        run_command(['/usr/local/bin/jdssc', @$cmd], outfunc => $output, errfunc => $errfunc, timeout => $timeout);
+    };
+    return ($msg, $err);
 }
 
 my $ISCSIADM = '/usr/bin/iscsiadm';
@@ -251,7 +281,6 @@ sub iscsi_discovery {
     my $cmd = [$ISCSIADM, '--mode', 'discovery', '--type', 'sendtargets', '--portal', $portal];
     run_command($cmd, outfunc => sub {
 	my $line = shift;
-
 	if ($line =~ m/^((?:$IPV4RE|\[$IPV6RE\]):\d+)\,\S+\s+(\S+)\s*$/) {
 	    my $portal = $1;
 	    my $target = $2;
@@ -276,9 +305,11 @@ sub iscsi_login {
 
     check_iscsi_support();
 
+    #TODO: for each IP run discovery
     eval { iscsi_discovery($target, $portal_in); };
     warn $@ if $@;
-
+    
+    #TODO: for each target run login
     run_command([$ISCSIADM, '--mode', 'node', '-p', $portal_in, '--targetname',  $target, '--login']);
 }
 
@@ -441,7 +472,70 @@ sub clean_word {
 
 sub list_images {
     my ( $class, $storeid, $scfg, $vmid, $vollist, $cache ) = @_;
+    ############################################################
+    # remove me
+    my $target = "iqn.2021-10.com.open-e:vm-100-disk-0";
+    my $portal = "172.29.0.14";
+    my $volname = "vm-100-disk-0";
 
+    #$class->activate_volume($storeid, $scfg, $volname, $cache);
+    my $data = iscsi_discovery($target, $portal);
+    for my $family ( keys %$data ) {
+        print "$family: @{ %$data{$family} }\n";
+    }
+    my $cfg = $scfg->{config};
+
+    my $gethostscmd = ["/usr/local/bin/jdssc", "-c", $cfg, "hosts"];
+
+    my @hosts = ();
+    run_command($gethostscmd, outfunc => sub {
+        # Try to use shift
+        my $h = shift;
+        push @hosts, $h;
+    });
+    
+    my $getiscsiidcmd = ["/lib/udev/scsi_id", "-g", "-u", "-d"];
+    my $iscsiid;
+    my $host;
+    foreach $host (@hosts) {
+        if ( grep( /^$host$/, @{%$data{$target}}  ) ) {
+            my $targetpath = ["/dev/disk/by-path/ip-$host-iscsi-$target-lun-0"];
+            #print "@$targetpath\n";
+            push @$getiscsiidcmd, @$targetpath;
+            #print "@$getiscsiidcmd\n";
+            eval { iscsi_login($target, $host); };
+            run_command($getiscsiidcmd, outfunc => sub {
+                $iscsiid = shift;
+            });
+        #print "Identified $host $target $getiscsiidcmd";
+        }
+    }
+
+    make_path '/etc/multipath/conf.d/', {owner=>'root', group=>'root'};
+    my $str = "multipaths {
+  multipath {
+    wwid $iscsiid
+    alias $target
+  }
+}
+
+blacklist_exceptions {
+        wwid $iscsiid
+}";
+
+    my $filename = "/etc/multipath/conf.d/$volname";
+
+    open(FH, '>', $filename) or die $!;
+
+    print FH $str;
+
+    close(FH);
+    my $multipathadd = ['multipath', 
+    run_command($getiscsiidcmd, outfunc => sub {
+        $iscsiid = shift;
+    });
+    #print "@hosts\n";
+    ############################################################
     my $nodename = PVE::INotify::nodename();
 
     my $config = $scfg->{config};
@@ -639,6 +733,52 @@ sub cifs_mount {
     run_command($cmd, errmsg => "mount error");
 }
 
+sub ensure_content_volume {
+    my ( $class, $storeid, $scfg, $cache ) = @_; 
+
+    if (!defined($scfg->{path})){
+    	return 0;
+    }
+    my $path = $scfg->{path};
+
+    #$class->ensure_content_volume($storeid, $scfg, $cache) if defined($scfg->{content});
+    #my $path = $scfg->{path};
+    #die "path property is required for content storage\n" if !defined($scfg->{path});
+    #my $path = $scfg->{path};
+
+    #die "content_volume_name property is required for content storage\n" if !defined($scfg->{content_volume_name});
+    #my $content_volume_name = $scfg->{content_volume_name};
+
+    #die "content_volume_size property is required for content storage\n" if !defined($scfg->{content_volume_size});
+    #my $content_volume_size = $scfg->{content_volume_size} * 1024 * 1024;
+
+    # Get volume
+
+    #my (_, $err) = $class->joviandss_cmde(["-c", $config, "pool", $pool, "volumes", $volname, "get", "-d", "-s"]);
+
+    #if $err {
+    #    # Create volume
+    #    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "-s", $content_volume_size * 1024, $content_volume_name]);
+    #}
+
+    #$class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $content_volume_name, "resize", $size]);
+
+    #$class->attach_volume($scfg, $volname, $snap, $directmode, $cache);
+
+    ## TODO: format volume
+
+    #my $dir_path = "$path/iso";
+    #mkdir $dir_path;
+    #$dir_path = "$path/vztmpl";
+    #mkdir $dir_path;
+    #$dir_path = "$path/backup";
+    #mkdir $dir_path;
+    #$dir_path = "$path/rootdir";
+    #mkdir $dir_path;
+    #$dir_path = "$path/snippets";
+    #mkdir $dir_path;
+}
+
 sub activate_storage {
     my ( $class, $storeid, $scfg, $cache ) = @_;
 
@@ -646,36 +786,36 @@ sub activate_storage {
     	return 0;
     }
 
-    die "Path property requires share_user property\n" if !defined($scfg->{share_user});
-    my $username = $scfg->{share_user};
-    die "Path property requires share_user property\n" if !defined($scfg->{share_pass});
-    my $password = $scfg->{share_pass};
-
-    my $config = $scfg->{config};
-    my $share = $scfg->{share_name};
-    my $pool = $scfg->{pool_name};
+    #$class->ensure_content_volume($storeid, $scfg, $cache) if defined($scfg->{content});
     my $path = $scfg->{path};
-    my $joviandss_address = $scfg->{joviandss_address};
 
-    return 1 if (cifs_is_mounted($share, $path));
+    my $dir_path = "$path/iso";
+    mkdir $dir_path;
+    $dir_path = "$path/vztmpl";
+    mkdir $dir_path;
+    $dir_path = "$path/backup";
+    mkdir $dir_path;
+    $dir_path = "$path/rootdir";
+    mkdir $dir_path;
+    $dir_path = "$path/snippets";
+    mkdir $dir_path;
+    #my $username = $scfg->{share_user};
+    #die "Path property requires share_user property\n" if !defined($scfg->{share_pass});
+    
+    #my $password = $scfg->{share_pass};
+    #my $config = $scfg->{config};
+    #my $share = $scfg->{share_name};
+    #my $pool = $scfg->{pool_name};
+    #my $path = $scfg->{path};
 
-	mkdir $path;
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "cifs",  $share, "ensure", "-u", $username, "-p", $password, "-n", $share]);
+    #return 1 if (cifs_is_mounted($share, $path));
 
-    cifs_mount($joviandss_address, $share, $path, $username, $password);
+    #mkdir $path;
+    #$class->joviandss_cmd(["-c", $config, "pool", $pool, "cifs",  $share, "ensure", "-u", $username, "-p", $password, "-n", $share]);
+
+    #cifs_mount($joviandss_address, $share, $path, $username, $password);
 
 	# Make dirs
-
-	my $dir_path = "$path/iso";
-	mkdir $dir_path;
-	$dir_path = "$path/vztmpl";
-	mkdir $dir_path;
-	$dir_path = "$path/backup";
-	mkdir $dir_path;
-	$dir_path = "$path/rootdir";
-	mkdir $dir_path;
-	$dir_path = "$path/snippets";
-	mkdir $dir_path;
     return undef;
 }
 
@@ -696,6 +836,72 @@ sub deactivate_storage {
 
     return undef;
 }
+
+#sub multipath_activate_volume {
+#    my ( $class, $scfg, $volname, $snap, $directmode, $cache ) = @_;
+#
+#    my $config = $scfg->{config};
+#    my $pool = $scfg->{pool_name};
+#
+#    my $target_info;
+#
+#    if ($snap){
+#        $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--snapshot", $snap]);
+#    } else {
+#        $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host"]);
+#    }
+#
+#    my @tmp = split(" ", $target_info, 2);
+#
+#    my $host = $tmp[1];
+#    chomp($host);
+#    $host =~ s/[^[:ascii:]]//;
+#
+#    my $target = $tmp[0];
+#    chomp($target);
+#    $target =~ s/[^[:ascii:]]//;
+#
+#    my $session = iscsi_session($cache, $target);
+#    if (defined ($session)) {
+#        print"Nothing to do, exiting" if $scfg->{debug};
+#        return 1;
+#    }
+#
+#    my $args = ["-c", $config, "pool", $pool, "targets", "create", $volname];
+#
+#    if ($snap){
+#        $args = [$args, ["--snapshot", $snap]];
+#    }
+#
+#    # Create target
+#    if ($directmode){
+#        $args = [$args, ["-d"]];
+#    }
+#    $class->joviandss_cmd($args);
+#
+#    # Start iscsi-login
+#    my $data = iscsi_discovery($target, $portal);
+#    for my $family ( keys %$data ) {
+#        print "$family: @{ %$data{$family} }\n";
+#    }
+#    my $cfg = $scfg->{config};
+#
+#    my $cmd = ["/usr/local/bin/jdssc", "-c", $cfg, "hosts"];
+#
+#    my @hosts = ();
+#    run_command($cmd, outfunc => sub {
+#        my $h = shift;
+#
+#        push @hosts, $h;
+#    });
+#
+#    foreach (@hosts) {
+#        if ( grep( /^$_$/, @{%$data{$target}}  ) ) {
+#            iscsi_login($target, $_);
+#            print "Login to $_ $target";
+#        }
+#    }
+#}
 
 sub activate_volume {
     my ( $class, $storeid, $scfg, $volname, $snap, $cache ) = @_;
@@ -737,7 +943,7 @@ sub activate_volume {
     } else {
         $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname]);
     }
-
+    print "Try to login to $target $host";
     iscsi_login($target, $host);
 
     return 0;
@@ -831,7 +1037,7 @@ sub volume_has_feature {
         template => { current => 1 },
         copy => { base => 1, current => 1, snap => 1},
         sparseinit => { base => { raw => 1 }, current => { raw => 1} },
-        replicate => { base => 1, current => 1},
+        replicate => { base => 1, current => 1, raw => 1},
     };
 
     my ( $vtype, $name, $vmid, $basename, $basevmid, $isBase ) =

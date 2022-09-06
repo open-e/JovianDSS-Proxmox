@@ -51,6 +51,7 @@ def get_config():
     command = parser.add_subparsers(required=True, dest='command')
 
     pool_parser = command.add_parser('pool', add_help=False)
+    hosts = command.add_parser('hosts', add_help=False)
 
     args = parser.parse_known_args()
     return args
@@ -83,6 +84,15 @@ def setup_logging(args, cfg):
         log.setLevel(numeric_level)
         log.addHandler(handler)
 
+def hosts(args, uargs, jdss):
+    
+    for i in jdss.configuration['san_hosts']:
+        addr = i
+        if 'target_port' in jdss.configuration:
+            addr = '%s:%s' % (addr, jdss.configuration['target_port'])
+        sys.stdout.write(addr + "\n")
+        #print(i)
+
 def main():
     (args, uargs) = get_config()
     if args.cli_log_lvl and args.cli_log_file:
@@ -103,7 +113,8 @@ def main():
 
     setup_logging(args, config)
     # list available commands
-    cmd = {'pool': pool.Pools}
+    cmd = {'pool': pool.Pools,
+           'hosts': hosts}
     
     jdss = iscsi.JovianISCSIDriver(config)
     jdss.do_setup('')
@@ -111,11 +122,11 @@ def main():
     args = vars(args)
     # Run command
     out = cmd[args.pop('command')](args, uargs, jdss)
-    #cmd['pool'](args, jdss)
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as err:
+        #sys.stderr.write("error: %s\n" % err)
         LOG.error("Critical failure during execution.", err, exc_info=True)
         sys.exit(1)
