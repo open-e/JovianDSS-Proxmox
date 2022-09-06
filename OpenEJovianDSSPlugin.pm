@@ -206,6 +206,12 @@ sub joviandss_cmde {
 my $ISCSIADM = '/usr/bin/iscsiadm';
 $ISCSIADM = undef if ! -X $ISCSIADM;
 
+my $MULTIPATH = '/usr/sbin/multipath';
+$MULTIPATH = undef if ! -X $ISCSIADM;
+
+my $SYSTEMCTL = '/usr/bin/systemctl';
+$SYSTEMCTL = undef if ! -X $SYSTEMCTL;
+
 sub check_iscsi_support {
     my $noerr = shift;
 
@@ -470,22 +476,79 @@ sub clean_word {
     return $word;
 }
 
-sub list_images {
-    my ( $class, $storeid, $scfg, $vmid, $vollist, $cache ) = @_;
-    ############################################################
-    # remove me
-    my $target = "iqn.2021-10.com.open-e:vm-100-disk-0";
-    my $portal = "172.29.0.14";
-    my $volname = "vm-100-disk-0";
+sub stage_target {
+    my ($class, $scfg, $volname, $storeid, $snapname) = @_;
 
-    #$class->activate_volume($storeid, $scfg, $volname, $cache);
-    my $data = iscsi_discovery($target, $portal);
-    for my $family ( keys %$data ) {
-        print "$family: @{ %$data{$family} }\n";
+    print "Get target name";
+    my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
+    
+    print "Get storage address";
+    my @hosts = $class->get_storage_addresses($scfg, $storeid);
+
+    foreach my $host (@hosts) {
+
+            eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '-o', 'new']); };
+            warn $@ if $@;
+            eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--login']); };
+            warn $@ if $@;
     }
-    my $cfg = $scfg->{config};
+}
 
-    my $gethostscmd = ["/usr/local/bin/jdssc", "-c", $cfg, "hosts"];
+sub unstage_target {
+    my ($class, $scfg, $volname, $storeid, $snapname) = @_;
+
+    my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
+
+    my @hosts = $class->get_storage_addresses($scfg, $storeid);
+
+    foreach my $host (@hosts) {
+
+        run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--logout']);
+
+        run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '-o', 'delete']);
+    }
+}
+
+sub add_multipath {
+    my ($class, $scfg, $volname, $storeid, $snapname) = @_;
+
+    my $scsiid = $class->get_scsiid($scfg, $volname, $storeid, $snapname);
+    my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
+
+    my $str = "multipaths {
+  multipath {
+    wwid $scsiid
+    alias $target
+  }
+}
+
+blacklist_exceptions {
+        wwid $scsiid
+}";
+
+    my $filename = "/etc/multipath/conf.d/$target";
+
+    open(FH, '>', $filename) or die $!;
+
+    print FH $str;
+
+    close(FH);
+
+    my $scsiid_path = "/dev/disk/by-id/scsi-${scsiid}";
+    run_command([$MULTIPATH, '-a', $scsiid_path]);
+
+    run_command([$SYSTEMCTL, 'restart', 'multipathd']);
+
+}
+
+sub delete_multipath {
+}
+
+sub get_storage_addresses {
+    my ($class, $scfg, $storeid) = @_;
+
+    my $config = $scfg->{config};
+    my $gethostscmd = ["/usr/local/bin/jdssc", "-c", $config, "hosts"];
 
     my @hosts = ();
     run_command($gethostscmd, outfunc => sub {
@@ -493,48 +556,57 @@ sub list_images {
         my $h = shift;
         push @hosts, $h;
     });
-    
-    my $getiscsiidcmd = ["/lib/udev/scsi_id", "-g", "-u", "-d"];
-    my $iscsiid;
-    my $host;
-    foreach $host (@hosts) {
-        if ( grep( /^$host$/, @{%$data{$target}}  ) ) {
-            my $targetpath = ["/dev/disk/by-path/ip-$host-iscsi-$target-lun-0"];
-            #print "@$targetpath\n";
-            push @$getiscsiidcmd, @$targetpath;
-            #print "@$getiscsiidcmd\n";
-            eval { iscsi_login($target, $host); };
-            run_command($getiscsiidcmd, outfunc => sub {
-                $iscsiid = shift;
-            });
-        #print "Identified $host $target $getiscsiidcmd";
-        }
-    }
-
-    make_path '/etc/multipath/conf.d/', {owner=>'root', group=>'root'};
-    my $str = "multipaths {
-  multipath {
-    wwid $iscsiid
-    alias $target
-  }
+    return @hosts;
 }
 
-blacklist_exceptions {
-        wwid $iscsiid
-}";
+sub get_scsiid {
+    my ($class, $scfg, $volname, $storeid, $snapname) = @_;
 
-    my $filename = "/etc/multipath/conf.d/$volname";
+    my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
+    my $getscsiidcmd = ["/lib/udev/scsi_id", "-g", "-u", "-d"];
+    my $iscsiid;
 
-    open(FH, '>', $filename) or die $!;
+    my @hosts = $class->get_storage_addresses($scfg, $storeid);
 
-    print FH $str;
+    foreach my $host (@hosts) {
+        my $targetpath = "/dev/disk/by-path/ip-${host}-iscsi-${target}-lun-0";
+        my $getscsiidcmd = ["/lib/udev/scsi_id", "-g", "-u", "-d", $targetpath];
+        my $scsiid;
+        run_command($getscsiidcmd, outfunc => sub {
+            $scsiid = shift;
+        });
+        print "Identified scsi id ${scsiid}\n";
+        return $scsiid if defined($scsiid) ;
+    }
+    die "Unable identify scsi id for target $target";
+}
 
-    close(FH);
-    my $multipathadd = ['multipath', 
-    run_command($getiscsiidcmd, outfunc => sub {
-        $iscsiid = shift;
-    });
-    #print "@hosts\n";
+sub get_target_name {
+    my ($class, $scfg, $volname, $storeid, $snapname) = @_;
+
+    my $config = $scfg->{config};
+    my $pool = $scfg->{pool_name};
+
+    my $target;
+    if ($snapname){
+        $target = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--snapshot", $snapname]);
+    } else {
+        $target = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get"]);
+    }
+    print "generated target name ${target}";
+    return clean_word($target);
+}
+
+sub list_images {
+    my ( $class, $storeid, $scfg, $vmid, $vollist, $cache ) = @_;
+    ############################################################
+    # remove me
+    my $volname = "vm-100-disk-0";
+
+    $class->stage_target($scfg, $volname, $storeid);
+    print "Adding multipath\n";
+    $class->add_multipath($scfg, $volname, $storeid);
+    
     ############################################################
     my $nodename = PVE::INotify::nodename();
 
@@ -785,10 +857,12 @@ sub activate_storage {
     if (!defined($scfg->{path})){
     	return 0;
     }
-
+ 
     #$class->ensure_content_volume($storeid, $scfg, $cache) if defined($scfg->{content});
     my $path = $scfg->{path};
 
+    make_path '/etc/multipath/conf.d/', {owner=>'root', group=>'root'};
+    
     my $dir_path = "$path/iso";
     mkdir $dir_path;
     $dir_path = "$path/vztmpl";
