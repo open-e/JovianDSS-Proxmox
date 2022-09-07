@@ -46,6 +46,7 @@ my $default_joviandss_address = "192.168.0.100";
 my $default_pool = "Pool-0";
 my $default_config = "/etc/pve/joviandss.cfg";
 my $default_debug = 0;
+my $default_multipath = 0;
 my $default_path = "/mnt/joviandss";
 
 sub api {
@@ -93,6 +94,11 @@ sub properties {
             type => 'boolean',
             default     => $default_debug,
         },
+        multipath => {
+            description => "Enable multipath support",
+            type => 'boolean',
+            default     => $default_multipath,
+        },
         share_name => {
             description => "Name of proxmox dedicated storage share",
             type => 'string',
@@ -118,10 +124,10 @@ sub properties {
 
 sub options {
     return {
-        joviandss_address   => { fixed => 1 },
         pool_name           => { fixed => 1 },
         config              => { fixed => 1 },
         debug               => { optional => 1 },
+        multipath           => { optional => 1 },
         path                => { optional => 1 },
         content             => { optional => 1 },
         content_volume_name => { optional => 1 },
@@ -140,12 +146,6 @@ sub get_pool {
     return $scfg->{pool_name} || $default_pool;
 }
 
-sub get_joviandss_address {
-    my ($scfg) = @_;
-
-    return $scfg->{joviandss_address} || $default_joviandss_address;
-}
-
 sub get_config {
     my ($scfg) = @_;
 
@@ -162,6 +162,12 @@ sub get_path {
     my ($scfg) = @_;
 
     return $scfg->{path} || $default_path;
+}
+
+sub get_multipath {
+    my ($scfg) = @_;
+
+    return $scfg->{multipath} || $default_multipath;
 }
 
 sub joviandss_cmd {
@@ -477,10 +483,10 @@ sub clean_word {
 }
 
 sub stage_target {
-    my ($class, $scfg, $volname, $storeid, $snapname) = @_;
+    my ($class, $scfg, $storeid, $target) = @_;
 
-    print "Get target name";
-    my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
+    #print "Get target name";
+    #my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
     
     print "Get storage address";
     my @hosts = $class->get_storage_addresses($scfg, $storeid);
@@ -492,6 +498,8 @@ sub stage_target {
             eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--login']); };
             warn $@ if $@;
     }
+
+    return $class->get_target_path($scfg, $target, $storeid);
 }
 
 sub unstage_target {
@@ -502,18 +510,15 @@ sub unstage_target {
     my @hosts = $class->get_storage_addresses($scfg, $storeid);
 
     foreach my $host (@hosts) {
-
-        run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--logout']);
-
-        run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '-o', 'delete']);
+        eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--logout']); };
+        warn $@ if $@;
+        eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '-o', 'delete']); };
+        warn $@ if $@;
     }
 }
 
-sub add_multipath {
-    my ($class, $scfg, $volname, $storeid, $snapname) = @_;
-
-    my $scsiid = $class->get_scsiid($scfg, $volname, $storeid, $snapname);
-    my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
+sub stage_multipath {
+    my ($class, $scfg, $scsiid, $target) = @_;
 
     my $str = "multipaths {
   multipath {
@@ -534,14 +539,36 @@ blacklist_exceptions {
 
     close(FH);
 
-    my $scsiid_path = "/dev/disk/by-id/scsi-${scsiid}";
-    run_command([$MULTIPATH, '-a', $scsiid_path]);
-
-    run_command([$SYSTEMCTL, 'restart', 'multipathd']);
-
+    eval {run_command([$MULTIPATH, '-a', $scsiid]); };
+    die "Unable to add scsi id ${scsiid} $@" if $@;
+    eval {run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
+    die "Unable to restart multipath daemon $@" if $@;
 }
 
-sub delete_multipath {
+sub unstage_multipath {
+    my ($class, $scfg, $scsiid) = @_;
+    
+    my $scsiid_path = "/dev/disk/by-id/scsi-${scsiid}";
+   
+    if ( -e $scsiid_path ) {
+        unlink $scsiid_path;
+    }
+
+    eval{ run_command([$MULTIPATH, '-d', $scsiid]); };
+    warn $@ if $@;
+    
+    run_command([$SYSTEMCTL, 'restart', 'multipathd']);
+}
+
+sub get_multipath_path {
+    my ($class, $scfg, $scsiid) = @_;
+
+    my $scsiid_path = "/dev/disk/by-id/scsi-${scsiid}";
+
+    if (-e $scsiid_path) {
+        return $scsiid_path;
+    }
+    die "Unable to identify path for scsiid ${scsiid}";
 }
 
 sub get_storage_addresses {
@@ -597,15 +624,38 @@ sub get_target_name {
     return clean_word($target);
 }
 
+sub get_target_path {
+    my ($class, $scfg, $target, $storeid) = @_;
+
+    my $config = $scfg->{config};
+    my $pool = $scfg->{pool_name};
+
+    my @hosts = $class->get_storage_addresses($scfg, $storeid);
+
+    my $path;
+    foreach my $host (@hosts) {
+        $path = "/dev/disk/by-path/ip-${host}-iscsi-${target}-lun-0";
+        if ( -e $path ){
+            return $path;
+        }
+    }
+    die "Unable to find active session for target ${target}";
+}
+
 sub list_images {
     my ( $class, $storeid, $scfg, $vmid, $vollist, $cache ) = @_;
     ############################################################
     # remove me
     my $volname = "vm-100-disk-0";
 
-    $class->stage_target($scfg, $volname, $storeid);
+    print "Get target name";
+    my $target = $class->get_target_name($scfg, $volname, $storeid);
+    my $scsiid = $class->get_scsiid($scfg, $volname, $storeid);
+   
+    print "Staging target\n";
+    $class->stage_target($scfg, $storeid, $target);
     print "Adding multipath\n";
-    $class->add_multipath($scfg, $volname, $storeid);
+    $class->stage_multipath($scfg, $scsiid, $target);
     
     ############################################################
     my $nodename = PVE::INotify::nodename();
