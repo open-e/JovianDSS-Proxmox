@@ -128,5 +128,5 @@ if __name__ == "__main__":
         main()
     except Exception as err:
         #sys.stderr.write("error: %s\n" % err)
-        LOG.error("Critical failure during execution.", err, exc_info=True)
+        LOG.error(err, exc_info=True)
         sys.exit(1)

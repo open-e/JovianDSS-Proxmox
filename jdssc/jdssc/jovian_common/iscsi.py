@@ -579,7 +579,7 @@ class JovianISCSIDriver(object):
             try:
                 self.ra.delete_snapshot(oname, coname)
             except jexc.JDSSSnapshotIsBusyException as jerr:
-                raise cexc.Duplicate() from jerr
+                raise jerr
             except jexc.JDSSException as jerr:
                 raise cexc.VolumeBackendAPIException(
                     (_("Unable to create volume %s.") % coname)) from jerr
@@ -605,7 +605,7 @@ class JovianISCSIDriver(object):
                 oname,
                 sparse=self.jovian_sparse)
         except jexc.JDSSResourceExistsException as jerr:
-            raise cexc.Duplicate() from jerr
+            raise jerr
         except jexc.JDSSException as err:
             try:
                 self.ra.delete_snapshot(oname,
@@ -938,7 +938,7 @@ class JovianISCSIDriver(object):
                                   use_chap=use_chap)
 
         except jexc.JDSSResourceExistsException as jerr:
-            raise cexc.Duplicate() from jerr
+            raise jerr
         except jexc.JDSSException as ex:
 
             msg = (_('Unable to create target %(target)s '

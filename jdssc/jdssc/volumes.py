@@ -44,7 +44,7 @@ class Volumes():
         if 'volumes-action' in self.args:
             self.vsa[self.args.pop('volumes-action')]()
         elif 'volume-action' in self.args:
-            print(self.args)
+            #print(self.args)
             self.va[self.args.pop('volume-action')]()
 
     def __parse(self, args):
@@ -146,7 +146,7 @@ class Volumes():
         volume = {'id': volume_name}
         
         d = self.jdss.get_volume(volume, direct_mode=self.args['direct_mode'])
-        print(d)
+        #print(d)
         if self.args['volume_size']:
             print(d['size'])
 

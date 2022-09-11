@@ -636,7 +636,7 @@ class JovianRESTAPI(object):
             return
 
         if resp["code"] == 409:
-            raise jexc.JDSSResourceExistsException(res=target_name)
+            raise jexc.JDSSResourceExistsException(target_name)
 
         self._general_error(req, resp)
 
@@ -801,7 +801,7 @@ class JovianRESTAPI(object):
             return
 
         if resp['code'] == 409:
-            raise jexc.JDSSResourceExistsException(res=lun_name)
+            raise jexc.JDSSResourceExistsException(lun_name)
 
         if resp['code'] == 404:
             raise jexc.JDSSResourceNotFoundException(res=target_name)

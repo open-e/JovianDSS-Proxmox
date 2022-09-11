@@ -42,7 +42,6 @@ my $PLUGIN_VERSION = '0.9.4';
 
 # Configuration
 
-my $default_joviandss_address = "192.168.0.100";
 my $default_pool = "Pool-0";
 my $default_config = "/etc/pve/joviandss.cfg";
 my $default_debug = 0;
@@ -74,11 +73,6 @@ sub plugindata {
 
 sub properties {
     return {
-        joviandss_address => {
-            description => "The fqdn or ip of the Open-E JovianDSS storage (',' separated list allowed)",
-            type        => 'string',
-            default     => $default_joviandss_address,
-        },
         pool_name => {
             description => "Pool name",
             type        => 'string',
@@ -142,8 +136,8 @@ sub options {
 
 sub get_pool {
     my ($scfg) = @_;
-
-    return $scfg->{pool_name} || $default_pool;
+    die "pool name required in storage.cfg" if !defined($scfg->{pool_name});
+    return $scfg->{pool_name};
 }
 
 sub get_config {
@@ -164,7 +158,7 @@ sub get_path {
     return $scfg->{path} || $default_path;
 }
 
-sub get_multipath {
+sub multipath_enabled {
     my ($scfg) = @_;
 
     return $scfg->{multipath} || $default_multipath;
@@ -178,7 +172,7 @@ sub joviandss_cmd {
     my $target;
     my $res = ();
 
-    $timeout = 10 if !$timeout;
+    $timeout = 20 if !$timeout;
 
     my $output = sub { $msg .= "$_[0]\n" };
     my $errfunc = sub { $err .= "$_[0]\n" };
@@ -186,7 +180,7 @@ sub joviandss_cmd {
         run_command(['/usr/local/bin/jdssc', @$cmd], outfunc => $output, errfunc => $errfunc, timeout => $timeout);
     };
     if ($@) {
-        die $err;
+        die $@;
     }
     return $msg;
 }
@@ -199,7 +193,7 @@ sub joviandss_cmde {
     my $target;
     my $res = ();
 
-    $timeout = 10 if !$timeout;
+    $timeout = 20 if !$timeout;
 
     my $output = sub { $msg .= "$_[0]" };
     my $errfunc = sub { $err .= "$_[0]" };
@@ -217,6 +211,9 @@ $MULTIPATH = undef if ! -X $ISCSIADM;
 
 my $SYSTEMCTL = '/usr/bin/systemctl';
 $SYSTEMCTL = undef if ! -X $SYSTEMCTL;
+
+my $DMSETUP = '/usr/sbin/dmsetup';
+$DMSETUP = undef if ! -X $DMSETUP;
 
 sub check_iscsi_support {
     my $noerr = shift;
@@ -339,6 +336,14 @@ sub iscsi_session {
     return $cache->{iscsi_sessions}->{$target};
 }
 
+sub get_call_stack {
+    my $i = 1;
+    print STDERR "Stack Trace:\n";
+    while ( (my @call_details = (caller($i++))) ){
+        print STDERR $call_details[1].":".$call_details[2]." in function ".$call_details[3]."\n";
+    }
+}
+
 sub path {
     my ($class, $scfg, $volname, $storeid, $snapname) = @_;
 
@@ -349,21 +354,27 @@ sub path {
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
     if ($vtype eq "images") {
+
         print"Getting path of volume ${volname} snapshot ${snapname}\n" if $scfg->{debug};
+        
+        my $path;
+        my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
 
-        my $dpath = "";
-
-        if ($snapname){
-            $dpath = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--path", "--snapshot", $snapname]);
-        } else {
-            $dpath = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--path"]);
+        if (multipath_enabled($scfg)) {
+            my $scsiid;
+            eval { $scsiid = $class->get_scsiid($scfg, $target, $storeid); };
+            warn "Volume ${volname} is not active." if $@;
+            return $class->get_multipath_path($scfg, $scsiid, $target);
         }
-
-        chomp($dpath);
-        $dpath =~ s/[^[:ascii:]]//;
-        my $path = "/dev/disk/by-path/${dpath}";
-
-        return ($path, $vmid, $vtype);
+        eval { $path = $class->get_target_path($scfg, $target, $storeid); };
+        return $path;
+        #eval { $path = $class->get_target_path($scfg, $target, $storeid); };
+        #if ($@) {
+        #    die "Unable to path for volume $volname";
+        #    #warn "Getting path for inactive volume ${volname}";
+        #    #$class->activate_volume($storeid, $scfg, $volname, $snapname);
+        #}
+        #return $path;
     }
 
     return $class->filesystem_path($scfg, $volname, $snapname);
@@ -411,7 +422,7 @@ sub create_base {
 
     my $newnameprefix = join '', 'base-', $vmid, '-disk-';
 
-	my $newname = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "getfreename", "--prefix", $newnameprefix]);
+    my $newname = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "getfreename", "--prefix", $newnameprefix]);
     chomp($newname);
     $newname =~ s/[^[:ascii:]]//;
 	$class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "rename", $newname]);
@@ -450,7 +461,8 @@ sub alloc_image {
     $volume_name = $class->find_free_diskname($storeid, $scfg, $vmid, $fmt)
         if !$volume_name;
 
-    print"Allocating image ${volume_name} format ${fmt}\n" if $scfg->{debug};
+    print"Creating volume ${volume_name} format ${fmt}\n" if get_debug($scfg);
+
     my $config = $scfg->{config};
 
     my $pool = $scfg->{pool_name};
@@ -467,6 +479,8 @@ sub free_image {
 
     my $pool = $scfg->{pool_name};
 
+    print"Deleting volume ${volname} format ${format}\n" if get_debug($scfg);
+
     $class->deactivate_volume($storeid, $scfg, $volname, '', '');
 
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "delete", "-c"]);
@@ -475,7 +489,7 @@ sub free_image {
 
 sub clean_word {
     my ($word) = @_;
-
+    
     chomp($word);
     $word =~ s/[^[:ascii:]]//;
 
@@ -487,8 +501,14 @@ sub stage_target {
 
     #print "Get target name";
     #my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
-    
-    print "Get storage address";
+
+    my $targetpath = $class->get_target_path($scfg, $target, $storeid);
+
+    if ( -b $targetpath ) {
+        print "Looks like target already pressent\n";
+        return $targetpath;
+    }
+    print "Get storage address\n";
     my @hosts = $class->get_storage_addresses($scfg, $storeid);
 
     foreach my $host (@hosts) {
@@ -506,6 +526,7 @@ sub unstage_target {
     my ($class, $scfg, $volname, $storeid, $snapname) = @_;
 
     my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
+    print "Unstaging target ${target}\n"; 
 
     my @hosts = $class->get_storage_addresses($scfg, $storeid);
 
@@ -520,6 +541,14 @@ sub unstage_target {
 sub stage_multipath {
     my ($class, $scfg, $scsiid, $target) = @_;
 
+    my $scsiidpath = "/dev/disk/by-id/scsi-${scsiid}";
+    my $targetpath = "/dev/mapper/${target}";
+    my $filename = "/etc/multipath/conf.d/$target";
+
+    if (-b $targetpath && -e $filename) {
+        return $targetpath;
+    }
+    
     my $str = "multipaths {
   multipath {
     wwid $scsiid
@@ -531,8 +560,6 @@ blacklist_exceptions {
         wwid $scsiid
 }";
 
-    my $filename = "/etc/multipath/conf.d/$target";
-
     open(FH, '>', $filename) or die $!;
 
     print FH $str;
@@ -543,15 +570,88 @@ blacklist_exceptions {
     die "Unable to add scsi id ${scsiid} $@" if $@;
     eval {run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
     die "Unable to restart multipath daemon $@" if $@;
+    
+
+    
+    my $timeout = 10;
+    
+    for (my $i = 0; $i <= $timeout; $i++) {
+
+        if (-b $targetpath) {
+            print "found mpath renamed file\n";
+            my $dir = "/dev/mapper";
+            opendir DIR,$dir;
+            my @dir = readdir(DIR);
+            close DIR;
+            foreach(@dir){
+                if (-f $dir . "/" . $_ ){
+                    print $_,"   : file\n";
+                }elsif(-d $dir . "/" . $_){
+                    print $_,"   : folder\n";
+                }else{
+                    print $_,"   : other\n";
+                }
+            }
+            return $targetpath;
+        }
+        if (-b $scsiidpath) {
+            print "Renaming ${scsiid}!\n";
+            eval { run_command([$DMSETUP, 'rename', $scsiid , $target]); };
+            die "Failed to stage target ${target} with proper name" if $@;
+        }
+        sleep(1);
+    }
+
+    if ( -e $targetpath ) {
+        return $targetpath;
+    }
+    if ( -e $scsiidpath ) {
+        eval { run_command([$DMSETUP, 'rename', $scsiid , $target]); };
+        die "Failed to stage target ${target} with proper name" if $@;
+        return $targetpath;
+    }
+
+    print "Target path ${targetpath}\n";
+    print "ISCSIID path ${scsiidpath}\n";
+    
+    my $dir = "/dev/mapper";
+    opendir DIR,$dir;
+    my @dir = readdir(DIR);
+    close DIR;
+    foreach(@dir){
+        if (-f $dir . "/" . $_ ){
+            print $_,"   : file\n";
+        }elsif(-d $dir . "/" . $_){
+            print $_,"   : folder\n";
+        }else{
+            print $_,"   : other\n";
+        }
+    }
+    
+    my $dir = "/dev/disk/by-id/";
+    opendir DIR,$dir;
+    my @dir = readdir(DIR);
+    close DIR;
+    foreach(@dir){
+        if (-f $dir . "/" . $_ ){
+            print $_,"   : file\n";
+        }elsif(-d $dir . "/" . $_){
+            print $_,"   : folder\n";
+        }else{
+            print $_,"   : other\n";
+        }
+    }
+    die "Unable to identify mapping for target ${target}, might be an issue with device mapper, multipath or udev naming scripts";
 }
 
 sub unstage_multipath {
-    my ($class, $scfg, $scsiid) = @_;
-    
-    my $scsiid_path = "/dev/disk/by-id/scsi-${scsiid}";
+    my ($class, $scfg, $scsiid, $target) = @_;
    
-    if ( -e $scsiid_path ) {
-        unlink $scsiid_path;
+    print "Unstage multipath for scsi id ${scsiid} target ${target}";
+    my $tcfg = "/etc/multipath/conf.d/${target}";
+   
+    if ( -e $tcfg ) {
+        unlink $tcfg;
     }
 
     eval{ run_command([$MULTIPATH, '-d', $scsiid]); };
@@ -561,14 +661,15 @@ sub unstage_multipath {
 }
 
 sub get_multipath_path {
-    my ($class, $scfg, $scsiid) = @_;
+    my ($class, $scfg, $scsiid, $target) = @_;
 
-    my $scsiid_path = "/dev/disk/by-id/scsi-${scsiid}";
+    return "/dev/mapper/${target}";
+    #my $scsiid_path = "/dev/disk/by-id/scsi-${scsiid}";
 
-    if (-e $scsiid_path) {
-        return $scsiid_path;
-    }
-    die "Unable to identify path for scsiid ${scsiid}";
+    #if (-e $scsiid_path) {
+    #    return $scsiid_path;
+    #}
+    #die "Unable to identify path for scsiid ${scsiid}";
 }
 
 sub get_storage_addresses {
@@ -587,9 +688,8 @@ sub get_storage_addresses {
 }
 
 sub get_scsiid {
-    my ($class, $scfg, $volname, $storeid, $snapname) = @_;
+    my ($class, $scfg, $target, $storeid) = @_;
 
-    my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
     my $getscsiidcmd = ["/lib/udev/scsi_id", "-g", "-u", "-d"];
     my $iscsiid;
 
@@ -599,9 +699,13 @@ sub get_scsiid {
         my $targetpath = "/dev/disk/by-path/ip-${host}-iscsi-${target}-lun-0";
         my $getscsiidcmd = ["/lib/udev/scsi_id", "-g", "-u", "-d", $targetpath];
         my $scsiid;
-        run_command($getscsiidcmd, outfunc => sub {
+        eval {run_command($getscsiidcmd, outfunc => sub {
             $scsiid = shift;
-        });
+        }); };
+        if ($@) {
+            warn "Unable to locate ${target} for host ${host}";
+            continue;
+        };
         print "Identified scsi id ${scsiid}\n";
         return $scsiid if defined($scsiid) ;
     }
@@ -639,38 +743,44 @@ sub get_target_path {
             return $path;
         }
     }
-    die "Unable to find active session for target ${target}";
+    return $path;
+    #die "Unable to find active session for target ${target}";
 }
 
 sub list_images {
     my ( $class, $storeid, $scfg, $vmid, $vollist, $cache ) = @_;
     ############################################################
     # remove me
-    my $volname = "vm-100-disk-0";
+    #my $i = 1;
+    #print STDERR "Stack Trace:\n";
+    #while ( (my @call_details = (caller($i++))) ){
+    #    print STDERR $call_details[1].":".$call_details[2]." in function ".$call_details[3]."\n";
+    #}
+    #my $volname = "vm-100-disk-0";
 
-    print "Get target name";
-    my $target = $class->get_target_name($scfg, $volname, $storeid);
-    my $scsiid = $class->get_scsiid($scfg, $volname, $storeid);
+    #print "Get target name";
+    #my $target = $class->get_target_name($scfg, $volname, $storeid);
+    #my $scsiid = $class->get_scsiid($scfg, $volname, $storeid);
    
-    print "Staging target\n";
-    $class->stage_target($scfg, $storeid, $target);
-    print "Adding multipath\n";
-    $class->stage_multipath($scfg, $scsiid, $target);
-    
+    #print "Staging target\n";
+    #$class->stage_target($scfg, $storeid, $target);
+    #print "Adding multipath\n";
+    #$class->stage_multipath($scfg, $scsiid, $target);
+    #
     ############################################################
     my $nodename = PVE::INotify::nodename();
 
-    my $config = $scfg->{config};
+    my $config = get_config($scfg);
 
-    my $pool = $scfg->{pool_name};
+    my $pool = get_config($scfg);
 
-    if ($scfg->{debug}) {
-        print"list images ${storeid}\n" if $storeid;
-        print"scfg ${scfg}\n" if $scfg;
-        print"vmid ${vmid}" if $vmid;
-        print"vollist ${vollist}" if $vollist;
-        print"cache ${cache}" if $cache;
-    }
+    #if ($scfg->{debug}) {
+    #    print"list images ${storeid}\n" if $storeid;
+    #    print"scfg $@scfg\n" if $scfg;
+    #    print"vmid ${vmid}" if $vmid;
+    #    print"vollist ${vollist}" if $vollist;
+    #    print"cache ${cache}" if $cache;
+    #}
 
     my $jdssc =  $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "list", "--vmid"]);
 
@@ -1028,82 +1138,56 @@ sub deactivate_storage {
 #}
 
 sub activate_volume {
-    my ( $class, $storeid, $scfg, $volname, $snap, $cache ) = @_;
-
-    my $config = $scfg->{config};
-
-    my $pool = $scfg->{pool_name};
-
-    my $target_info = "";
+    my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
     return 0 if ('images' cmp "$vtype");
 
-    if ($snap){
-        $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--snapshot", $snap]);
-    } else {
-        $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host"]);
-    }
+    print "Activating volume ${volname}\n";
+    my $config = get_config($scfg);
+    my $pool = get_pool($scfg);
 
-    my @tmp = split(" ", $target_info, 2);
-
-    my $host = $tmp[1];
-    chomp($host);
-    $host =~ s/[^[:ascii:]]//;
-
-    my $target = $tmp[0];
-    chomp($target);
-    $target =~ s/[^[:ascii:]]//;
-
-    my $session = iscsi_session($cache, $target);
-    if (defined ($session)) {
-        print"Nothing to do, exiting" if $scfg->{debug};
-        return 1;
-    }
-
-    if ($snap){
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname, "--snapshot", $snap]);
+    my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
+    
+    if ($snapname){
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname, "--snapshot", $snapname]);
     } else {
         $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "create", $volname]);
     }
-    print "Try to login to $target $host";
-    iscsi_login($target, $host);
+    
+    print "Staging target\n";
+    $class->stage_target($scfg, $storeid, $target);
 
-    return 0;
+    if (multipath_enabled($scfg)) {
+        
+        my $scsiid = $class->get_scsiid($scfg, $target, $storeid);
+        print "Adding multipath\n";
+        $class->stage_multipath($scfg, $scsiid, $target);
+    }
+
+    return 1;
 }
 
 sub deactivate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
 
-    my $config = $scfg->{config};
+    print "Deactivating volume ${volname}\n";
+    my $config = get_config($scfg);
+    my $pool = get_pool($scfg);
 
-    my $pool = $scfg->{pool_name};
+    my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
 
-    my $target_info = "";
-
-    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
-    return 0 if ('images' cmp "$vtype");
-
-    if ($snapname){
-        $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host", "--snapshot", $snapname]);
-    } else {
-        $target_info = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--host"]);
+    if (multipath_enabled($scfg)) {
+        
+        my $scsiid = $class->get_scsiid($scfg, $target, $storeid);
+        print "Removing multipath\n";
+        $class->unstage_multipath($scfg, $scsiid, $target);
     }
 
-    my @tmp = split(" ", $target_info, 2);
-    my $host = $tmp[1];
-    my $target = $tmp[0];
-
-    eval{ iscsi_logout($target, $host)};
-    warn $@ if $@;
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]);
-
-    if ($snapname){
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete", "--snapshot", $snapname]);
-    } else {
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]);
-    }
+    print "Unstaging target\n";
+    $class->unstage_target($scfg, $storeid, $target);
+    
     return 1;
 }
 
