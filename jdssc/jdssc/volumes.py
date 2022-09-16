@@ -57,6 +57,7 @@ class Volumes():
             create = parsers.add_parser('create')
             create.add_argument('-s', dest='volume_size', type=str, default='1G', help='New volume size in format <number><dimension>')
             create.add_argument('-b', dest='block_size', type=str, default='64K', help='Block size')
+            create.add_argument('-d', dest='direct_mode', action='store_true', default=False, help='Use real volume name')
             create.add_argument('volume_name', type=str, help='New volume name')
 
             freename = parsers.add_parser('getfreename')
@@ -117,7 +118,7 @@ class Volumes():
         else:
             volume['id'] = str(uuid.uuid1())
 
-        self.jdss.create_volume(volume)
+        self.jdss.create_volume(volume, direct_mode=self.args['direct_mode'])
 
     def clone(self):
 
@@ -230,7 +231,7 @@ class Volumes():
         size = self.args['new_size']
  
         if self.args['add_size']:
-            d = self.jdss.get_volume(volume)
+            d = self.jdss.get_volume(volume, direct_mode=self.args['direct_mode'])
             size += int(d['size'])
 
         self.jdss.extend_volume(volume, size, direct_mode=self.args['direct_mode'])

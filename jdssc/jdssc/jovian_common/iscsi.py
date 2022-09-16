@@ -119,13 +119,17 @@ class JovianISCSIDriver(object):
 
         return self.jovian_hosts
 
-    def create_volume(self, volume):
+    def create_volume(self, volume, direct_mode=False):
         """Create a volume.
 
         :param volume: volume reference
         :return: model update dict for volume reference
         """
-        vname = jcom.vname(volume['id'])
+        vname = "";
+        if direct_mode:
+            vname = volume['id']
+        else:
+            vname = jcom.vname(volume['id'])
         LOG.debug('creating volume %s.', vname)
 
         provider_location = self._get_provider_location(volume['id'])
@@ -229,7 +233,7 @@ class JovianISCSIDriver(object):
             name = jcom.vname(volume['id'])
         #try:
         data = self.ra.get_lun(name)
-        print(data)
+        #print(data)
         #except jexc.JDSSException as ex:
         #    LOG.error("Get volume error. Because %(err)s",
         #              {"err": ex})
@@ -485,8 +489,8 @@ class JovianISCSIDriver(object):
         LOG.debug("Extend volume %s", volume['id'])
         name = volume['id']
 
-        if not self.config['direct_mode']:
-            name = jcom.vname(new_name)
+        if not direct_mode:
+            name = jcom.vname(name)
 
         try:
             self.ra.extend_lun(name, new_size)
@@ -999,7 +1003,7 @@ class JovianISCSIDriver(object):
 
             raise Exception(err_msg)
 
-    def _create_target_volume(self, volume, isSnapshot=False):
+    def _create_target_volume(self, volume, isSnapshot=False, direct_mode=False):
         """Creates target and attach volume to it
 
         :param volume: volume id
@@ -1009,16 +1013,17 @@ class JovianISCSIDriver(object):
 
         target_name = self.jovian_target_prefix + volume['id']
 
-        vname = None
-        if isSnapshot:
-            vname = jcom.sname(volume['id'])
-        else:
-            vname = jcom.vname(volume['id'])
+        vname = volume['id']
+        if not direct_mode:
+            if isSnapshot:
+                vname = jcom.sname(volume['id'])
+            else:
+                vname = jcom.vname(volume['id'])
 
         auth = volume['provider_auth']
 
         if not auth:
-            msg = _("Volume %s is missing provider_auth") % volume['id']
+            msg = _("Volume %s is missing provider_auth") % vname
             raise cexc.VolumeDriverException(msg)
 
         (__, auth_username, auth_secret) = auth.split()
@@ -1054,7 +1059,7 @@ class JovianISCSIDriver(object):
                      "password": auth_secret}
 
         if not self.ra.is_target(target_name):
-            self._create_target_volume(volume, isSnapshot=isSnapshot)
+            self._create_target_volume(volume, isSnapshot=isSnapshot, direct_mode=direct_mode)
             return
 
         vname = volume['id']
