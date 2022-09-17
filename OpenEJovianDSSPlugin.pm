@@ -614,7 +614,17 @@ blacklist_exceptions {
 }
 
 sub unstage_multipath {
-    my ($class, $scfg, $scsiid, $target) = @_;
+    my ($class, $scfg, $storeid, $target) = @_;
+
+    my $scsiid;
+
+    eval { $scsiid = $class->get_scsiid($scfg, $target, $storeid); };
+    if ($@) {
+        warn "Unable to identify scsiid for target ${target}";
+    } else {
+        eval{ run_command([$MULTIPATH, '-d', $scsiid]); };
+        warn $@ if $@;
+    }
 
     print "Unstage multipath for scsi id ${scsiid} target ${target}" if get_debug($scfg);
     my $tcfg = "/etc/multipath/conf.d/${target}";
@@ -622,9 +632,6 @@ sub unstage_multipath {
     if ( -e $tcfg ) {
         unlink $tcfg;
     }
-
-    eval{ run_command([$MULTIPATH, '-d', $scsiid]); };
-    warn $@ if $@;
 
     run_command([$SYSTEMCTL, 'restart', 'multipathd']);
 }
@@ -655,35 +662,33 @@ sub get_storage_addresses {
 sub get_scsiid {
     my ($class, $scfg, $target, $storeid) = @_;
 
-    my $getscsiidcmd = ["/lib/udev/scsi_id", "-g", "-u", "-d"];
-    my $iscsiid;
-
-    my $multipathpath = $class->get_multipath_path($scfg, $target);
     my $mcfg = "/etc/multipath/conf.d/$target";
 
-    if (-e $multipathpath) {
-        my $getscsiidcmd = ["/lib/udev/scsi_id", "-g", "-u", "-d", $multipathpath];
+    if (multipath_enabled($scfg)) {
+        if (-e $mcfg) {
+            open my $mcfgfile, $mcfg or die "Unable to parse existing multipath file ${mcfg}, because of $!";
 
-        my $scsiid;
-        eval {run_command($getscsiidcmd, outfunc => sub {
-            $scsiid = shift;
-        }); };
-        return $scsiid;
-    }
-
-    if (-e $mcfg) {
-        open my $mcfgfile, $mcfg or die "Unable to parse existing multipath file ${mcfg}, because of $!";
-
-        while ( defined(my $line = <$mcfgfile>) ) {
-            if ($line =~ m/wwid (\d+)/) {
-                close $mcfgfile;
-                return $1;
+            while ( defined(my $line = <$mcfgfile>) ) {
+                if ($line =~ m/wwid (\d+)/) {
+                    close $mcfgfile;
+                    return $1;
+                }
             }
+            close $mcfgfile;
+            die "Multipath config file ${mcfg} does not contain wwid!";
         }
-        close $mcfgfile;
-        die "Multipath config file ${mcfg} does not contain wwid!";
-    }
 
+        my $multipathpath = $class->get_multipath_path($scfg, $target);
+        if (-e $multipathpath) {
+            my $getscsiidcmd = ["/lib/udev/scsi_id", "-g", "-u", "-d", $multipathpath];
+
+            my $scsiid;
+            eval {run_command($getscsiidcmd, outfunc => sub {
+                $scsiid = shift;
+            }); };
+            return $scsiid;
+        }
+    }
     my @hosts = $class->get_storage_addresses($scfg, $storeid);
 
     foreach my $host (@hosts) {
@@ -1095,17 +1100,16 @@ sub activate_volume {
 sub deactivate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
 
-    print "Deactivating volume ${volname}\n" if get_volume($scfg);
+    print "Deactivating volume ${volname}\n" if get_debug($scfg);
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
 
     if (multipath_enabled($scfg)) {
-        
-        my $scsiid = $class->get_scsiid($scfg, $target, $storeid);
+
         print "Removing multipath\n" if get_debug($scfg);
-        $class->unstage_multipath($scfg, $scsiid, $target);
+        $class->unstage_multipath($scfg, $storeid, $target);
     }
 
     print "Unstaging target\n" if get_debug($scfg);
