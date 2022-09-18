@@ -356,15 +356,10 @@ sub volume_path {
 
     print"Getting path of volume ${volname} snapshot ${snapname}\n" if get_debug($scfg);
     
-    my $path;
     my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
 
-    if (multipath_enabled($scfg)) {
-        my $scsiid;
-        eval { $scsiid = $class->get_scsiid($scfg, $target, $storeid); };
-        warn "Volume ${volname} is not active." if $@;
-        return $class->get_multipath_path($scfg, $target);
-    }
+    return $class->get_multipath_path($scfg, $target) if (multipath_enabled($scfg));
+
     return $class->get_target_path($scfg, $target, $storeid);
 }
 
@@ -405,9 +400,6 @@ sub get_subdir {
     return "$path/$subdir" if defined($subdir);
 
     return undef;
-    #die "unknown vtype '$vtype'\n" if !defined($subdir);
-
-    #return "$path/$subdir";
 }
 
 sub create_base {
@@ -521,7 +513,6 @@ sub stage_target {
     }
 
     return $targetpath;
-    #$class->get_target_path($scfg, $target, $storeid);
 }
 
 sub unstage_target {
@@ -577,20 +568,6 @@ blacklist_exceptions {
     for (my $i = 0; $i <= $timeout; $i++) {
 
         if (-b $targetpath) {
-            #print "found mpath renamed file\n";
-            #my $dir = "/dev/mapper";
-            #opendir DIR,$dir;
-            #my @dir = readdir(DIR);
-            #close DIR;
-            #foreach(@dir){
-            #    if (-f $dir . "/" . $_ ){
-            #        print $_,"   : file\n";
-            #    }elsif(-d $dir . "/" . $_){
-            #        print $_,"   : folder\n";
-            #    }else{
-            #        print $_,"   : other\n";
-            #    }
-            #}
             return $targetpath;
         }
         if (-b $scsiidpath) {
@@ -931,28 +908,23 @@ sub cifs_mount {
 sub ensure_content_volume {
     my ($class, $storeid, $scfg, $cache) = @_; 
 
-    my $path = get_content_path($scfg);
+    my $content_path = get_content_path($scfg);
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my $content_volname = get_content_volume_name($scfg);
     my $content_volume_size = get_content_volume_size($scfg);
 
+    my $tpath = $class->volume_path($scfg, $content_volname, $storeid);
+
     # Check if content volume already present in system
-    my $volumeuuid; 
-    eval {run_command(["findmnt", $path, "-n", "-o", "UUID"], outfunc => sub { $volumeuuid = shift; }); };
+    my $findmntpath; 
+    eval {run_command(["findmnt", $content_path, "-n", "-o", "SOURCE"], outfunc => sub { $findmntpath = shift; }); };
 
     my $tname = $class->get_target_name($scfg, $content_volname, $storeid);
-    if (defined($volumeuuid) && -e "/dev/disk/by-uuid/${volumeuuid}") {
 
-        my $scsiida = $class->get_scsiid($scfg, $tname, $storeid);
-
-        my $scsiidb;
-        my $getscsiidcmd = ["/lib/udev/scsi_id", "-g", "-u", "-d", "/dev/disk/by-uuid/${volumeuuid}"];
-        eval {run_command($getscsiidcmd, outfunc => sub { $scsiidb = shift; }); };
-        
-        die "Another volume is mounted to the PATH" if $scsiida ne $scsiidb;
-
+    if (defined($findmntpath)) {
+        die "Another volume is mounted to the content volume ${content_path}" if ($findmntpath ne $tpath);
         $class->ensure_fs($scfg);
         return 1;
     }
@@ -968,11 +940,11 @@ sub ensure_content_volume {
 
     $class->activate_volume_ext($storeid, $scfg, $content_volname, "", $cache, 1);
 
-    my $tpath = $class->volume_path($scfg, $content_volname, $storeid);
     print "Checking file system on device ${tpath}\n";
     run_command(["/usr/sbin/fsck", "-n", $tpath], errmsg => "Unable identify file system type for content storage, if that is a first run, format ${tpath} to a file sistem of your choise.");
     print "Mounting device ${tpath}\n";
-    run_command(["/usr/bin/mount", $tpath, $path], errmsg => "Unable to mount contant storage");
+    mkdir "$content_path";
+    run_command(["/usr/bin/mount", $tpath, $content_path], errmsg => "Unable to mount contant storage");
 
     $class->ensure_fs($scfg);
 }
