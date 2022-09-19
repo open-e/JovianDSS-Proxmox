@@ -919,12 +919,14 @@ sub ensure_content_volume {
 
     # Check if content volume already present in system
     my $findmntpath; 
-    eval {run_command(["findmnt", $content_path, "-n", "-o", "SOURCE"], outfunc => sub { $findmntpath = shift; }); };
+    eval {run_command(["findmnt", $content_path, "-n", "-o", "UUID"], outfunc => sub { $findmntpath = shift; }); };
 
     my $tname = $class->get_target_name($scfg, $content_volname, $storeid);
 
     if (defined($findmntpath)) {
-        die "Another volume is mounted to the content volume ${content_path}" if ($findmntpath ne $tpath);
+        my $tuuid;
+        eval { run_command(['blkid', '-o', 'value', $tpath, '-s', 'UUID'], outfunc => sub { $tuuid = shift; }); };
+        die "Another volume is mounted to the content volume ${content_path}" if ($findmntpath ne $tuuid);
         $class->ensure_fs($scfg);
         return 1;
     }
