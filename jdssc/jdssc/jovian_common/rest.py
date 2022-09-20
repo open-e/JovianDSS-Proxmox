@@ -31,7 +31,7 @@ class JovianRESTAPI(object):
 
     def __init__(self, config):
 
-        self.pool = config.get('jovian_pool', 'Pool-0')
+        self.pool = config.get('jovian_pool')
         self.rproxy = rest_proxy.JovianRESTProxy(config)
 
         self.resource_dne_msg = (

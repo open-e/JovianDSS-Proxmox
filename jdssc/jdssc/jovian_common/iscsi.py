@@ -56,7 +56,7 @@ class JovianISCSIDriver(object):
         self.jovian_sparse = False
         self.jovian_ignore_tpath = None
         self.jovian_hosts = None
-        self._pool = 'Pool-0'
+        self._pool = None
         self.ra = None
 
     @property
@@ -73,7 +73,7 @@ class JovianISCSIDriver(object):
     def do_setup(self, context):
         """Any initialization the volume driver does while starting."""
 
-        self._pool = self.configuration.get('jovian_pool', 'Pool-0')
+        self._pool = self.configuration.get('jovian_pool')
         self.jovian_iscsi_target_portal_port = self.configuration.get(
             'target_port', 3260)
 

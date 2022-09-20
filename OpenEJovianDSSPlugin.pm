@@ -25,6 +25,8 @@ use Storable qw(lock_store lock_retrieve);
 use UUID "uuid";
 
 use File::Path qw(make_path);
+use File::Temp qw(tempfile);
+#use File::Sync qw(fsync sync);
 
 use Encode qw(decode encode);
 
@@ -530,37 +532,121 @@ sub unstage_target {
     }
 }
 
+sub get_multipath_records {
+    my ($class, $jmultipathd) = @_;
+    my $res = {};
+
+    make_path $jmultipathd, {owner=>'root', group=>'root'};
+    opendir my $dir, $jmultipathd or die "Cannot open multipath directory: $!";
+    my @files = readdir $dir;
+    closedir $dir;
+
+    #my @files = glob( $jmultipathd . '/*' );
+    foreach my $file (@files) {
+
+        if ($file eq '.' or $file eq '..') {
+            next;
+        }
+
+        open my $filed, '<', "${jmultipathd}/${file}";
+        my $scsiid = <$filed>;
+        $res->{$file} = clean_word($scsiid);
+        close($filed);
+    }
+    return $res;
+}
+
+sub generate_multipath_file {
+    my ($class, $jmultipathd) = @_;
+    ###################
+    
+    my $target = "test-target";
+    my $scsiid = "1234567";
+    my $filename = "/etc/multipath/conf.d/multipath.conf";
+
+    make_path '/etc/multipath/conf.d/', {owner=>'root', group=>'root'};
+    my (undef, $tmppath) = tempfile('multipathXXXXX', DIR => '/tmp/', OPEN => 0); 
+    
+    print "Tmp file path ${tmppath}";
+    
+    PVE::Tools::file_copy($filename, $tmppath);
+    open(MULTIPATH, '<', $filename);  
+    open(FH, '>', $tmppath);
+
+    my $mpvols = $class->get_multipath_records($jmultipathd);
+        
+    my $startblock = "# Start of JovianDSS managed block\n";
+    my $endblock   = "# End of JovianDSS managed block";
+
+    my $printflag = 1;
+    while(<MULTIPATH>){
+
+        if (/$startblock/ ) {
+            $printflag = 0;
+        }
+
+        if ($printflag) {
+            print FH "$_";
+        }
+
+        if (/$endblock/ ) {
+            $printflag = 1;
+        }
+        if (/multipaths \{/ ) {
+            print FH $startblock;
+            
+            for my $key (keys %$mpvols) {
+                my $multipathdef = "      multipath {
+            wwid $mpvols->{ $key }
+            alias ${key}
+      }\n";
+                print FH $multipathdef;
+            }
+
+            print FH $endblock;
+            print FH "\n";
+        }
+        if (/blacklist_exceptions \{/ ) {
+            print FH $startblock;
+            
+            for my $key (keys %$mpvols) {
+                my $multipathdef = "      wwid $mpvols->{ $key }\n";
+                print FH $multipathdef;
+            }
+
+            print FH $endblock;
+            print FH "\n";
+        }
+    }
+    #$tmpfh->fsync();
+    close(MULTIPATH);
+    close(FH);
+    ##################################################33
+    PVE::Tools::file_copy($tmppath, $filename);
+}
+
 sub stage_multipath {
     my ($class, $scfg, $scsiid, $target) = @_;
 
-    my $scsiidpath = "/dev/disk/by-id/scsi-${scsiid}";
-    my $targetpath = "/dev/mapper/${target}";
-    my $filename = "/etc/multipath/conf.d/$target";
+    my $scsiidpath  = "/dev/disk/by-id/scsi-${scsiid}";
+    my $targetpath  = "/dev/mapper/${target}";
+    my $jmultipathd = "/etc/multipath/conf.d/joviandssdisks";
+    my $filename    = "${jmultipathd}/${target}";
 
     if (-b $targetpath && -e $filename) {
         return $targetpath;
     }
-    
-    my $str = "multipaths {
-  multipath {
-    wwid $scsiid
-    alias $target
-  }
-}
 
-blacklist_exceptions {
-  wwid $scsiid
-}";
+    make_path $jmultipathd, {owner=>'root', group=>'root'};
+    my $multipathidfd;
+    open($multipathidfd, '>', $filename) or die "Unable to create multipath record file ${filename}";
+    print $multipathidfd "${scsiid}";
+    close $multipathidfd;
 
-    open(FH, '>', $filename) or die $!;
-
-    print FH $str;
-
-    close(FH);
-
-    eval {run_command([$MULTIPATH, '-a', $scsiid]); };
+    $class->generate_multipath_file($jmultipathd);
+    eval { run_command([$MULTIPATH, '-a', $scsiid]); };
     die "Unable to add scsi id ${scsiid} $@" if $@;
-    eval {run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
+    eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
     die "Unable to restart multipath daemon $@" if $@;
 
     my $timeout = 10;
@@ -576,15 +662,6 @@ blacklist_exceptions {
             die "Failed to stage target ${target} with proper name" if $@;
         }
         sleep(1);
-    }
-
-    if ( -e $targetpath ) {
-        return $targetpath;
-    }
-    if ( -e $scsiidpath ) {
-        eval { run_command([$DMSETUP, 'rename', $scsiid , $target]); };
-        die "Failed to stage target ${target} with proper name" if $@;
-        return $targetpath;
     }
 
     die "Unable to identify mapping for target ${target}, might be an issue with device mapper, multipath or udev naming scripts";
@@ -724,6 +801,9 @@ sub list_images {
     my ( $class, $storeid, $scfg, $vmid, $vollist, $cache ) = @_;
 
     my $nodename = PVE::INotify::nodename();
+
+    #my $jmultipathd = "/etc/multipath/conf.d/joviandssdisks";
+    #$class->generate_multipath_file($jmultipathd);
 
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
@@ -956,6 +1036,7 @@ sub ensure_fs {
     
     my $path = get_content_path($scfg);
     
+    make_path $path, {owner=>'root', group=>'root'};
     my $dir_path = "$path/iso";
     mkdir $dir_path;
     $dir_path = "$path/vztmpl";
@@ -970,44 +1051,11 @@ sub ensure_fs {
 
 sub activate_storage {
     my ( $class, $storeid, $scfg, $cache ) = @_;
- 
-    my $path = "/tmp/";
-    #get_content_path($scfg);
-    #my $content_enabled = get_content($scfg);
 
     return undef if !defined($scfg->{content});
 
     $class->ensure_content_volume($storeid, $scfg, $cache);
 
-    make_path '/etc/multipath/conf.d/', {owner=>'root', group=>'root'};
-
-    my $dir_path = "$path/iso";
-    mkdir $dir_path;
-    $dir_path = "$path/vztmpl";
-    mkdir $dir_path;
-    $dir_path = "$path/backup";
-    mkdir $dir_path;
-    $dir_path = "$path/rootdir";
-    mkdir $dir_path;
-    $dir_path = "$path/snippets";
-    mkdir $dir_path;
-    #my $username = $scfg->{share_user};
-    #die "Path property requires share_user property\n" if !defined($scfg->{share_pass});
-
-    #my $password = $scfg->{share_pass};
-    #my $config = $scfg->{config};
-    #my $share = $scfg->{share_name};
-    #my $pool = $scfg->{pool_name};
-    #my $path = $scfg->{path};
-
-    #return 1 if (cifs_is_mounted($share, $path));
-
-    #mkdir $path;
-    #$class->joviandss_cmd(["-c", $config, "pool", $pool, "cifs",  $share, "ensure", "-u", $username, "-p", $password, "-n", $share]);
-
-    #cifs_mount($joviandss_address, $share, $path, $username, $password);
-
-	# Make dirs
     return undef;
 }
 

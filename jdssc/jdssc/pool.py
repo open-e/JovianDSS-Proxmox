@@ -38,13 +38,17 @@ class Pools():
                    'volumes': self.volumes}
 
         self.args = args
-        
+
         argst = self.__parse(uargs)
 
         self.args.update(vars(argst[0]))
         self.uargs = argst[1]
         self.jdss = jdss
         
+        if self.args['pool_name']:
+            self.jdss.configuration['jovian_pool'] = self.args['pool_name']
+            #print(self.jdss.configuration)
+        self.jdss.do_setup(None)
         if 'pool-action' in self.args:
             self.pa[self.args.pop('pool-action')]()
 
