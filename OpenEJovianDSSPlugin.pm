@@ -48,6 +48,7 @@ my $default_pool = "Pool-0";
 my $default_config = "/etc/pve/joviandss.cfg";
 my $default_debug = 0;
 my $default_multipath = 0;
+my $default_content_size = 2;
 my $default_path = "/mnt/joviandss";
 
 sub api {
@@ -142,8 +143,7 @@ sub get_debug {
 sub get_content {
     my ($scfg) = @_;
 
-    die "Path property is required for content storage\n" if !defined($scfg->{path});
-    return $scfg->{path};
+    return $scfg->{content};
 }
 
 sub get_content_path {
@@ -156,20 +156,24 @@ sub get_content_path {
 sub get_content_volume_name {
     my ($scfg) = @_;
 
-    die "Content volume name property is required for content storage\n" if !defined($scfg->{content_volume_name});
-    return $scfg->{content_volume_name};
+    return $scfg->{content_volume_name} if defined($scfg->{content_volume_name});
+
+    my $pool = get_pool($scfg);
+    my $cvn = "proxmox-content-volume-${pool}";
+    warn "Content volume name is not set up, using generated value ${cvn}\n";
+    return $cvn;
 }
 
 sub get_content_volume_size {
     my ($scfg) = @_;
 
-    die "content_volume_size property is required for content storage\n" if !defined($scfg->{content_volume_size});
-    return $scfg->{content_volume_size} * 1024 * 1024 * 1024;
+    warn "content_volume_size property is not set up, using default $default_volume_size\n" if !defined($scfg->{content_volume_size});
+    my $size = $scfg->{content_volume_size} || $default_content_size;
+    return $size * 1024 * 1024 * 1024;
 }
 
 sub multipath_enabled {
     my ($scfg) = @_;
-
     return $scfg->{multipath} || $default_multipath;
 }
 
