@@ -93,7 +93,7 @@ class JovianISCSIDriver(object):
 
         self.ra = rest.JovianRESTAPI(self.configuration)
 
-        self.check_for_setup_error()
+        #self.check_for_setup_error()
 
     def check_for_setup_error(self):
         """Check for setup error."""

@@ -167,7 +167,7 @@ sub get_content_volume_name {
 sub get_content_volume_size {
     my ($scfg) = @_;
 
-    warn "content_volume_size property is not set up, using default $default_volume_size\n" if !defined($scfg->{content_volume_size});
+    warn "content_volume_size property is not set up, using default $default_content_size\n" if !defined($scfg->{content_volume_size});
     my $size = $scfg->{content_volume_size} || $default_content_size;
     return $size * 1024 * 1024 * 1024;
 }
@@ -660,15 +660,15 @@ sub stage_multipath {
         if (-b $targetpath) {
             return $targetpath;
         }
-        if (-b $scsiidpath) {
-            print "Renaming ${scsiid}!\n" if get_debug($scfg);
-            eval { run_command([$DMSETUP, 'rename', $scsiid , $target]); };
-            die "Failed to stage target ${target} with proper name" if $@;
-        }
+        #if (-b $scsiidpath) {
+        #    print "Renaming ${scsiid}!\n" if get_debug($scfg);
+        #    eval { run_command([$DMSETUP, 'rename', $scsiid , $target]); };
+        #    die "Failed to stage target ${target} with proper name" if $@;
+        #}
         sleep(1);
     }
 
-    die "Unable to identify mapping for target ${target}, might be an issue with device mapper, multipath or udev naming scripts";
+    die "Unable to identify mapping for target ${target}, might be an issue with device mapper, multipath or udev naming scripts\n";
 }
 
 sub unstage_multipath {
@@ -958,37 +958,6 @@ sub storage_mounted {
     return 0;
 }
 
-sub cifs_is_mounted {
-    my ($share, $mountpoint) = @_;
-
-    #$server = "[$server]" if Net::IP::ip_is_ipv6($server);
-    #my $source = "//${server}/$share";
-    my $mountdata = PVE::ProcFSTools::parse_proc_mounts();
-
-    return $mountpoint if grep {
-    $_->[2] =~ /^cifs/ &&
-	$_->[0] =~ /$share/ &&
-	#$_->[0] =~ m|^\Q$source\E/?$| &&
-    $_->[1] eq $mountpoint
-    } @$mountdata;
-    return undef;
-}
-
-sub cifs_mount {
-    my ($server, $share, $mountpoint, $username, $password, $smbver) = @_;
-
-    $server = "[$server]" if Net::IP::ip_is_ipv6($server);
-    my $source = "//${server}/$share";
-
-    my $cmd = ['/bin/mount', '-t', 'cifs', $source, $mountpoint];
-    push @$cmd, '-o', 'soft';
-    push @$cmd, '-o', "username=$username", '-o', "password=$password";
-    push @$cmd, '-o', "domain=workgroup";
-    push @$cmd, '-o', defined($smbver) ? "vers=$smbver" : "vers=3.0";
-
-    run_command($cmd, errmsg => "mount error");
-}
-
 sub ensure_content_volume {
     my ($class, $storeid, $scfg, $cache) = @_; 
 
@@ -1010,9 +979,17 @@ sub ensure_content_volume {
     if (defined($findmntpath)) {
         my $tuuid;
         eval { run_command(['blkid', '-o', 'value', $tpath, '-s', 'UUID'], outfunc => sub { $tuuid = shift; }); };
-        die "Another volume is mounted to the content volume ${content_path}" if ($findmntpath ne $tuuid);
-        $class->ensure_fs($scfg);
-        return 1;
+
+        if ($findmntpath eq $tuuid) {
+            $class->ensure_fs($scfg);
+            return 1;
+        }
+
+        warn "Another volume is mounted to the content volume ${content_path} location.";
+        my $cmd = ['/bin/umount', $content_path];
+        eval {run_command($cmd, errmsg => 'umount error') };
+        die "Unable to unmount unknown volume at content path ${content_path}" if $@;
+
     }
 
     # Get volume
@@ -1066,17 +1043,21 @@ sub activate_storage {
 sub deactivate_storage {
     my ( $class, $storeid, $scfg, $cache ) = @_;
 
-    $cache->{mountdata} = PVE::ProcFSTools::parse_proc_mounts()
-    if !$cache->{mountdata};
-
-    my $path = $scfg->{path};
-    my $server = $scfg->{server};
-    my $share = $scfg->{share};
-
-    return 1 if (cifs_is_mounted($share, $path));
+    my $path = get_content_path($scfg);
+    my $content_volname = get_content_volume_name($scfg);
+    my $target = $class->get_target_name($scfg, $content_volname, $storeid);
 
     my $cmd = ['/bin/umount', $path];
-    run_command($cmd, errmsg => 'umount error');
+    eval {run_command($cmd, errmsg => 'umount error') };
+    warn "Unable to unmount ${path}" if $@;
+
+    if (multipath_enabled($scfg)) {
+
+        print "Removing multipath\n" if get_debug($scfg);
+        $class->unstage_multipath($scfg, $storeid, $target);
+    }
+    print "Unstaging target\n" if get_debug($scfg);
+    $class->unstage_target($scfg, $storeid, $target);
 
     return undef;
 }

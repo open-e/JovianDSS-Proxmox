@@ -198,13 +198,21 @@ systemctl start multipathd
 ### Storage.cfg
 Activate feature by setting `1` for `multipath` property in `storage.cfg` 
 
-### Content volume with multipath
+### Content volume
 
-Once multipath is enabled JovianDSS Proxmox will try to mount volume specified as `content_volume_name` in `storage.conf` file.
-User can create this volume manualy or let JovianDSS plugin create it automaticaly.
+If `content` being set in `storage.cfg` JovianDSS Proxmox plugin will try to use volume specified as `content_volume_name` in `storage.conf` as a storage for
+data described in `content` variable.
+User can create volume `content_volume_name` manually or let JovianDSS plugin create it automatically.
+After activation plugin will try to mount content volume to directory specified as `path` in `storage.conf` file.
+If volume was not formatted administrator is expected to format it manually.
 
-After activation plugin will try to mount volume to `path` property in `storage.conf` file.
+Plugin will show what device to format through error message in user interface or in command line
 
+
+Formatting can be done by calling
+```bash
+mount <device> <content folder path>
+```
 
 
 ## Installing/Uninstalling
