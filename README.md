@@ -206,7 +206,9 @@ User can create volume `content_volume_name` manually or let JovianDSS plugin cr
 After activation plugin will try to mount content volume to directory specified as `path` in `storage.conf` file.
 If volume was not formatted administrator is expected to format it manually.
 
-Plugin will show what device to format through error message in user interface or in command line
+Plugin will show path of device representation is OS through error message in user interface:
+
+or in command line:
 
 
 Formatting can be done by calling

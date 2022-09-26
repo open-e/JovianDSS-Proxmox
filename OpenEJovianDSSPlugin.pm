@@ -1004,7 +1004,11 @@ sub ensure_content_volume {
     $class->activate_volume_ext($storeid, $scfg, $content_volname, "", $cache, 1);
 
     print "Checking file system on device ${tpath}\n";
-    run_command(["/usr/sbin/fsck", "-n", $tpath], errmsg => "Unable identify file system type for content storage, if that is a first run, format ${tpath} to a file sistem of your choise.");
+    eval { run_command(["/usr/sbin/fsck", "-n", $tpath])};
+    if ($@) {
+            warn $@;
+            die "Unable identify file system type for content storage, if that is a first run, format ${tpath} to a file sistem of your choise.";
+    }
     print "Mounting device ${tpath}\n";
     mkdir "$content_path";
     run_command(["/usr/bin/mount", $tpath, $content_path], errmsg => "Unable to mount contant storage");
