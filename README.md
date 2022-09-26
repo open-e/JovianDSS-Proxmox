@@ -25,7 +25,7 @@ open-e: joviandss
         config /etc/pve/joviandss.yaml
         path /mnt/joviandss
         content iso,backup,images,rootdir,vztmpl
-        content_volume_name proxmox-content-volume-Pool-0
+        content_volume_name proxmox-content-volume-pool-0
         content_volume_size 1
         debug 0
         multipath 1
