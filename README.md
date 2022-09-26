@@ -208,14 +208,22 @@ If volume was not formatted administrator is expected to format it manually.
 
 Plugin will show path of device representation is OS through error message in user interface:
 
-or in command line:
-
-
-Formatting can be done by calling
+Or in command line:
 ```bash
-mount <device> <content folder path>
+pvesm list joviandss
 ```
 
+Will output address `/dev/mapper/iqn.2021-10.com.open-e:proxmox-content-volume-Pool-0` for volume `proxmox-content-volume-Pool-0`.
+```bash
+Unable identify file system type for content storage, if that is a first run, format /dev/mapper/iqn.2021-10.com.open-e:proxmox-content-volume-Pool-0 to a file system of your choise. at /usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm line 1010.
+r
+```
+
+Formatting can be done by calling
+
+```bash
+mkfs.ext3 /dev/mapper/iqn.2021-10.com.open-e:proxmox-content-volume-Pool-0
+```
 
 ## Installing/Uninstalling
 
