@@ -206,7 +206,7 @@ User can create volume `content_volume_name` manually or let JovianDSS plugin cr
 After activation plugin will try to mount content volume to directory specified as `path` in `storage.conf` file.
 If volume was not formatted administrator is expected to format it manually.
 
-Plugin will show path of device representation is OS through error message in user interface:
+Plugin will show path of device representation is OS through error message in web interface ![fs-error](pic/fs-error.png)
 
 Or in command line:
 ```bash
@@ -216,7 +216,6 @@ pvesm list joviandss
 Will output address `/dev/mapper/iqn.2021-10.com.open-e:proxmox-content-volume-Pool-0` for volume `proxmox-content-volume-Pool-0`.
 ```bash
 Unable identify file system type for content storage, if that is a first run, format /dev/mapper/iqn.2021-10.com.open-e:proxmox-content-volume-Pool-0 to a file system of your choise. at /usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm line 1010.
-r
 ```
 
 Formatting can be done by calling
