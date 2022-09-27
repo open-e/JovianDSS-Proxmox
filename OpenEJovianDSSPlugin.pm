@@ -161,7 +161,7 @@ sub get_content_volume_name {
         return "proxmox-content-volume";
     }
     my $cvn = $scfg->{content_volume_name};
-    die "Content volume name should only include lower case, numbers and . : - chars" if ( not ($cvn =~ /^[a-z0-9.:-]*$/) );
+    die "Content volume name should only include lower case, numbers and . - chars" if ( not ($cvn =~ /^[a-z0-9.-]*$/) );
 
     return $cvn;
 }
