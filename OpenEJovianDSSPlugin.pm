@@ -156,11 +156,13 @@ sub get_content_path {
 sub get_content_volume_name {
     my ($scfg) = @_;
 
-    return $scfg->{content_volume_name} if defined($scfg->{content_volume_name});
+    if ( !defined($scfg->{content_volume_name}) ) {
+        warn "Content volume name is not set up, using default value";
+        return "proxmox-content-volume";
+    }
+    my $cvn = $scfg->{content_volume_name};
+    die "Content volume name should only include lower case, numbers and . : - chars" if ( not ($cvn =~ /^[a-z0-9.:-]*$/) );
 
-    my $pool = get_pool($scfg);
-    my $cvn = "proxmox-content-volume-${pool}";
-    warn "Content volume name is not set up, using generated value ${cvn}\n";
     return $cvn;
 }
 

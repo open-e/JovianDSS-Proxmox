@@ -25,7 +25,7 @@ open-e: joviandss
         config /etc/pve/joviandss.yaml
         path /mnt/joviandss
         content iso,backup,images,rootdir,vztmpl
-        content_volume_name proxmox-content-volume-Pool-0
+        content_volume_name proxmox-content-volume
         content_volume_size 1
         debug 0
         multipath 1
@@ -172,11 +172,11 @@ multipaths {
 # Start of JovianDSS managed block
       multipath {
             wwid 26431316533316430
-            alias iqn.2021-10.com.open-e:proxmox-content-volume-Pool-0
+            alias iqn.2021-10.com.open-e:proxmox-content-volume
       }
       multipath {
             wwid 23939646637633635
-            alias iqn.2022-10.com.open-e:proxmox-content-volume-Pool-1
+            alias iqn.2022-10.com.open-e:proxmox-content-volume
       }
 # End of JovianDSS managed block
 }
@@ -213,15 +213,15 @@ Or in command line:
 pvesm list joviandss
 ```
 
-Will output address `/dev/mapper/iqn.2021-10.com.open-e:proxmox-content-volume-Pool-0` for volume `proxmox-content-volume-Pool-0`.
+Will output address `/dev/mapper/iqn.2021-10.com.open-e:proxmox-content-volume` for volume `proxmox-content-volume`.
 ```bash
-Unable identify file system type for content storage, if that is a first run, format /dev/mapper/iqn.2021-10.com.open-e:proxmox-content-volume-Pool-0 to a file system of your choise. at /usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm line 1010.
+Unable identify file system type for content storage, if that is a first run, format /dev/mapper/iqn.2021-10.com.open-e:proxmox-content-volume to a file system of your choise. at /usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm line 1010.
 ```
 
 Formatting can be done by calling
 
 ```bash
-mkfs.ext3 /dev/mapper/iqn.2021-10.com.open-e:proxmox-content-volume-Pool-0
+mkfs.ext3 /dev/mapper/iqn.2021-10.com.open-e:proxmox-content-volume
 ```
 
 ## Installing/Uninstalling
