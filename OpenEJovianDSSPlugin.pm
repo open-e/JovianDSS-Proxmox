@@ -51,6 +51,8 @@ my $default_multipath = 0;
 my $default_content_size = 2;
 my $default_path = "/mnt/joviandss";
 
+my $default_jmultipathd = "/etc/multipath/conf.d/joviandssdisks";
+
 sub api {
 
    my $apiver = PVE::Storage::APIVER;
@@ -464,21 +466,28 @@ sub alloc_image {
 
     $volume_name = $class->find_free_diskname($storeid, $scfg, $vmid, $fmt) if !$volume_name;
 
-    print"Creating volume ${volume_name} format ${fmt}\n" if get_debug($scfg);
+    if ('images' ne "${fmt}") {
+        print"Creating volume ${volume_name} format ${fmt}\n" if get_debug($scfg);
 
-    my $config = get_config($scfg);
-    my $pool = get_pool($scfg);
+        my $config = get_config($scfg);
+        my $pool = get_pool($scfg);
 
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "-s", $size * 1024, $volume_name]);
-
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "-s", $size * 1024, $volume_name]);
+    }
     return "$volume_name";
 }
 
 sub free_image {
-    my ( $class, $storeid, $scfg, $volname, $isBase, $format) = @_;
+    my ( $class, $storeid, $scfg, $volname, $isBase, $_format) = @_;
 
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
+    my ($vtype, undef, undef, undef, undef, undef, $format) =
+        $class->parse_volname($volname);
+
+    if ('images' cmp "$vtype") {
+        return $class->SUPER::free_image($storeid, $scfg, $volname, $isBase, $format);
+    }
 
     print"Deleting volume ${volname} format ${format}\n" if get_debug($scfg);
 
@@ -547,7 +556,6 @@ sub get_multipath_records {
     my @files = readdir $dir;
     closedir $dir;
 
-    #my @files = glob( $jmultipathd . '/*' );
     foreach my $file (@files) {
 
         if ($file eq '.' or $file eq '..') {
@@ -564,23 +572,20 @@ sub get_multipath_records {
 
 sub generate_multipath_file {
     my ($class, $jmultipathd) = @_;
-    ###################
-    
-    my $target = "test-target";
-    my $scsiid = "1234567";
+
     my $filename = "/etc/multipath/conf.d/multipath.conf";
 
     make_path '/etc/multipath/conf.d/', {owner=>'root', group=>'root'};
     my (undef, $tmppath) = tempfile('multipathXXXXX', DIR => '/tmp/', OPEN => 0); 
-    
+
     print "Tmp file path ${tmppath}";
-    
+
     PVE::Tools::file_copy($filename, $tmppath);
     open(MULTIPATH, '<', $filename);  
     open(FH, '>', $tmppath);
 
     my $mpvols = $class->get_multipath_records($jmultipathd);
-        
+
     my $startblock = "# Start of JovianDSS managed block\n";
     my $endblock   = "# End of JovianDSS managed block";
 
@@ -600,7 +605,7 @@ sub generate_multipath_file {
         }
         if (/multipaths \{/ ) {
             print FH $startblock;
-            
+
             for my $key (keys %$mpvols) {
                 my $multipathdef = "      multipath {
             wwid $mpvols->{ $key }
@@ -614,7 +619,7 @@ sub generate_multipath_file {
         }
         if (/blacklist_exceptions \{/ ) {
             print FH $startblock;
-            
+
             for my $key (keys %$mpvols) {
                 my $multipathdef = "      wwid $mpvols->{ $key }\n";
                 print FH $multipathdef;
@@ -624,10 +629,8 @@ sub generate_multipath_file {
             print FH "\n";
         }
     }
-    #$tmpfh->fsync();
     close(MULTIPATH);
     close(FH);
-    ##################################################33
     PVE::Tools::file_copy($tmppath, $filename);
 }
 
@@ -636,7 +639,7 @@ sub stage_multipath {
 
     my $scsiidpath  = "/dev/disk/by-id/scsi-${scsiid}";
     my $targetpath  = "/dev/mapper/${target}";
-    my $jmultipathd = "/etc/multipath/conf.d/joviandssdisks";
+    my $jmultipathd = $default_jmultipathd;
     my $filename    = "${jmultipathd}/${target}";
 
     if (-b $targetpath && -e $filename) {
@@ -662,11 +665,6 @@ sub stage_multipath {
         if (-b $targetpath) {
             return $targetpath;
         }
-        #if (-b $scsiidpath) {
-        #    print "Renaming ${scsiid}!\n" if get_debug($scfg);
-        #    eval { run_command([$DMSETUP, 'rename', $scsiid , $target]); };
-        #    die "Failed to stage target ${target} with proper name" if $@;
-        #}
         sleep(1);
     }
 
@@ -687,11 +685,15 @@ sub unstage_multipath {
     }
 
     print "Unstage multipath for scsi id ${scsiid} target ${target}" if get_debug($scfg);
-    my $tcfg = "/etc/multipath/conf.d/${target}";
 
-    if ( -e $tcfg ) {
-        unlink $tcfg;
+
+    my $filename    = "${default_jmultipathd}/${target}";
+
+    if ( -e $filename ) {
+        unlink $filename;
     }
+
+    $class->generate_multipath_file($default_jmultipathd);
 
     run_command([$SYSTEMCTL, 'restart', 'multipathd']);
 }
@@ -718,24 +720,25 @@ sub get_storage_addresses {
     return @hosts;
 }
 
-
 sub get_scsiid {
     my ($class, $scfg, $target, $storeid) = @_;
 
-    my $mcfg = "/etc/multipath/conf.d/$target";
+    my $mcfg = "${default_jmultipathd}/${target}";
 
     if (multipath_enabled($scfg)) {
         if (-e $mcfg) {
             open my $mcfgfile, $mcfg or die "Unable to parse existing multipath file ${mcfg}, because of $!";
-
+            my $scsiid;
             while ( defined(my $line = <$mcfgfile>) ) {
-                if ($line =~ m/wwid (\d+)/) {
-                    close $mcfgfile;
-                    return $1;
+                if ( $line =~ /^[a-f0-9]*$/ ) {
+                    $scsiid = $line;
+                }
+                close $mcfgfile;
+                if (! defined($scsiid) ){
+                    warn "Multipath config file ${mcfg} does not contain wwid!";
+                    unlink $mcfg;
                 }
             }
-            close $mcfgfile;
-            die "Multipath config file ${mcfg} does not contain wwid!";
         }
 
         my $multipathpath = $class->get_multipath_path($scfg, $target);
@@ -746,7 +749,10 @@ sub get_scsiid {
             eval {run_command($getscsiidcmd, outfunc => sub {
                 $scsiid = shift;
             }); };
-            return $scsiid;
+            if ( defined($scsiid) ) {
+                return $scsiid;
+	    }
+	    warn "Unable to obtaine scsi id from multipath mapping of device";
         }
     }
     my @hosts = $class->get_storage_addresses($scfg, $storeid);
@@ -763,7 +769,7 @@ sub get_scsiid {
             continue;
         };
         print "Identified scsi id ${scsiid}\n" if get_debug($scfg);
-        return $scsiid if defined($scsiid) ;
+        return $scsiid if defined($scsiid);
     }
     die "Unable identify scsi id for target $target";
 }
@@ -807,9 +813,6 @@ sub list_images {
     my ( $class, $storeid, $scfg, $vmid, $vollist, $cache ) = @_;
 
     my $nodename = PVE::INotify::nodename();
-
-    #my $jmultipathd = "/etc/multipath/conf.d/joviandssdisks";
-    #$class->generate_multipath_file($jmultipathd);
 
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
@@ -1071,7 +1074,7 @@ sub deactivate_storage {
 sub activate_volume_ext {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache, $directmode ) = @_;
 
-    print "Activating volume ${volname}\n";
+    print "Activating volume ${volname}\n" if get_debug($scfg);
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
@@ -1105,7 +1108,7 @@ sub activate_volume {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-    return 0 if ('images' cmp "$vtype");
+    return 0 if ('images' ne "$vtype");
 
     return $class->activate_volume_ext($storeid, $scfg, $volname, $snapname, $cache);
 }
