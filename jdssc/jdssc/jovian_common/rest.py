@@ -31,7 +31,7 @@ class JovianRESTAPI(object):
 
     def __init__(self, config):
 
-        self.pool = config.get('jovian_pool', 'Pool-0')
+        self.pool = config.get('jovian_pool')
         self.rproxy = rest_proxy.JovianRESTProxy(config)
 
         self.resource_dne_msg = (
@@ -636,7 +636,7 @@ class JovianRESTAPI(object):
             return
 
         if resp["code"] == 409:
-            raise jexc.JDSSResourceExistsException(res=target_name)
+            raise jexc.JDSSResourceExistsException(target_name)
 
         self._general_error(req, resp)
 
@@ -801,7 +801,7 @@ class JovianRESTAPI(object):
             return
 
         if resp['code'] == 409:
-            raise jexc.JDSSResourceExistsException(res=lun_name)
+            raise jexc.JDSSResourceExistsException(lun_name)
 
         if resp['code'] == 404:
             raise jexc.JDSSResourceNotFoundException(res=target_name)

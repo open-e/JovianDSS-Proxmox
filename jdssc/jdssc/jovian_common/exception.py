@@ -52,26 +52,34 @@ class JDSSSnapshotNotFoundException(JDSSResourceNotFoundException):
 
 class JDSSResourceExistsException(JDSSException):
     """Resource with specified id exists"""
-
-    message = ("JDSS resource with id %(res)s exists.")
+    
+    def __init__(self, res):
+        self.message = ("JDSS resource with id {} exists.".format(res))
+        super().__init__(self.message)
 
 
 class JDSSSnapshotExistsException(JDSSResourceExistsException):
     """Snapshot with the same id exists"""
 
-    message = ("JDSS snapshot %(snapshot)s already exists.")
+    def __init__(self, snapshot):
+        self.message = ("JDSS snapshot %(snapshot)s already exists.")
+        super().__init__(self.message)
 
 
 class JDSSVolumeExistsException(JDSSResourceExistsException):
     """Volume with same id exists"""
 
-    message = ("JDSS volume %(volume)s already exists.")
+    def __init__(self, volume):
+        self.message = ("JDSS volume %(volume)s already exists.")
+        super().__init__(self.message)
 
 
 class JDSSResourceIsBusyException(JDSSException):
     """Resource have dependents"""
 
-    message = ("JDSS resource %(res)s is busy.")
+    def __init__(self, res):
+        self.message = ("JDSS resource %(res)s is busy." % res)
+        super().__init__(self.message)
 
 
 class JDSSSnapshotIsBusyException(JDSSResourceIsBusyException):

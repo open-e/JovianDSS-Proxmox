@@ -56,7 +56,7 @@ class JovianISCSIDriver(object):
         self.jovian_sparse = False
         self.jovian_ignore_tpath = None
         self.jovian_hosts = None
-        self._pool = 'Pool-0'
+        self._pool = None
         self.ra = None
 
     @property
@@ -73,7 +73,7 @@ class JovianISCSIDriver(object):
     def do_setup(self, context):
         """Any initialization the volume driver does while starting."""
 
-        self._pool = self.configuration.get('jovian_pool', 'Pool-0')
+        self._pool = self.configuration.get('jovian_pool')
         self.jovian_iscsi_target_portal_port = self.configuration.get(
             'target_port', 3260)
 
@@ -93,7 +93,7 @@ class JovianISCSIDriver(object):
 
         self.ra = rest.JovianRESTAPI(self.configuration)
 
-        self.check_for_setup_error()
+        #self.check_for_setup_error()
 
     def check_for_setup_error(self):
         """Check for setup error."""
@@ -119,13 +119,17 @@ class JovianISCSIDriver(object):
 
         return self.jovian_hosts
 
-    def create_volume(self, volume):
+    def create_volume(self, volume, direct_mode=False):
         """Create a volume.
 
         :param volume: volume reference
         :return: model update dict for volume reference
         """
-        vname = jcom.vname(volume['id'])
+        vname = "";
+        if direct_mode:
+            vname = volume['id']
+        else:
+            vname = jcom.vname(volume['id'])
         LOG.debug('creating volume %s.', vname)
 
         provider_location = self._get_provider_location(volume['id'])
@@ -216,29 +220,29 @@ class JovianISCSIDriver(object):
                 pass
         return ret
 
-    def get_volume(self, volume):
+    def get_volume(self, volume, direct_mode=False):
         """List volumes related to this pool.
 
         :return: list of volumes
         """
-        #vname = jcom.vname(volume.id)
-        #LOG.debug('creating volume %s.', vname)
+        name = None
 
-        #provider_location = self._get_provider_location(volume.id)
-        #provider_auth = self._get_provider_auth()
+        if direct_mode:
+            name = volume['id']
+        else:
+            name = jcom.vname(volume['id'])
+        #try:
+        data = self.ra.get_lun(name)
+        #print(data)
+        #except jexc.JDSSException as ex:
+        #    LOG.error("Get volume error. Because %(err)s",
+        #              {"err": ex})
+        #    raise Exception(('Failed to get volume %s.') % name)
 
-        try:
-            data = self.ra.get_lun(jcom.vname(volume['id']))
-
-        except jexc.JDSSException as ex:
-            LOG.error("Get volume error. Because %(err)s",
-                      {"err": ex})
-            raise Exception(('Failed to get volume %s.') % volume['id'])
-
-        if not jcom.is_volume(data['name']):
+        if (not direct_mode) and (not jcom.is_volume(name)):
             return dict()
 
-        ret = {'name': jcom.idname(data['name']),
+        ret = {'name': name,
                'id' : data['san:volume_id'],
                'size': data['volsize']}
 
@@ -476,19 +480,23 @@ class JovianISCSIDriver(object):
             except jexc.JDSSException as err:
                 raise cexc.VolumeBackendAPIException(err)
 
-    def extend_volume(self, volume, new_size):
+    def extend_volume(self, volume, new_size, direct_mode=False):
         """Extend an existing volume.
 
         :param volume: volume reference
         :param new_size: volume new size in GB
         """
         LOG.debug("Extend volume %s", volume['id'])
+        name = volume['id']
+
+        if not direct_mode:
+            name = jcom.vname(name)
 
         try:
-            self.ra.extend_lun(jcom.vname(volume['id']), new_size)
+            self.ra.extend_lun(name, new_size)
         except jexc.JDSSException as err:
             raise Exception(
-                (('Failed to extend volume %s.'), volume['id'])) from err
+                (('Failed to extend volume %s.'), name)) from err
     
     def rename_volume(self, volume, new_name):
         LOG.debug("Rename volume %s to %s",
@@ -575,7 +583,7 @@ class JovianISCSIDriver(object):
             try:
                 self.ra.delete_snapshot(oname, coname)
             except jexc.JDSSSnapshotIsBusyException as jerr:
-                raise cexc.Duplicate() from jerr
+                raise jerr
             except jexc.JDSSException as jerr:
                 raise cexc.VolumeBackendAPIException(
                     (_("Unable to create volume %s.") % coname)) from jerr
@@ -601,7 +609,7 @@ class JovianISCSIDriver(object):
                 oname,
                 sparse=self.jovian_sparse)
         except jexc.JDSSResourceExistsException as jerr:
-            raise cexc.Duplicate() from jerr
+            raise jerr
         except jexc.JDSSException as err:
             try:
                 self.ra.delete_snapshot(oname,
@@ -843,27 +851,27 @@ class JovianISCSIDriver(object):
             'port': self.jovian_iscsi_target_portal_port,
             'name': self._get_target_name(volume_name)}
 
-    def create_export(self, _ctx, volume, connector, isSnapshot=False):
+    def create_export(self, _ctx, volume, connector, isSnapshot=False, direct_mode=False):
         """Create new export for zvol.
 
         :param volume: reference of volume to be exported
         :return: iscsiadm-formatted provider location string
         """
-        LOG.debug("create export for volume: %s.", volume['id'])
+        LOG.debug("create export for volume: %s mode %s.", volume['id'], direct_mode)
 
-        self._ensure_target_volume(volume, isSnapshot=isSnapshot)
+        self._ensure_target_volume(volume, isSnapshot=isSnapshot, direct_mode=direct_mode)
 
         return {'provider_location': self._get_provider_location(volume['id'])}
 
-    def ensure_export(self, _ctx, volume):
+    def ensure_export(self, _ctx, volume, direct_mode=False):
         """Recreate parts of export if necessary.
 
         :param volume: reference of volume to be exported
         """
         LOG.debug("ensure export for volume: %s.", volume['id'])
-        self._ensure_target_volume(volume)
+        self._ensure_target_volume(volume, direct_mode=direct_mode)
 
-    def remove_export(self, _ctx, volume, isSnapshot=False):
+    def remove_export(self, _ctx, volume, isSnapshot=False, direct_mode=False):
         """Destroy all resources created to export zvol.
 
         :param volume: reference of volume to be unexported
@@ -934,7 +942,7 @@ class JovianISCSIDriver(object):
                                   use_chap=use_chap)
 
         except jexc.JDSSResourceExistsException as jerr:
-            raise cexc.Duplicate() from jerr
+            raise jerr
         except jexc.JDSSException as ex:
 
             msg = (_('Unable to create target %(target)s '
@@ -957,10 +965,10 @@ class JovianISCSIDriver(object):
         try:
             self.ra.attach_target_vol(target_name, vname, mode=mode)
         except jexc.JDSSException as ex:
-            msg = ('Unable to attach volume to target %(target)s '
+            msg = ('Unable to attach volume %(volume)s to target %(target)s '
                    'because of %(error)s.')
-            emsg = msg % {'target': target_name, 'error': ex.message}
-            LOG.debug(msg)
+            emsg = msg % {'volume': vname, 'target': target_name, 'error': ex.message}
+            LOG.debug(emsg)
             try:
                 self.ra.delete_target(target_name)
             except jexc.JDSSException:
@@ -995,7 +1003,7 @@ class JovianISCSIDriver(object):
 
             raise Exception(err_msg)
 
-    def _create_target_volume(self, volume, isSnapshot=False):
+    def _create_target_volume(self, volume, isSnapshot=False, direct_mode=False):
         """Creates target and attach volume to it
 
         :param volume: volume id
@@ -1005,16 +1013,17 @@ class JovianISCSIDriver(object):
 
         target_name = self.jovian_target_prefix + volume['id']
 
-        vname = None
-        if isSnapshot:
-            vname = jcom.sname(volume['id'])
-        else:
-            vname = jcom.vname(volume['id'])
+        vname = volume['id']
+        if not direct_mode:
+            if isSnapshot:
+                vname = jcom.sname(volume['id'])
+            else:
+                vname = jcom.vname(volume['id'])
 
         auth = volume['provider_auth']
 
         if not auth:
-            msg = _("Volume %s is missing provider_auth") % volume['id']
+            msg = _("Volume %s is missing provider_auth") % vname
             raise cexc.VolumeDriverException(msg)
 
         (__, auth_username, auth_secret) = auth.split()
@@ -1030,7 +1039,7 @@ class JovianISCSIDriver(object):
         # Set credentials
         #self._set_target_credentials(target_name, chap_cred)
 
-    def _ensure_target_volume(self, volume, isSnapshot=False):
+    def _ensure_target_volume(self, volume, isSnapshot=False, direct_mode=False):
         """Checks if target configured properly and volume is attached to it
 
         param: volume: volume structure
@@ -1050,15 +1059,16 @@ class JovianISCSIDriver(object):
                      "password": auth_secret}
 
         if not self.ra.is_target(target_name):
-            self._create_target_volume(volume, isSnapshot=isSnapshot)
+            self._create_target_volume(volume, isSnapshot=isSnapshot, direct_mode=direct_mode)
             return
 
-        vname = None
-        if isSnapshot:
-            vname = jcom.sname(volume['id'])
-        else:
-            vname = jcom.vname(volume['id'])
-
+        vname = volume['id']
+        if not direct_mode:
+            if isSnapshot:
+                vname = jcom.sname(volume['id'])
+            else:
+                vname = jcom.vname(volume['id'])
+        
         if not self.ra.is_target_lun(target_name, vname):
             self._attach_target_volume(target_name, vname, isSnapshot=isSnapshot)
 

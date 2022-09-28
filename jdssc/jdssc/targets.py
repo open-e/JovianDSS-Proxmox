@@ -55,6 +55,8 @@ class Targets():
                                 help='Print lun')
             create.add_argument('--snapshot', dest='volume_snapshot', default=None,
                                 help='Create target based on snapshot')
+            create.add_argument('-d', dest='direct_mode', action='store_true', default=False,
+                                help='Use real volume name')
 
             listp = parsers.add_parser('list')
         else:
@@ -84,11 +86,14 @@ class Targets():
                                                       self.args['volume_snapshot'])['id']
             volume = {'id': snapshot,
                       'provider_auth': 'CHAP 123456 123456789012'}
-            provider_location = self.jdss.create_export('', volume, '', isSnapshot=True)['provider_location']
+            provider_location = self.jdss.create_export('', volume, '', isSnapshot=True,
+                                                        direct_mode=self.args['direct_mode'])['provider_location']
         else:
             volume = {'id': self.args['target_name'],
                       'provider_auth': 'CHAP 123456 123456789012'}
-            provider_location = self.jdss.create_export('', volume, '')['provider_location']
+
+            provider_location = self.jdss.create_export('', volume, '',
+                                                        direct_mode=self.args['direct_mode'])['provider_location']
         #output = self.jdss.jovian_target_prefix + self.args['target_name'] + "\n"
         out = ''
         if self.args['host']:
@@ -132,7 +137,7 @@ class Targets():
         #eturn
         if self.args['path_format']:
             out = "ip-{ip}:{port}-iscsi-{target}-lun-{lun}".format(
-                ip = ip, 
+                ip = ip,
                 port = target_port,
                 target = target,
                 lun = lun)

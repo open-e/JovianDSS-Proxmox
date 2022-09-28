@@ -32,18 +32,23 @@ class Pools():
 
         self.pa = {'cifs': self.cifs,
                    'get': self.get,
+                   'ip': self.ip,
                    'nas_volumes': self.nas_volumes,
                    'targets': self.targets,
                    'volumes': self.volumes}
 
         self.args = args
-        
+
         argst = self.__parse(uargs)
 
         self.args.update(vars(argst[0]))
         self.uargs = argst[1]
         self.jdss = jdss
         
+        if self.args['pool_name']:
+            self.jdss.configuration['jovian_pool'] = self.args['pool_name']
+            #print(self.jdss.configuration)
+        self.jdss.do_setup(None)
         if 'pool-action' in self.args:
             self.pa[self.args.pop('pool-action')]()
 
@@ -54,6 +59,7 @@ class Pools():
         parser.add_argument('pool_name', help='Pool name')
         parsers = parser.add_subparsers(dest='pool-action')
         info = parsers.add_parser('get', add_help=False)
+        ip = parsers.add_parser('ip', add_help=False)
         cifs = parsers.add_parser('cifs', add_help=False)
         nas_volumes = parsers.add_parser('nas_volumes', add_help=False)
         target = parsers.add_parser('targets', add_help=False)
@@ -70,7 +76,12 @@ class Pools():
         line = "{total} {free} {used}\n".format(
             total=total_gb, free=free_gb, used=total_gb-free_gb)
         sys.stdout.write(line)
-    
+  
+    def ip(self):
+        for i in self.jdss.jovian_hosts:
+            line = ("%s\n" % i)
+            sys.stdout.write(line)
+
     def nas_volumes(self):
         nas_volumes.NASVolumes(self.args, self.uargs, self.jdss)
 
