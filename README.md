@@ -110,7 +110,7 @@ Provide list of ip's that would be used for multipathing in `san_hosts` property
 Make sure that multipath service is present 
 
 ```bash
-apt install multipath-toolsa  sg3-utils
+apt install multipath-tools sg3-utils
 ```
 
 Provide necessary configuration to multipath service in `multipath.conf` file at /etc/multipath/conf.d/multipath.conf.
@@ -240,7 +240,7 @@ make uninstall
 Or by installing it from debian package
 
 ```bash
-apt install ./open-e-joviandss-proxmox-plugin_0.9.5-1.deb
+apt install ./open-e-joviandss-proxmox-plugin_0.9.4-1.deb
 ```
 
 Once installation is done, provide configuration.
