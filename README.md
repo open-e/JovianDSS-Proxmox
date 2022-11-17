@@ -58,7 +58,7 @@ This config file should be placed according to the path provided in `storage.cfg
 
 ```yaml
 driver_use_ssl: True
-target_prefix: 'iqn.2021-10.com.open-e:'
+target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '64K'
 jovian_rest_send_repeats: 3
 san_api_port: 82
@@ -75,7 +75,7 @@ logfile: /tmp/jdss.log
 | Option                     | Default value           | Description                                                         |
 |----------------------------|-------------------------|---------------------------------------------------------------------|
 | `driver_use_ssl`           | True                    | Use SSL to send requests to JovianDSS\[1\]                          |
-| `iscsi_target_prefix`      | iqn.2021-10.com.open-e: | Prefix that will be used to form target name for volume             |
+| `iscsi_target_prefix`      | iqn.2021-10.iscsi:      | Prefix that will be used to form target name for volume             |
 | `jovian_block_size`        | 64K                     | Block size of a new volume, can be: 32K, 64K, 128K, 256K, 512K, 1M  |
 | `jovian_rest_send_repeats` | 3                       | Number of times that driver will try to send REST request           |
 | `san_api_port`             | 82                      | Rest port according to the settings in \[1\]                        |
@@ -95,10 +95,101 @@ logfile: /tmp/jdss.log
 
 [More info about Open-E JovianDSS](http://blog.open-e.com/?s=how+to)
 
+### Multiple Pools
+
+Plugin allows proxmox use more then one joviandss `Pool` at a same time.
+To introduce new `Pool` to proxmox user have to duplicate storage section in `storage.cfg`.
+
+Make sure that variables `pool_name`, `path` and `content_volume_name` are different.
+Here is an example of presenting 2 pools `Pool-0` and `Pool-1` to `Proxmox` as 2 independent storages `joviandss-0` and `joviandss-1` of type `open-e`.
+
+```
+open-e: joviandss-0
+        pool_name Pool-0
+        config /etc/pve/joviandss.yaml
+        path /mnt/joviandss-0
+        content iso,backup,images,rootdir,vztmpl
+        content_volume_name proxmox-content-volume-0
+        content_volume_size 100
+        debug 0
+        multipath 0
+
+open-e: joviandss-1
+        pool_name Pool-1
+        config /etc/pve/joviandss.yaml
+        path /mnt/joviandss-1
+        content iso,backup,images,rootdir,vztmpl
+        content_volume_name proxmox-content-volume-1
+        content_volume_size 100
+        debug 0
+        multipath 0
+```
+
+In the example above `config` property points out to the common file `/etc/pve/joviandss.yaml`. This means that both storages `joviandss-0` and `joviandss-1` will use common setting provided in this file.
+
+If user wants to set different `iscsi_target_prefix` or `block_size` user would have to duplicate `joviandss.yaml` as well.
+
+`/etc/pve/storage.cfg`
+```
+open-e: joviandss-0
+        pool_name Pool-0
+        config /etc/pve/joviandss-0.yaml
+        path /mnt/joviandss-0
+        content iso,backup,images,rootdir,vztmpl
+        content_volume_name proxmox-content-volume-0
+        content_volume_size 100
+        debug 0
+        multipath 0
+
+open-e: joviandss-1
+        pool_name Pool-1
+        config /etc/pve/joviandss-1.yaml
+        path /mnt/joviandss-1
+        content iso,backup,images,rootdir,vztmpl
+        content_volume_name proxmox-content-volume-1
+        content_volume_size 100
+        debug 0
+        multipath 0
+```
+
+`/etc/pve/joviandss-0.yaml`
+```yaml
+driver_use_ssl: True
+target_prefix: 'iqn.2021-10.iscsi:'
+jovian_block_size: '64K'
+jovian_rest_send_repeats: 3
+san_api_port: 82
+target_port: 3260
+san_hosts: 
+  - '172.16.0.220'
+san_login: 'admin'
+san_password: 'admin'
+san_thin_provision: True
+loglevel: debug
+logfile: /tmp/jdss.log
+```
+
+`/etc/pve/joviandss-1.yaml`
+```yaml
+driver_use_ssl: True
+target_prefix: 'iqn.2022-03.iscsi:'
+jovian_block_size: '128K'
+jovian_rest_send_repeats: 3
+san_api_port: 82
+target_port: 3260
+san_hosts: 
+  - '172.16.0.220'
+san_login: 'admin'
+san_password: 'admin'
+san_thin_provision: True
+loglevel: debug
+logfile: /tmp/jdss.log
+```
+
+
 ## Multipathing
 
 In order to enable multipathing user should modify proxmox `storage.cfg`, file specified as `config` in `storage.cfg` responding for connectivity options with joviandss `joviandss.yaml` and proxmox multipath service itself.
-
 
 
 ### Joviandss.yaml
