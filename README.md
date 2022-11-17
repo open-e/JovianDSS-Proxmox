@@ -26,9 +26,9 @@ open-e: joviandss
         path /mnt/joviandss
         content iso,backup,images,rootdir,vztmpl
         content_volume_name proxmox-content-volume
-        content_volume_size 1
+        content_volume_size 100
         debug 0
-        multipath 1
+        multipath 0
 ```
 
 | Option                     | Default value                     | Description                                                         |
