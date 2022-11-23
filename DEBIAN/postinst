@@ -1,3 +1,4 @@
 #!/bin/sh
 chmod +x /usr/local/bin/jdssc
+patch /usr/share/perl5/PVE/Storage/Plugin.pm /usr/share/open-e/mark-open-e-plugin-as-dynamic.patch
 exit 0

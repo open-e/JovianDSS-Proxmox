@@ -1,6 +1,7 @@
 LOCAL_BIN=$(DESTDIR)/usr/local/bin
 PYTHON_PACKAGE=$(DESTDIR)/usr/lib/python3/dist-packages
 PERLDIR=$(DESTDIR)/usr/share/perl5
+DEB_FLAG=0
 
 .PHONY: all, install, uninstall
 
@@ -12,6 +13,7 @@ deb:
 	$(eval debdir := $(shell mktemp -d))
 
 	@echo "Using tmp dir $(debdir)"
+	DEB_FLAG=1
 	make install DESTDIR=$(debdir)
 	
 	install -D -m 0555 ./DEBIAN/control $(debdir)/DEBIAN/control
@@ -25,9 +27,16 @@ deb:
 install:
 	@echo "Installing proxmox plugin"
 	install -D -m 0644 ./OpenEJovianDSSPlugin.pm $(PERLDIR)/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
+	install -D -m 0644 ./mark-open-e-plugin-as-dynamic.patch /usr/share/open-e/mark-open-e-plugin-as-dynamic.patch
+
+	if [ $(DEB_FLAG) -ne 1 ]; then \
+		patch /usr/share/perl5/PVE/Storage/Plugin.pm /usr/share/open-e/mark-open-e-plugin-as-dynamic.patch ; \
+	fi
 	$(MAKE) -C jdssc install DESTDIR=$(DESTDIR)
 
 uninstall:
 	@echo "Cleaning up proxmox plugin"
 	rm $(PERLDIR)/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
+	patch -R /usr/share/perl5/PVE/Storage/Plugin.pm /usr/share/open-e/mark-open-e-plugin-as-dynamic.patch
+	rm /usr/share/open-e/mark-open-e-plugin-as-dynamic.patch
 	$(MAKE) -C jdssc uninstall DESTDIR=$(DESTDIR)

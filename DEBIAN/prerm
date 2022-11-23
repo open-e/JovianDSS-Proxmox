@@ -1,0 +1,4 @@
+#!/bin/sh
+
+patch -R /usr/share/perl5/PVE/Storage/Plugin.pm /usr/share/open-e/mark-open-e-plugin-as-dynamic.patch
+exit 0
