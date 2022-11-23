@@ -26,7 +26,7 @@ open-e: joviandss
         path /mnt/joviandss
         content iso,backup,images,rootdir,vztmpl
         content_volume_name proxmox-content-volume
-        content_volume_size 100
+        content_volume_size 32
         debug 0
         multipath 0
 ```
@@ -39,7 +39,7 @@ open-e: joviandss
 | `content`                  | None                              | List content type that you expect JovianDSS to store                | 
 |                            |                                   | Supported values: iso,backup,images,rootdir,vztmpl                  |
 | `content_volume_name`	     | proxmox-content-volume-<Pool Name>| Dedicated volume that would be used to store content resources.     |
-| `content_volume_size`      | 2                                 | Size of content volume, measured in Gigabytes                       |
+| `content_volume_size`      | 32                                | Size of content volume, measured in Gigabytes                       |
 | `debug`                    | 0                                 | Debuging flag, place 1 to enable                                    |
 | `multipath`                | 1                                 | Multipath flag, place 1 to enable                                   |
 
@@ -64,7 +64,7 @@ jovian_rest_send_repeats: 3
 san_api_port: 82
 target_port: 3260
 san_hosts: 
-  - '172.16.0.220'
+  - '10.1.0.100'
 san_login: 'admin'
 san_password: 'admin'
 san_thin_provision: True
@@ -110,7 +110,7 @@ open-e: joviandss-0
         path /mnt/joviandss-0
         content iso,backup,images,rootdir,vztmpl
         content_volume_name proxmox-content-volume-0
-        content_volume_size 100
+        content_volume_size 32
         debug 0
         multipath 0
 
@@ -120,14 +120,14 @@ open-e: joviandss-1
         path /mnt/joviandss-1
         content iso,backup,images,rootdir,vztmpl
         content_volume_name proxmox-content-volume-1
-        content_volume_size 100
+        content_volume_size 32
         debug 0
         multipath 0
 ```
 
 In the example above `config` property points out to the common file `/etc/pve/joviandss.yaml`. This means that both storages `joviandss-0` and `joviandss-1` will use common setting provided in this file.
 
-If user wants to set different `iscsi_target_prefix` or `block_size` user would have to duplicate `joviandss.yaml` as well.
+If user wants to set different `iscsi_target_prefix` or `block_size`or `ip address` user would have to duplicate `joviandss.yaml` as well.
 
 `/etc/pve/storage.cfg`
 ```
@@ -137,7 +137,7 @@ open-e: joviandss-0
         path /mnt/joviandss-0
         content iso,backup,images,rootdir,vztmpl
         content_volume_name proxmox-content-volume-0
-        content_volume_size 100
+        content_volume_size 32
         debug 0
         multipath 0
 
@@ -147,7 +147,7 @@ open-e: joviandss-1
         path /mnt/joviandss-1
         content iso,backup,images,rootdir,vztmpl
         content_volume_name proxmox-content-volume-1
-        content_volume_size 100
+        content_volume_size 32
         debug 0
         multipath 0
 ```
@@ -161,7 +161,7 @@ jovian_rest_send_repeats: 3
 san_api_port: 82
 target_port: 3260
 san_hosts: 
-  - '172.16.0.220'
+  - '10.1.0.100'
 san_login: 'admin'
 san_password: 'admin'
 san_thin_provision: True
@@ -178,7 +178,7 @@ jovian_rest_send_repeats: 3
 san_api_port: 82
 target_port: 3260
 san_hosts: 
-  - '172.16.0.220'
+  - '10.2.0.100'
 san_login: 'admin'
 san_password: 'admin'
 san_thin_provision: True

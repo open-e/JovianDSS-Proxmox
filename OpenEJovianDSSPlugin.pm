@@ -48,7 +48,7 @@ my $default_pool = "Pool-0";
 my $default_config = "/etc/pve/joviandss.cfg";
 my $default_debug = 0;
 my $default_multipath = 0;
-my $default_content_size = 2;
+my $default_content_size = 32;
 my $default_path = "/mnt/joviandss";
 
 my $default_jmultipathd = "/etc/multipath/conf.d/joviandssdisks";
