@@ -1153,11 +1153,30 @@ sub volume_resize {
 sub parse_volname {
     my ($class, $volname) = @_;
 
+    my $iso_re;
+
+    if (defined($PVE::Storage::iso_extension_re)) {
+        $iso_re = $PVE::Storage::iso_extension_re;
+    } elsif (defined($PVE::Storage::ISO_EXT_RE_0)) {
+        $iso_re = $PVE::Storage::ISO_EXT_RE_0;
+    } else {
+        $iso_re = qr/\.(?:iso|img)/i;
+    }
+
+    my $vztmpl_re;
+    if (defined($PVE::Storage::vztmpl_extension_re)) {
+        $vztmpl_re = $PVE::Storage::vztmpl_extension_re;
+    } elsif (defined($PVE::Storage::VZTMPL_EXT_RE_1)) {
+        $vztmpl_re = $PVE::Storage::VZTMPL_EXT_RE_1;
+    } else {
+        $vztmpl_re = qr/\.tar\.(gz|xz|zst)/i;
+    }
+
     if ($volname =~ m/^((base-(\d+)-\S+)\/)?((base)?(vm)?-(\d+)-\S+)$/) {
         return ('images', $4, $7, $2, $3, $5, 'raw');
-    } elsif ($volname =~ m!^iso/([^/]+$PVE::Storage::iso_extension_re)$!) {
+    } elsif ($volname =~ m!^iso/([^/]+$iso_re)$!) {
     	return ('iso', $1);
-    } elsif ($volname =~ m!^vztmpl/([^/]+$PVE::Storage::vztmpl_extension_re)$!) {
+    } elsif ($volname =~ m!^vztmpl/([^/]+$vztmpl_re)$!) {
     	return ('vztmpl', $1);
     } elsif ($volname =~ m!^rootdir/(\d+)$!) {
     	return ('rootdir', $1, $1);
