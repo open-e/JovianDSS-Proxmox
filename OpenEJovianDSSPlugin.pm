@@ -1120,6 +1120,10 @@ sub deactivate_volume {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
+    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+
+    return 0 if ('images' ne "$vtype");
+
     my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
 
     if (multipath_enabled($scfg)) {
