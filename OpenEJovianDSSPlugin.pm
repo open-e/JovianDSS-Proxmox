@@ -827,7 +827,7 @@ sub list_images {
         $vm = clean_word($vm);
         $size = clean_word($size);
 
-        my $volid = "joviandss:$volname";
+        my $volid = "$storeid:$volname";
 
         if ($vollist) {
             my $found = grep { $_ eq $volid } @$vollist;
