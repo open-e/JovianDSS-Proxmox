@@ -66,7 +66,7 @@ target_port: 3260
 rest_api_login: 'admin'
 rest_api_password: 'admin'
 thin_provision: True
-loglevel: debug
+loglevel: info
 logfile: /var/log/jdss-Pool-0.log
 ```
 
@@ -82,7 +82,7 @@ logfile: /var/log/jdss-Pool-0.log
 | `rest_api_login`                | admin                   | Must be set according to the settings in \[1\]                      |
 | `rest_api_password`             | admin                   | Jovian password \[1\], **should be changed** for security purposes  |
 | `thin_provision`       | False                   | Using thin provisioning for new volumes                             |
-| `loglevel`                 |                         | Logging level. Both `loglvl` and `logfile` have to be specified in order to make logging operational |
+| `loglevel`                 |                         | Logging level. Both `loglvl` and `logfile` have to be specified in order to make logging operational. Possible log levels are: critical, error, warning, info, debug |
 | `logfile`                  |                         | Path to file to store logs.                                         |
 
 
@@ -137,7 +137,7 @@ target_port: 3260
 rest_api_login: 'admin'
 rest_api_password: 'admin'
 thin_provision: True
-loglevel: debug
+loglevel: info
 logfile: /var/log/jdss-Pool-0.log
 ```
 
@@ -154,7 +154,7 @@ target_port: 3260
 rest_api_login: 'admin'
 rest_api_password: 'admin'
 thin_provision: True
-loglevel: debug
+loglevel: info
 logfile: /var/log/jdss-Pool-1.log
 ```
 
@@ -192,7 +192,7 @@ target_port: 3260
 rest_api_login: 'admin'
 rest_api_password: 'admin'
 thin_provision: True
-loglevel: debug
+loglevel: info
 logfile: /tmp/jdss.log
 ```
 
@@ -233,7 +233,7 @@ target_port: 3260
 rest_api_login: 'admin'
 rest_api_password: 'admin'
 thin_provision: True
-loglevel: debug
+loglevel: info
 logfile: /tmp/jdss.log
 ```
 ### Proxmox multipathing configuration

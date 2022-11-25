@@ -43,7 +43,7 @@ def get_config():
                         dest='cli_log_lvl',
                         required=False,
                         choices=log_levels,
-                        default='debug',
+                        default='info',
                         help='Logging level')
     parser.add_argument('--logfile', dest='cli_log_file', help='File to store log to', required=False)
     parser.add_argument('-p', '--plain', dest='plain_mode', required=False, action='store_true', default=False, help='Plain format')
