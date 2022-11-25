@@ -20,13 +20,13 @@ And contains minimal set of information required by perl part to run.
 `/etc/pve/storage.cfg` 
 
 ```
-open-e: joviandss
+joviandss: jdss-Pool-0
         pool_name Pool-0
-        config /etc/pve/joviandss.yaml
-        path /mnt/joviandss
+        config /etc/pve/jdss-Pool-0.yaml
         content iso,backup,images,rootdir,vztmpl
-        content_volume_name proxmox-content-volume
-        content_volume_size 32
+        content_volume_name proxmox-content-jdss-pool-0
+        content_volume_size 100
+        path /mnt/jdss-Pool-0.yaml
         debug 0
         multipath 0
 ```
@@ -34,22 +34,20 @@ open-e: joviandss
 | Option                     | Default value                     | Description                                                         |
 |----------------------------|-----------------------------------|---------------------------------------------------------------------|
 | `pool_name`                | Pool-0                            | Pool name that is going to be used. Must be created in \[1\]        |
-| `config`                   | /etc/pve/joviandss.yaml           | path to `jdssc` configuration file                                  |
-| `path`                     | None                              | Location that would be used to mount proxmox dedicated volume       |
-| `content`                  | None                              | List content type that you expect JovianDSS to store                | 
-|                            |                                   | Supported values: iso,backup,images,rootdir,vztmpl                  |
-| `content_volume_name`	     | proxmox-content-volume-<Pool Name>| Dedicated volume that would be used to store content resources.     |
-| `content_volume_size`      | 32                                | Size of content volume, measured in Gigabytes                       |
+| `config`                   | /etc/pve/jdss-\<pool\_name\>.yaml | Path to `jdssc` configuration file                                  |
+| `content`                  | None                              | List content type that you expect JovianDSS to store. Supported values: iso,backup,images,rootdir,vztmpl |
+| `content_volume_name`	     | proxmox-content-volume-\<pool\_name\>| Dedicated volume that would be used to store content resources. Only lowercase, numbers and symbols - . are allowed |
+| `content_volume_size`      | 100                               | Size of content volume, measured in Gigabytes                       |
+| `path`                     | /mnt/proxmox-content-jdss-\<pool\_name\> | Location that would be used to mount proxmox dedicated volume |
 | `debug`                    | 0                                 | Debuging flag, place 1 to enable                                    |
-| `multipath`                | 1                                 | Multipath flag, place 1 to enable                                   |
+| `multipath`                | 0                                 | Multipath flag, place 1 to enable                                   |
 
 [1] [Can be created by going to JovianDSS Web interface/Storage](https://www.open-e.com/site_media/download/documents/Open-E-JovianDSS-Advanced-Metro-High-Avability-Cluster-Step-by-Step-2rings.pdf)
 
-Options `path`, `content`, `share_user` and `share_pass` are optional.
-They are responsible for creation of a dedicated storage that gets attached to proxmox to store iso images and backups.
-Specify this option in configuration file if you want to enable this dedicated storage.
-Plugin will create it for you automatically.
-If you want to change size of or modify this storage in other way, please find it in `Storage/Shares/proxmox-internal-data`.
+`content_volume` is a dedicated volume that is responsible for storing `iso`, `vztmpl` and `backup` files created and managed by proxmox.
+This volume gets automaticaly created on the pool `pool_name` and introduced to system as iscsi target.
+User is responsible for maintaining file system of `content_volume`.
+And if user wants to change size or modify this storage in other way, he should address it in `Storage/<pool_name>/iSCSI Targets` section of JovianDSS web UI.
 
 ### Jdssc config
 
@@ -61,15 +59,15 @@ driver_use_ssl: True
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '64K'
 jovian_rest_send_repeats: 3
-san_api_port: 82
-target_port: 3260
-san_hosts: 
+rest_api_addresses:
   - '10.1.0.100'
-san_login: 'admin'
-san_password: 'admin'
-san_thin_provision: True
+rest_api_port: 82
+target_port: 3260
+rest_api_login: 'admin'
+rest_api_password: 'admin'
+thin_provision: True
 loglevel: debug
-logfile: /tmp/jdss.log
+logfile: /var/log/jdss-Pool-0.log
 ```
 
 | Option                     | Default value           | Description                                                         |
@@ -78,13 +76,12 @@ logfile: /tmp/jdss.log
 | `iscsi_target_prefix`      | iqn.2021-10.iscsi:      | Prefix that will be used to form target name for volume             |
 | `jovian_block_size`        | 64K                     | Block size of a new volume, can be: 32K, 64K, 128K, 256K, 512K, 1M  |
 | `jovian_rest_send_repeats` | 3                       | Number of times that driver will try to send REST request           |
-| `san_api_port`             | 82                      | Rest port according to the settings in \[1\]                        |
+| `rest_api_hosts`           |                         | Yaml list of IP address of the JovianDSS, only addresses specified here would be used for multipathing |
+| `rest_api_port`             | 82                      | Rest port according to the settings in \[1\]                        |
 | `target_port`              | 3260                    | Port for iSCSI connections                                          |
-| `volume_driver`            |                         | Location of the driver source code                                  |
-| `san_hosts`                |                         | Yaml list of IP address of the JovianDSS                            |
-| `san_login`                | admin                   | Must be set according to the settings in \[1\]                      |
-| `san_password`             | admin                   | Jovian password \[1\], **should be changed** for security purposes  |
-| `san_thin_provision`       | False                   | Using thin provisioning for new volumes                             |
+| `rest_api_login`                | admin                   | Must be set according to the settings in \[1\]                      |
+| `rest_api_password`             | admin                   | Jovian password \[1\], **should be changed** for security purposes  |
+| `thin_provision`       | False                   | Using thin provisioning for new volumes                             |
 | `loglevel`                 |                         | Logging level. Both `loglvl` and `logfile` have to be specified in order to make logging operational |
 | `logfile`                  |                         | Path to file to store logs.                                         |
 
@@ -101,101 +98,144 @@ Plugin allows proxmox use more then one joviandss `Pool` at a same time.
 To introduce new `Pool` to proxmox user have to duplicate storage section in `storage.cfg`.
 
 Make sure that variables `pool_name`, `path` and `content_volume_name` are different.
-Here is an example of presenting 2 pools `Pool-0` and `Pool-1` to `Proxmox` as 2 independent storages `joviandss-0` and `joviandss-1` of type `open-e`.
+Here is an example of presenting 2 pools `Pool-0` and `Pool-1` to `Proxmox` as 2 independent storages `jdss-Pool-0` and `jdss-Pool-1` using `joviandss` plugin.
 
 ```
-open-e: joviandss-0
+joviandss: jdss-Pool-0
         pool_name Pool-0
-        config /etc/pve/joviandss.yaml
-        path /mnt/joviandss-0
+        config /etc/pve/jdss-Pool-0.yaml
         content iso,backup,images,rootdir,vztmpl
-        content_volume_name proxmox-content-volume-0
-        content_volume_size 32
+        content_volume_name proxmox-content-jdss-pool-0
+        content_volume_size 100
+        path /mnt/jdss-Pool-0.yaml
         debug 0
         multipath 0
 
-open-e: joviandss-1
+joviandss: jdss-Pool-1
         pool_name Pool-1
-        config /etc/pve/joviandss.yaml
-        path /mnt/joviandss-1
+        config /etc/pve/jdss-Pool-1.yaml
         content iso,backup,images,rootdir,vztmpl
-        content_volume_name proxmox-content-volume-1
-        content_volume_size 32
+        content_volume_name proxmox-content-jdss-pool-1
+        content_volume_size 100
+        path /mnt/jdss-Pool-1.yaml
         debug 0
         multipath 0
 ```
 
-In the example above `config` property points out to the common file `/etc/pve/joviandss.yaml`. This means that both storages `joviandss-0` and `joviandss-1` will use common setting provided in this file.
+And here is 2 `config` files referenced in `storage.cfg` file above:
 
-If user wants to set different `iscsi_target_prefix` or `block_size`or `ip address` user would have to duplicate `joviandss.yaml` as well.
-
-`/etc/pve/storage.cfg`
-```
-open-e: joviandss-0
-        pool_name Pool-0
-        config /etc/pve/joviandss-0.yaml
-        path /mnt/joviandss-0
-        content iso,backup,images,rootdir,vztmpl
-        content_volume_name proxmox-content-volume-0
-        content_volume_size 32
-        debug 0
-        multipath 0
-
-open-e: joviandss-1
-        pool_name Pool-1
-        config /etc/pve/joviandss-1.yaml
-        path /mnt/joviandss-1
-        content iso,backup,images,rootdir,vztmpl
-        content_volume_name proxmox-content-volume-1
-        content_volume_size 32
-        debug 0
-        multipath 0
-```
-
-`/etc/pve/joviandss-0.yaml`
+`/etc/pve/jdss-Pool-0.yaml`
 ```yaml
 driver_use_ssl: True
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '64K'
 jovian_rest_send_repeats: 3
-san_api_port: 82
-target_port: 3260
-san_hosts: 
+rest_api_addresses:
   - '10.1.0.100'
-san_login: 'admin'
-san_password: 'admin'
-san_thin_provision: True
+rest_api_port: 82
+target_port: 3260
+rest_api_login: 'admin'
+rest_api_password: 'admin'
+thin_provision: True
 loglevel: debug
-logfile: /tmp/jdss.log
+logfile: /var/log/jdss-Pool-0.log
 ```
 
-`/etc/pve/joviandss-1.yaml`
+`/etc/pve/jdss-Pool-1.yaml`
 ```yaml
 driver_use_ssl: True
-target_prefix: 'iqn.2022-03.iscsi:'
-jovian_block_size: '128K'
+target_prefix: 'iqn.2021-10.iscsi:'
+jovian_block_size: '64K'
 jovian_rest_send_repeats: 3
-san_api_port: 82
+rest_api_addresses:
+  - '10.1.0.200'
+rest_api_port: 82
 target_port: 3260
-san_hosts: 
-  - '10.2.0.100'
-san_login: 'admin'
-san_password: 'admin'
-san_thin_provision: True
+rest_api_login: 'admin'
+rest_api_password: 'admin'
+thin_provision: True
 loglevel: debug
-logfile: /tmp/jdss.log
+logfile: /var/log/jdss-Pool-1.log
 ```
 
 
 ## Multipathing
 
-In order to enable multipathing user should modify proxmox `storage.cfg`, file specified as `config` in `storage.cfg` responding for connectivity options with joviandss `joviandss.yaml` and proxmox multipath service itself.
+In order to enable multipathing user should provide a set of modifications to `storage.cfg`, `jdss-Pool-0.yaml` and `multipath.conf`
+
+For instance if user wants to enable multipathing on for storage `jdss-Pool-0` described in config files as:
 
 
-### Joviandss.yaml
+`/etc/pve/storage.cfg`
+```
+joviandss: jdss-Pool-0
+        pool_name Pool-0
+        config /etc/pve/jdss-Pool-0.yaml
+        content iso,backup,images,rootdir,vztmpl
+        content_volume_name proxmox-content-jdss-pool-0
+        content_volume_size 100
+        path /mnt/jdss-Pool-0.yaml
+        debug 0
+        multipath 0
+```
 
-Provide list of ip's that would be used for multipathing in `san_hosts` property.
+`/etc/pve/jdss-Pool-0.yaml`
+```yaml
+driver_use_ssl: True
+target_prefix: 'iqn.2021-10.iscsi:'
+jovian_block_size: '64K'
+jovian_rest_send_repeats: 3
+rest_api_addresses:
+  - '10.1.0.100'
+rest_api_port: 82
+target_port: 3260
+rest_api_login: 'admin'
+rest_api_password: 'admin'
+thin_provision: True
+loglevel: debug
+logfile: /tmp/jdss.log
+```
 
+He should apply folowing changes:
+
+### storage.cfg
+
+Set `multipath` option to `1`
+
+`/etc/pve/storage.cfg`
+```
+joviandss: jdss-Pool-0
+        pool_name Pool-0
+        config /etc/pve/jdss-Pool-0.yaml
+        content iso,backup,images,rootdir,vztmpl
+        content_volume_name proxmox-content-jdss-pool-0
+        content_volume_size 100
+        path /mnt/jdss-Pool-0.yaml
+        debug 0
+        multipath 1
+```
+
+### jdss-Pool-0.yaml
+
+Provide list of ip's that would be used for multipathing in `rest_api_addresses` property.
+
+`/etc/pve/jdss-Pool-0.yaml`
+```yaml
+driver_use_ssl: True
+target_prefix: 'iqn.2021-10.iscsi:'
+jovian_block_size: '64K'
+jovian_rest_send_repeats: 3
+rest_api_address:
+  - '10.1.0.100'
+  - '10.2.0.100'
+rest_api_port: 82
+target_port: 3260
+rest_api_login: 'admin'
+rest_api_password: 'admin'
+thin_provision: True
+loglevel: debug
+logfile: /tmp/jdss.log
+```
 ### Proxmox multipathing configuration
 
 Make sure that multipath service is present 
@@ -301,18 +341,18 @@ Plugin will show path of device representation is OS through error message in we
 
 Or in command line:
 ```bash
-pvesm list joviandss
+pvesm list jdss-Pool-0
 ```
 
-Will output address `/dev/mapper/iqn.2021-10.com.open-e:proxmox-content-volume` for volume `proxmox-content-volume`.
+Will output address `/dev/mapper/iqn.2021-10.com.open-e:proxmox-content-jdss-pool-0` for volume `proxmox-content-jdss-Pool-0`.
 ```bash
-Unable identify file system type for content storage, if that is a first run, format /dev/mapper/iqn.2021-10.com.open-e:proxmox-content-volume to a file system of your choise. at /usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm line 1010.
+Unable identify file system type for content storage, if that is a first run, format /dev/mapper/iqn.2021-10.com.open-e:proxmox-content-jdss-Pool-0 to a file system of your choise. at /usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm line 1010.
 ```
 
 Formatting can be done by calling
 
 ```bash
-mkfs.ext3 /dev/mapper/iqn.2021-10.com.open-e:proxmox-content-volume
+mkfs.ext3 /dev/mapper/iqn.2021-10.com.open-e:proxmox-content-jdss-Pool-0
 ```
 
 ## Installing/Uninstalling
@@ -331,15 +371,15 @@ make uninstall
 Or by installing it from debian package
 
 ```bash
-apt install ./open-e-joviandss-proxmox-plugin_0.9.4-1.deb
+apt install ./open-e-joviandss-proxmox-plugin_0.9.5-1.deb
 ```
 
 Once installation is done, provide configuration.
 
-After installation and configuration restart proxmox server.
+After installation and configuration restart proxmox service.
 
 ```bash
-reboot
+systemctl restart pvedaemon
 ```
 ### Clustering
 
