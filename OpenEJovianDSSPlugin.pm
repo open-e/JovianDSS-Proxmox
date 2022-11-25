@@ -40,15 +40,16 @@ use base qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.9.4';
+my $PLUGIN_VERSION = '0.9.5';
 
 # Configuration
 
+my $default_prefix = "jdss-";
 my $default_pool = "Pool-0";
-my $default_config = "/etc/pve/joviandss.cfg";
+my $default_config_path = "/etc/pve/";
 my $default_debug = 0;
 my $default_multipath = 0;
-my $default_content_size = 32;
+my $default_content_size = 100;
 my $default_path = "/mnt/joviandss";
 
 my $default_jmultipathd = "/etc/multipath/conf.d/joviandssdisks";
@@ -65,7 +66,7 @@ sub api {
 }
 
 sub type {
-    return 'open-e';
+    return 'joviandss';
 }
 
 sub plugindata {
@@ -86,7 +87,6 @@ sub properties {
         config => {
             description => "JovianDSS config address",
             type        => 'string',
-            default     => $default_config,
         },
         debug => {
             description => "Allow debug prints",
@@ -111,14 +111,14 @@ sub properties {
 
 sub options {
     return {
-        pool_name           => { fixed => 1 },
-        config              => { fixed => 1 },
-        debug               => { optional => 1 },
-        multipath           => { optional => 1 },
-        path                => { optional => 1 },
-        content             => { optional => 1 },
-        content_volume_name => { optional => 1 },
-        content_volume_size => { optional => 1 },
+        pool_name                       => { fixed    => 1 },
+        config                          => { optional => 1 },
+        path                            => { optional => 1 },
+        debug                           => { optional => 1 },
+        multipath                       => { optional => 1 },
+        content                         => { optional => 1 },
+        content_volume_name             => { optional => 1 },
+        content_volume_size             => { optional => 1 },
     };
 }
 
@@ -132,8 +132,11 @@ sub get_pool {
 
 sub get_config {
     my ($scfg) = @_;
-    
-    return $scfg->{config} || $default_config;
+
+    return $scfg->{config} if (defined($scfg->{config}));
+
+    my $pool = get_pool($scfg);
+    return "/etc/pve/${default_prefix}${pool}.yaml"
 }
 
 sub get_debug {
@@ -148,19 +151,15 @@ sub get_content {
     return $scfg->{content};
 }
 
-sub get_content_path {
-    my ($scfg) = @_;
-
-    die "Path property is required for content storage\n" if !defined($scfg->{path});
-    return $scfg->{path};
-}
-
 sub get_content_volume_name {
     my ($scfg) = @_;
 
     if ( !defined($scfg->{content_volume_name}) ) {
-        warn "Content volume name is not set up, using default value";
-        return "proxmox-content-volume";
+
+        my $pool = get_pool($scfg);
+	my $cv = lc("proxmox-content-${default_prefix}${pool}");
+        warn "Content volume name is not set up, using default value ${cv}\n";
+        return $cv;
     }
     my $cvn = $scfg->{content_volume_name};
     die "Content volume name should only include lower case, numbers and . - chars" if ( not ($cvn =~ /^[a-z0-9.-]*$/) );
@@ -171,9 +170,19 @@ sub get_content_volume_name {
 sub get_content_volume_size {
     my ($scfg) = @_;
 
-    warn "content_volume_size property is not set up, using default $default_content_size\n" if !defined($scfg->{content_volume_size});
+    warn "content_volume_size property is not set up, using default $default_content_size\n" if (!defined($scfg->{content_volume_size}));
     my $size = $scfg->{content_volume_size} || $default_content_size;
     return $size * 1024 * 1024 * 1024;
+}
+
+sub get_content_path {
+    my ($scfg) = @_;
+
+    return $scfg->{path} if (defined($scfg->{path}));
+
+    my $path = get_content_volume_name($scfg);
+    warn "path property is not set up, using default ${path}\n";
+    return $path;
 }
 
 sub multipath_enabled {
@@ -686,7 +695,6 @@ sub unstage_multipath {
 
     print "Unstage multipath for scsi id ${scsiid} target ${target}" if get_debug($scfg);
 
-
     my $filename    = "${default_jmultipathd}/${target}";
 
     if ( -e $filename ) {
@@ -713,7 +721,6 @@ sub get_storage_addresses {
 
     my @hosts = ();
     run_command($gethostscmd, outfunc => sub {
-        # Try to use shift
         my $h = shift;
         push @hosts, $h;
     });
@@ -806,7 +813,6 @@ sub get_target_path {
         }
     }
     return $path;
-    #die "Unable to find active session for target ${target}";
 }
 
 sub list_images {

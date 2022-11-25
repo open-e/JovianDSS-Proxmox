@@ -6,7 +6,7 @@
   );
   
   our @SHARED_STORAGE = (
-+     'open-e',
++     'joviandss',
       'iscsi',
       'nfs',
       'cifs',
