@@ -38,8 +38,8 @@ class JovianRESTProxy(object):
         if config.get('driver_use_ssl', True):
             self.proto = 'https'
 
-        self.hosts = config.get('san_hosts', [])
-        self.port = str(config.get('san_api_port', 82))
+        self.hosts = config.get('rest_api_hosts', [])
+        self.port = str(config.get('rest_api_port', 82))
 
         for host in self.hosts:
             if o_netutils.is_valid_ip(host) is False:
@@ -56,8 +56,8 @@ class JovianRESTProxy(object):
 
         self.pool = config.get('jovian_pool', 'Pool-0')
 
-        self.user = config.get('san_login', 'admin')
-        self.password = config.get('san_password', 'admin')
+        self.user = config.get('rest_api_login', 'admin')
+        self.password = config.get('rest_api_password', 'admin')
         self.verify = config.get('driver_ssl_cert_verify', False)
         self.cert = config.get('driver_ssl_cert_path')
 

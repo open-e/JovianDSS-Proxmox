@@ -85,7 +85,7 @@ class JovianISCSIDriver(object):
         self.block_size = (
             self.configuration.get('jovian_block_size', '64K'))
         self.jovian_sparse = (
-            self.configuration.get('san_thin_provision', True))
+            self.configuration.get('thin_provision', True))
         self.jovian_ignore_tpath = self.configuration.get(
             'jovian_ignore_tpath', None)
         self.jovian_hosts = self.configuration.get(
