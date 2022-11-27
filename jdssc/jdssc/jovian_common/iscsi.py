@@ -89,7 +89,7 @@ class JovianISCSIDriver(object):
         self.jovian_ignore_tpath = self.configuration.get(
             'jovian_ignore_tpath', None)
         self.jovian_hosts = self.configuration.get(
-            'san_hosts', [])
+            'rest_api_addresses', [])
 
         self.ra = rest.JovianRESTAPI(self.configuration)
 

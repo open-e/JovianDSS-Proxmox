@@ -38,7 +38,7 @@ class JovianRESTProxy(object):
         if config.get('driver_use_ssl', True):
             self.proto = 'https'
 
-        self.hosts = config.get('rest_api_hosts', [])
+        self.hosts = config.get('rest_api_addresses', [])
         self.port = str(config.get('rest_api_port', 82))
 
         for host in self.hosts:
