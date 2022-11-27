@@ -86,7 +86,7 @@ def setup_logging(args, cfg):
 
 def hosts(args, uargs, jdss):
     
-    for i in jdss.configuration['rest_api_hosts']:
+    for i in jdss.configuration['rest_api_addresses']:
         addr = i
         if 'target_port' in jdss.configuration:
             addr = '%s:%s' % (addr, jdss.configuration['target_port'])
