@@ -124,7 +124,7 @@ class JovianRESTProxy(object):
                 continue
             break
 
-        LOG.debug("Geting %(data)s from %(t)s to %(addr)s",
+        LOG.debug("Getting %(data)s from %(t)s to %(addr)s",
                   {'data': out, 't': request_method, 'addr': addr})
         return out
 
