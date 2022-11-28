@@ -26,7 +26,7 @@ joviandss: jdss-Pool-0
         content iso,backup,images,rootdir,vztmpl
         content_volume_name proxmox-content-jdss-pool-0
         content_volume_size 100
-        path /mnt/jdss-Pool-0.log
+        path /mnt/jdss-Pool-0
         debug 0
         multipath 0
 ```
@@ -107,7 +107,7 @@ joviandss: jdss-Pool-0
         content iso,backup,images,rootdir,vztmpl
         content_volume_name proxmox-content-jdss-pool-0
         content_volume_size 100
-        path /mnt/jdss-Pool-0.log
+        path /mnt/jdss-Pool-0
         debug 0
         multipath 0
 
@@ -117,7 +117,7 @@ joviandss: jdss-Pool-1
         content iso,backup,images,rootdir,vztmpl
         content_volume_name proxmox-content-jdss-pool-1
         content_volume_size 100
-        path /mnt/jdss-Pool-1.log
+        path /mnt/jdss-Pool-1
         debug 0
         multipath 0
 ```
@@ -174,7 +174,7 @@ joviandss: jdss-Pool-0
         content iso,backup,images,rootdir,vztmpl
         content_volume_name proxmox-content-jdss-pool-0
         content_volume_size 100
-        path /mnt/jdss-Pool-0.log
+        path /mnt/jdss-Pool-0
         debug 0
         multipath 0
 ```
@@ -210,7 +210,7 @@ joviandss: jdss-Pool-0
         content iso,backup,images,rootdir,vztmpl
         content_volume_name proxmox-content-jdss-pool-0
         content_volume_size 100
-        path /mnt/jdss-Pool-0.log
+        path /mnt/jdss-Pool-0
         debug 0
         multipath 1
 ```
