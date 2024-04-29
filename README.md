@@ -66,7 +66,7 @@ target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '64K'
 jovian_rest_send_repeats: 3
 rest_api_addresses:
-  - '10.1.0.100'
+  - '192.168.21.100'
 rest_api_port: 82
 target_port: 3260
 rest_api_login: 'admin'
@@ -137,7 +137,7 @@ target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '64K'
 jovian_rest_send_repeats: 3
 rest_api_addresses:
-  - '10.1.0.100'
+  - '192.168.21.100'
 rest_api_port: 82
 target_port: 3260
 rest_api_login: 'admin'
@@ -154,7 +154,7 @@ target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '64K'
 jovian_rest_send_repeats: 3
 rest_api_addresses:
-  - '10.1.0.200'
+  - '192.168.31.100'
 rest_api_port: 82
 target_port: 3260
 rest_api_login: 'admin'
@@ -192,7 +192,7 @@ target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '64K'
 jovian_rest_send_repeats: 3
 rest_api_addresses:
-  - '10.1.0.100'
+  - '192.168.21.100'
 rest_api_port: 82
 target_port: 3260
 rest_api_login: 'admin'
@@ -232,8 +232,8 @@ target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '64K'
 jovian_rest_send_repeats: 3
 rest_api_address:
-  - '10.1.0.100'
-  - '10.2.0.100'
+  - '192.168.21.100'
+  - '192.168.31.100'
 rest_api_port: 82
 target_port: 3260
 rest_api_login: 'admin'
