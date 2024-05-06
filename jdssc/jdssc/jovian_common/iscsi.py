@@ -29,6 +29,7 @@ from jdssc.jovian_common.stub import _
 
 LOG = logging.getLogger(__name__)
 
+
 class JovianISCSIDriver(object):
     """Executes volume driver commands on Open-E JovianDSS.
 
@@ -83,7 +84,7 @@ class JovianISCSIDriver(object):
         self.jovian_chap_pass_len = self.configuration.get(
             'chap_password_len', 12)
         self.block_size = (
-            self.configuration.get('jovian_block_size', '64K'))
+            self.configuration.get('jovian_block_size', '64K')).upper()
         self.jovian_sparse = (
             self.configuration.get('thin_provision', True))
         self.jovian_ignore_tpath = self.configuration.get(
@@ -125,7 +126,7 @@ class JovianISCSIDriver(object):
         :param volume: volume reference
         :return: model update dict for volume reference
         """
-        vname = "";
+        vname = ""
         if direct_mode:
             vname = volume['id']
         else:
@@ -135,11 +136,15 @@ class JovianISCSIDriver(object):
         provider_location = self._get_provider_location(volume['id'])
         provider_auth = self._get_provider_auth()
 
+        block_size = self.block_size
+        if volume['block_size']:
+            block_size = volume['block_size']
+
         try:
             self.ra.create_lun(vname,
                                volume['size'],
                                sparse=self.jovian_sparse,
-                               block_size=self.block_size)
+                               block_size=block_size)
 
         except jexc.JDSSException as ex:
             LOG.error("Create volume error. Because %(err)s",
@@ -158,11 +163,6 @@ class JovianISCSIDriver(object):
 
         :return: list of volumes
         """
-        #vname = jcom.vname(volume.id)
-        #LOG.debug('creating volume %s.', vname)
-
-        #provider_location = self._get_provider_location(volume.id)
-        #provider_auth = self._get_provider_auth()
 
         ret = []
         try:
@@ -180,11 +180,11 @@ class JovianISCSIDriver(object):
                     continue
 
                 ret.append({
-                'name': jcom.idname(r['name']),
-                'id' : r['san:volume_id'],
-                'size': r['volsize']})
+                    'name': jcom.idname(r['name']),
+                    'id': r['san:volume_id'],
+                    'size': r['volsize']})
 
-            except Exception as err:
+            except Exception:
                 pass
         return ret
 
@@ -193,11 +193,6 @@ class JovianISCSIDriver(object):
 
         :return: list of volumes
         """
-        #vname = jcom.vname(volume.id)
-        #LOG.debug('creating volume %s.', vname)
-
-        #provider_location = self._get_provider_location(volume.id)
-        #provider_auth = self._get_provider_auth()
 
         ret = []
         try:
@@ -212,11 +207,11 @@ class JovianISCSIDriver(object):
             try:
 
                 ret.append({
-                'name': jcom.idname(r['name']),
-                'id' : r['san:volume_id'],
-                'size': r['volsize']})
+                    'name': jcom.idname(r['name']),
+                    'id': r['san:volume_id'],
+                    'size': r['volsize']})
 
-            except Exception as err:
+            except Exception:
                 pass
         return ret
 

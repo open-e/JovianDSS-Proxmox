@@ -23,12 +23,10 @@ import jdssc.volumes as volumes
 import jdssc.targets as targets
 
 """Pool related commands."""
-        
+
+
 class Pools():
     def __init__(self, args, uargs, jdss):
-
-        #self.sa = {'create': self.create,
-        #           'list': self.list}
 
         self.pa = {'cifs': self.cifs,
                    'get': self.get,
@@ -44,10 +42,9 @@ class Pools():
         self.args.update(vars(argst[0]))
         self.uargs = argst[1]
         self.jdss = jdss
-        
+
         if self.args['pool_name']:
             self.jdss.configuration['jovian_pool'] = self.args['pool_name']
-            #print(self.jdss.configuration)
         self.jdss.do_setup(None)
         if 'pool-action' in self.args:
             self.pa[self.args.pop('pool-action')]()
@@ -65,9 +62,8 @@ class Pools():
         target = parsers.add_parser('targets', add_help=False)
         volumes = parsers.add_parser('volumes', add_help=False)
 
-
         return parser.parse_known_args(args)
-   
+
     def cifs(self):
         cifs.CIFS(self.args, self.uargs, self.jdss)
 
@@ -76,7 +72,7 @@ class Pools():
         line = "{total} {free} {used}\n".format(
             total=total_gb, free=free_gb, used=total_gb-free_gb)
         sys.stdout.write(line)
-  
+
     def ip(self):
         for i in self.jdss.jovian_hosts:
             line = ("%s\n" % i)

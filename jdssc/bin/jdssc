@@ -16,7 +16,6 @@
 #    under the License.
 
 import argparse
-import uuid
 
 import yaml
 import sys
@@ -29,14 +28,13 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 LOG = logging.getLogger(__name__)
-LOG.setLevel(logging.DEBUG)
 
- 
+
 def get_config():
     parser = argparse.ArgumentParser(description='JDSS simple CLI')
 
-    lvls = [ logging.getLevelName(i) for i in range(7)]
-    parser.add_argument('-c', '--config', dest='config', required=True, help='Path of configuration file')
+    parser.add_argument('-c', '--config', dest='config', required=True,
+                        help='Path of configuration file')
     log_levels = ['critical', 'error', 'warning', 'info', 'debug']
     parser.add_argument('-l',
                         '--loglvl',
@@ -45,8 +43,14 @@ def get_config():
                         choices=log_levels,
                         default='info',
                         help='Logging level')
-    parser.add_argument('--logfile', dest='cli_log_file', help='File to store log to', required=False)
-    parser.add_argument('-p', '--plain', dest='plain_mode', required=False, action='store_true', default=False, help='Plain format')
+    parser.add_argument('--logfile',
+                        dest='cli_log_file',
+                        help='File to store log to',
+                        required=False)
+    parser.add_argument('-p', '--plain', dest='plain_mode', required=False,
+                        action='store_true',
+                        default=False,
+                        help='Plain format')
 
     command = parser.add_subparsers(required=True, dest='command')
 
@@ -55,6 +59,7 @@ def get_config():
 
     args = parser.parse_known_args()
     return args
+
 
 def setup_logging(args, cfg):
 
@@ -73,41 +78,49 @@ def setup_logging(args, cfg):
         logfile = cfg['logfile']
 
     if loglvl and logfile:
+
         numeric_level = getattr(logging, loglvl.upper(), None)
         if not isinstance(numeric_level, int):
-                raise ValueError('Invalid log level: %s' % loglevel)
-        handler = RotatingFileHandler(logfile, maxBytes=1024*1024*16, backupCount=5)
-        formatter = logging.Formatter('%(asctime)s %(message)s')
-        handler.setFormatter(formatter)
+            raise ValueError('Invalid log level: %s' % loglvl)
+        rfh = RotatingFileHandler(logfile,
+                                  maxBytes=1024*1024*16,
+                                  backupCount=5)
 
-        log = logging.getLogger()
-        log.setLevel(numeric_level)
-        log.addHandler(handler)
+        logging.basicConfig(
+            level=logging.DEBUG,
+            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S',
+            handlers=[
+                rfh,
+                logging.StreamHandler()
+            ]
+        )
+
 
 def hosts(args, uargs, jdss):
-    
+
     for i in jdss.configuration['rest_api_addresses']:
         addr = i
         if 'target_port' in jdss.configuration:
             addr = '%s:%s' % (addr, jdss.configuration['target_port'])
         sys.stdout.write(addr + "\n")
-        #print(i)
+
 
 def main():
     (args, uargs) = get_config()
     if args.cli_log_lvl and args.cli_log_file:
         numeric_level = getattr(logging, args.cli_log_lvl.upper(), None)
         if not isinstance(numeric_level, int):
-                raise ValueError('Invalid log level: %s' % loglevel)
-        handler = RotatingFileHandler(args.cli_log_file, maxBytes=1024*1024*16, backupCount=5)
+            raise ValueError('Invalid log level: %s' % args.cli_log_level)
+        handler = RotatingFileHandler(args.cli_log_file,
+                                      maxBytes=1024*1024*16,
+                                      backupCount=5)
         formatter = logging.Formatter('%(asctime)s %(message)s')
         handler.setFormatter(formatter)
-       
+
         log = logging.getLogger()
         log.setLevel(numeric_level)
         log.addHandler(handler)
-
-    cfgFile = open(args.config)
 
     config = yaml.safe_load(open(args.config))
 
@@ -115,13 +128,13 @@ def main():
     # list available commands
     cmd = {'pool': pool.Pools,
            'hosts': hosts}
-    
+
     jdss = iscsi.JovianISCSIDriver(config)
     jdss.do_setup('')
 
     args = vars(args)
     # Run command
-    out = cmd[args.pop('command')](args, uargs, jdss)
+    cmd[args.pop('command')](args, uargs, jdss)
 
 if __name__ == "__main__":
     try:
