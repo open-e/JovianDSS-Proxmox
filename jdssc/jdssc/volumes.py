@@ -157,14 +157,16 @@ class Volumes():
                                 default=False,
                                 help='Use real volume name')
 
-            # snapshots = parsers.add_parser('snapshots')
+            snapshots = parsers.add_parser('snapshots')
 
         return parser.parse_known_args(args)
 
     def create(self):
 
-        volume = {'size': self.args['volume_size'],
-                  'block_size': self.args['block_size'].upper()}
+        volume = {'size': self.args['volume_size'].upper()}
+
+        if self.args['block_size'] is not None:
+            volume['block_size'] = self.args['block_size'].upper()
 
         if 'volume_name' in self.args:
             volume['id'] = self.args['volume_name']
@@ -220,7 +222,7 @@ class Volumes():
                 print(nname)
                 return
 
-        raise Exception("Unable to find free volume name") 
+        raise Exception("Unable to find free volume name")
 
     def list(self):
         data = self.jdss.list_volumes()

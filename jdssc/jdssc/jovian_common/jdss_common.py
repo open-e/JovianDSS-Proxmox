@@ -38,7 +38,7 @@ def idname(name):
         return name[2:]
 
     if name.startswith('vb_'):
-        return base64.b32decode(name[3:].encode())
+        return base64.b32decode(name[3:].replace("-", "=") .encode()).decode()
 
     raise Exception("Bad volume name %s" % name)
 
@@ -61,9 +61,9 @@ def vname(name):
         raise Exception(message=msg)
 
     if allowed.match(name):
-        return name
+        return "v_" + name
 
-    return "vb_" + base64.b32encode(name).decode()
+    return "vb_" + base64.b32encode(name.encode()).decode().replace("=", "-")
 
 
 def sname(name):
@@ -73,6 +73,10 @@ def sname(name):
         return name
 
     if name.startswith('v_'):
+        msg = ('Attempt to use volume %s as a snapshot') % name
+        raise Exception(message=msg)
+
+    if name.startswith('vb_'):
         msg = ('Attempt to use volume %s as a snapshot') % name
         raise Exception(message=msg)
 

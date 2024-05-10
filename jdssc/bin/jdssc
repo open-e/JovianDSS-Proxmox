@@ -27,7 +27,7 @@ import jdssc.pool as pool
 import logging
 from logging.handlers import RotatingFileHandler
 
-LOG = logging.getLogger(__name__)
+#LOG = logging.getLogger(__name__)
 
 
 def get_config():
@@ -35,7 +35,8 @@ def get_config():
 
     parser.add_argument('-c', '--config', dest='config', required=True,
                         help='Path of configuration file')
-    log_levels = ['critical', 'error', 'warning', 'info', 'debug']
+    log_levels = ['critical', 'error', 'warning', 'info', 'debug',
+                  'CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG']
     parser.add_argument('-l',
                         '--loglvl',
                         dest='cli_log_lvl',
@@ -63,12 +64,11 @@ def get_config():
 
 def setup_logging(args, cfg):
 
-    loglvl = None
-
-    if args.cli_log_lvl:
-        loglvl = args.cli_log_lvl
-    elif 'loglvl' in cfg:
+    loglvl = 'info'
+    if 'loglvl' in cfg:
         loglvl = cfg['loglvl']
+    if args.cli_log_lvl != "info":
+        loglvl = args.cli_log_lvl
 
     logfile = None
 
@@ -87,7 +87,7 @@ def setup_logging(args, cfg):
                                   backupCount=5)
 
         logging.basicConfig(
-            level=logging.DEBUG,
+            level=numeric_level,
             format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
             datefmt='%Y-%m-%d %H:%M:%S',
             handlers=[
@@ -136,10 +136,11 @@ def main():
     # Run command
     cmd[args.pop('command')](args, uargs, jdss)
 
+
 if __name__ == "__main__":
     try:
         main()
     except Exception as err:
-        #sys.stderr.write("error: %s\n" % err)
+        LOG = logging.getLogger(__name__)
         LOG.error(err, exc_info=True)
         sys.exit(1)

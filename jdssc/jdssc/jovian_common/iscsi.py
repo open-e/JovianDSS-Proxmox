@@ -137,7 +137,9 @@ class JovianISCSIDriver(object):
         provider_auth = self._get_provider_auth()
 
         block_size = self.block_size
-        if volume['block_size']:
+        if ('block_size' in volume and
+                volume['block_size'] is not None and
+                len(volume['block_size']) > 0):
             block_size = volume['block_size']
 
         try:

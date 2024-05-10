@@ -138,7 +138,7 @@ class JovianRESTAPI(object):
 
         if not resp["error"] and resp["code"] in (200, 201):
             return resp["data"]
-        
+
         self._general_error(req, resp)
 
     def delete_nas_volume(self, volume_name):
@@ -351,7 +351,7 @@ class JovianRESTAPI(object):
             return
 
         if resp["error"] is not None:
-            if resp["error"]["errno"] == str(5):
+            if 'errno' in resp["error"] and resp["error"]["errno"] == str(5):
                 raise jexc.JDSSRESTException(
                     'Failed to create volume. %s.' % resp['error']['message'])
 

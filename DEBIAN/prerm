@@ -1,4 +1,18 @@
-#!/bin/sh
+#!/bin/bash
+ADDJOVIANDSSPATCH=$(cat <<'END'
+***************
+*** 30,35 ****
+--- 30,36 ----
+  );
 
-patch -R /usr/share/perl5/PVE/Storage/Plugin.pm /usr/share/open-e/mark-open-e-plugin-as-dynamic.patch
+  our @SHARED_STORAGE = (
++     'joviandss',
+      'iscsi',
+      'nfs',
+      'cifs',
+END
+)
+
+echo "$ADDJOVIANDSSPATCH" | patch -R /usr/share/perl5/PVE/Storage/Plugin.pm
+
 exit 0
