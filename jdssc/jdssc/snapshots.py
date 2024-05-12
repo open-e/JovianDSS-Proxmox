@@ -20,9 +20,10 @@ import sys
 
 """Snapshot related commands."""
 
+
 class Snapshots():
     def __init__(self, args, uargs, jdss):
-        
+
         self.ssa = {'create': self.create,
                     'list': self.list}
         self.sa = {'clone': self.clone,
@@ -34,7 +35,7 @@ class Snapshots():
         self.args.update(vars(argst[0]))
         self.uargs = argst[1]
         self.jdss = jdss
-       
+
         if 'snapshots-actions' in self.args:
             self.ssa[self.args.pop('snapshots-actions')]()
         elif 'snapshot-actions' in self.args:
@@ -42,19 +43,19 @@ class Snapshots():
 
     @staticmethod
     def get_snapshot(volume_name, snapshot_name):
-    
+
         name_bytes = bytes(volume_name + snapshot_name, 'ascii')
         name_uuid = hashlib.md5(name_bytes).hexdigest()
         snapshot = {'id': "{}-{}".format(name_uuid, snapshot_name),
                     'volume_id': volume_name,
                     'volume_name': volume_name}
-    
+
         return snapshot
 
     def __parse(self, args):
 
         parser = argparse.ArgumentParser(prog="Volume")
-       
+
         if args[0] in self.ssa:
             parsers = parser.add_subparsers(dest='snapshots-actions')
 
@@ -68,10 +69,8 @@ class Snapshots():
             clone = parsers.add_parser('clone')
             delete = parsers.add_parser('delete')
             delete = parsers.add_parser('rollback')
-       
+
         return parser.parse_known_args(args)
-
-
 
     def create(self):
 

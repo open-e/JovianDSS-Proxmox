@@ -13,11 +13,16 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import base64
+import re
+
+allowed = re.compile(r"^[-\w]+$")
+
 
 def is_volume(name):
     """Return True if volume"""
 
-    return name.startswith("v_")
+    return name.startswith("v_") or name.startswith("vb_")
 
 
 def is_snapshot(name):
@@ -32,7 +37,10 @@ def idname(name):
     if name.startswith(('s_', 'v_', 't_')):
         return name[2:]
 
-    raise Exception(msg)
+    if name.startswith('vb_'):
+        return base64.b32decode(name[3:].replace("-", "=") .encode()).decode()
+
+    raise Exception("Bad volume name %s" % name)
 
 
 def vname(name):
@@ -41,15 +49,21 @@ def vname(name):
     if name.startswith("v_"):
         return name
 
+    if name.startswith("vb_"):
+        return name
+
     if name.startswith('s_'):
-        msg = _('Attempt to use snapshot %s as a volume') % name
+        msg = 'Attempt to use snapshot %s as a volume' % name
         raise Exception(message=msg)
 
     if name.startswith('t_'):
-        msg = _('Attempt to use deleted object %s as a volume') % name
+        msg = 'Attempt to use deleted object %s as a volume' % name
         raise Exception(message=msg)
 
-    return 'v_' + name
+    if allowed.match(name):
+        return "v_" + name
+
+    return "vb_" + base64.b32encode(name.encode()).decode().replace("=", "-")
 
 
 def sname(name):
@@ -59,11 +73,15 @@ def sname(name):
         return name
 
     if name.startswith('v_'):
-        msg = _('Attempt to use volume %s as a snapshot') % name
+        msg = ('Attempt to use volume %s as a snapshot') % name
+        raise Exception(message=msg)
+
+    if name.startswith('vb_'):
+        msg = ('Attempt to use volume %s as a snapshot') % name
         raise Exception(message=msg)
 
     if name.startswith('t_'):
-        msg = _('Attempt to use deleted object %s as a snapshot') % name
+        msg = ('Attempt to use deleted object %s as a snapshot') % name
         raise Exception(message=msg)
 
     return 's_' + name
@@ -101,10 +119,12 @@ def hidden(name):
     """Get hidden version of a name"""
 
     if len(name) < 2:
-        # TODO: work through this
-        #raise Exception.VolumeDriverException("Incorrect volume name")
         pass
 
     if name[:2] == 'v_' or name[:2] == 's_':
         return 't_' + name[2:]
+
+    if name[3:] == 'vb_':
+        return 't_' + name[3:]
+
     return 't_' + name

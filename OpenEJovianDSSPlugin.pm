@@ -40,7 +40,7 @@ use base qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.9.5';
+my $PLUGIN_VERSION = '0.9.6';
 
 # Configuration
 
@@ -123,6 +123,10 @@ sub options {
 }
 
 # helpers
+sub safe_var_print {
+    my ($varname, $variable) = @_;
+    return defined $variable ? "${varname} ${variable}": "";
+}
 
 sub get_pool {
     my ($scfg) = @_;
@@ -362,24 +366,22 @@ sub iscsi_session {
     return $cache->{iscsi_sessions}->{$target};
 }
 
-sub get_call_stack {
-    my $i = 1;
-    print STDERR "Stack Trace:\n";
-    while ( (my @call_details = (caller($i++))) ){
-        print STDERR $call_details[1].":".$call_details[2]." in function ".$call_details[3]."\n";
-    }
-}
-
 sub volume_path {
     my ($class, $scfg, $volname, $storeid, $snapname) = @_;
 
-    print"Getting path of volume ${volname} snapshot ${snapname}\n" if get_debug($scfg);
+    print"Getting path of volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
     
     my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
 
-    return $class->get_multipath_path($scfg, $target) if (multipath_enabled($scfg));
+    my $tpath;
 
-    return $class->get_target_path($scfg, $target, $storeid);
+    if (multipath_enabled($scfg)) {
+        $tpath = $class->get_multipath_path($scfg, $target);
+    } else {
+        $tpath = $class->get_target_path($scfg, $target, $storeid);
+    }
+
+    return $tpath
 }
 
 sub path {
@@ -480,8 +482,8 @@ sub alloc_image {
 
         my $config = get_config($scfg);
         my $pool = get_pool($scfg);
-
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "-s", $size * 1024, $volume_name]);
+        my $extsize = $size + 1023;
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "-s", "${extsize}K", $volume_name]);
     }
     return "$volume_name";
 }
@@ -518,7 +520,7 @@ sub clean_word {
 sub stage_target {
     my ($class, $scfg, $storeid, $target) = @_;
 
-    print "Stage target ${target}" if get_debug($scfg);
+    print "Stage target ${target}\n" if get_debug($scfg);
 
     my $targetpath = $class->get_target_path($scfg, $target, $storeid);
 
@@ -538,6 +540,8 @@ sub stage_target {
             warn $@ if $@;
     }
 
+    print "Storage address is ${targetpath}\n" if get_debug($scfg);
+
     return $targetpath;
 }
 
@@ -545,7 +549,6 @@ sub unstage_target {
     my ($class, $scfg, $storeid, $target) = @_;
 
     print "Unstaging target ${target}\n" if get_debug($scfg); 
-
     my @hosts = $class->get_storage_addresses($scfg, $storeid);
 
     foreach my $host (@hosts) {
@@ -1098,15 +1101,20 @@ sub activate_volume_ext {
     }
 
     print "Staging target\n" if get_debug($scfg);
-    $class->stage_target($scfg, $storeid, $target);
+    my $targetpath = $class->stage_target($scfg, $storeid, $target);
 
     if (multipath_enabled($scfg)) {
         my $scsiid = $class->get_scsiid($scfg, $target, $storeid);
         print "Adding multipath\n" if get_debug($scfg);
-        $class->stage_multipath($scfg, $scsiid, $target);
+        $targetpath = $class->stage_multipath($scfg, $scsiid, $target);
     }
 
-    return 1;
+    for (my $i = 1; $i <= 10; $i++) {
+        return 1 if -b $targetpath;
+        sleep(1);
+    }
+
+    die "Unable to confirm existance of volume at path ${targetpath}\n";
 }
 
 sub activate_volume {
@@ -1116,7 +1124,9 @@ sub activate_volume {
 
     return 0 if ('images' ne "$vtype");
 
-    return $class->activate_volume_ext($storeid, $scfg, $volname, $snapname, $cache);
+    $class->activate_volume_ext($storeid, $scfg, $volname, $snapname, $cache);
+
+    return 1;
 }
 
 sub deactivate_volume {
