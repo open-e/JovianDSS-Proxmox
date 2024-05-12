@@ -1,0 +1,10 @@
+***************
+*** 30,35 ****
+--- 30,36 ----
+  );
+
+  our @SHARED_STORAGE = (
++     'joviandss',
+      'iscsi',
+      'nfs',
+      'cifs',

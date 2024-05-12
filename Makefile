@@ -24,16 +24,15 @@ deb:
 install:
 	@echo "Installing proxmox plugin"
 	install -D -m 0644 ./OpenEJovianDSSPlugin.pm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
-	install -D -m 0644 ./mark-open-e-plugin-as-dynamic.patch $(DESTDIR)/usr/share/open-e/mark-open-e-plugin-as-dynamic.patch
 
 	if [ $(DEB_FLAG) -ne 1 ]; then \
-		patch /usr/share/perl5/PVE/Storage/Plugin.pm /usr/share/open-e/mark-open-e-plugin-as-dynamic.patch ; \
+		patch /usr/share/perl5/PVE/Storage/Plugin.pm ./mark-open-e-plugin-as-dynamic.patch ; \
 	fi
 	$(MAKE) -C jdssc install DESTDIR=$(DESTDIR)
 
 uninstall:
 	@echo "Cleaning up proxmox plugin"
 	rm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
-	patch -R /usr/share/perl5/PVE/Storage/Plugin.pm /usr/share/open-e/mark-open-e-plugin-as-dynamic.patch
+	patch -R /usr/share/perl5/PVE/Storage/Plugin.pm ./mark-open-e-plugin-as-dynamic.patch
 	rm /usr/share/open-e/mark-open-e-plugin-as-dynamic.patch
 	$(MAKE) -C jdssc uninstall DESTDIR=$(DESTDIR)
