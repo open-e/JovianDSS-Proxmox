@@ -63,7 +63,7 @@ This config file should be placed according to the path provided in `storage.cfg
 ```yaml
 driver_use_ssl: True
 target_prefix: 'iqn.2021-10.iscsi:'
-jovian_block_size: '64K'
+jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
 rest_api_addresses:
   - '192.168.21.100'
@@ -80,7 +80,7 @@ logfile: /var/log/jdss-Pool-0.log
 |----------------------------|-------------------------|---------------------------------------------------------------------|
 | `driver_use_ssl`           | True                    | Use SSL to send requests to JovianDSS\[1\]                          |
 | `iscsi_target_prefix`      | iqn.2021-10.iscsi:      | Prefix that will be used to form target name for volume             |
-| `jovian_block_size`        | 64K                     | Block size of a new volume, can be: 32K, 64K, 128K, 256K, 512K, 1M  |
+| `jovian_block_size`        | 16K                     | Block size of a new volume, can be: 16K, 32K, 64K, 128K, 256K, 512K, 1M  |
 | `jovian_rest_send_repeats` | 3                       | Number of times that driver will try to send REST request           |
 | `rest_api_addresses`           |                         | Yaml list of IP address of the JovianDSS, only addresses specified here would be used for multipathing |
 | `rest_api_port`             | 82                      | Rest port according to the settings in \[1\]                        |
@@ -134,7 +134,7 @@ And here is 2 `config` files referenced in `storage.cfg` file above:
 ```yaml
 driver_use_ssl: True
 target_prefix: 'iqn.2021-10.iscsi:'
-jovian_block_size: '64K'
+jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
 rest_api_addresses:
   - '192.168.21.100'
@@ -151,7 +151,7 @@ logfile: /var/log/jdss-Pool-0.log
 ```yaml
 driver_use_ssl: True
 target_prefix: 'iqn.2021-10.iscsi:'
-jovian_block_size: '64K'
+jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
 rest_api_addresses:
   - '192.168.31.100'
@@ -189,7 +189,7 @@ joviandss: jdss-Pool-0
 ```yaml
 driver_use_ssl: True
 target_prefix: 'iqn.2021-10.iscsi:'
-jovian_block_size: '64K'
+jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
 rest_api_addresses:
   - '192.168.21.100'
@@ -229,7 +229,7 @@ Provide list of ip's that would be used for multipathing in `rest_api_addresses`
 ```yaml
 driver_use_ssl: True
 target_prefix: 'iqn.2021-10.iscsi:'
-jovian_block_size: '64K'
+jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
 rest_api_address:
   - '192.168.21.100'
