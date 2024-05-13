@@ -15,8 +15,9 @@
 
 
 class JDSSException(Exception):
-    """Unknown error"""
-    pass
+    """General JovianDSS error"""
+    message = ("%(reason)s")
+
 
 class JDSSRESTException(JDSSException):
     """Unknown communication error"""

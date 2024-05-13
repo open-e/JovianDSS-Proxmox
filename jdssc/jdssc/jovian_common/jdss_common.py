@@ -13,10 +13,13 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from datetime import datetime
 import base64
 import re
 
-allowed = re.compile(r"^[-\w]+$")
+from jdssc.jovian_common import cexception as exception
+from cinder import exception
+from jdssc.jovian_common.stub import _
 
 
 def is_volume(name):
@@ -32,7 +35,7 @@ def is_snapshot(name):
 
 
 def idname(name):
-    """Convert id into name"""
+    """Extract id from physical volume name"""
 
     if name.startswith(('s_', 'v_', 't_')):
         return name[2:]
@@ -65,26 +68,37 @@ def vname(name):
 
     return "vb_" + base64.b32encode(name.encode()).decode().replace("=", "-")
 
+def sname_to_id(sname):
 
-def sname(name):
-    """Convert id into snapshot name"""
+    spl = sname.split('_')
 
-    if name.startswith('s_'):
-        return name
+    if len(spl) == 2:
+        return (spl[1], None)
 
-    if name.startswith('v_'):
-        msg = ('Attempt to use volume %s as a snapshot') % name
-        raise Exception(message=msg)
+    return (spl[1], spl[2])
 
-    if name.startswith('vb_'):
-        msg = ('Attempt to use volume %s as a snapshot') % name
-        raise Exception(message=msg)
 
-    if name.startswith('t_'):
-        msg = ('Attempt to use deleted object %s as a snapshot') % name
-        raise Exception(message=msg)
+def sid_from_sname(name):
+    return sname_to_id(name)[0]
 
-    return 's_' + name
+
+def vid_from_sname(name):
+    return sname_to_id(name)[1]
+
+
+def sname(sid, vid):
+    """Convert id into snapshot name
+
+    :param: vid: volume id
+    :param: sid: snapshot id
+    """
+    if vid is None:
+        return 's_%(sid)s' % {'sid': sid}
+    return 's_%(sid)s_%(vid)s' % {'sid': sid, 'vid': vid}
+
+
+def sname_from_snap(snapshot_struct):
+    return snapshot_struct['name']
 
 
 def is_hidden(name):
@@ -97,34 +111,52 @@ def is_hidden(name):
     return False
 
 
-def origin_snapshot(origin_str):
-    """Extracts original phisical snapshot name from origin record"""
-
-    return origin_str.split("@")[1]
-
-
-def origin_volume(origin_str):
-    """Extracts original phisical volume name from origin record"""
-
-    return origin_str.split("@")[0].split("/")[1]
+def origin_snapshot(vol):
+    """Extracts original physical snapshot name from volume dict"""
+    if 'origin' in vol and vol['origin'] is not None:
+        return vol['origin'].split("@")[1]
+    return None
 
 
-def full_name_volume(name):
-    """Get volume id from full_name"""
+def origin_volume(vol):
+    """Extracts original physical volume name from volume dict"""
 
-    return name.split('/')[1]
+    if 'origin' in vol and vol['origin'] is not None:
+        return vol['origin'].split("@")[0].split("/")[1]
+    return None
+
+
+def snapshot_clones(snap):
+    """Return list of clones associated with snapshot or return empty list"""
+    out = []
+    clones = []
+    if 'clones' not in snap:
+        return out
+    else:
+        clones = snap['clones'].split(',')
+
+    for clone in clones:
+        out.append(clone.split('/')[1])
+    return out
 
 
 def hidden(name):
     """Get hidden version of a name"""
 
     if len(name) < 2:
-        pass
+        raise exception.VolumeDriverException("Incorrect volume name")
 
     if name[:2] == 'v_' or name[:2] == 's_':
         return 't_' + name[2:]
-
-    if name[3:] == 'vb_':
-        return 't_' + name[3:]
-
     return 't_' + name
+
+
+def get_newest_snapshot_name(snapshots):
+    newest_date = None
+    sname = None
+    for snap in snapshots:
+        current_date = datetime.strptime(snap['creation'], "%Y-%m-%d %H:%M:%S")
+        if newest_date is None or current_date > newest_date:
+            newest_date = current_date
+            sname = snap['name']
+    return sname

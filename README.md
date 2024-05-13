@@ -79,9 +79,11 @@ logfile: /var/log/jdss-Pool-0.log
 | Option                     | Default value           | Description                                                         |
 |----------------------------|-------------------------|---------------------------------------------------------------------|
 | `driver_use_ssl`           | True                    | Use SSL to send requests to JovianDSS\[1\]                          |
+| `driver_ssl_cert_verify`   | False                   | Verify authenticity of JovianDSS[1] certificate\[1\]                |
+| `driver_ssl_cert_path`     | None                    | Path to the JovianDSS[1] certificate for verification               |
 | `iscsi_target_prefix`      | iqn.2021-10.iscsi:      | Prefix that will be used to form target name for volume             |
 | `jovian_block_size`        | 16K                     | Block size of a new volume, can be: 16K, 32K, 64K, 128K, 256K, 512K, 1M  |
-| `jovian_rest_send_repeats` | 3                       | Number of times that driver will try to send REST request           |
+| `jovian_rest_send_repeats` | 3                       | Number of times that driver will try to send REST request. This option is deprecated. Changing it will not affect behaviour  |
 | `rest_api_addresses`           |                         | Yaml list of IP address of the JovianDSS, only addresses specified here would be used for multipathing |
 | `rest_api_port`             | 82                      | Rest port according to the settings in \[1\]                        |
 | `target_port`              | 3260                    | Port for iSCSI connections                                          |

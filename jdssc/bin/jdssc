@@ -20,14 +20,12 @@ import argparse
 import yaml
 import sys
 
-from jdssc.jovian_common import iscsi
+from jdssc.jovian_common import driver
 
 import jdssc.pool as pool
 
 import logging
 from logging.handlers import RotatingFileHandler
-
-#LOG = logging.getLogger(__name__)
 
 
 def get_config():
@@ -55,8 +53,8 @@ def get_config():
 
     command = parser.add_subparsers(required=True, dest='command')
 
-    pool_parser = command.add_parser('pool', add_help=False)
-    hosts = command.add_parser('hosts', add_help=False)
+    command.add_parser('pool', add_help=False)
+    command.add_parser('hosts', add_help=False)
 
     args = parser.parse_known_args()
     return args
@@ -97,6 +95,30 @@ def setup_logging(args, cfg):
         )
 
 
+def duplicate_config_options(cfg):
+    """
+    jdssc uses heavily OpenStack deiver code and since some options was renamed
+    we have to ensure that old option names translate into new code properly
+    """
+
+    if 'rest_api_addresses' in cfg:
+        cfg['san_hosts'] = cfg['rest_api_addresses']
+
+    if 'rest_api_port' in cfg:
+        cfg['san_api_port'] = cfg['rest_api_port']
+
+    if 'rest_api_login' in cfg:
+        cfg['san_login'] = cfg['rest_api_login']
+
+    if 'rest_api_password' in cfg:
+        cfg['san_password'] = cfg['rest_api_password']
+
+    if 'thin_provision' in cfg:
+        cfg['san_thin_provision'] = cfg['thin_provision']
+
+    return cfg
+
+
 def hosts(args, uargs, jdss):
 
     for i in jdss.configuration['rest_api_addresses']:
@@ -108,28 +130,15 @@ def hosts(args, uargs, jdss):
 
 def main():
     (args, uargs) = get_config()
-    if args.cli_log_lvl and args.cli_log_file:
-        numeric_level = getattr(logging, args.cli_log_lvl.upper(), None)
-        if not isinstance(numeric_level, int):
-            raise ValueError('Invalid log level: %s' % args.cli_log_level)
-        handler = RotatingFileHandler(args.cli_log_file,
-                                      maxBytes=1024*1024*16,
-                                      backupCount=5)
-        formatter = logging.Formatter('%(asctime)s %(message)s')
-        handler.setFormatter(formatter)
-
-        log = logging.getLogger()
-        log.setLevel(numeric_level)
-        log.addHandler(handler)
 
     config = yaml.safe_load(open(args.config))
-
+    config = duplicate_config_options(config)
     setup_logging(args, config)
     # list available commands
     cmd = {'pool': pool.Pools,
            'hosts': hosts}
 
-    jdss = iscsi.JovianISCSIDriver(config)
+    jdss = driver.JovianDSSDriver(config)
     jdss.do_setup('')
 
     args = vars(args)
