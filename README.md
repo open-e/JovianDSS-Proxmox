@@ -377,7 +377,7 @@ make uninstall
 Or by installing it from debian package
 
 ```bash
-apt install ./open-e-joviandss-proxmox-plugin_0.9.5-1.deb
+apt install ./open-e-joviandss-proxmox-plugin_0.9.6.deb
 ```
 
 Once installation is done, provide configuration.
