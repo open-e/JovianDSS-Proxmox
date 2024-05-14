@@ -1249,5 +1249,14 @@ sub volume_has_feature {
     return undef;
 }
 
+sub get_volume_attribute {
+    my ($class, $scfg, $storeid, $volname, $attribute) = @_;
+    return undef;
+}
+
+sub update_volume_attribute {
+    my ($class, $scfg, $storeid, $volname, $attribute, $value) = @_;
+    return undef;
+}
+
 1;
-# vim: set et sw=4 :
