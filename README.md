@@ -231,7 +231,7 @@ driver_use_ssl: True
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
-rest_api_address:
+rest_api_addresses:
   - '192.168.21.100'
   - '192.168.31.100'
 rest_api_port: 82
