@@ -139,7 +139,7 @@ def main():
            'hosts': hosts}
 
     jdss = driver.JovianDSSDriver(config)
-    jdss.do_setup('')
+    # jdss.do_setup('')
 
     args = vars(args)
     # Run command

@@ -22,10 +22,10 @@ from oslo_utils import netutils as o_netutils
 import requests
 import urllib3
 
-from cinder import exception
-from cinder.i18n import _
-from cinder.utils import retry
-from cinder.volume.drivers.open_e.jovian_common import exception as jexc
+from jdssc.jovian_common import cexception as exception
+from jdssc.jovian_common.stub import _
+from retry import retry
+from jdssc.jovian_common import exception as jexc
 
 
 LOG = logging.getLogger(__name__)
@@ -146,7 +146,7 @@ class JovianDSSRESTProxy(object):
         return self.request(request_method, req, json_data=json_data)
 
     @retry(json.JSONDecodeError,
-           retries=3)
+           tries=3)
     def _send(self, pr):
         """Send prepared request
 

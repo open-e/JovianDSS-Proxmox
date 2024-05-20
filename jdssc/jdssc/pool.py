@@ -14,7 +14,6 @@
 #    under the License.
 
 import argparse
-import re
 import sys
 
 import jdssc.cifs as cifs
@@ -45,22 +44,22 @@ class Pools():
 
         if self.args['pool_name']:
             self.jdss.configuration['jovian_pool'] = self.args['pool_name']
-        self.jdss.do_setup(None)
-        if 'pool-action' in self.args:
-            self.pa[self.args.pop('pool-action')]()
+
+        if 'pool_action' in self.args and args['pool_action'] is not None:
+            self.pa[self.args.pop('pool_action')]()
 
     def __parse(self, args):
 
         parser = argparse.ArgumentParser(prog="Pool")
 
         parser.add_argument('pool_name', help='Pool name')
-        parsers = parser.add_subparsers(dest='pool-action')
-        info = parsers.add_parser('get', add_help=False)
-        ip = parsers.add_parser('ip', add_help=False)
-        cifs = parsers.add_parser('cifs', add_help=False)
-        nas_volumes = parsers.add_parser('nas_volumes', add_help=False)
-        target = parsers.add_parser('targets', add_help=False)
-        volumes = parsers.add_parser('volumes', add_help=False)
+        parsers = parser.add_subparsers(dest='pool_action')
+        parsers.add_parser('get', add_help=False)
+        parsers.add_parser('ip', add_help=False)
+        parsers.add_parser('cifs', add_help=False)
+        parsers.add_parser('nas_volumes', add_help=False)
+        parsers.add_parser('targets', add_help=False)
+        parsers.add_parser('volumes', add_help=False)
 
         return parser.parse_known_args(args)
 

@@ -19,9 +19,9 @@ import re
 
 from oslo_log import log as logging
 
-from cinder.i18n import _
-from cinder.volume.drivers.open_e.jovian_common import exception as jexc
-from cinder.volume.drivers.open_e.jovian_common import rest_proxy
+from jdssc.jovian_common import exception as jexc
+from jdssc.jovian_common import rest_proxy
+from jdssc.jovian_common.stub import _
 
 LOG = logging.getLogger(__name__)
 

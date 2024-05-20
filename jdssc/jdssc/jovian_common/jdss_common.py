@@ -15,11 +15,8 @@
 
 from datetime import datetime
 import base64
-import re
 
 from jdssc.jovian_common import cexception as exception
-from cinder import exception
-from jdssc.jovian_common.stub import _
 
 
 def is_volume(name):
