@@ -15,8 +15,20 @@
 
 from datetime import datetime
 import base64
+import re
 
 from jdssc.jovian_common import cexception as exception
+
+
+allowedPattern = re.compile(r"^[-\w]+$")
+
+
+def JBase32ToStr(bname):
+    return base64.b32decode(bname.replace("-", "=") .encode()).decode()
+
+
+def JBase32FromStr(name):
+    return base64.b32encode(name.encode()).decode().replace("=", "-")
 
 
 def is_volume(name):
@@ -34,11 +46,14 @@ def is_snapshot(name):
 def idname(name):
     """Extract id from physical volume name"""
 
-    if name.startswith(('s_', 'v_', 't_')):
+    if name.startswith(('v_', 't_')):
         return name[2:]
 
+    if name.startswith('s'):
+        return sname_to_id(name)[0]
+
     if name.startswith('vb_'):
-        return base64.b32decode(name[3:].replace("-", "=") .encode()).decode()
+        return JBase32ToStr(name[3:])
 
     raise Exception("Bad volume name %s" % name)
 
@@ -54,25 +69,37 @@ def vname(name):
 
     if name.startswith('s_'):
         msg = 'Attempt to use snapshot %s as a volume' % name
-        raise Exception(message=msg)
+        raise Exception(msg)
 
     if name.startswith('t_'):
         msg = 'Attempt to use deleted object %s as a volume' % name
-        raise Exception(message=msg)
+        raise Exception(msg)
 
-    if allowed.match(name):
+    if allowedPattern.match(name):
         return "v_" + name
 
-    return "vb_" + base64.b32encode(name.encode()).decode().replace("=", "-")
+    return "vb_" + JBase32FromStr(name)
+
 
 def sname_to_id(sname):
 
     spl = sname.split('_')
 
-    if len(spl) == 2:
-        return (spl[1], None)
+    if spl[0] == 's':
+        return ('_'.join(spl[1:]), None)
 
-    return (spl[1], spl[2])
+    if spl[0] == 'se':
+        sid = '_'.join(spl[1:-1])
+        vid = JBase32ToStr(spl[-1:][0])
+        return sid, vid
+
+    if spl[0] == 'sb' and len(spl) == 3:
+        sid = JBase32ToStr(spl[1])
+        vid = JBase32ToStr(spl[2])
+        return sid, vid
+
+    msg = "Incorrect snapshot name %s" % sname
+    raise Exception(msg)
 
 
 def sid_from_sname(name):
@@ -89,9 +116,18 @@ def sname(sid, vid):
     :param: vid: volume id
     :param: sid: snapshot id
     """
-    if vid is None:
-        return 's_%(sid)s' % {'sid': sid}
-    return 's_%(sid)s_%(vid)s' % {'sid': sid, 'vid': vid}
+    out = ""
+    # e for extendent
+    # b for based
+    if allowedPattern.match(sid):
+        out = 'se_%(sid)s' % {'sid': sid}
+    else:
+        out = 'sb_%(sid)s' % {'sid': JBase32FromStr(sid)}
+
+    if vid is not None and len(vid) > 0:
+        out += '_%(vid)s' % {'vid': JBase32FromStr(vid)}
+
+    return out
 
 
 def sname_from_snap(snapshot_struct):

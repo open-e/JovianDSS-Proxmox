@@ -42,7 +42,9 @@ class JDSSResourceNotFoundException(JDSSException):
 class JDSSVolumeNotFoundException(JDSSResourceNotFoundException):
     """Volume does not exist"""
 
-    message = ("JDSS volume %(volume)s DNE.")
+    def __init__(self, volume):
+        self.message = "JDSS volume %(volume)s DNE." % {'volume': volume}
+        super().__init__(self.message)
 
 
 class JDSSSnapshotNotFoundException(JDSSResourceNotFoundException):
@@ -53,7 +55,7 @@ class JDSSSnapshotNotFoundException(JDSSResourceNotFoundException):
 
 class JDSSResourceExistsException(JDSSException):
     """Resource with specified id exists"""
-    
+
     def __init__(self, res):
         self.message = ("JDSS resource with id {} exists.".format(res))
         super().__init__(self.message)
@@ -79,7 +81,7 @@ class JDSSResourceIsBusyException(JDSSException):
     """Resource have dependents"""
 
     def __init__(self, res):
-        self.message = ("JDSS resource %(res)s is busy." % res)
+        self.message = ("JDSS resource %(res)s is busy." % {'res': res})
         super().__init__(self.message)
 
 

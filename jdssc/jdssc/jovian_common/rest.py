@@ -136,6 +136,7 @@ class JovianRESTAPI(object):
         :return:
         """
         LOG.debug("create volume start")
+        LOG.debug("%s", volume_size)
         volume_size_str = str(volume_size)
         jbody = {
             'name': volume_name,

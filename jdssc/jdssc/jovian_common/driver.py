@@ -68,7 +68,8 @@ class JovianDSSDriver(object):
             'name': self._get_target_name(volume_name)}
 
     def create_volume(self, volume_id, volume_size, sparse=False,
-                      block_size=None):
+                      block_size=None,
+                      direct_mode=False):
         """Create a volume.
 
         :param str volume_id: volume id
@@ -79,6 +80,9 @@ class JovianDSSDriver(object):
         :return: None
         """
         vname = jcom.vname(volume_id)
+        if direct_mode:
+            vname = volume_id
+
         LOG.debug("Create volume:%(name)s with size:%(size)s",
                   {'name': volume_id, 'size': volume_size})
 
@@ -812,3 +816,155 @@ class JovianDSSDriver(object):
 
             LOG.error(err_msg)
             raise jexc.JDSSException(_(err_msg))
+
+    def list_volumes(self):
+        """List volumes related to this pool.
+
+        :return: list of volumes
+        """
+
+        ret = []
+        try:
+            data = self.ra.get_luns()
+
+        except jexc.JDSSException as ex:
+            LOG.error("List volume error. Because %(err)s",
+                      {"err": ex})
+            raise Exception(('Failed to list volumes %s.') % ex)
+
+        for r in data:
+            try:
+
+                if not jcom.is_volume(r['name']):
+                    continue
+
+                ret.append({
+                    'name': jcom.idname(r['name']),
+                    'id': r['san:volume_id'],
+                    'size': r['volsize']})
+
+            except Exception:
+                pass
+        return ret
+
+    def get_volume(self, volume, direct_mode=False):
+        """Get volume information.
+
+        :return: volume id, san id, size
+        """
+        name = None
+
+        if direct_mode:
+            name = volume['id']
+        else:
+            name = jcom.vname(volume['id'])
+        data = self.ra.get_lun(name)
+
+        if (not direct_mode) and (not jcom.is_volume(name)):
+            return dict()
+
+        ret = {'name': name,
+               'id': data['san:volume_id'],
+               'size': data['volsize']}
+
+        return ret
+
+    def modify_volume(self, volume_name, property, value):
+        LOG.debug("Update volume %s property %s with value %s",
+                  volume_name,
+                  property,
+                  value)
+        prop = {property: value}
+        try:
+            self.ra.modify_lun(jcom.vname(volume_name, prop=prop))
+        except jexc.JDSSException as err:
+            emsg = "Failed to set volume %(vol)s property %(pname)s with value %(pval)s" % {
+                              'vol': volume_name,
+                              'pname': property,
+                              'pval': value}
+            raise Exception(emsg) from err
+
+    def rename_volume(self, volume_name, new_volume_name):
+        LOG.debug("Rename volume %s to %s",
+                  volume_name,
+                  new_volume_name)
+
+        vname = jcom.vname(volume_name)
+        nvname = jcom.vname(new_volume_name)
+        prop = {'name': nvname}
+        try:
+            self.ra.modify_lun(vname, prop)
+        except jexc.JDSSException as err:
+            emsg = "Failed to rename volume %(vol)s to %(new_name)s" % {
+                              'vol': vname,
+                              'new_name': nvname}
+            raise Exception(emsg) from err
+
+    def list_snapshots(self, volume_name):
+        """List snapshots related to this volume.
+
+        :return: list of volumes
+        """
+
+        ret = []
+        vname = jcom.vname(volume_name)
+        try:
+            data = self.ra.get_snapshots(vname)
+
+        except jexc.JDSSException as ex:
+            LOG.error("List snapshots error. Because %(err)s",
+                      {"err": ex})
+            raise Exception(('Failed to list snapshots %s.') % volume_name)
+
+        for r in data:
+            try:
+                LOG.debug("physical volume  %s snap volume %s snap name %s",
+                          volume_name, jcom.vid_from_sname(r['name']), r['name'])
+
+                vid = jcom.vid_from_sname(r['name'])
+                if vid == volume_name or vid is None:
+                    ret.append({'name': jcom.sid_from_sname(r['name'])})
+
+            except Exception:
+                continue
+        return ret
+
+    def revert_to_snapshot(self, volume_name, snapshot_name):
+        """Revert volume to snapshot.
+
+        Note: the revert process should not change the volume's
+        current size, that means if the driver shrank
+        the volume during the process, it should extend the
+        volume internally.
+        """
+        vname = jcom.vname(volume['id'])
+        sname = jcom.sname(snapshot['id'], )
+        LOG.debug('reverting %(vname)s to %(sname)s', {
+            "vname": vname,
+            "sname": sname})
+
+        vsize = None
+        try:
+            vsize = self.ra.get_lun(vname).get('volsize')
+        except jexc.JDSSResourceNotFoundException as err:
+            raise cexc.VolumeNotFound(volume_id=volume.id) from err
+        except jexc.JDSSException as err:
+            raise cexc.VolumeBackendAPIException(err)
+
+        if vsize is None:
+            raise cexc.VolumeDriverException(
+                _("unable to identify volume size"))
+
+        try:
+            self.ra.rollback_volume_to_snapshot(vname, sname)
+        except jexc.JDSSException as err:
+            raise cexc.VolumeBackendAPIException(err.message)
+
+        try:
+            rvsize = self.ra.get_lun(vname).get('volsize')
+            if rvsize != vsize:
+                self.ra.extend_lun(vname, vsize)
+        except jexc.JDSSResourceNotFoundException as err:
+            raise cexc.VolumeNotFound(volume_id=volume.id) from err
+        except jexc.JDSSException as err:
+            raise cexc.VolumeBackendAPIException(err) from err

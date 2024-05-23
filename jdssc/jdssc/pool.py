@@ -19,6 +19,7 @@ import sys
 import jdssc.cifs as cifs
 import jdssc.nas_volumes as nas_volumes
 import jdssc.volumes as volumes
+import jdssc.volume as volume
 import jdssc.targets as targets
 
 """Pool related commands."""
@@ -32,6 +33,7 @@ class Pools():
                    'ip': self.ip,
                    'nas_volumes': self.nas_volumes,
                    'targets': self.targets,
+                   'volume': self.volume,
                    'volumes': self.volumes}
 
         self.args = args
@@ -59,6 +61,7 @@ class Pools():
         parsers.add_parser('cifs', add_help=False)
         parsers.add_parser('nas_volumes', add_help=False)
         parsers.add_parser('targets', add_help=False)
+        parsers.add_parser('volume', add_help=False)
         parsers.add_parser('volumes', add_help=False)
 
         return parser.parse_known_args(args)
@@ -79,6 +82,9 @@ class Pools():
 
     def nas_volumes(self):
         nas_volumes.NASVolumes(self.args, self.uargs, self.jdss)
+
+    def volume(self):
+        volume.Volume(self.args, self.uargs, self.jdss)
 
     def volumes(self):
         volumes.Volumes(self.args, self.uargs, self.jdss)
