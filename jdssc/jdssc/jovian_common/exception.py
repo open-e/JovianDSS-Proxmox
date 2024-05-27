@@ -16,7 +16,10 @@
 
 class JDSSException(Exception):
     """General JovianDSS error"""
-    message = ("%(reason)s")
+
+    def __init__(self, reason):
+        self.message = "%(reason)s" % {'reason': reason}
+        super().__init__(self.message)
 
 
 class JDSSRESTException(JDSSException):
@@ -65,7 +68,8 @@ class JDSSSnapshotExistsException(JDSSResourceExistsException):
     """Snapshot with the same id exists"""
 
     def __init__(self, snapshot):
-        self.message = ("JDSS snapshot %(snapshot)s already exists.")
+        self.message = ("%(snapshot)s that is snapshot" %
+                        {"snapshot": snapshot})
         super().__init__(self.message)
 
 

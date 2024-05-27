@@ -181,6 +181,8 @@ def hidden(name):
 
     if name[:2] == 'v_' or name[:2] == 's_':
         return 't_' + name[2:]
+    if name[:3] == 'se_' or name[:3] == 'sb_' or name[:3] == 'vb_':
+        return 't_' + name[:3]
     return 't_' + name
 
 

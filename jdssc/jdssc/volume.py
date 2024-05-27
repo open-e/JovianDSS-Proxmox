@@ -147,10 +147,10 @@ class Volume():
         if self.args['snapshot_name']:
 
             self.jdss.create_cloned_volume(
-                    self.args['volume_name'],
                     self.args['clone_name'],
+                    self.args['volume_name'],
                     0,
-                    snapshot_name=self.args['clone_name'],
+                    snapshot_name=self.args['snapshot_name'],
                     sparse=self.jdss.jovian_sparse)
             return
 

@@ -28,15 +28,12 @@ class Snapshot():
                    'rollback': self.rollback}
 
         self.args = args
-        argst = self.__parse(uargs)
-        self.args.update(vars(argst[0]))
-        self.uargs = argst[1]
+        args, uargs = self.__parse(uargs)
+        self.args.update(vars(args))
+        self.uargs = uargs
         self.jdss = jdss
 
-        if 'snapshots-actions' in self.args:
-            self.ssa[self.args.pop('snapshots-actions')]()
-        elif 'snapshot-actions' in self.args:
-            self.sa[self.args.pop('snapshot-actions')]()
+        self.sa[self.args.pop('snapshot_action')]()
 
     @staticmethod
     def get_snapshot(volume_name, snapshot_name):
@@ -54,12 +51,18 @@ class Snapshot():
         parser = argparse.ArgumentParser(prog="Volume")
 
         parser.add_argument('snapshot_name', help='Snapshot name')
-        parsers = parser.add_subparsers(dest='snapshot-actions')
-        clone = parsers.add_parser('clone')
-        delete = parsers.add_parser('delete')
-        delete = parsers.add_parser('rollback')
+        parsers = parser.add_subparsers(dest='snapshot_action')
+        # parsers.add_parser('clone')
+        parsers.add_parser('delete')
+        parsers.add_parser('rollback')
 
-        return parser.parse_known_args(args)
+        kargs, ukargs = parser.parse_known_args(args)
+
+        if kargs.snapshot_action is None:
+            parser.print_help()
+            sys.exit(1)
+
+        return kargs, ukargs
 
     def delete(self):
 
@@ -68,11 +71,8 @@ class Snapshot():
 
     def rollback(self):
 
-        volume = {'id': self.args['volume_name']}
-        snapshot = Snapshots.get_snapshot(self.args['volume_name'],
-                                          self.args['snapshot_name'])
-
-        self.jdss.revert_to_snapshot('', volume, snapshot)
+        self.jdss.revert_to_snapshot(self.args['volume_name'],
+                                     self.args['snapshot_name'])
 
     def clone(self):
         pass

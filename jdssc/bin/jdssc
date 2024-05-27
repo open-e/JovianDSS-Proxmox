@@ -120,8 +120,7 @@ def duplicate_config_options(cfg):
 
 
 def hosts(args, uargs, jdss):
-
-    for i in jdss.configuration['rest_api_addresses']:
+    for i in jdss.configuration['san_hosts']:
         addr = i
         if 'target_port' in jdss.configuration:
             addr = '%s:%s' % (addr, jdss.configuration['target_port'])
