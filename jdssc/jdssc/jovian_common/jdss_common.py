@@ -19,7 +19,7 @@ import re
 
 from jdssc.jovian_common import cexception as exception
 
-
+import uuid
 allowedPattern = re.compile(r"^[-\w]+$")
 
 
@@ -46,8 +46,15 @@ def is_snapshot(name):
 def idname(name):
     """Extract id from physical volume name"""
 
-    if name.startswith(('v_', 't_')):
+    if name.startswith('v_'):
         return name[2:]
+
+    if name.startswith('t_'):
+        return name[2:]
+
+    if name.startswith('te_'):
+        ns = name.split("_")
+        "_".join(ns[1:-1])
 
     if name.startswith('s'):
         return sname_to_id(name)[0]
@@ -180,10 +187,10 @@ def hidden(name):
         raise exception.VolumeDriverException("Incorrect volume name")
 
     if name[:2] == 'v_' or name[:2] == 's_':
-        return 't_' + name[2:]
+        return 't_' + name[2:] + '_' + uuid.uuid4().hex
     if name[:3] == 'se_' or name[:3] == 'sb_' or name[:3] == 'vb_':
-        return 't_' + name[:3]
-    return 't_' + name
+        return 't_' + name[:3] + '_' + uuid.uuid4().hex
+    return 't_' + name + '_' + uuid.uuid4().hex
 
 
 def get_newest_snapshot_name(snapshots):

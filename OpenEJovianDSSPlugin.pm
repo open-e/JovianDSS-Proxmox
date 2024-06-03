@@ -463,9 +463,9 @@ sub clone_image {
 
     print"Clone ${volname} with size ${size} to ${clone_name} with snapshot ${snap}\n" if get_debug($scfg);
     if ($snap){
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "clone", "-s", $size, "--snapshot", $snap, $clone_name]);
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "clone", "--size", $size, "--snapshot", $snap, $clone_name]);
     } else {
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "clone", "-s", $size, $clone_name]);
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "clone", "--size", $size, $clone_name]);
     }
     return $clone_name;
 }
@@ -483,7 +483,7 @@ sub alloc_image {
         my $config = get_config($scfg);
         my $pool = get_pool($scfg);
         my $extsize = $size + 1023;
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "-s", "${extsize}K", $volume_name]);
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "--size", "${extsize}K", $volume_name]);
     }
     return "$volume_name";
 }
@@ -1089,7 +1089,7 @@ sub activate_volume_ext {
 
     my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
    
-    my $createtargetcmd = ["-c", $config, "pool", $pool, "targets", "create", $volname];
+    my $createtargetcmd = ["-c", $config, "pool", $pool, "targets", "create", "-v", $volname];
     if ($snapname){
         push @$createtargetcmd, "--snapshot", $snapname;
         $class->joviandss_cmd($createtargetcmd);
@@ -1165,7 +1165,7 @@ sub volume_resize {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "resize", $size]);
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "resize", "{$size}K"]);
 
     return 1;
 }

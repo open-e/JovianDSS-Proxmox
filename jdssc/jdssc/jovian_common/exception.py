@@ -46,30 +46,34 @@ class JDSSVolumeNotFoundException(JDSSResourceNotFoundException):
     """Volume does not exist"""
 
     def __init__(self, volume):
-        self.message = "JDSS volume %(volume)s DNE." % {'volume': volume}
+        self.message = "volume %(volume)s" % {'volume': volume}
         super().__init__(self.message)
 
 
 class JDSSSnapshotNotFoundException(JDSSResourceNotFoundException):
     """Snapshot does not exist"""
 
-    message = ("JDSS snapshot %(snapshot)s DNE.")
+    def __init__(self, snapshot):
+        self.message = "snapshot %(snapshot)s" % {'snapshot': snapshot}
+        super().__init__(self.message)
 
 
 class JDSSResourceExistsException(JDSSException):
     """Resource with specified id exists"""
 
     def __init__(self, res):
-        self.message = ("JDSS resource with id {} exists.".format(res))
+        self.message = ("JDSS resource {} already exists.".format(res))
         super().__init__(self.message)
 
 
 class JDSSSnapshotExistsException(JDSSResourceExistsException):
     """Snapshot with the same id exists"""
 
-    def __init__(self, snapshot):
-        self.message = ("%(snapshot)s that is snapshot" %
-                        {"snapshot": snapshot})
+    def __init__(self, snapshot, volume):
+        self.message = (("snapshot %(snapshot)s associated with "
+                         "volume %(volume)s") %
+                        {"snapshot": snapshot,
+                         "volume": volume})
         super().__init__(self.message)
 
 
@@ -92,7 +96,7 @@ class JDSSResourceIsBusyException(JDSSException):
 class JDSSSnapshotIsBusyException(JDSSResourceIsBusyException):
     """Snapshot have dependent clones"""
 
-    message = ("JDSS snapshot %(snapshot)s is busy.")
+    message = ("snapshot %(snapshot)s")
 
 
 class JDSSOSException(JDSSException):

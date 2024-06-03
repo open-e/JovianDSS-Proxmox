@@ -15,6 +15,8 @@
 
 import logging
 from oslo_utils import units as o_units
+import math
+import re
 
 from jdssc.jovian_common import exception as jexc
 # from jdssc.jovian_common import cexception as exception
@@ -25,9 +27,14 @@ from jdssc.jovian_common.stub import _
 LOG = logging.getLogger(__name__)
 
 
+Size_Pattern = re.compile(r"^(\d+[GgMmKk]?)$")
+
+
 class JovianDSSDriver(object):
 
     def __init__(self, config):
+
+        self.VERSION = "0.9.7"
 
         self.configuration = config
         self._pool = self.configuration.get('jovian_pool', 'Pool-0')
@@ -87,7 +94,7 @@ class JovianDSSDriver(object):
                   {'name': volume_id, 'size': volume_size})
 
         self.ra.create_lun(vname,
-                           volume_size * o_units.Gi,
+                           volume_size,
                            sparse=sparse,
                            block_size=block_size)
         return
@@ -269,6 +276,10 @@ class JovianDSSDriver(object):
             snapshots = self.ra.get_snapshots(vname)
         return snapshots
 
+    # TODO: rethink delete volume
+    # it is used in many places, yet concept of 'garbage' has changed
+    # since last time. So instead of deleting hidden volumes
+    # we should only remove them if they have no snapshots
     def _delete_volume(self, vname, cascade=False):
         """_delete_volume delete routine containing delete logic
 
@@ -311,6 +322,8 @@ class JovianDSSDriver(object):
                                                snapshots,
                                                exclude_dedicated_volumes=True)
             if len(bsnaps) > 0:
+                raise jexc.JDSSResourceIsBusyException(vname)
+            if len(snapshots) > 0:
                 raise jexc.JDSSResourceIsBusyException(vname)
 
         snaps = self._clean_garbage_resources(vname, snapshots)
@@ -382,8 +395,7 @@ class JovianDSSDriver(object):
         LOG.debug("Extend volume:%(name)s to size:%(size)s",
                   {'name': volume_name, 'size': new_size})
 
-        self.ra.extend_lun(jcom.vname(volume_name),
-                           int(new_size) * o_units.Gi)
+        self.ra.extend_lun(jcom.vname(volume_name), new_size)
 
     def create_cloned_volume(self,
                              clone_name,
@@ -425,13 +437,11 @@ class JovianDSSDriver(object):
         except jexc.JDSSException as jerr:
 
             self.delete_volume(clone_name, cascade=False)
-            raise exception.VolumeBackendAPIException(
-                _("Fail in cloning volume %(vol)s to %(clone)s.") % {
-                    'vol': volume_name, 'clone': clone_name}) from jerr
+            raise jerr
 
         try:
-            if int(clone_size) < o_units.Gi * int(size):
-                self.resize_volume(clone_name, int(size))
+            if Size_Pattern.match(clone_size):
+                self.resize_volume(clone_name, clone_size)
 
         except jexc.JDSSException as jerr:
             # If volume can't be set to a proper size make sure to clean it
@@ -456,6 +466,15 @@ class JovianDSSDriver(object):
         vname = jcom.vname(volume_name)
         sname = jcom.sname(snapshot_name, volume_name)
 
+        snaps = self._list_volume_snapshots(volume_name, vname)
+
+        for snap in snaps:
+            if snap['name'] == sname:
+                LOG.error("Snapshot %(snapshot)s exists at volume %(volume)s",
+                          {"snapshot": sname,
+                           "volume": snap['volume_name']})
+                raise jexc.JDSSSnapshotExistsException(snapshot_name,
+                                                       volume_name)
         self.ra.create_snapshot(vname, sname)
 
     def create_export_snapshot(self, snapshot_name, volume_name,
@@ -519,33 +538,52 @@ class JovianDSSDriver(object):
         :return: None
         """
 
-        try:
-            self.ra.delete_snapshot(vname, sname, force_umount=True)
-        except jexc.JDSSResourceIsBusyException:
-            LOG.debug('Direct deletion of snapshot %s failed', vname)
+        pname = self._find_snapshot_parent(vname, sname)
+        snapshot = dict()
+        if pname is not None:
+            try:
+                snapshot = self.ra.get_snapshot(pname, sname)
+            except jexc.JDSSResourceNotFoundException:
+                LOG.debug('snapshot %s do not exists, it was already '
+                          'deleted', sname)
+                return
         else:
+            LOG.debug('snapshot %s do not exists, it was already '
+                      'deleted', sname)
             return
 
-        snap = self.ra.get_snapshot(vname, sname)
+        clones = jcom.snapshot_clones(snapshot)
 
-        clones = jcom.snapshot_clones(snap)
-        busy = False
-        for cvname in clones:
-            if jcom.is_snapshot(cvname):
-                self._promote_newest_delete(cvname)
-            if jcom.is_volume(cvname):
-                LOG.debug('Will not delete snap %(snap)s,'
-                          'becasue it is used by %(vol)s',
-                          {'snap': sname,
-                           'vol': cvname})
-                busy = True
-        if busy:
-            return
-        try:
-            self.ra.delete_snapshot(vname, sname, force_umount=True)
-        except jexc.JDSSResourceIsBusyException:
-            LOG.debug('Unable to delete snap %(snap)s because it is busy',
-                      {'snap': jcom.sname_from_snap(snap)})
+        if len(clones) > 0:
+
+            for cvname in clones:
+                if jcom.is_hidden(cvname):
+                    #TODO: here we should print list of dependents
+                    LOG.error("Snapshot is busy, delete his clones firs")
+                    raise jexc.JDSSResourceIsBusyException(
+                            jcom.sid_from_sname(sname))
+
+                if jcom.is_snapshot(cvname):
+                    self.ra.delete_lun(cvname)
+
+        if jcom.is_hidden(pname):
+            psnaps = self.ra.get_snapshots_page(pname, 0)
+            if len(psnaps) > 1:
+                try:
+                    self.ra.delete_snapshot(vname, sname, force_umount=True)
+                except jexc.JDSSSnapshotNotFoundException:
+                    LOG.debug('Snapshot %s not found', sname)
+                    return
+
+            self.ra.delete_lun(pname,
+                               force_umount=True,
+                               recursively_children=False)
+        if jcom.is_volume(pname):
+            try:
+                self.ra.delete_snapshot(vname, sname, force_umount=True)
+            except jexc.JDSSSnapshotNotFoundException:
+                LOG.debug('Snapshot %s not found', sname)
+                return
 
     def delete_snapshot(self, volume_name, snapshot_name):
         """Delete snapshot of existing volume.
@@ -701,9 +739,12 @@ class JovianDSSDriver(object):
 
             raise jerr
 
-    def ensure_export(self, volume_id, provider_auth):
+    def ensure_export(self, volume_id, provider_auth, direct_mode=False):
 
         vname = jcom.vname(volume_id)
+
+        if direct_mode:
+            vname = volume_id
 
         self._ensure_target_volume(volume_id, vname, provider_auth)
 
@@ -915,6 +956,7 @@ class JovianDSSDriver(object):
             spage = self.ra.get_snapshots_page(i)
 
             if len(spage) > 0:
+                LOG.debug("Page: %s", str(spage))
 
                 if f is not None:
                     resp.extend(filter(f, spage))
@@ -926,6 +968,46 @@ class JovianDSSDriver(object):
 
         return resp
 
+    def _list_volume_snapshots(self, ovolume_name, vname):
+        """List volume snapshots
+
+        :return: list of volume related snapshots
+        """
+        out = []
+        snapshots = []
+        i = 0
+        try:
+            while True:
+                spage = self.ra.get_volume_snapshots_page(vname, i)
+
+                if len(spage) > 0:
+                    LOG.debug("Page: %s", str(spage))
+
+                    snapshots.extend(spage)
+                    i += 1
+                else:
+                    break
+
+        except jexc.JDSSException as ex:
+            LOG.error("List snapshots error. Because %(err)s",
+                      {"err": ex})
+
+        for snap in snapshots:
+            if jcom.is_volume(snap['name']):
+                LOG.warning("Linked clone present among volumes")
+                continue
+
+            if jcom.vid_from_sname(snap['name']) == ovolume_name:
+                # That is used in create_snapshot function to provide detailed
+                # info in case volume already have snapshot
+                snap['volume_name'] = vname
+
+                out.append(snap)
+                for clone in jcom.snapshot_clones(snap):
+                    out.extend(self._list_volume_snapshots(ovolume_name,
+                                                           clone))
+        return out
+
     def list_snapshots(self, volume_name):
         """List snapshots related to this volume.
 
@@ -935,7 +1017,8 @@ class JovianDSSDriver(object):
         ret = []
         vname = jcom.vname(volume_name)
         try:
-            data = self.ra.get_snapshots(vname)
+            data = self._list_volume_snapshots(volume_name, vname)
+            # data = self.ra.get_snapshots(vname)
 
         except jexc.JDSSException as ex:
             LOG.error("List snapshots error. Because %(err)s",
@@ -944,7 +1027,7 @@ class JovianDSSDriver(object):
 
         for r in data:
             try:
-                LOG.debug("physical volume  %s snap volume %s snap name %s",
+                LOG.debug("physical volume %s snap volume %s snap name %s",
                           volume_name,
                           jcom.vid_from_sname(r['name']), r['name'])
 
@@ -978,23 +1061,71 @@ class JovianDSSDriver(object):
         Takes clone_name and promotes it until it hits not hidden volume
         """
 
-        origin = self.ra.get_lun(cname).get('origin')
+        cvolume = self.ra.get_lun(cname)
 
-        if (origin is not None and jcom.is_hidden(jcom.origin_volume(origin))):
+        ovname = jcom.origin_volume(cvolume)
 
-            self.ra.promote(jcom.origin_volume(origin),
-                            jcom.origin_snapshot(origin),
-                            cname)
+        if ovname is not None and len(ovname) > 0:
+
+            if jcom.is_hidden(ovname):
+
+                self.ra.promote(ovname,
+                                jcom.origin_snapshot(cvolume),
+                                cname)
+                try:
+                    self.ra.delete_lun(ovname,
+                                       force_umount=True,
+                                       recursively_children=False)
+                except jexc.JDSSResourceIsBusyException:
+                    LOG.debug('unable to delete volume %s, it is busy',
+                              ovname)
+                except jexc.JDSSResourceNotFoundException:
+                    LOG.debug('Hidden volume %s not found', ovname)
+                except jexc.JDSSException as jerr:
+                    LOG.error(
+                        "Unable to continue volume %(volume)s promotion,"
+                        "because of inability to conduct garbage cleaning "
+                        "on volume %(hvolume) with error %(err)s.", {
+                            "volume": cname,
+                            "hvolume": ovname,
+                            "err": jerr})
             return self._promote_volume(cname)
 
         return
 
-    def _get_snapshot_parent(self, sname):
+    def _find_snapshot_parent(self, vname, sname):
 
-        f = lambda s: s['name']) == sname
+        out = []
+        snapshots = []
+        i = 0
+        try:
+            while True:
+                spage = self.ra.get_volume_snapshots_page(vname, i)
 
-        self._list_all_snapshots(f)
-        print(sname)
+                if len(spage) > 0:
+                    LOG.debug("Page: %s", str(spage))
+
+                    snapshots.extend(spage)
+                    i += 1
+                else:
+                    break
+
+        except jexc.JDSSException as ex:
+            LOG.error("List snapshots error. Because %(err)s",
+                      {"err": ex})
+
+        for snap in snapshots:
+            if snap['name'] == sname:
+                return vname
+            if jcom.is_volume(snap['name']):
+                LOG.warning("Linked clone present among volumes")
+                continue
+
+            for clone in jcom.snapshot_clones(snap):
+                out = self._find_snapshot_parent(clone, sname)
+                if out is not None:
+                    return out
+        return None
 
     def revert_to_snapshot(self, volume_name, snapshot_name):
         """Revert volume to snapshot.
@@ -1010,14 +1141,78 @@ class JovianDSSDriver(object):
             "vname": vname,
             "sname": sname})
 
-        pname = self._get_snapshot_parent(sname)
-
-        vdata = self.ra.get_lun(vname)
+        pname = self._find_snapshot_parent(vname, sname)
+        if pname is None:
+            raise jexc.JDSSSnapshotNotFoundException(snapshot_name)
 
         hname = self._hide_object(vname)
-
+        if pname == vname:
+            pname = hname
         # TODO: make sure that sparsity of the volume depends on config
         self._clone_object(vname, sname, pname,
                            create_snapshot=False)
         self._promote_volume(vname)
-        self._delete_volume(jcom.hidden(vname))
+        # TODO: catch if volume is busy with snapshots
+        # in this case we just ignore
+
+
+    def _update_volume_stats(self):
+        """Retrieve stats info."""
+        LOG.debug('Updating volume stats')
+
+        pool_stats = self.ra.get_pool_stats()
+        total_capacity = math.floor(int(pool_stats["size"]) / o_units.Gi)
+        free_capacity = math.floor(int(pool_stats["available"]) / o_units.Gi)
+
+        reserved_percentage = (
+            self.configuration.get('reserved_percentage', 0))
+
+        if total_capacity is None:
+            total_capacity = 'unknown'
+        if free_capacity is None:
+            free_capacity = 'unknown'
+
+        location_info = '%(driver)s:%(host)s:%(volume)s' % {
+            'driver': self.__class__.__name__,
+            'host': self.ra.get_active_host()[0],
+            'volume': self._pool
+        }
+
+        self._stats = {
+            'vendor_name': 'Open-E',
+            'driver_version': self.VERSION,
+            'storage_protocol': 'iSCSI',
+            'total_capacity_gb': total_capacity,
+            'free_capacity_gb': free_capacity,
+            'reserved_percentage': int(reserved_percentage),
+            'volume_backend_name': self.backend_name,
+            'QoS_support': False,
+            'location_info': location_info,
+            'multiattach': True
+        }
+
+        LOG.debug('Total capacity: %d, '
+                  'Free %d.',
+                  self._stats['total_capacity_gb'],
+                  self._stats['free_capacity_gb'])
+
+    def get_volume_stats(self):
+        """Return information about pool capacity
+        
+        return (total_gb, free_gb)
+        """
+        self._update_volume_stats()
+
+        return (self._stats['total_capacity_gb'],
+                self._stats['free_capacity_gb'])
+
+    @property
+    def backend_name(self):
+        """Return backend name."""
+        backend_name = None
+        if self.configuration:
+            backend_name = self.configuration.get('volume_backend_name',
+                                                  'Open-EJovianDSS')
+        if not backend_name:
+            backend_name = self.__class__.__name__
+        return backend_name

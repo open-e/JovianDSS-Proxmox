@@ -46,6 +46,13 @@ def get_config():
                         dest='cli_log_file',
                         help='File to store log to',
                         required=False)
+    parser.add_argument('--logstd',
+                        dest='cli_log_std',
+                        default=False,
+                        action='store_true',
+                        help='File to store log to',
+                        required=False)
+
     parser.add_argument('-p', '--plain', dest='plain_mode', required=False,
                         action='store_true',
                         default=False,
@@ -69,30 +76,46 @@ def setup_logging(args, cfg):
         loglvl = args.cli_log_lvl
 
     logfile = None
-
+    if 'logfile' in cfg:
+        logfile = cfg['logfile']
     if args.cli_log_file:
         logfile = args.cli_log_file
-    elif 'logfile' in cfg:
-        logfile = cfg['logfile']
 
-    if loglvl and logfile:
+    handlers = []
+    if logfile:
+        handlers.append(RotatingFileHandler(logfile,
+                                            maxBytes=1024*1024*16,
+                                            backupCount=5))
 
-        numeric_level = getattr(logging, loglvl.upper(), None)
-        if not isinstance(numeric_level, int):
-            raise ValueError('Invalid log level: %s' % loglvl)
-        rfh = RotatingFileHandler(logfile,
-                                  maxBytes=1024*1024*16,
-                                  backupCount=5)
+    if args.cli_log_std:
+        handlers.append(logging.StreamHandler(sys.stdout))
 
-        logging.basicConfig(
-            level=numeric_level,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S',
-            handlers=[
-                rfh,
-                logging.StreamHandler()
-            ]
-        )
+    numeric_level = getattr(logging, loglvl.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError('Invalid log level: %s' % loglvl)
+
+    logging.basicConfig(
+        level=numeric_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=handlers
+    )
+
+    logger = logging.getLogger()
+    err_handler = logging.StreamHandler(sys.stderr)  # Error handler
+    err_handler.setLevel(logging.ERROR)  # Capture only errors
+    eformater = logging.Formatter('%(levelname)s - %(message)s')
+            # '%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+            # datefmt='%Y-%m-%d %H:%M:%S')
+
+    err_handler.setFormatter(eformater)
+
+    logger.addHandler(err_handler)
+    # logging.basicConfig(
+    #     level=logging.ERROR,
+
+    #     handlers=logging.StreamHandler(sys.stderr)
+    # )
 
 
 def duplicate_config_options(cfg):

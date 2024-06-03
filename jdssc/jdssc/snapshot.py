@@ -15,10 +15,14 @@
 
 import argparse
 import hashlib
-import re
+import logging
 import sys
 
+from jdssc.jovian_common import exception as jexc
+
 """Snapshot related commands."""
+
+LOG = logging.getLogger(__name__)
 
 
 class Snapshot():
@@ -70,9 +74,14 @@ class Snapshot():
                                   self.args['snapshot_name'])
 
     def rollback(self):
-
-        self.jdss.revert_to_snapshot(self.args['volume_name'],
-                                     self.args['snapshot_name'])
+        try:
+            self.jdss.revert_to_snapshot(self.args['volume_name'],
+                                         self.args['snapshot_name'])
+        except jexc.JDSSSnapshotNotFoundException as err:
+            LOG.error(err)
+            exit(1)
+        except Exception as err:
+            LOG.error(err)
 
     def clone(self):
         pass

@@ -19,130 +19,144 @@ import sys
 
 import jdssc.snapshots as snapshots
 
-"""Volume related commands."""
+"""Targets related commands."""
+
 
 class Targets():
     def __init__(self, args, uargs, jdss):
 
-        self.vsa = {'create': self.create,
-                    'list': self.list}
-        self.va = {'delete': self.delete,
-                   'get': self.get}
+        self.tsa = {'create': self.create,
+                    'get': self.get,
+                    'delete': self.delete}
 
         self.args = args
-        argst = self.__parse(uargs)
-        self.args.update(vars(argst[0]))
-        self.uargs = argst[1]
+        args, uargs = self.__parse(uargs)
+        self.args.update(vars(args))
+
+        self.uargs = uargs
         self.jdss = jdss
 
-        if 'targets-action' in self.args:
-            self.vsa[self.args.pop('targets-action')]()
-        elif 'target-action' in self.args:
-            self.va[self.args.pop('target-action')]()
+        if 'targets_action' in self.args:
+            self.tsa[self.args.pop('targets_action')]()
 
     def __parse(self, args):
 
         parser = argparse.ArgumentParser(prog="Target")
 
-        if args[0] in self.vsa:
-            parsers = parser.add_subparsers(dest='targets-action')
+        parsers = parser.add_subparsers(dest='targets_action')
 
-            create = parsers.add_parser('create')
-            create.add_argument('target_name', type=str, help='New target name')
-            create.add_argument('--host', action='store_true', default=False,
-                                help='Print host address')
-            create.add_argument('--lun', action='store_true', default=False,
-                                help='Print lun')
-            create.add_argument('--snapshot', dest='volume_snapshot', default=None,
-                                help='Create target based on snapshot')
-            create.add_argument('-d', dest='direct_mode', action='store_true', default=False,
-                                help='Use real volume name')
+        create = parsers.add_parser('create')
+        create.add_argument('-v',
+                            required=True,
+                            dest='volume_name',
+                            type=str,
+                            help='New volume name')
+        create.add_argument('--host', action='store_true',
+                            default=False,
+                            help='Print host address')
+        create.add_argument('--lun', action='store_true',
+                            default=False,
+                            help='Print lun')
+        create.add_argument('--snapshot',
+                            dest='snapshot_name', default=None,
+                            help='Create target based on snapshot')
+        create.add_argument('-d',
+                            dest='direct_mode',
+                            action='store_true',
+                            default=False,
+                            help='Use real volume name')
 
-            listp = parsers.add_parser('list')
-        else:
-            parser.add_argument('target_name', help='Target name')
-            parsers = parser.add_subparsers(dest='target-action')
+        delete = parsers.add_parser('delete')
+        delete.add_argument('-v',
+                            required=True,
+                            dest='volume_name',
+                            type=str,
+                            help='New volume name')
+        delete.add_argument('--snapshot', dest='snapshot_name',
+                            default=None,
+                            help='Delete target based on snapshot')
 
-            get = parsers.add_parser('get')
-            get.add_argument('--path', dest='path_format', action='store_true', default=False,
-                                help='Print in path format')
-            get.add_argument('--host', action='store_true', default=False,
-                                help='Print host address')
-            get.add_argument('--lun', action='store_true', default=False,
-                                help='Print lun')
-            get.add_argument('--snapshot', dest='volume_snapshot', default=None,
-                                help='Get target based on snapshot')
-            
-            delete = parsers.add_parser('delete')
-            delete.add_argument('--snapshot', dest='volume_snapshot', default=None,
-                                help='Delete target based on snapshot')
+        get = parsers.add_parser('get')
+        get.add_argument('--path', dest='path_format', action='store_true',
+                         default=False,
+                         help='Print in path format')
+        get.add_argument('--host', action='store_true',
+                         default=False,
+                         help='Print host address')
+        get.add_argument('--lun', action='store_true',
+                         default=False,
+                         help='Print lun')
+        get.add_argument('--snapshot', dest='snapshot_name',
+                         default=None,
+                         help='Get target based on snapshot')
+        get.add_argument('-v',
+                         dest='volume_name',
+                         default=None,
+                         type=str,
+                         help='New volume name')
 
-        return parser.parse_known_args(args)
+        kargs, ukargs = parser.parse_known_args(args)
+
+        if kargs.targets_action is None:
+            parser.print_help()
+            sys.exit(1)
+
+        return kargs, ukargs
 
     def create(self):
         provider_location = None
-        if self.args['volume_snapshot']:
-            snapshot = snapshots.Snapshots.get_snapshot(self.args['target_name'],
-                                                      self.args['volume_snapshot'])['id']
-            volume = {'id': snapshot,
-                      'provider_auth': 'CHAP 123456 123456789012'}
-            provider_location = self.jdss.create_export('', volume, '', isSnapshot=True,
-                                                        direct_mode=self.args['direct_mode'])['provider_location']
-        else:
-            volume = {'id': self.args['target_name'],
-                      'provider_auth': 'CHAP 123456 123456789012'}
+        provider_auth = 'CHAP 123456 123456789012'
 
-            provider_location = self.jdss.create_export('', volume, '',
-                                                        direct_mode=self.args['direct_mode'])['provider_location']
-        #output = self.jdss.jovian_target_prefix + self.args['target_name'] + "\n"
+        if self.args['snapshot_name']:
+            provider_location = self.jdss.create_export_snapshot(
+                    self.args['snapshot_name'],
+                    self.args['volume_name'],
+                    provider_auth)
+        else:
+            provider_location = self.jdss.ensure_export(
+                    self.args['volume_name'],
+                    provider_auth,
+                    direct_mode=self.args['direct_mode'])['provider_location']
         out = ''
         if self.args['host']:
             out += ' ' + ':'.join(provider_location.split()[0].split(':')[:-1])
         if self.args['lun']:
             out += ' ' + provider_location.split()[2]
         out = provider_location.split()[1] + out
-        #sys.stdout.write(out.encode("ascii"))
         print(out)
 
-    def list(self):
-        pass
-
     def delete(self):
-    
-        if self.args['volume_snapshot']:
-            snapshot = snapshots.Snapshots.get_snapshot(self.args['target_name'],
-                                                      self.args['volume_snapshot'])['id']
-            volume = {'id': snapshot}
-            self.jdss.remove_export('', volume, isSnapshot=True)
+
+        if self.args['snapshot_name']:
+            self.jdss.remove_export_snapshot(self.args['snapshot_name'],
+                                             self.args['volume_name'])
         else:
-            volume = {'id': self.args['target_name']}
-            self.jdss.remove_export('', volume)
+            self.jdss.remove_export(self.args['volume_name'])
 
     def get(self):
 
         provider_location = None
-        if self.args['volume_snapshot']:
-            snapshot = snapshots.Snapshots.get_snapshot(self.args['target_name'],
-                                                      self.args['volume_snapshot'])['id']
-            provider_location = self.jdss.get_provider_location(snapshot)
+        if self.args['snapshot_name']:
+            provider_location = self.jdss.get_provider_location(
+                    self.args['snapshot_name'])
+        elif self.args['volume_name']:
+            provider_location = self.jdss.get_provider_location(
+                    self.args['volume_name'])
         else:
-            provider_location = self.jdss.get_provider_location(self.args['target_name'])
+            sys.exit(1)
 
         pvs = provider_location.split()
         ip = ''.join(pvs[0].split(':')[:-1])
         target_port = pvs[0].split(':')[-1].split(',')[0]
         target = pvs[1]
         lun = pvs[2]
-        #print(provider_location)
-        #eturn
         if self.args['path_format']:
             out = "ip-{ip}:{port}-iscsi-{target}-lun-{lun}".format(
-                ip = ip,
-                port = target_port,
-                target = target,
-                lun = lun)
-            #ip-10.0.0.245:3260-iscsi-iqn.2020-04.com.open-e.cinder:vm-100-19cf298b9c454d84b8423d3c30da78cb-lun-0
-            out = [ chr(ord(c)) for c in out]
+                    ip=ip,
+                    port=target_port,
+                    target=target,
+                    lun=lun)
+            out = [chr(ord(c)) for c in out]
             print(''.join(out))
             return
 
@@ -152,6 +166,5 @@ class Targets():
         if self.args['lun']:
             out += ' ' + lun
         out = provider_location.split()[1] + out
-        #sys.stdout.write(out.encode("ascii"))
 
         print(out)

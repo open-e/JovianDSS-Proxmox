@@ -67,12 +67,11 @@ class Volume():
                            dest='snapshot_name',
                            type=str,
                            help='Use snapshot for cloning')
-        # clone.add_argument('-s',
-        #                    '--size',
-        #                    dest='volume_size',
-        #                    type=str,
-        #                    default='1G',
-        #                    help='New volume size in format size+[K M G]')
+        clone.add_argument('--size',
+                           dest='clone_size',
+                           type=str,
+                           default='0',
+                           help='New volume size in format size+[K M G]')
         # clone.add_argument('-b',
         #                    dest='block_size',
         #                    type=str,
@@ -87,16 +86,6 @@ class Volume():
                             action='store_true',
                             default=False,
                             help='Remove snapshots along side with volume')
-
-        # properties = parsers.add_parser('properties')
-        # properties.add_argument('--name',
-        #                         dest='property_name',
-        #                         type=str,
-        #                         help='Volume propertie name')
-        # properties.add_argument('--value',
-        #                         dest='property_value',
-        #                         type=str,
-        #                         help='Volume propertie value')
 
         rename = parsers.add_parser('rename')
         rename.add_argument('new_name', type=str, help='New volume name')
@@ -156,7 +145,7 @@ class Volume():
 
         self.jdss.create_cloned_volume(self.args['clone_name'],
                                        self.args['volume_name'],
-                                       0,
+                                       self.args['clone_size'],
                                        sparse=self.jdss.jovian_sparse)
 
     def get(self):

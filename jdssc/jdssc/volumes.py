@@ -50,7 +50,8 @@ class Volumes():
         parsers = parser.add_subparsers(dest='volumes_action')
 
         create = parsers.add_parser('create')
-        create.add_argument('-s',
+        create.add_argument('--size',
+                            required=True,
                             dest='volume_size',
                             type=str,
                             default='1G',
@@ -66,6 +67,7 @@ class Volumes():
                             default=False,
                             help='Use real volume name')
         create.add_argument('-n',
+                            required=True,
                             dest='volume_name',
                             type=str,
                             help='New volume name')
@@ -102,7 +104,7 @@ class Volumes():
         if 'volume_name' in self.args:
             name = self.args['volume_name']
 
-        self.jdss.create_volume(name, int(size),
+        self.jdss.create_volume(name, size,
                                 direct_mode=self.args['direct_mode'],
                                 block_size=block_size)
 

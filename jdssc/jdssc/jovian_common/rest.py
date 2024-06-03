@@ -17,7 +17,7 @@
 """REST cmd interoperation class for Open-E JovianDSS driver."""
 import re
 
-from oslo_log import log as logging
+import logging
 
 from jdssc.jovian_common import exception as jexc
 from jdssc.jovian_common import rest_proxy
@@ -696,7 +696,7 @@ class JovianRESTAPI(object):
             if resp["error"]:
                 if resp["error"]["errno"] == 5:
                     raise jexc.JDSSSnapshotExistsException(
-                        snapshot_name)
+                        snapshot_name, volume_name)
                 if resp["error"]["errno"] == 1:
                     raise jexc.JDSSVolumeNotFoundException(
                         volume=volume_name)
@@ -963,9 +963,55 @@ class JovianRESTAPI(object):
             "error": null
         }
         """
-        req = '/volumes/snapshots?page=' % str(page_id)
+        req = '/volumes/snapshots?page=%s' % str(page_id)
 
         LOG.debug("get page %d of all snapshots", page_id)
+
+        resp = self.rproxy.pool_request('GET', req)
+
+        if not resp["error"] and resp["code"] == 200:
+            return resp["data"]["entries"]
+
+        self._general_error(req, resp)
+
+    def get_volume_snapshots_page(self, vname, page_id):
+        """get_snapshots_page
+
+        GET
+        /volumes/snapshots?page=<int:page_id>
+
+        :param page_id: page number
+        :return:
+        {
+            "data":
+            [
+                {"results": 1,
+                 "entries": [
+                     ]}
+                {
+                    "referenced": "65536",
+                    "name": "MySnapshot",
+                    "defer_destroy": "off",
+                    "userrefs": "0",
+                    "primarycache": "all",
+                    "type": "snapshot",
+                    "creation": "2015-5-27 16:8:35",
+                    "refcompressratio": "1.00x",
+                    "compressratio": "1.00x",
+                    "written": "65536",
+                    "used": "0",
+                    "clones": "",
+                    "mlslabel": "none",
+                    "secondarycache": "all"
+                }
+            ],
+            "error": null
+        }
+        """
+        req = (('/volumes/%(vname)s/snapshots?page=%(page)s') %
+               {'vname': vname, 'page': str(page_id)})
+
+        LOG.debug("get page %d of volume %s snapshots", page_id, vname)
 
         resp = self.rproxy.pool_request('GET', req)
 

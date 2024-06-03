@@ -14,11 +14,16 @@
 #    under the License.
 
 import argparse
-import hashlib
-import re
+import logging
 import sys
 
+
+from jdssc.jovian_common import exception as jexc
+
+
 """Snapshots related commands."""
+
+LOG = logging.getLogger(__name__)
 
 
 class Snapshots():
@@ -35,16 +40,6 @@ class Snapshots():
 
         if 'snapshots_action' in self.args:
             self.ssa[self.args.pop('snapshots_action')]()
-
-    #@staticmethod
-    #def get_snapshot(volume_name, snapshot_name):
-
-    #    name_bytes = bytes(volume_name + snapshot_name, 'ascii')
-    #    name_uuid = hashlib.md5(name_bytes).hexdigest()
-    #    snapshot = {'id': "{}-{}".format(name_uuid, snapshot_name),
-    #                'volume_id': volume_name,
-    #                'volume_name': volume_name}
-    #    return snapshot
 
     def __parse(self, args):
 
@@ -68,8 +63,16 @@ class Snapshots():
 
     def create(self):
 
-        self.jdss.create_snapshot(self.args['snapshot_name'],
-                                  self.args['volume_name'])
+        try:
+            self.jdss.create_snapshot(self.args['snapshot_name'],
+                                      self.args['volume_name'])
+        except jexc.JDSSSnapshotExistsException as exists:
+            LOG.error(exists)
+            exit(1)
+        except jexc.JDSSException as err:
+            LOG.error(err)
+            exit(1)
+
 
     def list(self):
 

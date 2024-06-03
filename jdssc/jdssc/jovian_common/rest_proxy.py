@@ -17,7 +17,7 @@
 
 import json
 
-from oslo_log import log as logging
+import logging
 from oslo_utils import netutils as o_netutils
 import requests
 import urllib3
@@ -124,6 +124,10 @@ class JovianDSSRESTProxy(object):
 
                     pr = self.session.prepare_request(r)
                     out = self._send(pr)
+                except requests.exceptions.SSLError as sslerr:
+                    LOG.warning(sslerr)
+                    LOG.error(("SSL certificate error, make sure that you have"
+                               " certificates configured properly"))
                 except requests.exceptions.ConnectionError:
                     self._next_host()
                     continue
