@@ -139,6 +139,9 @@ def duplicate_config_options(cfg):
     if 'thin_provision' in cfg:
         cfg['san_thin_provision'] = cfg['thin_provision']
 
+    if 'loglevel' in cfg:
+        cfg['loglvl'] = cfg['loglevel']
+
     return cfg
 
 

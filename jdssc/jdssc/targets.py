@@ -14,12 +14,13 @@
 #    under the License.
 
 import argparse
-import re
+import logging
 import sys
 
-import jdssc.snapshots as snapshots
 
 """Targets related commands."""
+
+LOG = logging.getLogger(__name__)
 
 
 class Targets():
@@ -90,6 +91,7 @@ class Targets():
                          default=None,
                          help='Get target based on snapshot')
         get.add_argument('-v',
+                         required=True,
                          dest='volume_name',
                          default=None,
                          type=str,
@@ -108,15 +110,21 @@ class Targets():
         provider_auth = 'CHAP 123456 123456789012'
 
         if self.args['snapshot_name']:
-            provider_location = self.jdss.create_export_snapshot(
+
+            self.jdss.create_export_snapshot(
                     self.args['snapshot_name'],
                     self.args['volume_name'],
                     provider_auth)
+            provider_location = self.jdss.get_provider_location(
+                    self.args['snapshot_name'])
+
         else:
-            provider_location = self.jdss.ensure_export(
+            self.jdss.ensure_export(
                     self.args['volume_name'],
                     provider_auth,
-                    direct_mode=self.args['direct_mode'])['provider_location']
+                    direct_mode=self.args['direct_mode'])
+            provider_location = self.jdss.get_provider_location(
+                    self.args['volume_name'])
         out = ''
         if self.args['host']:
             out += ' ' + ':'.join(provider_location.split()[0].split(':')[:-1])
@@ -135,6 +143,7 @@ class Targets():
 
     def get(self):
 
+        LOG.debug("Getting target for volume %s", self.args['volume_name'])
         provider_location = None
         if self.args['snapshot_name']:
             provider_location = self.jdss.get_provider_location(

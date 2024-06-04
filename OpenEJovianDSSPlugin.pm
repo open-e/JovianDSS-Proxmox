@@ -40,7 +40,7 @@ use base qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.9.6';
+my $PLUGIN_VERSION = '0.9.7';
 
 # Configuration
 
@@ -176,7 +176,7 @@ sub get_content_volume_size {
 
     warn "content_volume_size property is not set up, using default $default_content_size\n" if (!defined($scfg->{content_volume_size}));
     my $size = $scfg->{content_volume_size} || $default_content_size;
-    return $size * 1024 * 1024 * 1024;
+    return $size;
 }
 
 sub get_content_path {
@@ -442,7 +442,7 @@ sub create_base {
     my $newname = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "getfreename", "--prefix", $newnameprefix]);
     chomp($newname);
     $newname =~ s/[^[:ascii:]]//;
-	$class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "rename", $newname]);
+	$class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "rename", $newname]);
 
     return $newname;
 }
@@ -457,15 +457,15 @@ sub clone_image {
     my (undef, undef, undef, undef, undef, undef, $fmt) = $class->parse_volname($volname);
     my $clone_name = $class->find_free_diskname($storeid, $scfg, $vmid, $fmt);
 
-    my $size = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "get", "-s"]);
+    my $size = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "get", "-s"]);
     chomp($size);
     $size =~ s/[^[:ascii:]]//;
 
     print"Clone ${volname} with size ${size} to ${clone_name} with snapshot ${snap}\n" if get_debug($scfg);
     if ($snap){
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "clone", "--size", $size, "--snapshot", $snap, $clone_name]);
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "clone", "--size", $size, "--snapshot", $snap, "-n", $clone_name]);
     } else {
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "clone", "--size", $size, $clone_name]);
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "clone", "--size", $size, "-n", $clone_name]);
     }
     return $clone_name;
 }
@@ -483,7 +483,7 @@ sub alloc_image {
         my $config = get_config($scfg);
         my $pool = get_pool($scfg);
         my $extsize = $size + 1023;
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "--size", "${extsize}K", $volume_name]);
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "--size", "${extsize}K", "-n", $volume_name]);
     }
     return "$volume_name";
 }
@@ -504,7 +504,7 @@ sub free_image {
 
     $class->deactivate_volume($storeid, $scfg, $volname, '', '');
 
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "delete", "-c"]);
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "delete", "-c"]);
     return undef;
 }
 
@@ -792,9 +792,9 @@ sub get_target_name {
 
     my $target;
     if ($snapname){
-        $target = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get", "--snapshot", $snapname]);
+        $target = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "get", "-v", $volname, "--snapshot", $snapname]);
     } else {
-        $target = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "get"]);
+        $target = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "get", "-v", $volname]);
     }
     print "Generated target name ${target}" if get_debug($scfg);
     return clean_word($target);
@@ -864,7 +864,7 @@ sub volume_snapshot {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "snapshots", "create", $snap]);
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", "create", $snap]);
 
 }
 
@@ -881,7 +881,7 @@ sub volume_snapshot_rollback {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "snapshots", $snap, "rollback"]);
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "rollback"]);
 }
 
 sub volume_rollback_is_possible {
@@ -900,7 +900,7 @@ sub volume_snapshot_delete {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "snapshots", $snap, "delete"]);
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "delete"]);
 }
 
 sub volume_snapshot_list {
@@ -909,7 +909,7 @@ sub volume_snapshot_list {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    my $jdssc =  $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "$volname", "snapshots", "list"]);
+    my $jdssc =  $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", "$volname", "snapshots", "list"]);
 
     my $res = [];
     foreach (split(/\n/, $jdssc)) {
@@ -932,7 +932,7 @@ sub volume_size_info {
         return $class->SUPER::volume_size_info($scfg, $storeid, $volname, $timeout);
     }
 
-    my $size = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "get", "-s"]);
+    my $size = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "get", "-s"]);
     chomp($size);
     $size =~ s/[^[:ascii:]]//;
 
@@ -1008,11 +1008,11 @@ sub ensure_content_volume {
 
     # Get volume
 
-    eval { $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $content_volname, "get", "-d", "-s"]); };
+    eval { $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $content_volname, "get", "-d", "-s"]); };
     if ($@) {
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "-d", "-s", $content_volume_size, $content_volname]);
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "-d", "-s", "${content_volume_size}G", '-n', $content_volname]);
     } else {
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $content_volname, "resize", "-d", $content_volume_size]);
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $content_volname, "resize", "-d", "${content_volume_size}G"]);
     }
 
     $class->activate_volume_ext($storeid, $scfg, $content_volname, "", $cache, 1);
@@ -1152,9 +1152,9 @@ sub deactivate_volume {
     $class->unstage_target($scfg, $storeid, $target);
     
     if ($snapname){
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete", "--snapshot", $snapname]);
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "delete", "-v", $volname, "--snapshot", $snapname]);
     } else {
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", $volname, "delete"]);
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "delete", "-v", $volname]);
     }
     return 1;
 }
@@ -1165,7 +1165,7 @@ sub volume_resize {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", $volname, "resize", "{$size}K"]);
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "resize", "{$size}K"]);
 
     return 1;
 }

@@ -70,8 +70,11 @@ class Snapshot():
 
     def delete(self):
 
-        self.jdss.delete_snapshot(self.args['volume_name'],
-                                  self.args['snapshot_name'])
+        try:
+            self.jdss.delete_snapshot(self.args['volume_name'],
+                                      self.args['snapshot_name'])
+        except jexc.JDSSSnapshotIsBusyException:
+            exit(1)
 
     def rollback(self):
         try:

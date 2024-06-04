@@ -386,7 +386,7 @@ class JovianDSSDriver(object):
 
             raise jerr
 
-    def resize_volume(self, volume_name, new_size):
+    def resize_volume(self, volume_name, new_size, direct_mode=False):
         """Extend an existing volume.
 
         :param str volume_name: volume id
@@ -395,7 +395,11 @@ class JovianDSSDriver(object):
         LOG.debug("Extend volume:%(name)s to size:%(size)s",
                   {'name': volume_name, 'size': new_size})
 
-        self.ra.extend_lun(jcom.vname(volume_name), new_size)
+        vname = jcom.vname(volume_name)
+
+        if direct_mode:
+            vname = volume_name
+        self.ra.extend_lun(vname, new_size)
 
     def create_cloned_volume(self,
                              clone_name,
@@ -430,18 +434,12 @@ class JovianDSSDriver(object):
                                create_snapshot=True,
                                sparse=sparse)
 
-        clone_size = 0
+        size = str(size)
 
         try:
-            clone_size = int(self.ra.get_lun(cvname)['volsize'])
-        except jexc.JDSSException as jerr:
-
-            self.delete_volume(clone_name, cascade=False)
-            raise jerr
-
-        try:
-            if Size_Pattern.match(clone_size):
-                self.resize_volume(clone_name, clone_size)
+            if Size_Pattern.match(size):
+                if len(size) > 1:
+                    self.resize_volume(clone_name, size)
 
         except jexc.JDSSException as jerr:
             # If volume can't be set to a proper size make sure to clean it
@@ -558,16 +556,19 @@ class JovianDSSDriver(object):
 
             for cvname in clones:
                 if jcom.is_hidden(cvname):
-                    #TODO: here we should print list of dependents
-                    LOG.error("Snapshot is busy, delete his clones firs")
-                    raise jexc.JDSSResourceIsBusyException(
+                    dsnaps = self._list_all_volume_snapshots(cvname, None)
+                    msg = "Snapshot is busy, delete dependent snapshots firs"
+                    dsnames = [jcom.sid_from_sname(s['name']) for s in dsnaps]
+                    jcom.dependency_error(msg, dsnames)
+
+                    raise jexc.JDSSSnapshotIsBusyException(
                             jcom.sid_from_sname(sname))
 
                 if jcom.is_snapshot(cvname):
                     self.ra.delete_lun(cvname)
 
         if jcom.is_hidden(pname):
-            psnaps = self.ra.get_snapshots_page(pname, 0)
+            psnaps = self.ra.get_volume_snapshots_page(pname, 0)
             if len(psnaps) > 1:
                 try:
                     self.ra.delete_snapshot(vname, sname, force_umount=True)
@@ -577,7 +578,7 @@ class JovianDSSDriver(object):
 
             self.ra.delete_lun(pname,
                                force_umount=True,
-                               recursively_children=False)
+                               recursively_children=True)
         if jcom.is_volume(pname):
             try:
                 self.ra.delete_snapshot(vname, sname, force_umount=True)
@@ -638,7 +639,7 @@ class JovianDSSDriver(object):
                 self.ra.delete_target_user(
                     target_name,
                     user['name'])
-            self._set_target_credentials(target_name, chap_cred)
+            #self._set_target_credentials(target_name, chap_cred)
 
         except jexc.JDSSException as jerr:
             self.ra.delete_target(target_name)
@@ -818,7 +819,7 @@ class JovianDSSDriver(object):
         self._attach_target_volume(target_name, vid)
 
         # Set credentials
-        self._set_target_credentials(target_name, chap_cred)
+        #self._set_target_credentials(target_name, chap_cred)
 
     def _attach_target_volume(self, target_name, vname):
         """Attach target to volume and handles exceptions
@@ -968,6 +969,34 @@ class JovianDSSDriver(object):
 
         return resp
 
+    # Expand this function with remove hidden volume if that volume
+    # have not snapshots
+    def _list_all_volume_snapshots(self, vname, f=None):
+
+        snaps = []
+
+        i = 0
+        LOG.debug("Listing all volume snapshots: %s", vname)
+
+        while True:
+            spage = self.ra.get_volume_snapshots_page(vname, i)
+
+            if len(spage) > 0:
+
+                if f is not None:
+                    snaps.extend(filter(f, spage))
+                else:
+                    snaps.extend(spage)
+                i += 1
+            else:
+                break
+
+        for snap in snaps:
+            for clone in jcom.snapshot_clones(snap):
+                snaps.extend(self._list_all_volume_snapshots(vname, f))
+
+        return snaps
+
     def _list_volume_snapshots(self, ovolume_name, vname):
         """List volume snapshots
 
@@ -976,6 +1005,7 @@ class JovianDSSDriver(object):
         out = []
         snapshots = []
         i = 0
+        # First we list all volume snapshots page by page
         try:
             while True:
                 spage = self.ra.get_volume_snapshots_page(vname, i)
@@ -992,12 +1022,19 @@ class JovianDSSDriver(object):
             LOG.error("List snapshots error. Because %(err)s",
                       {"err": ex})
 
+        # Each snapshot we check
         for snap in snapshots:
+            # if that is a linked clone one we might not want to list it for specific volume
             if jcom.is_volume(snap['name']):
-                LOG.warning("Linked clone present among volumes")
+                if all:
+                    snap['volume_name'] = vname
+                    out.append(snap)
+                else:
+                    LOG.warning("Linked clone present among volumes")
                 continue
 
-            if jcom.vid_from_sname(snap['name']) == ovolume_name:
+            vid = jcom.vid_from_sname(snap['name'])
+            if vid is None or vid == ovolume_name:
                 # That is used in create_snapshot function to provide detailed
                 # info in case volume already have snapshot
                 snap['volume_name'] = vname
@@ -1006,6 +1043,11 @@ class JovianDSSDriver(object):
                 for clone in jcom.snapshot_clones(snap):
                     out.extend(self._list_volume_snapshots(ovolume_name,
                                                            clone))
+                continue
+            if all:
+                snap['volume_name'] = vname
+                out.append(snap)
+
         return out
 
     def list_snapshots(self, volume_name):

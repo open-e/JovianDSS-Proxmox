@@ -77,7 +77,8 @@ class Volume():
         #                    type=str,
         #                    default=None,
         #                    help='Block size')
-        clone.add_argument('clone_name',
+        clone.add_argument('-n',
+                           dest='clone_name',
                            type=str,
                            help='Clone volume name')
 
@@ -97,7 +98,7 @@ class Volume():
                             default=False,
                             help='Add new size to existing volume size')
         resize.add_argument('new_size',
-                            type=int,
+                            type=str,
                             help='New volume size')
         resize.add_argument('-d',
                             dest='direct_mode',
@@ -178,13 +179,12 @@ class Volume():
 
         volume_name = self.args['volume_name']
 
-        volume = {'id': volume_name}
         size = self.args['new_size']
 
         if self.args['add_size']:
-            d = self.jdss.get_volume(volume,
+            d = self.jdss.get_volume(volume_name,
                                      direct_mode=self.args['direct_mode'])
             size += int(d['size'])
 
-        self.jdss.extend_volume(volume, size,
+        self.jdss.resize_volume(volume_name, size,
                                 direct_mode=self.args['direct_mode'])

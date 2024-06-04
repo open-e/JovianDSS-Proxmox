@@ -15,12 +15,15 @@
 
 from datetime import datetime
 import base64
+import logging
 import re
 
 from jdssc.jovian_common import cexception as exception
 
 import uuid
 allowedPattern = re.compile(r"^[-\w]+$")
+
+LOG = logging.getLogger(__name__)
 
 
 def JBase32ToStr(bname):
@@ -202,3 +205,11 @@ def get_newest_snapshot_name(snapshots):
             newest_date = current_date
             sname = snap['name']
     return sname
+
+
+def dependency_error(msg, dl):
+    LOG.error(msg)
+    while len(dl) > 0:
+        msg = ', '.join(dl[:10])
+        dl = dl[10:]
+        LOG.error(msg)
