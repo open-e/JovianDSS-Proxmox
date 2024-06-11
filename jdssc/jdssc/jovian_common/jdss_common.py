@@ -43,7 +43,13 @@ def is_volume(name):
 def is_snapshot(name):
     """Return True if volume"""
 
-    return name.startswith("s_")
+    if name.startswith("s_"):
+        return True
+
+    if name.startswith("se_"):
+        return True
+
+    return False
 
 
 def idname(name):

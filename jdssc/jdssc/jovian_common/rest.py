@@ -45,9 +45,16 @@ class JovianRESTAPI(object):
 
         self.resource_has_snapshots_msg = (
             re.compile(r"^cannot destroy '.*/.*': volume has children\nuse "
-                       "'-r' to destroy the following datasets:\n.*"))
+                       r"'-r' to destroy the following datasets:\n.*"))
         self.resource_has_snapshots_class = (
             re.compile(r'^zfslib.wrap.zfs.ZfsCmdError$'))
+
+        self.dataset_exists_msg = (
+            re.compile(r"^cannot create '.*': dataset already exists$"))
+
+        self.no_space_left = (
+            re.compile(r"^New zvol size\(\d+\) exceeds available space on pool"
+                       r" .+\(\d+\).$"))
 
     def _general_error(self, url, resp):
         reason = "Request %s failure" % url
@@ -154,12 +161,15 @@ class JovianRESTAPI(object):
         if not resp["error"] and resp["code"] in (200, 201):
             return
 
-        if resp["error"] is not None:
-            if resp["error"]["errno"] == str(5):
-                msg = _('Failed to create volume %s.' %
-                        resp['error']['message'])
-                raise jexc.JDSSRESTException(msg)
-
+        if "error" in resp and resp["error"] is not None:
+            if "errno" in resp['error']:
+                if resp["error"]["errno"] == str(5):
+                    msg = _('Failed to create volume %s.' %
+                            resp['error']['message'])
+                    raise jexc.JDSSRESTException(msg)
+            if "message" in resp["error"]:
+                if self.no_space_left.match(resp["error"]["message"]):
+                    raise jexc.JDSSResourceExhausted
         raise jexc.JDSSRESTException('Failed to create volume.')
 
     def extend_lun(self, volume_name, volume_size):
@@ -724,8 +734,8 @@ class JovianRESTAPI(object):
         if 'sparse' in options:
             jbody['sparse'] = options['sparse']
 
-        if 'ro' in options:
-            jbody['ro'] = options['sparse']
+        if 'readonly' in options:
+            jbody['readonly'] = options['readonly']
 
         LOG.debug("create volume %(vol)s from snapshot %(snap)s",
                   {'vol': volume_name,
@@ -738,13 +748,17 @@ class JovianRESTAPI(object):
 
         if resp["code"] == 500:
             if resp["error"]:
-                if resp["error"]["errno"] == 100:
-                    raise jexc.JDSSVolumeExistsException(
-                        volume=volume_name)
+                if (resp["error"]["errno"] == 100 and
+                        ('message' in resp["error"])):
+                    if self.dataset_exists_msg.match(resp['error']['message']):
+                        raise jexc.JDSSVolumeExistsException(volume_name)
                 if resp["error"]["errno"] == 1:
                     raise jexc.JDSSResourceNotFoundException(
                         res="%(vol)s@%(snap)s" % {'vol': original_vol_name,
                                                   'snap': snapshot_name})
+            if "message" in resp["error"]:
+                if self.no_space_left.match(resp["error"]["message"]):
+                    raise jexc.JDSSResourceExhausted
 
         self._general_error(req, resp)
 

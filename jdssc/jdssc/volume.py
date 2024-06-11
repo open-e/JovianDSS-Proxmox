@@ -14,14 +14,16 @@
 #    under the License.
 
 import argparse
-import re
 import sys
-import uuid
+import logging
 
 import jdssc.snapshot as snapshot
 import jdssc.snapshots as snapshots
+from jdssc.jovian_common import exception as jexc
 
 """Volume related commands."""
+
+LOG = logging.getLogger(__name__)
 
 
 class Volume():
@@ -78,6 +80,7 @@ class Volume():
         #                    default=None,
         #                    help='Block size')
         clone.add_argument('-n',
+                           required=True,
                            dest='clone_name',
                            type=str,
                            help='Clone volume name')
@@ -118,20 +121,6 @@ class Volume():
 
         return kargs, ukargs
 
-    def create(self):
-
-        volume = {'size': self.args['volume_size'].upper()}
-
-        if self.args['block_size'] is not None:
-            volume['block_size'] = self.args['block_size'].upper()
-
-        if 'volume_name' in self.args:
-            volume['id'] = self.args['volume_name']
-        else:
-            volume['id'] = str(uuid.uuid1())
-
-        self.jdss.create_volume(volume, direct_mode=self.args['direct_mode'])
-
     def clone(self):
 
         if self.args['snapshot_name']:
@@ -143,11 +132,14 @@ class Volume():
                     snapshot_name=self.args['snapshot_name'],
                     sparse=self.jdss.jovian_sparse)
             return
-
-        self.jdss.create_cloned_volume(self.args['clone_name'],
-                                       self.args['volume_name'],
-                                       self.args['clone_size'],
-                                       sparse=self.jdss.jovian_sparse)
+        try:
+            self.jdss.create_cloned_volume(self.args['clone_name'],
+                                           self.args['volume_name'],
+                                           0,
+                                           sparse=self.jdss.jovian_sparse)
+        except jexc.JDSSResourceExhausted:
+            LOG.error("No space left on the storage")
+            exit(1)
 
     def get(self):
 
@@ -155,14 +147,23 @@ class Volume():
 
         volume = {'id': volume_name}
 
-        d = self.jdss.get_volume(volume, direct_mode=self.args['direct_mode'])
-        if self.args['volume_size']:
-            print(d['size'])
+        try:
+            d = self.jdss.get_volume(volume,
+                                     direct_mode=self.args['direct_mode'])
+            if self.args['volume_size']:
+                print(d['size'])
+        except jexc.JDSSException as err:
+            LOG.error(err.message)
+            exit(1)
 
     def delete(self):
 
-        self.jdss.delete_volume(self.args['volume_name'],
-                                cascade=self.args['cascade'])
+        try:
+            self.jdss.delete_volume(self.args['volume_name'],
+                                    cascade=self.args['cascade'])
+        except jexc.JDSSException as err:
+            LOG.error(err.message)
+            exit(1)
 
     def snapshot(self):
         snapshot.Snapshot(self.args, self.uargs, self.jdss)

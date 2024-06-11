@@ -202,7 +202,7 @@ sub joviandss_cmd {
     my $target;
     my $res = ();
 
-    $timeout = 20 if !$timeout;
+    $timeout = 40 if !$timeout;
 
     my $output = sub { $msg .= "$_[0]\n" };
     my $errfunc = sub { $err .= "$_[0]\n" };
@@ -210,7 +210,9 @@ sub joviandss_cmd {
         run_command(['/usr/local/bin/jdssc', @$cmd], outfunc => $output, errfunc => $errfunc, timeout => $timeout);
     };
     if ($@) {
-        die $@;
+        print "Error:\n";
+        print "${err}";
+        die "$@\n ${err}\n";
     }
     return $msg;
 }
@@ -864,7 +866,7 @@ sub volume_snapshot {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", "create", $snap]);
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshots", "create", $snap]);
 
 }
 
@@ -875,6 +877,8 @@ sub volume_snapshot_needs_fsfreeze {
 
 sub volume_snapshot_rollback {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
+    
+    die "Volume snapshot rollback is not supported\n";
 
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
@@ -887,7 +891,7 @@ sub volume_snapshot_rollback {
 sub volume_rollback_is_possible {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
 
-    return 1;
+    return 0;
 }
 
 sub volume_snapshot_delete {
@@ -896,7 +900,7 @@ sub volume_snapshot_delete {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    return 1 if $running;
+    # return 1 if $running;
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
@@ -1083,7 +1087,7 @@ sub deactivate_storage {
 sub activate_volume_ext {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache, $directmode ) = @_;
 
-    print "Activating volume ${volname}\n" if get_debug($scfg);
+    print "Activating volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
@@ -1132,7 +1136,7 @@ sub activate_volume {
 sub deactivate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
 
-    print "Deactivating volume ${volname}\n" if get_debug($scfg);
+    print "Deactivating volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
@@ -1165,7 +1169,7 @@ sub volume_resize {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "resize", "{$size}K"]);
+    $class->joviandss_cmd(["-c", $config, "pool", "${pool}", "volume", "${volname}", "resize", "{$size}K"]);
 
     return 1;
 }

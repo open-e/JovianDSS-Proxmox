@@ -107,21 +107,20 @@ class Targets():
 
     def create(self):
         provider_location = None
-        provider_auth = 'CHAP 123456 123456789012'
 
         if self.args['snapshot_name']:
 
             self.jdss.create_export_snapshot(
                     self.args['snapshot_name'],
                     self.args['volume_name'],
-                    provider_auth)
+                    None)
             provider_location = self.jdss.get_provider_location(
                     self.args['snapshot_name'])
 
         else:
             self.jdss.ensure_export(
                     self.args['volume_name'],
-                    provider_auth,
+                    None,
                     direct_mode=self.args['direct_mode'])
             provider_location = self.jdss.get_provider_location(
                     self.args['volume_name'])

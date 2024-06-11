@@ -73,7 +73,6 @@ class Snapshots():
             LOG.error(err)
             exit(1)
 
-
     def list(self):
 
         volume = self.args['volume_name']

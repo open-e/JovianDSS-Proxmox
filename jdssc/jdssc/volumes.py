@@ -17,10 +17,14 @@ import argparse
 import re
 import sys
 import uuid
+import logging
 
 import jdssc.snapshots as snapshots
+from jdssc.jovian_common import exception as jexc
 
 """Volume related commands."""
+
+LOG = logging.getLogger(__name__)
 
 
 class Volumes():
@@ -104,25 +108,35 @@ class Volumes():
         if 'volume_name' in self.args:
             name = self.args['volume_name']
 
-        self.jdss.create_volume(name, size,
-                                direct_mode=self.args['direct_mode'],
-                                block_size=block_size)
+        try:
+            self.jdss.create_volume(name, size,
+                                    direct_mode=self.args['direct_mode'],
+                                    block_size=block_size)
+        except jexc.JDSSResourceExhausted:
+            LOG.error("No space left on the storage")
+            exit(1)
 
     def clone(self):
 
         volume = {'id': self.args['clone_name']}
 
-        if self.args['snapshot_name']:
-            snapshot = snapshots.Snapshot.get_snapshot(
-                self.args['volume_name'],
-                self.args['snapshot_name'])
+        try:
 
-            self.jdss.create_volume_from_snapshot(volume, snapshot)
+            if self.args['snapshot_name']:
+                snapshot = snapshots.Snapshot.get_snapshot(
+                    self.args['volume_name'],
+                    self.args['snapshot_name'])
 
-            return
+                self.jdss.create_volume_from_snapshot(volume, snapshot)
 
-        src_vref = {'id': self.args['volume_name']}
-        self.jdss.create_cloned_volume(volume, src_vref)
+                return
+
+            src_vref = {'id': self.args['volume_name']}
+            self.jdss.create_cloned_volume(volume, src_vref)
+
+        except jexc.JDSSResourceExhausted:
+            LOG.error("No space left on the storage")
+            exit(1)
 
     def get(self):
 

@@ -81,7 +81,7 @@ class JDSSVolumeExistsException(JDSSResourceExistsException):
     """Volume with same id exists"""
 
     def __init__(self, volume):
-        self.message = ("JDSS volume %(volume)s already exists.")
+        self.message = ("volume %(volume)s" % {'volume': volume})
         super().__init__(self.message)
 
 
@@ -96,10 +96,22 @@ class JDSSResourceIsBusyException(JDSSException):
 class JDSSSnapshotIsBusyException(JDSSResourceIsBusyException):
     """Snapshot have dependent clones"""
 
-    message = ("snapshot %(snapshot)s")
+    def __init__(self, res):
+        self.message = ("snapshot %(snapshot)s")
+        super().__init__(self.message)
 
 
 class JDSSOSException(JDSSException):
     """Storage internal system error"""
 
-    message = ("JDSS internal system error %(message)s.")
+    def __init__(self, res):
+        self.message = ("JDSS internal system error %(message)s.")
+        super().__init__(self.message)
+
+
+class JDSSResourceExhausted(JDSSException):
+    """No space left on the device"""
+
+    def __init__(self):
+        self.message = "JDSS Not enoung free space."
+        super().__init__(self.message)
