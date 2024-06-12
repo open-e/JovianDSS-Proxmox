@@ -132,16 +132,20 @@ def sname(sid, vid):
     :param: vid: volume id
     :param: sid: snapshot id
     """
-    out = ""
+    # out = ""
     # e for extendent
     # b for based
-    if allowedPattern.match(sid):
-        out = 'se_%(sid)s' % {'sid': sid}
-    else:
-        out = 'sb_%(sid)s' % {'sid': JBase32FromStr(sid)}
 
-    if vid is not None and len(vid) > 0:
-        out += '_%(vid)s' % {'vid': JBase32FromStr(vid)}
+    out = 's_%(sid)s' % {'sid': sid}
+    return out
+
+    # if allowedPattern.match(sid):
+    #     out = 'se_%(sid)s' % {'sid': sid}
+    # else:
+    #     out = 'sb_%(sid)s' % {'sid': JBase32FromStr(sid)}
+
+    # if vid is not None and len(vid) > 0:
+    #     out += '_%(vid)s' % {'vid': JBase32FromStr(vid)}
 
     return out
 

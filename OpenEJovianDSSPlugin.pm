@@ -463,7 +463,7 @@ sub clone_image {
     chomp($size);
     $size =~ s/[^[:ascii:]]//;
 
-    print"Clone ${volname} with size ${size} to ${clone_name} with snapshot ${snap}\n" if get_debug($scfg);
+    print"Clone ${volname} with size ${size} to ${clone_name}".safe_var_print(" with snapshot", $snapname)."\n" if get_debug($scfg);
     if ($snap){
         $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "clone", "--size", $size, "--snapshot", $snap, "-n", $clone_name]);
     } else {

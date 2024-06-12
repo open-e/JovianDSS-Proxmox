@@ -336,19 +336,20 @@ class JovianDSSDriver(object):
                       'deleted', vname)
             return
 
-        LOG.debug(snapshots)
-        exit(1)
+        # LOG.debug(snapshots)
+        # exit(1)
         bsnaps = self._list_busy_snapshots(vname,
                                            snapshots,
                                            exclude_dedicated_snapshots=True)
         if len(bsnaps) > 0:
-            LOG.debug("Found busy snapshots that cant be deleted, for instance %s", bsnaps[0]['name'])
+            LOG.debug(("Found busy snapshots that cant be deleted,"
+                       "for instance %s"), bsnaps[0]['name'])
             raise jexc.JDSSResourceIsBusyException(vname)
 
         # snaps = self._clean_garbage_resources(vname, snapshots)
         self._clean_volume_snapshots_mount_points(vname, snapshots)
 
-        self._delete_volume(vname, cascade=False)
+        self._delete_volume(vname, cascade=cascade)
 
         # self._promote_newest_delete(vname, snapshots=snaps, cascade=cascade)
 
@@ -1026,7 +1027,7 @@ class JovianDSSDriver(object):
 
         while True:
             spage = self.ra.get_volume_snapshots_page(vname, i)
-
+            LOG.debug("spage %s", str(spage))
             if len(spage) > 0:
 
                 if f is not None:
@@ -1037,9 +1038,11 @@ class JovianDSSDriver(object):
             else:
                 break
 
-        for snap in snaps:
-            for clone in jcom.snapshot_clones(snap):
-                snaps.extend(self._list_all_volume_snapshots(vname, f))
+        # for snap in snaps:
+        #     for clone in jcom.snapshot_clones(snap):
+        #         LOG.debug("Add snapshots of clone %s", clone)
+
+        #         snaps.extend(self._list_all_volume_snapshots(clone, f))
 
         return snaps
 
@@ -1087,6 +1090,7 @@ class JovianDSSDriver(object):
 
                 out.append(snap)
                 for clone in jcom.snapshot_clones(snap):
+                    LOG.debug("List volume recursion step for list_volume_snapshots")
                     out.extend(self._list_volume_snapshots(ovolume_name,
                                                            clone))
                 continue
