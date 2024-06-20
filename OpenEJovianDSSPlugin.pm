@@ -217,23 +217,23 @@ sub joviandss_cmd {
     return $msg;
 }
 
-sub joviandss_cmde {
-    my ($class, $cmd, $timeout) = @_;
-
-    my $msg = '';
-    my $err = undef;
-    my $target;
-    my $res = ();
-
-    $timeout = 20 if !$timeout;
-
-    my $output = sub { $msg .= "$_[0]" };
-    my $errfunc = sub { $err .= "$_[0]" };
-    eval {
-        run_command(['/usr/local/bin/jdssc', @$cmd], outfunc => $output, errfunc => $errfunc, timeout => $timeout);
-    };
-    return ($msg, $err);
-}
+# sub joviandss_cmde {
+#     my ($class, $cmd, $timeout) = @_;
+# 
+#     my $msg = '';
+#     my $err = undef;
+#     my $target;
+#     my $res = ();
+# 
+#     $timeout = 20 if !$timeout;
+# 
+#     my $output = sub { $msg .= "$_[0]" };
+#     my $errfunc = sub { $err .= "$_[0]" };
+#     eval {
+#         run_command(['/usr/local/bin/jdssc', @$cmd], outfunc => $output, errfunc => $errfunc, timeout => $timeout);
+#     };
+#     return ($msg, $err);
+# }
 
 my $ISCSIADM = '/usr/bin/iscsiadm';
 $ISCSIADM = undef if ! -X $ISCSIADM;
@@ -463,7 +463,7 @@ sub clone_image {
     chomp($size);
     $size =~ s/[^[:ascii:]]//;
 
-    print"Clone ${volname} with size ${size} to ${clone_name}".safe_var_print(" with snapshot", $snapname)."\n" if get_debug($scfg);
+    print"Clone ${volname} with size ${size} to ${clone_name}".safe_var_print(" with snapshot", $snap)."\n" if get_debug($scfg);
     if ($snap){
         $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "clone", "--size", $size, "--snapshot", $snap, "-n", $clone_name]);
     } else {
@@ -648,6 +648,25 @@ sub generate_multipath_file {
     PVE::Tools::file_copy($tmppath, $filename);
 }
 
+sub get_device_mapper_name {
+    my ($class, $wwid) = @_;
+    open(my $multipath_topology, '-|', "multipath -ll $wwid") or die "Unable to list multipath topology: $!";
+
+    my $device_mapper_name = '';
+    
+    while (my $line = <$multipath_topology>) {
+        chomp $line;
+        if ($line =~ /\b$wwid\b/) {
+    
+            my @parts = split(/\s+/, $line);
+            $device_mapper_name = $parts[0];
+        }
+    }
+    
+    close $multipath_topology;
+    return $device_mapper_name;
+}
+
 sub stage_multipath {
     my ($class, $scfg, $scsiid, $target) = @_;
 
@@ -659,24 +678,32 @@ sub stage_multipath {
     if (-b $targetpath && -e $filename) {
         return $targetpath;
     }
+    print "Staging ${target}\n" if get_debug($scfg);
 
     make_path $jmultipathd, {owner=>'root', group=>'root'};
     my $multipathidfd;
-    open($multipathidfd, '>', $filename) or die "Unable to create multipath record file ${filename}";
-    print $multipathidfd "${scsiid}";
-    close $multipathidfd;
+    # open($multipathidfd, '>', $filename) or die "Unable to create multipath record file ${filename}";
+    # print $multipathidfd "${scsiid}";
+    # close $multipathidfd;
 
-    $class->generate_multipath_file($jmultipathd);
+    # $class->generate_multipath_file($jmultipathd);
     eval { run_command([$MULTIPATH, '-a', $scsiid]); };
     die "Unable to add scsi id ${scsiid} $@" if $@;
-    eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
-    die "Unable to restart multipath daemon $@" if $@;
+    #eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
+    #die "Unable to restart multipath daemon $@" if $@;
+
+    my $mpathname = $class->get_device_mapper_name($scsiid);
+
+    eval {run_command(["dmsetup", "rename", "${mpathname}", "${target}"], errmsg => 'umount error') };
+    warn "Unable rename mpath device ${mpathname} to ${target}" if $@;
 
     my $timeout = 10;
 
     for (my $i = 0; $i <= $timeout; $i++) {
 
         if (-b $targetpath) {
+
+            print "Staging ${target} to ${targetpath} done." if get_debug($scfg);
             return $targetpath;
         }
         sleep(1);
@@ -694,7 +721,7 @@ sub unstage_multipath {
     if ($@) {
         warn "Unable to identify scsiid for target ${target}";
     } else {
-        eval{ run_command([$MULTIPATH, '-d', $scsiid]); };
+        eval{ run_command([$MULTIPATH, '-f', $scsiid]); };
         warn $@ if $@;
     }
 
@@ -706,7 +733,7 @@ sub unstage_multipath {
         unlink $filename;
     }
 
-    $class->generate_multipath_file($default_jmultipathd);
+    # $class->generate_multipath_file($default_jmultipathd);
 
     run_command([$SYSTEMCTL, 'restart', 'multipathd']);
 }
@@ -1087,7 +1114,7 @@ sub deactivate_storage {
 sub activate_volume_ext {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache, $directmode ) = @_;
 
-    print "Activating volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
+    print "Activating volume ext ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
@@ -1123,6 +1150,8 @@ sub activate_volume_ext {
 
 sub activate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
+    
+    print "Activating volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 

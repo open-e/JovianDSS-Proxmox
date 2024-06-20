@@ -93,6 +93,21 @@ class JDSSResourceIsBusyException(JDSSException):
         super().__init__(self.message)
 
 
+class JDSSResourceVolumeIsBusyException(JDSSException):
+
+    def __init__(self, volume, clones):
+        dependents = ""
+        while len(clones) > 0:
+            dependents += ', '.join(clones[:10])
+            dependents += '\n'
+            clones = clones[10:]
+        self.message = (("JDSS volume %(volume)s is busy, other volumes depend"
+                         " on it:\n%(dependents)s ") %
+                        {'volume': volume,
+                         'dependents': dependents})
+        super().__init__(self.message)
+
+
 class JDSSSnapshotIsBusyException(JDSSResourceIsBusyException):
     """Snapshot have dependent clones"""
 

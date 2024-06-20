@@ -74,11 +74,6 @@ class Volume():
                            type=str,
                            default='0',
                            help='New volume size in format size+[K M G]')
-        # clone.add_argument('-b',
-        #                    dest='block_size',
-        #                    type=str,
-        #                    default=None,
-        #                    help='Block size')
         clone.add_argument('-n',
                            required=True,
                            dest='clone_name',

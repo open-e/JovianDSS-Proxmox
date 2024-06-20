@@ -281,8 +281,23 @@ class JovianDSSDriver(object):
         for snap in snapshots:
             clones = jcom.snapshot_clones(snap)
             for cname in [c for c in clones if jcom.is_snapshot(c)]:
+                # self._remove_target_volume(jcom.idname(cname), cname)
                 LOG.debug("Delete snapshot mount point %s", cname)
                 self._delete_volume(cname, cascade=True)
+
+    def _volume_busy_error(self, vname, snapshots):
+
+        cnames = []
+
+        for s in snapshots:
+            cnames.extend(jcom.snapshot_clones(s))
+
+        volume_names = [jcom.idname(vn) for vn in cnames]
+        msg = ("Volume %(volume_name)s is busy, delete dependent volumes first:"
+               % {'volume_name': jcom.idname(vname)})
+        jcom.dependency_error(msg, volume_names)
+
+        raise jexc.JDSSResourceIsBusyException(vname)
 
     # TODO: rethink delete volume
     # it is used in many places, yet concept of 'garbage' has changed
@@ -298,6 +313,11 @@ class JovianDSSDriver(object):
         :return: None
         """
         LOG.debug("Deleting %s", vname)
+        try:
+            self._remove_target_volume(jcom.idname(vname), vname)
+        except jexc.JDSSResourceNotFoundException:
+            LOG.debug('target for volume %s does not exist', vname)
+
         try:
             # First we try to delete lun, if it has no snapshots deletion will
             # succeed
@@ -330,28 +350,27 @@ class JovianDSSDriver(object):
 
         snapshots = []
         try:
-            snapshots = self._list_all_volume_snapshots(vname, vsnap_filter)
+            snapshots = self._list_all_volume_snapshots(vname, None)
         except jexc.JDSSResourceNotFoundException:
             LOG.debug('volume %s do not exists, it was already '
                       'deleted', vname)
             return
 
-        # LOG.debug(snapshots)
-        # exit(1)
         bsnaps = self._list_busy_snapshots(vname,
                                            snapshots,
                                            exclude_dedicated_snapshots=True)
         if len(bsnaps) > 0:
-            LOG.debug(("Found busy snapshots that cant be deleted,"
-                       "for instance %s"), bsnaps[0]['name'])
-            raise jexc.JDSSResourceIsBusyException(vname)
+            cnames = []
+            for s in snapshots:
+                cnames.extend(jcom.snapshot_clones(s))
+            volume_names = [jcom.idname(vn) for vn in cnames]
+            raise jexc.JDSSResourceVolumeIsBusyException(jcom.idname(vname),
+                                                         volume_names)
 
-        # snaps = self._clean_garbage_resources(vname, snapshots)
+        LOG.debug("All snapshots len %d %s", len(snapshots), str(snapshots))
         self._clean_volume_snapshots_mount_points(vname, snapshots)
 
         self._delete_volume(vname, cascade=cascade)
-
-        # self._promote_newest_delete(vname, snapshots=snaps, cascade=cascade)
 
     def delete_volume(self, volume_name, cascade=False):
         """Delete volume
@@ -602,15 +621,19 @@ class JovianDSSDriver(object):
             for cvname in clones:
                 if jcom.is_hidden(cvname):
                     dsnaps = self._list_all_volume_snapshots(cvname, None)
-                    msg = "Snapshot is busy, delete dependent snapshots firs"
-                    dsnames = [jcom.sid_from_sname(s['name']) for s in dsnaps]
-                    jcom.dependency_error(msg, dsnames)
 
-                    raise jexc.JDSSSnapshotIsBusyException(
-                            jcom.sid_from_sname(sname))
+                    if len(dsnaps) > 0:
+                        msg = "Snapshot is busy, delete dependent snapshots firs"
+                        dsnames = [jcom.sid_from_sname(s['name']) for s in dsnaps]
+                        jcom.dependency_error(msg, dsnames)
+
+                        raise jexc.JDSSSnapshotIsBusyException(
+                                jcom.sid_from_sname(sname))
+                    else:
+                        self._delete_volume(cvname, cascade=False)
 
                 if jcom.is_snapshot(cvname):
-                    self.ra.delete_lun(cvname)
+                    self._delete_volume(cvname, cascade=False)
 
         if jcom.is_hidden(pname):
             psnaps = self.ra.get_volume_snapshots_page(pname, 0)
@@ -620,10 +643,8 @@ class JovianDSSDriver(object):
                 except jexc.JDSSSnapshotNotFoundException:
                     LOG.debug('Snapshot %s not found', sname)
                     return
-
-            self.ra.delete_lun(pname,
-                               force_umount=True,
-                               recursively_children=True)
+            else:
+                self._delete_volume(cvname, cascade=True)
         if jcom.is_volume(pname):
             try:
                 self.ra.delete_snapshot(vname, sname, force_umount=True)

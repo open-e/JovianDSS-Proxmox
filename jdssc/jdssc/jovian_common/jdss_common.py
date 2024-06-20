@@ -71,7 +71,8 @@ def idname(name):
     if name.startswith('vb_'):
         return JBase32ToStr(name[3:])
 
-    raise Exception("Bad volume name %s" % name)
+    LOG.warn("Unable to identify name type %s", name)
+    return name
 
 
 def vname(name):
