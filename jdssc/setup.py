@@ -18,10 +18,10 @@ from setuptools import setup
 
 setup(
   name='OpenEJovianDSSProxmoxCLI',
-  version='0.6.1',
+  version='0.9.6',
   author='Andrei Perepiolkin',
   author_email='andrei.perepiolkin@open-e.com',
-  packages=['jdssc', 'jdssc.test'],
+  packages=['jdssc'],
   scripts=['bin/jdssc'],
   url='https://github.com/open-e/JovianDSS-Proxmox',
   license='LICENSE.txt',

@@ -85,6 +85,10 @@ class Volume():
                             action='store_true',
                             default=False,
                             help='Remove snapshots along side with volume')
+        delete.add_argument('-p', '--printres', dest='print',
+                            action='store_true',
+                            default=False,
+                            help='Print resources that would be deleted')
 
         rename = parsers.add_parser('rename')
         rename.add_argument('new_name', type=str, help='New volume name')

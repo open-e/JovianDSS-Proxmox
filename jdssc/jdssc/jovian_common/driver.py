@@ -372,7 +372,7 @@ class JovianDSSDriver(object):
 
         self._delete_volume(vname, cascade=cascade)
 
-    def delete_volume(self, volume_name, cascade=False):
+    def delete_volume(self, volume_name, cascade=False, print_and_exit=False):
         """Delete volume
 
         :param volume: volume reference
@@ -381,8 +381,13 @@ class JovianDSSDriver(object):
         vname = jcom.vname(volume_name)
 
         LOG.debug('deleting volume %s', vname)
-
-        self._delete_volume(vname, cascade=cascade)
+        
+        if print_and_exit:
+            self._print_resources_to_delete(vname, cascade=cascade)
+        else:
+            self._delete_volume(vname, cascade=cascade)
+    
+    def _print_resources_to_delete(vname, cascade=cascade)
 
     def _clone_object(self, cvname, sname, ovname,
                       sparse=None,
