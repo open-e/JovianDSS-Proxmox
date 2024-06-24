@@ -381,13 +381,31 @@ class JovianDSSDriver(object):
         vname = jcom.vname(volume_name)
 
         LOG.debug('deleting volume %s', vname)
-        
+
         if print_and_exit:
-            self._print_resources_to_delete(vname, cascade=cascade)
+            LOG.debug(cascade)
+            return self._list_resources_to_delete(vname, cascade=True)
         else:
-            self._delete_volume(vname, cascade=cascade)
+            return self._delete_volume(vname, cascade=cascade)
     
-    def _print_resources_to_delete(vname, cascade=cascade)
+    def _list_resources_to_delete(vname, cascade=False):
+        ret = [ jcom.idname(vname) ]
+        snapshots = []
+        try:
+            snapshots = self._list_all_volume_snapshots(vname, None)
+        except jexc.JDSSResourceNotFoundException:
+            LOG.debug('volume %s do not exists, it was already '
+                      'deleted', vname)
+            return
+
+        bsnaps = self._list_busy_snapshots(vname,
+                                           snapshots,
+                                           exclude_dedicated_volumes=True)
+
+        for snap in bsnaps:
+            ret.extend([jcom.idname(c)  for c in jcom.snapshot_clones(s) if jcom.is_snapshot(c)])
+        
+        return ret
 
     def _clone_object(self, cvname, sname, ovname,
                       sparse=None,

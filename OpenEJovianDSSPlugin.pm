@@ -584,6 +584,83 @@ sub get_multipath_records {
     return $res;
 }
 
+sub update_bindings_file {
+    my ($class, $wwid, $bname) = @_;
+    my $filename = "/etc/multipath/bindings";
+
+    open(my $multipath_map, '-|', "multipathd show maps | grep $wwid") or die "Unable to list multipath maps: $!";
+
+    my $device_mapper_name = '';
+    my $sysfs_name = '';
+    
+    while (my $line = <$multipath_map>) {
+        chomp $line;
+        if ($line =~ /\b$wwid\b/) {
+    
+            my @parts = split(/\s+/, $line);
+            $device_mapper_name = $parts[0];
+            $sysfs_name = $parts[1]
+        }
+    }
+    make_path '/etc/multipath/conf.d/', {owner=>'root', group=>'root'};
+    my (undef, $tmppath) = tempfile('multipathXXXXX', DIR => '/tmp/', OPEN => 0);
+
+    print "Tmp file path ${tmppath}";
+
+    PVE::Tools::file_copy($filename, $tmppath);
+    open(MULTIPATH, '<', $filename);  
+    open(FH, '>', $tmppath);
+
+    my $mpvols = $class->get_multipath_records($jmultipathd);
+
+    my $startblock = "# Start of JovianDSS managed block\n";
+    my $endblock   = "# End of JovianDSS managed block";
+
+    my $printflag = 1;
+    while(<MULTIPATH>){
+
+        if (/$startblock/ ) {
+            $printflag = 0;
+        }
+
+        if ($printflag) {
+            print FH "$_";
+        }
+
+        if (/$endblock/ ) {
+            $printflag = 1;
+        }
+        if (/multipaths \{/ ) {
+            print FH $startblock;
+
+            for my $key (keys %$mpvols) {
+                my $multipathdef = "      multipath {
+            wwid $mpvols->{ $key }
+            alias ${key}
+      }\n";
+                print FH $multipathdef;
+            }
+
+            print FH $endblock;
+            print FH "\n";
+        }
+        if (/blacklist_exceptions \{/ ) {
+            print FH $startblock;
+
+            for my $key (keys %$mpvols) {
+                my $multipathdef = "      wwid $mpvols->{ $key }\n";
+                print FH $multipathdef;
+            }
+
+            print FH $endblock;
+            print FH "\n";
+        }
+    }
+    close(MULTIPATH);
+    close(FH);
+    PVE::Tools::file_copy($tmppath, $filename);
+}
+
 sub generate_multipath_file {
     my ($class, $jmultipathd) = @_;
 
@@ -689,8 +766,8 @@ sub stage_multipath {
     # $class->generate_multipath_file($jmultipathd);
     eval { run_command([$MULTIPATH, '-a', $scsiid]); };
     die "Unable to add scsi id ${scsiid} $@" if $@;
-    #eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
-    #die "Unable to restart multipath daemon $@" if $@;
+    eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
+    die "Unable to restart multipath daemon $@" if $@;
 
     my $mpathname = $class->get_device_mapper_name($scsiid);
 

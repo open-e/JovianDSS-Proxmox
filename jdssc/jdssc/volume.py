@@ -156,13 +156,18 @@ class Volume():
             exit(1)
 
     def delete(self):
-
+        res = None
         try:
-            self.jdss.delete_volume(self.args['volume_name'],
-                                    cascade=self.args['cascade'])
+            res = self.jdss.delete_volume(self.args['volume_name'],
+                                          cascade=self.args['cascade'],
+                                          print_and_exit=self.args['print'])
         except jexc.JDSSException as err:
             LOG.error(err.message)
             exit(1)
+
+        if res is not None and len(res) > 0:
+            for r in res:
+                print(r)
 
     def snapshot(self):
         snapshot.Snapshot(self.args, self.uargs, self.jdss)
