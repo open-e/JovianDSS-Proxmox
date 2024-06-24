@@ -387,9 +387,9 @@ class JovianDSSDriver(object):
             return self._list_resources_to_delete(vname, cascade=True)
         else:
             return self._delete_volume(vname, cascade=cascade)
-    
-    def _list_resources_to_delete(vname, cascade=False):
-        ret = [ jcom.idname(vname) ]
+
+    def _list_resources_to_delete(self, vname, cascade=False):
+        ret = [jcom.idname(vname)]
         snapshots = []
         try:
             snapshots = self._list_all_volume_snapshots(vname, None)
@@ -403,8 +403,9 @@ class JovianDSSDriver(object):
                                            exclude_dedicated_volumes=True)
 
         for snap in bsnaps:
-            ret.extend([jcom.idname(c)  for c in jcom.snapshot_clones(s) if jcom.is_snapshot(c)])
-        
+            ret.extend([jcom.idname(c) for c in jcom.snapshot_clones(snap)
+                        if jcom.is_snapshot(c)])
+
         return ret
 
     def _clone_object(self, cvname, sname, ovname,
