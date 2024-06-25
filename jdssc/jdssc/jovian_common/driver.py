@@ -389,7 +389,7 @@ class JovianDSSDriver(object):
             return self._delete_volume(vname, cascade=cascade)
 
     def _list_resources_to_delete(self, vname, cascade=False):
-        ret = [jcom.idname(vname)]
+        ret = []
         snapshots = []
         try:
             snapshots = self._list_all_volume_snapshots(vname, None)

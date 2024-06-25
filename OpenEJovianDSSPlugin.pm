@@ -584,82 +584,82 @@ sub get_multipath_records {
     return $res;
 }
 
-sub update_bindings_file {
-    my ($class, $wwid, $bname) = @_;
-    my $filename = "/etc/multipath/bindings";
-
-    open(my $multipath_map, '-|', "multipathd show maps | grep $wwid") or die "Unable to list multipath maps: $!";
-
-    my $device_mapper_name = '';
-    my $sysfs_name = '';
-    
-    while (my $line = <$multipath_map>) {
-        chomp $line;
-        if ($line =~ /\b$wwid\b/) {
-    
-            my @parts = split(/\s+/, $line);
-            $device_mapper_name = $parts[0];
-            $sysfs_name = $parts[1]
-        }
-    }
-    make_path '/etc/multipath/conf.d/', {owner=>'root', group=>'root'};
-    my (undef, $tmppath) = tempfile('multipathXXXXX', DIR => '/tmp/', OPEN => 0);
-
-    print "Tmp file path ${tmppath}";
-
-    PVE::Tools::file_copy($filename, $tmppath);
-    open(MULTIPATH, '<', $filename);  
-    open(FH, '>', $tmppath);
-
-    my $mpvols = $class->get_multipath_records($jmultipathd);
-
-    my $startblock = "# Start of JovianDSS managed block\n";
-    my $endblock   = "# End of JovianDSS managed block";
-
-    my $printflag = 1;
-    while(<MULTIPATH>){
-
-        if (/$startblock/ ) {
-            $printflag = 0;
-        }
-
-        if ($printflag) {
-            print FH "$_";
-        }
-
-        if (/$endblock/ ) {
-            $printflag = 1;
-        }
-        if (/multipaths \{/ ) {
-            print FH $startblock;
-
-            for my $key (keys %$mpvols) {
-                my $multipathdef = "      multipath {
-            wwid $mpvols->{ $key }
-            alias ${key}
-      }\n";
-                print FH $multipathdef;
-            }
-
-            print FH $endblock;
-            print FH "\n";
-        }
-        if (/blacklist_exceptions \{/ ) {
-            print FH $startblock;
-
-            for my $key (keys %$mpvols) {
-                my $multipathdef = "      wwid $mpvols->{ $key }\n";
-                print FH $multipathdef;
-            }
-
-            print FH $endblock;
-            print FH "\n";
-        }
-    }
-    close(MULTIPATH);
-    close(FH);
-    PVE::Tools::file_copy($tmppath, $filename);
-}
+#sub update_bindings_file {
+#    my ($class, $wwid, $bname) = @_;
+#    my $filename = "/etc/multipath/bindings";
+#
+#    open(my $multipath_map, '-|', "multipathd show maps | grep $wwid") or die "Unable to list multipath maps: $!";
+#
+#    my $device_mapper_name = '';
+#    my $sysfs_name = '';
+#    
+#    while (my $line = <$multipath_map>) {
+#        chomp $line;
+#        if ($line =~ /\b$wwid\b/) {
+#    
+#            my @parts = split(/\s+/, $line);
+#            $device_mapper_name = $parts[0];
+#            $sysfs_name = $parts[1]
+#        }
+#    }
+#    make_path '/etc/multipath/conf.d/', {owner=>'root', group=>'root'};
+#    my (undef, $tmppath) = tempfile('multipathXXXXX', DIR => '/tmp/', OPEN => 0);
+#
+#    print "Tmp file path ${tmppath}";
+#
+#    PVE::Tools::file_copy($filename, $tmppath);
+#    open(MULTIPATH, '<', $filename);  
+#    open(FH, '>', $tmppath);
+#
+#    my $mpvols = $class->get_multipath_records($jmultipathd);
+#
+#    my $startblock = "# Start of JovianDSS managed block\n";
+#    my $endblock   = "# End of JovianDSS managed block";
+#
+#    my $printflag = 1;
+#    while(<MULTIPATH>){
+#
+#        if (/$startblock/ ) {
+#            $printflag = 0;
+#        }
+#
+#        if ($printflag) {
+#            print FH "$_";
+#        }
+#
+#        if (/$endblock/ ) {
+#            $printflag = 1;
+#        }
+#        if (/multipaths \{/ ) {
+#            print FH $startblock;
+#
+#            for my $key (keys %$mpvols) {
+#                my $multipathdef = "      multipath {
+#            wwid $mpvols->{ $key }
+#            alias ${key}
+#      }\n";
+#                print FH $multipathdef;
+#            }
+#
+#            print FH $endblock;
+#            print FH "\n";
+#        }
+#        if (/blacklist_exceptions \{/ ) {
+#            print FH $startblock;
+#
+#            for my $key (keys %$mpvols) {
+#                my $multipathdef = "      wwid $mpvols->{ $key }\n";
+#                print FH $multipathdef;
+#            }
+#
+#            print FH $endblock;
+#            print FH "\n";
+#        }
+#    }
+#    close(MULTIPATH);
+#    close(FH);
+#    PVE::Tools::file_copy($tmppath, $filename);
+#}
 
 sub generate_multipath_file {
     my ($class, $jmultipathd) = @_;
@@ -772,7 +772,11 @@ sub stage_multipath {
     my $mpathname = $class->get_device_mapper_name($scsiid);
 
     eval {run_command(["dmsetup", "rename", "${mpathname}", "${target}"], errmsg => 'umount error') };
+
+    eval { run_command(["sed", "-i", "s/${mpathname} ${scsiid}/${target} ${scsiid}/g"], errmsg => 'joviandss error', outfunc => $func) };
     warn "Unable rename mpath device ${mpathname} to ${target}" if $@;
+    
+    eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
 
     my $timeout = 10;
 
@@ -798,7 +802,7 @@ sub unstage_multipath {
     if ($@) {
         warn "Unable to identify scsiid for target ${target}";
     } else {
-        eval{ run_command([$MULTIPATH, '-f', $scsiid]); };
+        eval{ run_command([$MULTIPATH, '-f', ${target}]); };
         warn $@ if $@;
     }
 
@@ -1250,12 +1254,20 @@ sub deactivate_volume {
 
     return 0 if ('images' ne "$vtype");
 
-    my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
-
     if (multipath_enabled($scfg)) {
+        if ($snapname){
+            my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
+            $class->unstage_multipath($scfg, $storeid, $starget);
+        } else {
+            my $delitablesnaps = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "delete", "-c", "-p"]);
+            my @dsl = split(" ", $delitablesnaps);
 
-        print "Removing multipath\n" if get_debug($scfg);
-        $class->unstage_multipath($scfg, $storeid, $target);
+            foreach (@dsl) {
+                my $starget = $class->get_target_name($scfg, $volname, $storeid, $_);
+                $class->unstage_multipath($scfg, $storeid, $starget);
+            }
+
+        }
     }
 
     print "Unstaging target\n" if get_debug($scfg);
