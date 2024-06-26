@@ -420,7 +420,7 @@ sub get_subdir {
 
     my $subdir = $vtype_subdirs->{$vtype};
 
-    return "$path/$subdir" if defined($subdir);
+    return "$path/$subdir" if (defined($subdir));
 
     return undef;
 }
@@ -739,9 +739,13 @@ sub get_device_mapper_name {
             $device_mapper_name = $parts[0];
         }
     }
-    
+
     close $multipath_topology;
-    return $device_mapper_name;
+
+    if ($device_mapper_name =~ /^([\:\-\@\w.\/]+)$/) {
+        return $1;
+    }
+    die "Bad device mapper name";
 }
 
 sub stage_multipath {
@@ -772,9 +776,11 @@ sub stage_multipath {
     my $mpathname = $class->get_device_mapper_name($scsiid);
 
     eval {run_command(["dmsetup", "rename", "${mpathname}", "${target}"], errmsg => 'umount error') };
+   
+    #print "sed -i s/${mpathname} ${scsiid}/${target} ${scsiid}/g /etc/multipath/bindings\n" if get_debug($scfg);
 
-    eval { run_command(["sed", "-i", "s/${mpathname} ${scsiid}/${target} ${scsiid}/g"], errmsg => 'joviandss error', outfunc => $func) };
-    warn "Unable rename mpath device ${mpathname} to ${target}" if $@;
+    eval {run_command(["sed", "-i", "\\'s/${mpathname} ${scsiid}/${target} ${scsiid}/g\\'", "/etc/multipath/bindings"], errmsg => 'sed command error') };
+    warn "Unable rename mpath device ${mpathname} to ${target} because of $@" if $@;
     
     eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
 
@@ -807,12 +813,15 @@ sub unstage_multipath {
     }
 
     print "Unstage multipath for scsi id ${scsiid} target ${target}" if get_debug($scfg);
+    
+    eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
+    die "Unable to restart multipath daemon $@" if $@;
 
-    my $filename    = "${default_jmultipathd}/${target}";
+    #my $filename = "${default_jmultipathd}/${target}";
 
-    if ( -e $filename ) {
-        unlink $filename;
-    }
+    #if ( -e $filename ) {
+    #    unlink $filename;
+    #}
 
     # $class->generate_multipath_file($default_jmultipathd);
 
@@ -845,36 +854,36 @@ sub get_scsiid {
 
     my $mcfg = "${default_jmultipathd}/${target}";
 
-    if (multipath_enabled($scfg)) {
-        if (-e $mcfg) {
-            open my $mcfgfile, $mcfg or die "Unable to parse existing multipath file ${mcfg}, because of $!";
-            my $scsiid;
-            while ( defined(my $line = <$mcfgfile>) ) {
-                if ( $line =~ /^[a-f0-9]*$/ ) {
-                    $scsiid = $line;
-                }
-                close $mcfgfile;
-                if (! defined($scsiid) ){
-                    warn "Multipath config file ${mcfg} does not contain wwid!";
-                    unlink $mcfg;
-                }
-            }
-        }
+    #if (multipath_enabled($scfg)) {
+    #    if (-e $mcfg) {
+    #        open my $mcfgfile, $mcfg or die "Unable to parse existing multipath file ${mcfg}, because of $!";
+    #        my $scsiid;
+    #        while ( defined(my $line = <$mcfgfile>) ) {
+    #            if ( $line =~ /^[a-f0-9]*$/ ) {
+    #                $scsiid = $line;
+    #            }
+    #            close $mcfgfile;
+    #            if (! defined($scsiid) ){
+    #                warn "Multipath config file ${mcfg} does not contain wwid!";
+    #                unlink $mcfg;
+    #            }
+    #        }
+    #    }
 
-        my $multipathpath = $class->get_multipath_path($scfg, $target);
-        if (-e $multipathpath) {
-            my $getscsiidcmd = ["/lib/udev/scsi_id", "-g", "-u", "-d", $multipathpath];
+    #    my $multipathpath = $class->get_multipath_path($scfg, $target);
+    #    if (-e $multipathpath) {
+    #        my $getscsiidcmd = ["/lib/udev/scsi_id", "-g", "-u", "-d", $multipathpath];
 
-            my $scsiid;
-            eval {run_command($getscsiidcmd, outfunc => sub {
-                $scsiid = shift;
-            }); };
-            if ( defined($scsiid) ) {
-                return $scsiid;
-	    }
-	    warn "Unable to obtaine scsi id from multipath mapping of device";
-        }
-    }
+    #        my $scsiid;
+    #        eval {run_command($getscsiidcmd, outfunc => sub {
+    #            $scsiid = shift;
+    #        }); };
+    #        if ( defined($scsiid) ) {
+    #            return $scsiid;
+    #        }
+    #        warn "Unable to obtaine scsi id from multipath mapping of device";
+    #    }
+    #}
     my @hosts = $class->get_storage_addresses($scfg, $storeid);
 
     foreach my $host (@hosts) {
@@ -889,7 +898,12 @@ sub get_scsiid {
             continue;
         };
         print "Identified scsi id ${scsiid}\n" if get_debug($scfg);
-        return $scsiid if defined($scsiid);
+
+        if (defined($scsiid)) {
+            if ($scsiid =~ /^([\-\@\w.\/]+)$/) {
+                return $1;
+            }
+        }
     }
     die "Unable identify scsi id for target $target";
 }
@@ -906,8 +920,16 @@ sub get_target_name {
     } else {
         $target = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "get", "-v", $volname]);
     }
-    print "Generated target name ${target}" if get_debug($scfg);
-    return clean_word($target);
+
+    if (defined($target)) {
+        
+        
+        $target = clean_word($target);
+        if ($target =~ /^([\:\-\@\w.\/]+)$/) {
+            return $1;
+        }
+    }
+    die "Unable to identify target name for ${volname} ".safe_var_print("snapshot", $snapname);
 }
 
 sub get_target_path {
@@ -1105,6 +1127,10 @@ sub ensure_content_volume {
     if (defined($findmntpath)) {
         my $tuuid;
         eval { run_command(['blkid', '-o', 'value', $tpath, '-s', 'UUID'], outfunc => sub { $tuuid = shift; }); };
+        if ($@) {
+                warn $@;
+                die "Unable identify UUID of content volume.";
+        }
 
         if ($findmntpath eq $tuuid) {
             $class->ensure_fs($scfg);
@@ -1254,24 +1280,20 @@ sub deactivate_volume {
 
     return 0 if ('images' ne "$vtype");
 
-    if (multipath_enabled($scfg)) {
-        if ($snapname){
-            my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
-            $class->unstage_multipath($scfg, $storeid, $starget);
-        } else {
-            my $delitablesnaps = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "delete", "-c", "-p"]);
-            my @dsl = split(" ", $delitablesnaps);
+    if ($snapname){
+        my $starget = $class->get_target_name($scfg, $volname, $storeid, $snapname);
+        $class->unstage_multipath($scfg, $storeid, $starget) if multipath_enabled($scfg);
+        $class->unstage_target($scfg, $storeid, $starget);
+    } else {
+        my $delitablesnaps = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "delete", "-c", "-p"]);
+        my @dsl = split(" ", $delitablesnaps);
 
-            foreach (@dsl) {
-                my $starget = $class->get_target_name($scfg, $volname, $storeid, $_);
-                $class->unstage_multipath($scfg, $storeid, $starget);
-            }
-
+        foreach (@dsl) {
+            my $starget = $class->get_target_name($scfg, $volname, $storeid, $_);
+            $class->unstage_multipath($scfg, $storeid, $starget) if multipath_enabled($scfg);;
+            $class->unstage_target($scfg, $storeid, $starget);
         }
     }
-
-    print "Unstaging target\n" if get_debug($scfg);
-    $class->unstage_target($scfg, $storeid, $target);
     
     if ($snapname){
         $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "delete", "-v", $volname, "--snapshot", $snapname]);
