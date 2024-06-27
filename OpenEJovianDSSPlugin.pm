@@ -52,7 +52,7 @@ my $default_multipath = 0;
 my $default_content_size = 100;
 my $default_path = "/mnt/joviandss";
 
-my $default_jmultipathd = "/etc/multipath/conf.d/joviandssdisks";
+#my $default_jmultipathd = "/etc/multipath/conf.d/joviandssdisks";
 
 sub api {
 
@@ -125,7 +125,7 @@ sub options {
 # helpers
 sub safe_var_print {
     my ($varname, $variable) = @_;
-    return defined $variable ? "${varname} ${variable}": "";
+    return defined ($variable) ? "${varname} ${variable}": "";
 }
 
 sub get_pool {
@@ -561,28 +561,6 @@ sub unstage_target {
     }
 }
 
-sub get_multipath_records {
-    my ($class, $jmultipathd) = @_;
-    my $res = {};
-
-    make_path $jmultipathd, {owner=>'root', group=>'root'};
-    opendir my $dir, $jmultipathd or die "Cannot open multipath directory: $!";
-    my @files = readdir $dir;
-    closedir $dir;
-
-    foreach my $file (@files) {
-
-        if ($file eq '.' or $file eq '..') {
-            next;
-        }
-
-        open my $filed, '<', "${jmultipathd}/${file}";
-        my $scsiid = <$filed>;
-        $res->{$file} = clean_word($scsiid);
-        close($filed);
-    }
-    return $res;
-}
 
 #sub update_bindings_file {
 #    my ($class, $wwid, $bname) = @_;
@@ -661,70 +639,6 @@ sub get_multipath_records {
 #    PVE::Tools::file_copy($tmppath, $filename);
 #}
 
-sub generate_multipath_file {
-    my ($class, $jmultipathd) = @_;
-
-    my $filename = "/etc/multipath/conf.d/multipath.conf";
-
-    make_path '/etc/multipath/conf.d/', {owner=>'root', group=>'root'};
-    my (undef, $tmppath) = tempfile('multipathXXXXX', DIR => '/tmp/', OPEN => 0); 
-
-    print "Tmp file path ${tmppath}";
-
-    PVE::Tools::file_copy($filename, $tmppath);
-    open(MULTIPATH, '<', $filename);  
-    open(FH, '>', $tmppath);
-
-    my $mpvols = $class->get_multipath_records($jmultipathd);
-
-    my $startblock = "# Start of JovianDSS managed block\n";
-    my $endblock   = "# End of JovianDSS managed block";
-
-    my $printflag = 1;
-    while(<MULTIPATH>){
-
-        if (/$startblock/ ) {
-            $printflag = 0;
-        }
-
-        if ($printflag) {
-            print FH "$_";
-        }
-
-        if (/$endblock/ ) {
-            $printflag = 1;
-        }
-        if (/multipaths \{/ ) {
-            print FH $startblock;
-
-            for my $key (keys %$mpvols) {
-                my $multipathdef = "      multipath {
-            wwid $mpvols->{ $key }
-            alias ${key}
-      }\n";
-                print FH $multipathdef;
-            }
-
-            print FH $endblock;
-            print FH "\n";
-        }
-        if (/blacklist_exceptions \{/ ) {
-            print FH $startblock;
-
-            for my $key (keys %$mpvols) {
-                my $multipathdef = "      wwid $mpvols->{ $key }\n";
-                print FH $multipathdef;
-            }
-
-            print FH $endblock;
-            print FH "\n";
-        }
-    }
-    close(MULTIPATH);
-    close(FH);
-    PVE::Tools::file_copy($tmppath, $filename);
-}
-
 sub get_device_mapper_name {
     my ($class, $wwid) = @_;
     open(my $multipath_topology, '-|', "multipath -ll $wwid") or die "Unable to list multipath topology: $!";
@@ -753,16 +667,16 @@ sub stage_multipath {
 
     my $scsiidpath  = "/dev/disk/by-id/scsi-${scsiid}";
     my $targetpath  = "/dev/mapper/${target}";
-    my $jmultipathd = $default_jmultipathd;
-    my $filename    = "${jmultipathd}/${target}";
+    # my $jmultipathd = $default_jmultipathd;
+    #my $filename    = "${jmultipathd}/${target}";
 
-    if (-b $targetpath && -e $filename) {
+    if (-b $targetpath) {
         return $targetpath;
     }
     print "Staging ${target}\n" if get_debug($scfg);
 
-    make_path $jmultipathd, {owner=>'root', group=>'root'};
-    my $multipathidfd;
+    #make_path $jmultipathd, {owner=>'root', group=>'root'};
+    #my $multipathidfd;
     # open($multipathidfd, '>', $filename) or die "Unable to create multipath record file ${filename}";
     # print $multipathidfd "${scsiid}";
     # close $multipathidfd;
@@ -776,11 +690,12 @@ sub stage_multipath {
     my $mpathname = $class->get_device_mapper_name($scsiid);
 
     eval {run_command(["dmsetup", "rename", "${mpathname}", "${target}"], errmsg => 'umount error') };
+    die "Unable rename device ${mpathname} to ${target} with dmsetup because of $@" if $@;
    
     #print "sed -i s/${mpathname} ${scsiid}/${target} ${scsiid}/g /etc/multipath/bindings\n" if get_debug($scfg);
 
-    eval {run_command(["sed", "-i", "\\'s/${mpathname} ${scsiid}/${target} ${scsiid}/g\\'", "/etc/multipath/bindings"], errmsg => 'sed command error') };
-    warn "Unable rename mpath device ${mpathname} to ${target} because of $@" if $@;
+    eval {run_command(["sed", "-i", "s/${mpathname}/${target}/g", "/etc/multipath/bindings"], errmsg => 'sed command error') };
+    die "Unable rename mpath device ${mpathname} to ${target} in bindings file because of $@" if $@;
     
     eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
 
@@ -852,7 +767,6 @@ sub get_storage_addresses {
 sub get_scsiid {
     my ($class, $scfg, $target, $storeid) = @_;
 
-    my $mcfg = "${default_jmultipathd}/${target}";
 
     #if (multipath_enabled($scfg)) {
     #    if (-e $mcfg) {
@@ -1226,7 +1140,14 @@ sub activate_volume_ext {
     my $pool = get_pool($scfg);
 
     my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
-   
+    
+    my $targetpath = $class->get_target_path($scfg, $target, $storeid);
+
+    if (-b $targetpath) {
+        print "Volume ${volname} ".safe_var_print("snapshot", $snapname)." present at path ${targetpath} \n" if get_debug($scfg);
+        return 1
+    }
+
     my $createtargetcmd = ["-c", $config, "pool", $pool, "targets", "create", "-v", $volname];
     if ($snapname){
         push @$createtargetcmd, "--snapshot", $snapname;
@@ -1239,12 +1160,12 @@ sub activate_volume_ext {
     }
 
     print "Staging target\n" if get_debug($scfg);
-    my $targetpath = $class->stage_target($scfg, $storeid, $target);
+    $class->stage_target($scfg, $storeid, $target);
 
     if (multipath_enabled($scfg)) {
         my $scsiid = $class->get_scsiid($scfg, $target, $storeid);
         print "Adding multipath\n" if get_debug($scfg);
-        $targetpath = $class->stage_multipath($scfg, $scsiid, $target);
+        $class->stage_multipath($scfg, $scsiid, $target);
     }
 
     for (my $i = 1; $i <= 10; $i++) {
