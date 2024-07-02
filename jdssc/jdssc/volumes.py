@@ -17,10 +17,14 @@ import argparse
 import re
 import sys
 import uuid
+import logging
 
 import jdssc.snapshots as snapshots
+from jdssc.jovian_common import exception as jexc
 
 """Volume related commands."""
+
+LOG = logging.getLogger(__name__)
 
 
 class Volumes():
@@ -29,167 +33,110 @@ class Volumes():
         self.vsa = {'create': self.create,
                     'getfreename': self.getfreename,
                     'list': self.list}
-        self.va = {'clone': self.clone,
-                   'delete': self.delete,
-                   'get': self.get,
-                   'snapshots': self.snapshots,
-                   'properties': self.properties,
-                   'rename': self.rename,
-                   'resize': self.resize}
 
         self.args = args
-        argst = self.__parse(uargs)
-        self.args.update(vars(argst[0]))
-        self.uargs = argst[1]
+        args, uargs = self.__parse(uargs)
+
+        self.args.update(vars(args))
+        self.uargs = uargs
         self.jdss = jdss
 
-        if 'volumes-action' in self.args:
-            self.vsa[self.args.pop('volumes-action')]()
-        elif 'volume-action' in self.args:
-            self.va[self.args.pop('volume-action')]()
+        action = args.volumes_action
+        if action is not None and len(action) > 0 and action in self.vsa:
+            self.vsa[action]()
+        else:
+            sys.exit(1)
 
     def __parse(self, args):
 
         parser = argparse.ArgumentParser(prog="Volume")
 
-        if args[0] in self.vsa:
-            parsers = parser.add_subparsers(dest='volumes-action')
+        parsers = parser.add_subparsers(dest='volumes_action')
 
-            create = parsers.add_parser('create')
-            create.add_argument('-s',
-                                dest='volume_size',
-                                type=str,
-                                default='1G',
-                                help='New volume size in format num + [K M G]')
-            create.add_argument('-b',
-                                dest='block_size',
-                                type=str,
-                                default=None,
-                                help='Block size')
-            create.add_argument('-d',
-                                dest='direct_mode',
-                                action='store_true',
-                                default=False,
-                                help='Use real volume name')
-            create.add_argument('volume_name',
-                                type=str,
-                                help='New volume name')
+        create = parsers.add_parser('create')
+        create.add_argument('--size',
+                            required=True,
+                            dest='volume_size',
+                            type=str,
+                            default='1G',
+                            help='New volume size in format num + [K M G]')
+        create.add_argument('-b',
+                            dest='block_size',
+                            type=str,
+                            default=None,
+                            help='Block size')
+        create.add_argument('-d',
+                            dest='direct_mode',
+                            action='store_true',
+                            default=False,
+                            help='Use real volume name')
+        create.add_argument('-n',
+                            required=True,
+                            dest='volume_name',
+                            type=str,
+                            help='New volume name')
 
-            freename = parsers.add_parser('getfreename')
-            freename.add_argument('--prefix',
-                                  required=True,
-                                  dest='volume_prefix',
-                                  help='Prefix for the new volume')
+        freename = parsers.add_parser('getfreename')
+        freename.add_argument('--prefix',
+                              required=True,
+                              dest='volume_prefix',
+                              help='Prefix for the new volume')
 
-            listp = parsers.add_parser('list')
-            listp.add_argument('--vmid',
-                               dest='vmid',
-                               action='store_true',
-                               default=False,
-                               help='Show only volumes with VM ID')
-        else:
-            parser.add_argument('volume_name', help='Volume name')
-            parsers = parser.add_subparsers(dest='volume-action')
+        listp = parsers.add_parser('list')
+        listp.add_argument('--vmid',
+                           dest='vmid',
+                           action='store_true',
+                           default=False,
+                           help='Show only volumes with VM ID')
 
-            get = parsers.add_parser('get')
-            get.add_argument('-s',
-                             dest='volume_size',
-                             action='store_true',
-                             default=False,
-                             help='Print volume size')
-            get.add_argument('-d',
-                             dest='direct_mode',
-                             action='store_true',
-                             default=False,
-                             help='Use real volume name')
+        kargs, ukargs = parser.parse_known_args(args)
 
-            clone = parsers.add_parser('clone')
-            clone.add_argument('--snapshot',
-                               dest='snapshot_name',
-                               type=str,
-                               help='Use snapshot for cloning')
-            # clone.add_argument('-s',
-            #                    '--size',
-            #                    dest='volume_size',
-            #                    type=str,
-            #                    default='1G',
-            #                    help='New volume size in format size+[K M G]')
-            # clone.add_argument('-b',
-            #                    dest='block_size',
-            #                    type=str,
-            #                    default=None,
-            #                    help='Block size')
-            clone.add_argument('clone_name',
-                               type=str,
-                               help='Clone volume name')
+        if kargs.volumes_action is None:
+            parser.print_help()
+            sys.exit(1)
 
-            delete = parsers.add_parser('delete')
-            delete.add_argument('-c', '--cascade', dest='cascade',
-                                action='store_true',
-                                default=False,
-                                help='Remove snapshots along side with volume')
-
-            properties = parsers.add_parser('properties')
-            properties.add_argument('--name',
-                                    dest='property_name',
-                                    type=str,
-                                    help='Volume propertie name')
-            properties.add_argument('--value',
-                                    dest='property_value',
-                                    type=str,
-                                    help='Volume propertie value')
-
-            rename = parsers.add_parser('rename')
-            rename.add_argument('new_name', type=str, help='New volume name')
-
-            resize = parsers.add_parser('resize')
-            resize.add_argument('--add',
-                                dest="add_size",
-                                action="store_true",
-                                default=False,
-                                help='Add new size to existing volume size')
-            resize.add_argument('new_size',
-                                type=int,
-                                help='New volume size')
-            resize.add_argument('-d',
-                                dest='direct_mode',
-                                action='store_true',
-                                default=False,
-                                help='Use real volume name')
-
-            snapshots = parsers.add_parser('snapshots')
-
-        return parser.parse_known_args(args)
+        return kargs, ukargs
 
     def create(self):
+        size = self.args['volume_size'].upper()
 
-        volume = {'size': self.args['volume_size'].upper()}
-
+        block_size = None
         if self.args['block_size'] is not None:
-            volume['block_size'] = self.args['block_size'].upper()
+            block_size = self.args['block_size'].upper()
 
+        name = str(uuid.uuid1())
         if 'volume_name' in self.args:
-            volume['id'] = self.args['volume_name']
-        else:
-            volume['id'] = str(uuid.uuid1())
+            name = self.args['volume_name']
 
-        self.jdss.create_volume(volume, direct_mode=self.args['direct_mode'])
+        try:
+            self.jdss.create_volume(name, size,
+                                    direct_mode=self.args['direct_mode'],
+                                    block_size=block_size)
+        except jexc.JDSSResourceExhausted:
+            LOG.error("No space left on the storage")
+            exit(1)
 
     def clone(self):
 
         volume = {'id': self.args['clone_name']}
 
-        if self.args['snapshot_name']:
-            snapshot = snapshots.Snapshot.get_snapshot(
-                self.args['volume_name'],
-                self.args['snapshot_name'])
+        try:
 
-            self.jdss.create_volume_from_snapshot(volume, snapshot)
+            if self.args['snapshot_name']:
+                snapshot = snapshots.Snapshot.get_snapshot(
+                    self.args['volume_name'],
+                    self.args['snapshot_name'])
 
-            return
+                self.jdss.create_volume_from_snapshot(volume, snapshot)
 
-        src_vref = {'id': self.args['volume_name']}
-        self.jdss.create_cloned_volume(volume, src_vref)
+                return
+
+            src_vref = {'id': self.args['volume_name']}
+            self.jdss.create_cloned_volume(volume, src_vref)
+
+        except jexc.JDSSResourceExhausted:
+            LOG.error("No space left on the storage")
+            exit(1)
 
     def get(self):
 
@@ -209,7 +156,7 @@ class Volumes():
             volume_prefix = self.args['volume_prefix']
 
         present_volumes = []
-        data = self.jdss.list_all_volumes()
+        data = self.jdss.list_volumes()
 
         for v in data:
             if v['name'].startswith(volume_prefix):
@@ -221,12 +168,10 @@ class Volumes():
             if nname not in present_volumes:
                 print(nname)
                 return
-
         raise Exception("Unable to find free volume name")
 
     def list(self):
         data = self.jdss.list_volumes()
-        lines = []
 
         vmid_re = None
         if self.args['vmid']:
@@ -250,38 +195,3 @@ class Volumes():
                     'name': v['name'],
                     'size': v['size']})
                 sys.stdout.write(line)
-
-    def delete(self):
-
-        volume = {'id': self.args['volume_name']}
-        self.jdss.delete_volume(volume, cascade=self.args['cascade'])
-
-    def snapshots(self):
-        snapshots.Snapshots(self.args, self.uargs, self.jdss)
-
-    def properties(self):
-        volume = {'id': self.args['volume_name']}
-        new_prop = {'name': self.args['property_name'],
-                    'value': self.args['property_value']}
-
-        self.jdss.modify_volume(volume, new_prop)
-
-    def rename(self):
-        volume = {'id': self.args['volume_name']}
-
-        self.jdss.rename_volume(volume, self.args['new_name'])
-
-    def resize(self):
-
-        volume_name = self.args['volume_name']
-
-        volume = {'id': volume_name}
-        size = self.args['new_size']
-
-        if self.args['add_size']:
-            d = self.jdss.get_volume(volume,
-                                     direct_mode=self.args['direct_mode'])
-            size += int(d['size'])
-
-        self.jdss.extend_volume(volume, size,
-                                direct_mode=self.args['direct_mode'])

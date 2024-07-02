@@ -20,14 +20,12 @@ import argparse
 import yaml
 import sys
 
-from jdssc.jovian_common import iscsi
+from jdssc.jovian_common import driver
 
 import jdssc.pool as pool
 
 import logging
 from logging.handlers import RotatingFileHandler
-
-LOG = logging.getLogger(__name__)
 
 
 def get_config():
@@ -48,6 +46,13 @@ def get_config():
                         dest='cli_log_file',
                         help='File to store log to',
                         required=False)
+    parser.add_argument('--logstd',
+                        dest='cli_log_std',
+                        default=False,
+                        action='store_true',
+                        help='File to store log to',
+                        required=False)
+
     parser.add_argument('-p', '--plain', dest='plain_mode', required=False,
                         action='store_true',
                         default=False,
@@ -55,8 +60,8 @@ def get_config():
 
     command = parser.add_subparsers(required=True, dest='command')
 
-    pool_parser = command.add_parser('pool', add_help=False)
-    hosts = command.add_parser('hosts', add_help=False)
+    command.add_parser('pool', add_help=False)
+    command.add_parser('hosts', add_help=False)
 
     args = parser.parse_known_args()
     return args
@@ -74,32 +79,70 @@ def setup_logging(args, cfg):
         loglvl = args.cli_log_lvl
 
     logfile = None
-
+    if 'logfile' in cfg:
+        logfile = cfg['logfile']
     if args.cli_log_file:
         logfile = args.cli_log_file
-    elif 'logfile' in cfg:
-        logfile = cfg['logfile']
 
-    if loglvl and logfile:
+    handlers = []
+    if logfile:
+        handlers.append(RotatingFileHandler(logfile,
+                                            maxBytes=1024*1024*16,
+                                            backupCount=5))
 
-        numeric_level = getattr(logging, loglvl.upper(), None)
-        if not isinstance(numeric_level, int):
-            raise ValueError('Invalid log level: %s' % loglvl)
-        rfh = RotatingFileHandler(logfile,
-                                  maxBytes=1024*1024*16,
-                                  backupCount=5)
+    if args.cli_log_std:
+        handlers.append(logging.StreamHandler(sys.stdout))
 
-        logging.basicConfig(
-            level=numeric_level,
-            format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-            datefmt='%Y-%m-%d %H:%M:%S',
-            handlers=[rfh]
-        )
+    numeric_level = getattr(logging, loglvl.upper(), None)
+    if not isinstance(numeric_level, int):
+        raise ValueError('Invalid log level: %s' % loglvl)
+
+    logging.basicConfig(
+        level=numeric_level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S',
+        handlers=handlers
+    )
+
+    logger = logging.getLogger()
+    err_handler = logging.StreamHandler(sys.stderr)  # Error handler
+    err_handler.setLevel(logging.ERROR)  # Capture only errors
+    eformater = logging.Formatter('%(levelname)s - %(message)s')
+
+    err_handler.setFormatter(eformater)
+
+    logger.addHandler(err_handler)
+
+
+def duplicate_config_options(cfg):
+    """
+    jdssc uses heavily OpenStack deiver code and since some options was renamed
+    we have to ensure that old option names translate into new code properly
+    """
+
+    if 'rest_api_addresses' in cfg:
+        cfg['san_hosts'] = cfg['rest_api_addresses']
+
+    if 'rest_api_port' in cfg:
+        cfg['san_api_port'] = cfg['rest_api_port']
+
+    if 'rest_api_login' in cfg:
+        cfg['san_login'] = cfg['rest_api_login']
+
+    if 'rest_api_password' in cfg:
+        cfg['san_password'] = cfg['rest_api_password']
+
+    if 'thin_provision' in cfg:
+        cfg['san_thin_provision'] = cfg['thin_provision']
+
+    if 'loglevel' in cfg:
+        cfg['loglvl'] = cfg['loglevel']
+
+    return cfg
 
 
 def hosts(args, uargs, jdss):
-
-    for i in jdss.configuration['rest_api_addresses']:
+    for i in jdss.configuration['san_hosts']:
         addr = i
         if 'target_port' in jdss.configuration:
             addr = '%s:%s' % (addr, jdss.configuration['target_port'])
@@ -110,14 +153,14 @@ def main():
     (args, uargs) = get_config()
 
     config = yaml.safe_load(open(args.config))
-
+    config = duplicate_config_options(config)
     setup_logging(args, config)
     # list available commands
     cmd = {'pool': pool.Pools,
            'hosts': hosts}
 
-    jdss = iscsi.JovianISCSIDriver(config)
-    jdss.do_setup('')
+    jdss = driver.JovianDSSDriver(config)
+    # jdss.do_setup('')
 
     args = vars(args)
     # Run command

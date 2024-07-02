@@ -22,14 +22,17 @@ from oslo_utils import netutils as o_netutils
 import requests
 import urllib3
 
+from jdssc.jovian_common import cexception as exception
+from jdssc.jovian_common.stub import _
+from retry import retry
 from jdssc.jovian_common import exception as jexc
+
 
 LOG = logging.getLogger(__name__)
 
-#LOG.setLevel(logging.DEBUG)
 
-class JovianRESTProxy(object):
-    """Jovian REST API proxy."""
+class JovianDSSRESTProxy(object):
+    """Jovian REST API proxy"""
 
     def __init__(self, config):
         """:param config: list of config values."""
@@ -38,8 +41,8 @@ class JovianRESTProxy(object):
         if config.get('driver_use_ssl', True):
             self.proto = 'https'
 
-        self.hosts = config.get('rest_api_addresses', [])
-        self.port = str(config.get('rest_api_port', 82))
+        self.hosts = config.get('san_hosts', [])
+        self.port = str(config.get('san_api_port', 82))
 
         for host in self.hosts:
             if o_netutils.is_valid_ip(host) is False:
@@ -48,7 +51,7 @@ class JovianRESTProxy(object):
                            {'addr': host})
 
                 LOG.debug(err_msg)
-                raise Exception(err_msg)
+                raise exception.InvalidConfigurationValue(err_msg)
 
         self.active_host = 0
 
@@ -56,10 +59,10 @@ class JovianRESTProxy(object):
 
         self.pool = config.get('jovian_pool', 'Pool-0')
 
-        self.user = config.get('rest_api_login', 'admin')
-        self.password = config.get('rest_api_password', 'admin')
-        self.verify = config.get('driver_ssl_cert_verify', False)
-        self.cert = config.get('driver_ssl_cert_path')
+        self.user = config.get('san_login', 'admin')
+        self.password = config.get('san_password', 'admin')
+        self.verify = config.get('driver_ssl_cert_verify', True)
+        self.cert = config.get('driver_ssl_cert_path', None)
 
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -73,7 +76,7 @@ class JovianRESTProxy(object):
         session.headers.update({'Connection': 'keep-alive',
                                 'Content-Type': 'application/json',
                                 'Authorization': 'Basic'})
-        session.hooks['response'] = [JovianRESTProxy._handle_500]
+        session.hooks['response'] = [JovianDSSRESTProxy._handle_500]
         session.verify = self.verify
         if self.verify and self.cert:
             session.verify = self.cert
@@ -98,35 +101,40 @@ class JovianRESTProxy(object):
         """Send request to the specific url.
 
         :param request_method: GET, POST, DELETE
-        :param url: where to send
+        :param req: where to send
         :param json_data: data
         """
         out = None
-        for i in range(len(self.hosts)):
-            try:
-                addr = "%(base)s%(req)s" % {'base': self._get_base_url(),
-                                            'req': req}
-                LOG.debug("Sending %(t)s to %(addr)s",
-                          {'t': request_method, 'addr': addr})
+        for i in range(3):
+            for i in range(len(self.hosts)):
+                try:
+                    addr = "%(base)s%(req)s" % {'base': self._get_base_url(),
+                                                'req': req}
+                    LOG.debug("Sending %(t)s to %(addr)s data %(data)s",
+                              {'t': request_method,
+                               'addr': addr,
+                               'data': json_data})
+                    r = None
+                    if json_data:
+                        r = requests.Request(request_method,
+                                             addr,
+                                             data=json.dumps(json_data))
+                    else:
+                        r = requests.Request(request_method, addr)
 
-                r = None
-                if json_data:
-                    r = requests.Request(request_method,
-                                         addr,
-                                         data=json.dumps(json_data))
-                else:
-                    r = requests.Request(request_method, addr)
-                
-                pr = self.session.prepare_request(r)
-                out = self._send(pr)
-            except requests.exceptions.ConnectionError as err:
-                self._next_host()
-                continue
-            break
+                    pr = self.session.prepare_request(r)
+                    out = self._send(pr)
+                except requests.exceptions.SSLError as sslerr:
+                    LOG.warning(sslerr)
+                    LOG.error(("SSL certificate error, make sure that you have"
+                               " certificates configured properly"))
+                except requests.exceptions.ConnectionError:
+                    self._next_host()
+                    continue
 
-        LOG.debug("Getting %(data)s from %(t)s to %(addr)s",
-                  {'data': out, 't': request_method, 'addr': addr})
-        return out
+                LOG.debug("Geting %(data)s from %(t)s to %(addr)s",
+                          {'data': out, 't': request_method, 'addr': addr})
+                return out
 
     def pool_request(self, request_method, req, json_data=None):
         """Send request to the specific url.
@@ -141,28 +149,25 @@ class JovianRESTProxy(object):
                   {'t': request_method, 'addr': addr})
         return self.request(request_method, req, json_data=json_data)
 
-#    @retry((requests.exceptions.ConnectionError,
-#            jexc.JDSSOSException),
-#           interval=2,
-#           backoff_rate=2,
-#           retries=7)
+    @retry(json.JSONDecodeError,
+           tries=3)
     def _send(self, pr):
         """Send prepared request
 
         :param pr: prepared request
         """
-        ret = dict()
+        ret = {}
 
         response_obj = self.session.send(pr)
 
         ret['code'] = response_obj.status_code
+        if ret['code'] == 204:
+            ret["data"] = None
+            return ret
 
-        try:
-            data = json.loads(response_obj.text)
-            ret["error"] = data.get("error")
-            ret["data"] = data.get("data")
-        except json.JSONDecodeError:
-            pass
+        data = json.loads(response_obj.text)
+        ret["error"] = data.get("error")
+        ret["data"] = data.get("data")
 
         return ret
 

@@ -43,11 +43,12 @@ class InvalidConfigurationValue(JDSSException):
     
     def __init__(self, value='', option=''):
         message = ("JDSS invalid configuration, Option: %(opt)s should not have value: %(val)s."
-                        % {'opt': option, 'val': value})
+                    % {'opt': option, 'val': value})
+
 
 class VolumeNotFound(JDSSException):
     """Volume does not exist"""
-    
+
     def __init__(self, volume_id=''):
         message = ("JDSS volume with id %(vol)s not found." % {'vol': volume_id})
 

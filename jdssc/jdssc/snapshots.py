@@ -14,11 +14,16 @@
 #    under the License.
 
 import argparse
-import hashlib
-import re
+import logging
 import sys
 
-"""Snapshot related commands."""
+
+from jdssc.jovian_common import exception as jexc
+
+
+"""Snapshots related commands."""
+
+LOG = logging.getLogger(__name__)
 
 
 class Snapshots():
@@ -26,83 +31,53 @@ class Snapshots():
 
         self.ssa = {'create': self.create,
                     'list': self.list}
-        self.sa = {'clone': self.clone,
-                   'delete': self.delete,
-                   'rollback': self.rollback}
 
         self.args = args
-        argst = self.__parse(uargs)
-        self.args.update(vars(argst[0]))
-        self.uargs = argst[1]
+        args, uargs = self.__parse(uargs)
+        self.args.update(vars(args))
+        self.uargs = uargs
         self.jdss = jdss
 
-        if 'snapshots-actions' in self.args:
-            self.ssa[self.args.pop('snapshots-actions')]()
-        elif 'snapshot-actions' in self.args:
-            self.sa[self.args.pop('snapshot-actions')]()
-
-    @staticmethod
-    def get_snapshot(volume_name, snapshot_name):
-
-        name_bytes = bytes(volume_name + snapshot_name, 'ascii')
-        name_uuid = hashlib.md5(name_bytes).hexdigest()
-        snapshot = {'id': "{}-{}".format(name_uuid, snapshot_name),
-                    'volume_id': volume_name,
-                    'volume_name': volume_name}
-
-        return snapshot
+        if 'snapshots_action' in self.args:
+            self.ssa[self.args.pop('snapshots_action')]()
 
     def __parse(self, args):
 
         parser = argparse.ArgumentParser(prog="Volume")
 
-        if args[0] in self.ssa:
-            parsers = parser.add_subparsers(dest='snapshots-actions')
+        parsers = parser.add_subparsers(dest='snapshots_action')
 
-            create = parsers.add_parser('create')
-            create.add_argument('snapshot_name', type=str, help='New snapshot name')
+        create = parsers.add_parser('create')
+        create.add_argument('snapshot_name',
+                            type=str,
+                            help='New snapshot name')
 
-            listp = parsers.add_parser('list')
-        else:
-            parser.add_argument('snapshot_name', help='Snapshot name')
-            parsers = parser.add_subparsers(dest='snapshot-actions')
-            clone = parsers.add_parser('clone')
-            delete = parsers.add_parser('delete')
-            delete = parsers.add_parser('rollback')
+        parsers.add_parser('list')
+        kargs, ukargs = parser.parse_known_args(args)
 
-        return parser.parse_known_args(args)
+        if kargs.snapshots_action is None:
+            parser.print_help()
+            sys.exit(1)
+
+        return kargs, ukargs
 
     def create(self):
 
-        snapshot = Snapshots.get_snapshot(self.args['volume_name'],
-                                          self.args['snapshot_name'])
-
-        self.jdss.create_snapshot(snapshot)
+        try:
+            self.jdss.create_snapshot(self.args['snapshot_name'],
+                                      self.args['volume_name'])
+        except jexc.JDSSSnapshotExistsException as exists:
+            LOG.error(exists)
+            exit(1)
+        except jexc.JDSSException as err:
+            LOG.error(err)
+            exit(1)
 
     def list(self):
 
-        volume = {'id': self.args['volume_name']}
+        volume = self.args['volume_name']
 
         data = self.jdss.list_snapshots(volume)
-
         for v in data:
-            name = "-".join(v['name'].split("-")[1:])
-            line = "{}\n".format(name)
+            line = "{}\n".format(v['name'])
             sys.stdout.write(line)
-
-    def delete(self):
-
-        snapshot = Snapshots.get_snapshot(self.args['volume_name'],
-                                          self.args['snapshot_name'])
-        self.jdss.delete_snapshot(snapshot)
-    
-    def rollback(self):
-
-        volume = {'id': self.args['volume_name']}
-        snapshot = Snapshots.get_snapshot(self.args['volume_name'],
-                                          self.args['snapshot_name'])
-
-        self.jdss.revert_to_snapshot('', volume, snapshot)
-
-    def clone(self):
-        pass

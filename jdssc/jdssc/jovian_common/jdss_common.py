@@ -13,10 +13,25 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+from datetime import datetime
 import base64
+import logging
 import re
 
-allowed = re.compile(r"^[-\w]+$")
+from jdssc.jovian_common import cexception as exception
+
+import uuid
+allowedPattern = re.compile(r"^[-\w]+$")
+
+LOG = logging.getLogger(__name__)
+
+
+def JBase32ToStr(bname):
+    return base64.b32decode(bname.replace("-", "=") .encode()).decode()
+
+
+def JBase32FromStr(name):
+    return base64.b32encode(name.encode()).decode().replace("=", "-")
 
 
 def is_volume(name):
@@ -28,19 +43,36 @@ def is_volume(name):
 def is_snapshot(name):
     """Return True if volume"""
 
-    return name.startswith("s_")
+    if name.startswith("s_"):
+        return True
+
+    if name.startswith("se_"):
+        return True
+
+    return False
 
 
 def idname(name):
-    """Convert id into name"""
+    """Extract id from physical volume name"""
 
-    if name.startswith(('s_', 'v_', 't_')):
+    if name.startswith('v_'):
         return name[2:]
 
-    if name.startswith('vb_'):
-        return base64.b32decode(name[3:].replace("-", "=") .encode()).decode()
+    if name.startswith('t_'):
+        return name[2:]
 
-    raise Exception("Bad volume name %s" % name)
+    if name.startswith('te_'):
+        ns = name.split("_")
+        "_".join(ns[1:-1])
+
+    if name.startswith('s'):
+        return sname_to_id(name)[0]
+
+    if name.startswith('vb_'):
+        return JBase32ToStr(name[3:])
+
+    LOG.warn("Unable to identify name type %s", name)
+    return name
 
 
 def vname(name):
@@ -54,37 +86,73 @@ def vname(name):
 
     if name.startswith('s_'):
         msg = 'Attempt to use snapshot %s as a volume' % name
-        raise Exception(message=msg)
+        raise Exception(msg)
 
     if name.startswith('t_'):
         msg = 'Attempt to use deleted object %s as a volume' % name
-        raise Exception(message=msg)
+        raise Exception(msg)
 
-    if allowed.match(name):
+    if allowedPattern.match(name):
         return "v_" + name
 
-    return "vb_" + base64.b32encode(name.encode()).decode().replace("=", "-")
+    return "vb_" + JBase32FromStr(name)
 
 
-def sname(name):
-    """Convert id into snapshot name"""
+def sname_to_id(sname):
 
-    if name.startswith('s_'):
-        return name
+    spl = sname.split('_')
 
-    if name.startswith('v_'):
-        msg = ('Attempt to use volume %s as a snapshot') % name
-        raise Exception(message=msg)
+    if spl[0] == 's':
+        return ('_'.join(spl[1:]), None)
 
-    if name.startswith('vb_'):
-        msg = ('Attempt to use volume %s as a snapshot') % name
-        raise Exception(message=msg)
+    if spl[0] == 'se':
+        sid = '_'.join(spl[1:-1])
+        vid = JBase32ToStr(spl[-1:][0])
+        return sid, vid
 
-    if name.startswith('t_'):
-        msg = ('Attempt to use deleted object %s as a snapshot') % name
-        raise Exception(message=msg)
+    if spl[0] == 'sb' and len(spl) == 3:
+        sid = JBase32ToStr(spl[1])
+        vid = JBase32ToStr(spl[2])
+        return sid, vid
 
-    return 's_' + name
+    msg = "Incorrect snapshot name %s" % sname
+    raise Exception(msg)
+
+
+def sid_from_sname(name):
+    return sname_to_id(name)[0]
+
+
+def vid_from_sname(name):
+    return sname_to_id(name)[1]
+
+
+def sname(sid, vid):
+    """Convert id into snapshot name
+
+    :param: vid: volume id
+    :param: sid: snapshot id
+    """
+    # out = ""
+    # e for extendent
+    # b for based
+
+    out = 's_%(sid)s' % {'sid': sid}
+    return out
+
+    # if allowedPattern.match(sid):
+    #     out = 'se_%(sid)s' % {'sid': sid}
+    # else:
+    #     out = 'sb_%(sid)s' % {'sid': JBase32FromStr(sid)}
+
+    # if vid is not None and len(vid) > 0:
+    #     out += '_%(vid)s' % {'vid': JBase32FromStr(vid)}
+
+    return out
+
+
+def sname_from_snap(snapshot_struct):
+    return snapshot_struct['name']
 
 
 def is_hidden(name):
@@ -97,34 +165,62 @@ def is_hidden(name):
     return False
 
 
-def origin_snapshot(origin_str):
-    """Extracts original phisical snapshot name from origin record"""
-
-    return origin_str.split("@")[1]
-
-
-def origin_volume(origin_str):
-    """Extracts original phisical volume name from origin record"""
-
-    return origin_str.split("@")[0].split("/")[1]
+def origin_snapshot(vol):
+    """Extracts original physical snapshot name from volume dict"""
+    if 'origin' in vol and vol['origin'] is not None:
+        return vol['origin'].split("@")[1]
+    return None
 
 
-def full_name_volume(name):
-    """Get volume id from full_name"""
+def origin_volume(vol):
+    """Extracts original physical volume name from volume dict"""
 
-    return name.split('/')[1]
+    if 'origin' in vol and vol['origin'] is not None:
+        return vol['origin'].split("@")[0].split("/")[1]
+    return None
+
+
+def snapshot_clones(snap):
+    """Return list of clones associated with snapshot or return empty list"""
+    out = []
+    clones = []
+    if 'clones' not in snap:
+        return out
+    else:
+        clones = snap['clones'].split(',')
+
+    for clone in clones:
+        out.append(clone.split('/')[1])
+    return out
 
 
 def hidden(name):
     """Get hidden version of a name"""
 
     if len(name) < 2:
-        pass
+        raise exception.VolumeDriverException("Incorrect volume name")
 
     if name[:2] == 'v_' or name[:2] == 's_':
-        return 't_' + name[2:]
+        return 't_' + name[2:] + '_' + uuid.uuid4().hex
+    if name[:3] == 'se_' or name[:3] == 'sb_' or name[:3] == 'vb_':
+        return 't_' + name[:3] + '_' + uuid.uuid4().hex
+    return 't_' + name + '_' + uuid.uuid4().hex
 
-    if name[3:] == 'vb_':
-        return 't_' + name[3:]
 
-    return 't_' + name
+def get_newest_snapshot_name(snapshots):
+    newest_date = None
+    sname = None
+    for snap in snapshots:
+        current_date = datetime.strptime(snap['creation'], "%Y-%m-%d %H:%M:%S")
+        if newest_date is None or current_date > newest_date:
+            newest_date = current_date
+            sname = snap['name']
+    return sname
+
+
+def dependency_error(msg, dl):
+    LOG.error(msg)
+    while len(dl) > 0:
+        msg = ', '.join(dl[:10])
+        dl = dl[10:]
+        LOG.error(msg)
