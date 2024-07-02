@@ -172,7 +172,7 @@ logfile: /var/log/jdss-Pool-1.log
 
 ## Multipathing
 
-In order to enable multipathing user should provide a set of modifications to `storage.cfg`, `jdss-Pool-0.yaml` and `multipath.conf`
+In order to enable multipathing user should provide a set of modifications to `storage.cfg` and `jdss-Pool-0.yaml`
 
 For instance if user wants to enable multipathing on for storage `jdss-Pool-0` described in config files as:
 
@@ -208,7 +208,7 @@ loglevel: info
 logfile: /tmp/jdss.log
 ```
 
-He should apply folowing changes:
+You should apply folowing changes:
 
 ### storage.cfg
 
@@ -263,27 +263,6 @@ And running:
 systemctl enable multipathd
 systemctl start multipathd
 ```
-
-```bash
-defaults {
-        polling_interval        2
-        path_selector           "round-robin 0"
-        path_grouping_policy    multibus
-        uid_attribute           ID_SERIAL
-        rr_min_io               100
-        failback                immediate
-        no_path_retry           queue
-        user_friendly_names     yes
-        config_dir              /etc/multipath/conf.d
-}
-
-blacklist {
-        wwid .*
-        devnode "^(ram|raw|loop|fd|md|dm-|sr|scd|st)[0-9]*"
-}
-
-Ensure multipath is up and running
-
 
 ### Storage.cfg
 Activate feature by setting `1` for `multipath` property in `storage.cfg` 
