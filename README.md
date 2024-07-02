@@ -351,7 +351,7 @@ Plugin have to be installed and configured on all nodes in cluster.
 - [x] Delete volume
 - [x] Create snapshot
 - [x] Delete snapshot
-- [x] Restore snapshot
+- [ ] Restore snapshot
 - [x] Create template
 - [x] Delete template
 - [x] ISO support
