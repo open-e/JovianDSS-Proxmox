@@ -62,6 +62,7 @@ This config file should be placed according to the path provided in `storage.cfg
 
 ```yaml
 driver_use_ssl: True
+driver_ssl_cert_verify: False
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
@@ -135,6 +136,7 @@ And here is 2 `config` files referenced in `storage.cfg` file above:
 `/etc/pve/jdss-Pool-0.yaml`
 ```yaml
 driver_use_ssl: True
+driver_ssl_cert_verify: False
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
@@ -152,6 +154,7 @@ logfile: /var/log/jdss-Pool-0.log
 `/etc/pve/jdss-Pool-1.yaml`
 ```yaml
 driver_use_ssl: True
+driver_ssl_cert_verify: False
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
@@ -190,6 +193,7 @@ joviandss: jdss-Pool-0
 `/etc/pve/jdss-Pool-0.yaml`
 ```yaml
 driver_use_ssl: True
+driver_ssl_cert_verify: False
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
@@ -230,6 +234,7 @@ Provide list of ip's that would be used for multipathing in `rest_api_addresses`
 `/etc/pve/jdss-Pool-0.yaml`
 ```yaml
 driver_use_ssl: True
+driver_ssl_cert_verify: False
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
@@ -246,93 +251,39 @@ logfile: /tmp/jdss.log
 ```
 ### Proxmox multipathing configuration
 
-Make sure that multipath service is present 
+Proxmox JovianDSS plugin does not require any specific changes in multipath configuration file in order to operate.
 
+Make sure that multipath service is present:
 ```bash
 apt install multipath-tools sg3-utils
 ```
 
-Provide necessary configuration to multipath service in `multipath.conf` file at /etc/multipath/conf.d/multipath.conf.
-This config is based on [proxmox recomendations](https://pve.proxmox.com/wiki/ISCSI_Multipath)
-
-```bash
-defaults {
-        polling_interval        2
-        path_selector           "round-robin 0"
-        path_grouping_policy    multibus
-        uid_attribute           ID_SERIAL
-        rr_min_io               100
-        failback                immediate
-        no_path_retry           queue
-        user_friendly_names     yes
-        config_dir              /etc/multipath/conf.d
-}
-
-blacklist {
-        wwid .*
-        devnode "^(ram|raw|loop|fd|md|dm-|sr|scd|st)[0-9]*"
-}
-
-multipaths {
-}
-
-blacklist_exceptions {
-}
-```
-
-Please make sure that your `multipath.conf` contain sections `multipaths`, `blacklist_exceptions` and `user_friendly_name` is ON.
-
-Multipath config might be edited by JovianDSS plugin, please do not edit blocks within comment sections:
-```bash
-# Start of JovianDSS managed block
-        ...
-# End of JovianDSS managed block
-```  
-
-```bash
-defaults {
-        polling_interval        2
-        path_selector           "round-robin 0"
-        path_grouping_policy    multibus
-        uid_attribute           ID_SERIAL
-        rr_min_io               100
-        failback                immediate
-        no_path_retry           queue
-        user_friendly_names     yes
-        config_dir              /etc/multipath/conf.d
-}
-
-blacklist {
-        wwid .*
-        devnode "^(ram|raw|loop|fd|md|dm-|sr|scd|st)[0-9]*"
-}
-
-multipaths {
-# Start of JovianDSS managed block
-      multipath {
-            wwid 26431316533316430
-            alias iqn.2021-10.com.open-e:proxmox-content-volume
-      }
-      multipath {
-            wwid 23939646637633635
-            alias iqn.2022-10.com.open-e:proxmox-content-volume
-      }
-# End of JovianDSS managed block
-}
-
-blacklist_exceptions {
-# Start of JovianDSS managed block
-      wwid 26431316533316430
-      wwid 23939646637633635
-# End of JovianDSS managed block
-}
-```
-
-Ensure multipath is up and running
+And running:
 ```bash
 systemctl enable multipathd
 systemctl start multipathd
 ```
+
+```bash
+defaults {
+        polling_interval        2
+        path_selector           "round-robin 0"
+        path_grouping_policy    multibus
+        uid_attribute           ID_SERIAL
+        rr_min_io               100
+        failback                immediate
+        no_path_retry           queue
+        user_friendly_names     yes
+        config_dir              /etc/multipath/conf.d
+}
+
+blacklist {
+        wwid .*
+        devnode "^(ram|raw|loop|fd|md|dm-|sr|scd|st)[0-9]*"
+}
+
+Ensure multipath is up and running
+
 
 ### Storage.cfg
 Activate feature by setting `1` for `multipath` property in `storage.cfg` 

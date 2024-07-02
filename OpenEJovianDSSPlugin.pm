@@ -121,6 +121,7 @@ sub options {
         content_volume_size             => { optional => 1 },
     };
 }
+
 sub print_dir {
     my ($class, $scfg, $dir) = @_;
 
@@ -133,6 +134,7 @@ sub print_dir {
             print "${line}";
     }
 }
+
 # helpers
 sub safe_var_print {
     my ($varname, $variable) = @_;
@@ -227,24 +229,6 @@ sub joviandss_cmd {
     }
     return $msg;
 }
-
-# sub joviandss_cmde {
-#     my ($class, $cmd, $timeout) = @_;
-# 
-#     my $msg = '';
-#     my $err = undef;
-#     my $target;
-#     my $res = ();
-# 
-#     $timeout = 20 if !$timeout;
-# 
-#     my $output = sub { $msg .= "$_[0]" };
-#     my $errfunc = sub { $err .= "$_[0]" };
-#     eval {
-#         run_command(['/usr/local/bin/jdssc', @$cmd], outfunc => $output, errfunc => $errfunc, timeout => $timeout);
-#     };
-#     return ($msg, $err);
-# }
 
 my $ISCSIADM = '/usr/bin/iscsiadm';
 $ISCSIADM = undef if ! -X $ISCSIADM;
@@ -393,12 +377,6 @@ sub volume_path {
     } else {
         $tpath = $class->get_target_path($scfg, $target, $storeid);
     }
-    
-    open(my $test_data, '-|', "ls -all /dev/mapper/") or die "Unable to list mapper data: $!";
-
-    while (my $line = <$test_data>) {
-            print "${line}\n" if get_debug($scfg);
-    }
 
     return $tpath
 }
@@ -543,8 +521,10 @@ sub stage_target {
 
     my $targetpath = $class->get_target_path($scfg, $target, $storeid);
 
-    if ( -b $targetpath ) {
+    if ( -e $targetpath ) {
         print "Looks like target already pressent\n" if get_debug($scfg);
+
+        $class->print_dir($scfg, $targetpath);
         return $targetpath;
     }
 
@@ -668,58 +648,17 @@ sub stage_multipath {
         } else {
             unlink $targetpath;
         }
-
     }
 
     eval { run_command(["ln", "/dev/mapper/${mpathname}", "/dev/mapper/${target}"]); };
     die "Unable to cretate link $@" if $@;
     return;
-    #unless ($mpathname eq $target) {
-    #    eval {run_command(["dmsetup", "rename", "${mpathname}", "${target}"], errmsg => 'umount error') };
-    #    die "Unable rename device ${mpathname} to ${target} with dmsetup because of $@" if $@;
-    #    
-    #    $class->print_dir($scfg, "/dev/mapper/");
-    #    
-    #    print "Renaming done for ${scsiid} ${target}\n" if get_debug($scfg); 
-    #    
-    #    eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
-    #    
-    #    $class->print_dir($scfg, "/dev/mapper/");
-
-    #    print "Restarting multipathd done\n" if get_debug($scfg); 
-
-    #    $class->add_multipath_bindings($scsiid, $target);
-    #    $class->print_dir($scfg, "/dev/mapper/");
-
-    #    print "Add binding done\n" if get_debug($scfg); 
-    #}
-
-    #eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
-
-    #my $timeout = 10;
-
-    #for (my $i = 0; $i <= $timeout; $i++) {
-    #    $class->print_dir($scfg, "/dev/mapper/");
-    #    if (-b $targetpath) {
-
-    #        print "Staging ${target} to ${targetpath} done.\n" if get_debug($scfg);
-    #        return $targetpath;
-    #    }
-    #    sleep(1);
-    #}
-
-    #die "Unable to identify mapping for target ${target}, might be an issue with device mapper, multipath or udev naming scripts\n";
 }
 
 sub unstage_multipath {
     my ($class, $scfg, $storeid, $target) = @_;
 
     my $scsiid;
-
-    eval { $scsiid = $class->get_scsiid($scfg, $target, $storeid); };
-    if ($@) {
-        die "Unable to identify scsiid for target ${target}";
-    }
 
     my $targetpath  = $class->get_multipath_path($scfg, $target);
     if ( -e $targetpath ) {
@@ -729,7 +668,17 @@ sub unstage_multipath {
             warn "Unable to remove ${targetpath} link$!\n";
         }
     }
-    
+
+    eval { $scsiid = $class->get_scsiid($scfg, $target, $storeid); };
+    if ($@) {
+        die "Unable to identify scsiid for target ${target}";
+    }
+
+    unless (defined($scsiid)) {
+        warn "Unable to identify multipath resource ${target}\n";
+        return ;
+    };
+
     eval{ run_command([$MULTIPATH, '-f', ${scsiid}]); };
     if ($@) {
         warn "Unable to remove multipath mapping for target ${target} because of $@\n" if $@;
@@ -741,7 +690,6 @@ sub unstage_multipath {
             warn "Unable to identify multipath mapper name for ${target}\n";
         }
     }
-    #print "Unstage multipath for scsi id ${scsiid} target ${target}\n" if get_debug($scfg);
 
     eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
     die "Unable to restart multipath daemon $@" if $@;
@@ -777,12 +725,15 @@ sub get_scsiid {
         my $targetpath = "/dev/disk/by-path/ip-${host}-iscsi-${target}-lun-0";
         my $getscsiidcmd = ["/lib/udev/scsi_id", "-g", "-u", "-d", $targetpath];
         my $scsiid;
-        eval {run_command($getscsiidcmd, outfunc => sub {
-            $scsiid = shift;
-        }); };
-        if ($@) {
-            warn "Unable to get iscsi id for ${targetpath} because of $@\n";
-            continue;
+
+        if (-e $targetpath) {
+            eval {run_command($getscsiidcmd, outfunc => sub { $scsiid = shift; }); };
+
+            if ($@) {
+                die "Unable to get iscsi id for ${targetpath} because of $@\n";
+            };
+        } else {
+            next;
         };
 
         if (defined($scsiid)) {
@@ -792,7 +743,7 @@ sub get_scsiid {
             }
         }
     }
-    die "Unable identify scsi id for target $target";
+    return undef;
 }
 
 sub get_target_name {
@@ -1133,27 +1084,29 @@ sub activate_volume_ext {
     print "Staging target\n" if get_debug($scfg);
     $class->stage_target($scfg, $storeid, $target);
 
-    if (multipath_enabled($scfg)) {
-
-        my $targetpath = $class->get_multipath_path($scfg, $target, $storeid);
-
-        unless (-b $targetpath) {
-            my $scsiid = $class->get_scsiid($scfg, $target, $storeid);
-            print "Adding multipath\n" if get_debug($scfg);
-            $class->stage_multipath($scfg, $scsiid, $target);
-        }
-    }
     for (my $i = 1; $i <= 10; $i++) {
-        return 1 if -b $targetpath;
+        last if (-e $targetpath);
         sleep(1);
     }
 
-    die "Unable to confirm existance of volume at path ${targetpath}\n";
+    unless (-e $targetpath) {
+        die "Unable to confirm existance of volume at path ${targetpath}\n";
+    }
+
+    if (multipath_enabled($scfg)) {
+        my $scsiid = $class->get_scsiid($scfg, $target, $storeid);
+        print "Adding multipath\n" if get_debug($scfg);
+        if (defined($scsiid)) {
+            $class->stage_multipath($scfg, $scsiid, $target);
+        } else {
+            die "Unable to get scsi id for multipath device ${target}\n";
+        }
+    }
 }
 
 sub activate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
-    
+
     print "Activating volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
