@@ -238,7 +238,7 @@ driver_ssl_cert_verify: False
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
-rest_api_address:
+rest_api_addresses:
   - '192.168.21.100'
   - '192.168.31.100'
 rest_api_port: 82
@@ -330,7 +330,7 @@ make uninstall
 Or by installing it from debian package
 
 ```bash
-apt install ./open-e-joviandss-proxmox-plugin_0.9.6-1.deb
+apt install ./open-e-joviandss-proxmox-plugin_0.9.7.deb
 ```
 
 Once installation is done, provide configuration.
