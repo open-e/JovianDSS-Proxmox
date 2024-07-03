@@ -5,6 +5,7 @@
 Please visit [wiki](https://github.com/open-e/JovianDSS-Proxmox/wiki) for more information.
 1. [Quick Start](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start)
 2. [JovianDSS recovery from a major storage failure](https://github.com/open-e/JovianDSS-Proxmox/wiki/JovianDSS-recovery-from-a-major-storage-failure)
+3. [Updating](https://github.com/open-e/JovianDSS-Proxmox/wiki/Updating)
 
 ## Configuring
 
