@@ -54,7 +54,8 @@ class Volumes():
         parsers = parser.add_subparsers(dest='volumes_action')
 
         create = parsers.add_parser('create')
-        create.add_argument('--size',
+        create.add_argument('-s',
+                            '--size',
                             required=True,
                             dest='volume_size',
                             type=str,
