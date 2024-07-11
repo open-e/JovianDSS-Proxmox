@@ -19,7 +19,7 @@ deb:
 
 	dpkg-deb --build $(debdir)
 	@mv $(debdir).deb ./open-e-joviandss-proxmox-plugin_$(IMAGE_VERSION).deb
-	@cp ./open-e-joviandss-proxmox-plugin_$(IMAGE_VERSION).deb ./open-e-joviandss-proxmox-plugin_latest.deb
+	@cp ./open-e-joviandss-proxmox-plugin-$(IMAGE_VERSION).deb ./open-e-joviandss-proxmox-plugin-latest.deb
 	rm -rf $(debdir)
 
 install:
