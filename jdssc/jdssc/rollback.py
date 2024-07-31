@@ -21,16 +21,16 @@ import sys
 from jdssc.jovian_common import exception as jexc
 
 
-"""Snapshots related commands."""
+"""Snapshot rollback related commands."""
 
 LOG = logging.getLogger(__name__)
 
 
-class Snapshots():
+class Rollback():
     def __init__(self, args, uargs, jdss):
 
-        self.ssa = {'create': self.create,
-                    'list': self.list}
+        self.ssa = {'check': self.check,
+                    'do': self.rollback}
 
         self.args = args
         args, uargs = self.__parse(uargs)
@@ -61,23 +61,21 @@ class Snapshots():
 
         return kargs, ukargs
 
-    def create(self):
+    def check(self):
+        pass
+
+    def do(self):
 
         try:
-            self.jdss.create_snapshot(self.args['snapshot_name'],
-                                      self.args['volume_name'])
-        except jexc.JDSSSnapshotExistsException as exists:
-            LOG.error(exists)
+            self.jdss.rollback(self.args['volume_name'], self.args['snapshot_name'])
+            return
+        except jexc.JDSSResourceIsBusyException as berr:
+            LOG.error(berr)
+            exit(1)
+        except jexc.JDSSSnapshotNotFoundException as dneerr:
+            LOG.error(dneerr)
             exit(1)
         except jexc.JDSSException as err:
             LOG.error(err)
             exit(1)
 
-    def list(self):
-
-        volume = self.args['volume_name']
-
-        data = self.jdss.list_snapshots(volume)
-        for v in data:
-            line = "{}\n".format(v['name'])
-            sys.stdout.write(line)

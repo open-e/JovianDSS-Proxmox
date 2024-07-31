@@ -1105,3 +1105,33 @@ class JovianRESTAPI(object):
             return resp["data"]
 
         self._general_error(req, resp)
+
+    def get_snapshot_rollback(self, vname, sname):
+        req = (('/volumes/%(vname)s/snapshots/%(sname)s/rollback') %
+               {'vname': vname, 'sname': sname})
+        req = ""
+        LOG.debug("get volume %s snapshot %s rollback dependency",
+                  vname,
+                  sname)
+
+        resp = self.rproxy.pool_request('GET', req)
+        if not resp["error"] and resp["code"] == 200:
+            return resp["data"]
+
+        self._general_error(req, resp)
+
+    def snapshot_rollback(self, vname, sname):
+        req = (('/volumes/%(vname)s/snapshots/%(sname)s/rollback') %
+               {'vname': vname, 'sname': sname})
+        req = ""
+        LOG.debug("rollback volume %s to snapshot %s", vname, sname)
+
+        resp = self.rproxy.pool_request('POST', req)
+
+        if resp["code"] in (200, 201, 204):
+            LOG.debug("volume %s been rolled back to snapshot %s",
+                      vname,
+                      sname)
+            return
+
+        self._general_error(req, resp)

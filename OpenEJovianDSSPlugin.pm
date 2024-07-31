@@ -19,10 +19,10 @@ use strict;
 use warnings;
 use Carp qw( confess );
 use IO::File;
-use JSON::XS qw( decode_json );
+# use JSON::XS qw( decode_json );
 use Data::Dumper;
 use Storable qw(lock_store lock_retrieve);
-use UUID "uuid";
+# use UUID "uuid";
 
 use File::Path qw(make_path);
 use File::Temp qw(tempfile);
@@ -30,7 +30,11 @@ use File::Temp qw(tempfile);
 
 use Encode qw(decode encode);
 
-use PVE::Tools qw(run_command file_read_firstline trim dir_glob_regex dir_glob_foreach $IPV4RE $IPV6RE);
+use PVE::Tools qw(run_command);
+use PVE::Tools qw($IPV4RE);
+use PVE::Tools qw($IPV6RE);
+
+# use PVE::Tools qw(run_command file_read_firstline trim dir_glob_regex dir_glob_foreach $IPV4RE $IPV6RE);
 use PVE::INotify;
 use PVE::Storage;
 use PVE::Storage::Plugin;
@@ -40,7 +44,7 @@ use base qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.9.7';
+my $PLUGIN_VERSION = '0.9.8';
 
 # Configuration
 
@@ -845,19 +849,24 @@ sub volume_snapshot_needs_fsfreeze {
 
 sub volume_snapshot_rollback {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
-    
-    die "Volume snapshot rollback is not supported\n";
 
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "rollback"]);
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "rollback", "do"]);
 }
 
 sub volume_rollback_is_possible {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
+    
+    my $config = get_config($scfg);
+    my $pool = get_pool($scfg);
+
+    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "rollback", "check"]);
 
     return 0;
 }
