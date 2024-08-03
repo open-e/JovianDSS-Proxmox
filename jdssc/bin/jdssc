@@ -76,7 +76,7 @@ def setup_logging(args, cfg):
         loglvl = cfg['loglevel']
 
     if args.loglvl != "info":
-        loglvl = args.cli_log_lvl
+        loglvl = args.loglvl
 
     logfile = None
     if 'logfile' in cfg:

@@ -1109,7 +1109,6 @@ class JovianRESTAPI(object):
     def get_snapshot_rollback(self, vname, sname):
         req = (('/volumes/%(vname)s/snapshots/%(sname)s/rollback') %
                {'vname': vname, 'sname': sname})
-        req = ""
         LOG.debug("get volume %s snapshot %s rollback dependency",
                   vname,
                   sname)
@@ -1123,7 +1122,6 @@ class JovianRESTAPI(object):
     def snapshot_rollback(self, vname, sname):
         req = (('/volumes/%(vname)s/snapshots/%(sname)s/rollback') %
                {'vname': vname, 'sname': sname})
-        req = ""
         LOG.debug("rollback volume %s to snapshot %s", vname, sname)
 
         resp = self.rproxy.pool_request('POST', req)

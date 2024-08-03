@@ -120,7 +120,8 @@ class JDSSOSException(JDSSException):
     """Storage internal system error"""
 
     def __init__(self, res):
-        self.message = ("JDSS internal system error %(message)s.")
+        self.message = ("JDSS internal system error %(res)s." %
+                        {'res': res})
         super().__init__(self.message)
 
 

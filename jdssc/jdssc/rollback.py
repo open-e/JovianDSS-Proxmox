@@ -30,7 +30,7 @@ class Rollback():
     def __init__(self, args, uargs, jdss):
 
         self.ssa = {'check': self.check,
-                    'do': self.rollback}
+                    'do': self.do}
 
         self.args = args
         args, uargs = self.__parse(uargs)
@@ -38,31 +38,39 @@ class Rollback():
         self.uargs = uargs
         self.jdss = jdss
 
-        if 'snapshots_action' in self.args:
-            self.ssa[self.args.pop('snapshots_action')]()
+        if 'rollback_action' in self.args:
+            self.ssa[self.args.pop('rollback_action')]()
 
     def __parse(self, args):
 
-        parser = argparse.ArgumentParser(prog="Volume")
+        parser = argparse.ArgumentParser(prog="JDSS Volume To Snapshot Rollback",
+                                         description="Executes snapshot rollback")
 
-        parsers = parser.add_subparsers(dest='snapshots_action')
+        parsers = parser.add_subparsers(dest='rollback_action')
 
-        create = parsers.add_parser('create')
-        create.add_argument('snapshot_name',
-                            type=str,
-                            help='New snapshot name')
-
-        parsers.add_parser('list')
+        check = parsers.add_parser('check')
+        do = parsers.add_parser('do')
         kargs, ukargs = parser.parse_known_args(args)
 
-        if kargs.snapshots_action is None:
+        if kargs.rollback_action is None:
             parser.print_help()
             sys.exit(1)
 
         return kargs, ukargs
 
     def check(self):
-        pass
+        try:
+            self.jdss.rollback_check(self.args['volume_name'], self.args['snapshot_name'])
+            return
+        except jexc.JDSSResourceIsBusyException as berr:
+            LOG.error(berr)
+            exit(1)
+        except jexc.JDSSSnapshotNotFoundException as dneerr:
+            LOG.error(dneerr)
+            exit(1)
+        except jexc.JDSSException as err:
+            LOG.error(err)
+            exit(1)
 
     def do(self):
 

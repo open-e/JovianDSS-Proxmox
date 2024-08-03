@@ -140,16 +140,6 @@ def sname(sid, vid):
     out = 's_%(sid)s' % {'sid': sid}
     return out
 
-    # if allowedPattern.match(sid):
-    #     out = 'se_%(sid)s' % {'sid': sid}
-    # else:
-    #     out = 'sb_%(sid)s' % {'sid': JBase32FromStr(sid)}
-
-    # if vid is not None and len(vid) > 0:
-    #     out += '_%(vid)s' % {'vid': JBase32FromStr(vid)}
-
-    return out
-
 
 def sname_from_snap(snapshot_struct):
     return snapshot_struct['name']

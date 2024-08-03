@@ -18,6 +18,8 @@ import hashlib
 import logging
 import sys
 
+import jdssc.rollback as cli_rollback
+
 from jdssc.jovian_common import exception as jexc
 
 """Snapshot related commands."""
@@ -52,11 +54,10 @@ class Snapshot():
 
     def __parse(self, args):
 
-        parser = argparse.ArgumentParser(prog="Volume")
+        parser = argparse.ArgumentParser(prog="Snapshot")
 
         parser.add_argument('snapshot_name', help='Snapshot name')
         parsers = parser.add_subparsers(dest='snapshot_action')
-        # parsers.add_parser('clone')
         parsers.add_parser('delete')
         parsers.add_parser('rollback')
 
@@ -77,14 +78,8 @@ class Snapshot():
             exit(1)
 
     def rollback(self):
-        try:
-            self.jdss.revert_to_snapshot(self.args['volume_name'],
-                                         self.args['snapshot_name'])
-        except jexc.JDSSSnapshotNotFoundException as err:
-            LOG.error(err)
-            exit(1)
-        except Exception as err:
-            LOG.error(err)
+
+        cli_rollback.Rollback(self.args, self.uargs, self.jdss)
 
     def clone(self):
         pass

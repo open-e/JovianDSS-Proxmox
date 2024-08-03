@@ -860,7 +860,7 @@ sub volume_snapshot_rollback {
 
 sub volume_rollback_is_possible {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
-    
+
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
