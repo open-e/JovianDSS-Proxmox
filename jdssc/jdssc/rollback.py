@@ -43,13 +43,14 @@ class Rollback():
 
     def __parse(self, args):
 
-        parser = argparse.ArgumentParser(prog="JDSS Volume To Snapshot Rollback",
-                                         description="Executes snapshot rollback")
+        parser = argparse.ArgumentParser(
+            prog="JovianDSS Volume To Snapshot Rollback",
+            description="Executes snapshot rollback")
 
         parsers = parser.add_subparsers(dest='rollback_action')
 
-        check = parsers.add_parser('check')
-        do = parsers.add_parser('do')
+        parsers.add_parser('check')
+        parsers.add_parser('do')
         kargs, ukargs = parser.parse_known_args(args)
 
         if kargs.rollback_action is None:
@@ -60,8 +61,33 @@ class Rollback():
 
     def check(self):
         try:
-            self.jdss.rollback_check(self.args['volume_name'], self.args['snapshot_name'])
-            return
+            dependency = self.jdss.rollback_check(self.args['volume_name'],
+                                                  self.args['snapshot_name'])
+            if dependency is not None:
+                msg = (("Rollback of volume %(volume)s"
+                        " to snapshot %(snapshot)s is blocked\n") %
+                       {'volume': self.args['volume_name'],
+                        'snapshot': self.args['snapshot_name']})
+                if ('snapshots' in dependency and
+                        len(dependency['snapshots']) > 0):
+                    msg += (" by snapshots: %(dependency)s" %
+                            {'dependency': ' '.join(dependency['snapshots'])})
+                    print("snapshots: " + ' '.join(dependency['snapshots']))
+
+                if ('clones' in dependency and
+                        len(dependency['clones']) > 0):
+                    msg += (" by clones: %(dependency)s" %
+                            {'dependency': ' '.join(dependency['clones'])})
+                    print("clones: " + ' '.join(dependency['clones']))
+
+                LOG.info(msg)
+                return
+            else:
+                LOG.info(("Rollback of volume %(volume)s"
+                          " to snapshot %(snapshot)s is possible"),
+                         {'volume': self.args['volume_name'],
+                          'snapshot': self.args['snapshot_name']})
+
         except jexc.JDSSResourceIsBusyException as berr:
             LOG.error(berr)
             exit(1)
@@ -75,7 +101,8 @@ class Rollback():
     def do(self):
 
         try:
-            self.jdss.rollback(self.args['volume_name'], self.args['snapshot_name'])
+            self.jdss.rollback(
+                self.args['volume_name'], self.args['snapshot_name'])
             return
         except jexc.JDSSResourceIsBusyException as berr:
             LOG.error(berr)
@@ -86,4 +113,3 @@ class Rollback():
         except jexc.JDSSException as err:
             LOG.error(err)
             exit(1)
-

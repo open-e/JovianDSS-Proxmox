@@ -1,0 +1,27 @@
+name: Single snapshot rollback
+prerequisites: 
+    - Plugin installed
+    - All initialization is done
+setup:
+id: rollback-001 
+scenario: Verify that rollback is working in general
+description: Basic test that checks general functionality of  properly
+objective: To ensure that rollback request being send to storage
+steps:
+    - Create volume test1
+    - Format volume test1
+    - Create snapshot snap1
+    - Create file on test1
+    - Conduct rollback of test1 to snap1
+data:
+    - description: volume name
+      value: test1
+      name: test1
+    - description: snapshot name
+      value: snap1
+      name: testsnap
+parameters:
+references:
+expected_results: |
+    Volume test1 should be rolled back to original steate and
+    file created on it should be gone

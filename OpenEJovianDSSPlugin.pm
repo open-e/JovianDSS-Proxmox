@@ -132,7 +132,7 @@ sub print_dir {
     unless (get_debug($scfg)) {
         return;
     }
-    open(my $test_data, '-|', "ls -all ${dir}") or die "Unable to list dir: $!";
+    open(my $test_data, '-|', "ls -all ${dir}") or die "Unable to list dir: $!\n";
 
     while (my $line = <$test_data>) {
             print "${line}";
@@ -147,7 +147,7 @@ sub safe_var_print {
 
 sub get_pool {
     my ($scfg) = @_;
-    die "pool name required in storage.cfg" if !defined($scfg->{pool_name});
+    die "pool name required in storage.cfg\n" if !defined($scfg->{pool_name});
     return $scfg->{pool_name};
 }
 
@@ -183,7 +183,7 @@ sub get_content_volume_name {
         return $cv;
     }
     my $cvn = $scfg->{content_volume_name};
-    die "Content volume name should only include lower case, numbers and . - chars" if ( not ($cvn =~ /^[a-z0-9.-]*$/) );
+    die "Content volume name should only include lower case, numbers and . - chars\n" if ( not ($cvn =~ /^[a-z0-9.-]*$/) );
 
     return $cvn;
 }
@@ -500,7 +500,6 @@ sub free_image {
     if ('images' cmp "$vtype") {
         return $class->SUPER::free_image($storeid, $scfg, $volname, $isBase, $format);
     }
-    #die 1;
     print"Deleting volume ${volname} format ${format}\n" if get_debug($scfg);
 
     $class->deactivate_volume($storeid, $scfg, $volname, undef, undef);
@@ -800,7 +799,7 @@ sub list_images {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    my $jdssc =  $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "list", "--vmid"]);
+    my $jdssc = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "list", "--vmid"]);
 
     my $res = [];
     foreach (split(/\n/, $jdssc)) {
@@ -866,7 +865,10 @@ sub volume_rollback_is_possible {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "rollback", "check"]);
+    my $res = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "rollback", "check"]);
+    if ( length($res) > 1) {
+        die "Unable to rollback ". $volname . " to snapshot " . $snap . " because resources's: " . $res . " will be lost in process. Please remove depending resources before continuing.\n"
+    }
 
     return 0;
 }
@@ -1005,8 +1007,7 @@ sub ensure_content_volume {
     print "Checking file system on device ${tpath}\n";
     eval { run_command(["/usr/sbin/fsck", "-n", $tpath])};
     if ($@) {
-            warn $@;
-            die "Unable identify file system type for content storage, if that is a first run, format ${tpath} to a file sistem of your choise.";
+            die "Unable identify file system type for content storage, if that is a first run, format ${tpath} to a file sistem of your choise.\n";
     }
     print "Mounting device ${tpath}\n";
     mkdir "$content_path";
@@ -1017,9 +1018,9 @@ sub ensure_content_volume {
 
 sub ensure_fs {
     my ( $class, $scfg) = @_; 
-    
+
     my $path = get_content_path($scfg);
-    
+
     make_path $path, {owner=>'root', group=>'root'};
     my $dir_path = "$path/iso";
     mkdir $dir_path;
@@ -1073,12 +1074,9 @@ sub activate_volume_ext {
     my $pool = get_pool($scfg);
 
     my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
-    
+
     my $targetpath = $class->get_target_path($scfg, $target, $storeid);
 
-    #if (-b $targetpath) {
-    #    print "Volume ${volname} ".safe_var_print("snapshot", $snapname)." present at path ${targetpath} \n" if get_debug($scfg);
-    #} else {
     my $createtargetcmd = ["-c", $config, "pool", $pool, "targets", "create", "-v", $volname];
     if ($snapname){
         push @$createtargetcmd, "--snapshot", $snapname;

@@ -1,0 +1,34 @@
+name: Plugin reinstallation
+prerequisites: 
+    - Previous version of plugin installed on proxmox
+    - JovianDSS have Pool-0
+    - JovianDSS have REST enabled
+    - Plugin and jdssc configured according git installation guide
+    - Content volume proxmox-content-jdss-pool-0 present
+    - Logging level for jdssc INFO
+setup:
+id: plugin-reinstall-001
+scenario: |
+    Conduct plugin reinstallation with apt utility and check driver status
+    by creating and removing container
+description: |
+    Basic test that verifys that plugin continue to operate
+    after reinstallation
+objective: ensure that reinstallation is possible and does not break proxmox
+steps:
+    - Build and copy debian package to proxmox
+    - Run apt reinstall ./open-e-joviandss-proxmox-plugin-<version to test>.deb
+    - Create container test1
+    - Verify presens of volume associated with test1 at JovianDSS
+    - Remove container test1
+data:
+    - description: container name
+      value: test1
+      name: test1
+parameters:
+references:
+expected_results: |
+    Container test1 should be created and removed without any error notifications.
+    Proxmox should not report any malfunction
+    After creation volume associated with test1 should be present at JovianDSS Pool-0
+    After deletion volume associates with test1 should not be present at JovianDSS Pool-0

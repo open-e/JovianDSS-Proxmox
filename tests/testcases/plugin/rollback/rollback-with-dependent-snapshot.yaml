@@ -1,0 +1,40 @@
+name: Impossible rollback due to existing newer snapshot
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have Pool-0
+    - JovianDSS have REST enabled
+    - Plugin and jdssc configured according git installation guide
+    - Logging level for jdssc INFO
+setup:
+id: plugin-rollback-002 
+scenario: |
+    Create container and make multiple snapshots of this container.
+    Then conduct rollback of the oldes snapshot
+description: |
+    Basic test that checks mechanism that prevents rollback from deleting
+    newer snapshots
+objective: |
+    To ensure that plugin mechanism prevents rollback from happening if
+    that operation will lead to destruction of other snapshots
+steps:
+    - Create container test1
+    - Create snapshot snap1
+    - Create snapshot snap2
+    - Conduct rollback of container test1 to snap1
+data:
+    - description: container name
+      value: test1
+      name: test1
+    - description: Name of snapshot that will be created first
+      value: snap1
+      name: snap1
+    - description: |
+        Newer snapshot that will be created after snap1
+      value: snap2
+      name: snap2
+parameters:
+references:
+expected_results: |
+    Proxmox will show error indicating that container test1
+    can't be rolled back to snapshot snap1 because it will lead
+    to distruction of snap2

@@ -17,17 +17,17 @@
 from setuptools import setup
 
 setup(
-  name='OpenEJovianDSSProxmoxCLI',
-  version='0.9.6',
-  author='Andrei Perepiolkin',
-  author_email='andrei.perepiolkin@open-e.com',
-  packages=['jdssc'],
-  scripts=['bin/jdssc'],
-  url='https://github.com/open-e/JovianDSS-Proxmox',
-  license='LICENSE.txt',
-  description='An assistant tool for Proxmox plugin',
-  long_description=open('README.txt').read(),
-  install_requires=[
-      "pytest",
-      "retry"
-  ],)
+    name='OpenEJovianDSSProxmoxCLI',
+    version='0.9.8',
+    author='Andrei Perepiolkin',
+    author_email='andrei.perepiolkin@open-e.com',
+    packages=['jdssc'],
+    scripts=['bin/jdssc'],
+    url='https://github.com/open-e/JovianDSS-Proxmox',
+    license='LICENSE.txt',
+    description='An assistant tool for Proxmox plugin',
+    long_description=open('README.txt').read(),
+    install_requires=[
+        "pytest",
+        "retry"
+    ],)

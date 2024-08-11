@@ -108,6 +108,42 @@ class JDSSResourceVolumeIsBusyException(JDSSException):
         super().__init__(self.message)
 
 
+class JDSSRollbackIsBlocked(JDSSException):
+
+    def __init__(self,
+                 volume, snapshot,
+                 snapshots, clones,
+                 nsnapshots, nclones):
+        snaps_string = ""
+        while len(snapshots) > 0:
+            snaps_string = ' '.join(snapshots[:10]) + "\n"
+            snapshots = snapshots[10:]
+
+        clones_string = ""
+        while len(clones) > 0:
+            clones_string = ' '.join(clones[:10]) + "\n"
+            clones = clones[10:]
+
+        msg = (("Unable to rollback volume %(volume_name)s to snapshot "
+                "%(snapshot_name)s.\n "
+                "Because"
+                " %(ns)d snapshots" if nsnapshots > 0 else ""
+                " %(nc)d clones" if nclones > 0 else ""
+                " will be lost in process.\n"
+                "To proceed with rollback please remove\n"
+                "snapshots %(snaps)s\n" if len(snapshots) > 0 else ""
+                "clones %(clones)s\n" if len(clones) > 0 else ""
+                ),
+               {'volume_name': volume,
+                'snapshot_name': snapshot,
+                'ns': nsnapshots,
+                'nc': nclones,
+                'snaps': snaps_string,
+                'clones': clones_string})
+        self.message = msg
+        super().__init__(self.message)
+
+
 class JDSSSnapshotIsBusyException(JDSSResourceIsBusyException):
     """Snapshot have dependent clones"""
 

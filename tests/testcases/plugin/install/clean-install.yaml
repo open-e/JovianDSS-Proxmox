@@ -1,0 +1,38 @@
+name: Clean installation on pure Proxmox ststem
+prerequisites: 
+    - JovianDSS have Pool-0
+    - JovianDSS have REST enabled
+    - Content volume proxmox-content-jdss-pool-0 do not exist
+    - Proxmox fresh installation
+    - Plugin is was not installed and no configuration was provided
+setup:
+id: plugin-clean-install-001
+scenario: |
+    Plugin get installed on fresh proxmox server, content volume get automaticaly created
+    and formated
+description: |
+    Installation test on unmodified Proxmox and JovianDSS
+objective: ensure that installation completes without error and
+    content volume get automaticaly created
+steps:
+    - Install plugin
+    - Follow quick start guide to configure
+    - Restart proxmox
+    - Identify error message and follow instructions
+    - Check mountpoints on proxmox
+data:
+    - description: container name
+      value: test1
+      name: test1
+    - description: snapshot name
+      value: snap1
+      name: snap1
+    - description: file name inside container test1tn
+      value: data
+      name: data
+parameters:
+references:
+expected_results: |
+    Plugin get installed and works properly after configuration
+    Error notification requires user to format content volume
+    After mounting content volume get mounted and available for usage
