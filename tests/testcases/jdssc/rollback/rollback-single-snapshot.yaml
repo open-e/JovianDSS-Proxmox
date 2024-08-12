@@ -8,11 +8,31 @@ scenario: Verify that rollback is working in general
 description: Basic test that checks general functionality of  properly
 objective: To ensure that rollback request being send to storage
 steps:
-    - Create volume test1
-    - Format volume test1
-    - Create snapshot snap1
-    - Create file on test1
-    - Conduct rollback of test1 to snap1
+    - desc: Create volume test1
+    - desc: Create volume test1 target
+    - desc: Discover target
+      cmd: iscsiadm --mode discovery --portal 192.168.21.100 --type sendtargets
+    - desc: Login into target
+      cmd: iscsiadm --mode node --target iqn.2021-10.iscsi:test1 --portal 192.168.21.100 --login
+    - desc: Format volume test1
+      cmd: mkfs.ext3 /dev/disk/by-path/ip-192.168.21.100:3260-iscsi-iqn.2021-10.iscsi:test1-lun-0
+    - desc: Create snapshot snap1
+      cmd: /usr/local/bin/jdssc --loglvl info --logstd -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 volume test1 snapshots create -n snap1
+    - desc: Mount test1
+    - desc: Create file on test1
+    - desc: Umount test1
+    - desc: Conduct rollback of test1 to snap1
+      cmd: /usr/local/bin/jdssc --loglvl info --logstd  -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 volume test1 snapshot snap1 rollback do
+    - desc: Mount test1
+    - desc: Check file on test1
+cleanup:
+    - desc: Umount test1
+    - desc: Logout from iscsi target
+      cmd: iscsiadm --mode node --target iqn.2021-10.iscsi:test1 --portal 192.168.21.100 --logout
+    - desc: Delete target for test1
+      cmd: /usr/local/bin/jdssc --loglvl debug --logstd  -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 targets delete -v test1
+    - desc: Delete volume and its snapshots
+      cmd: /usr/local/bin/jdssc --loglvl debug --logstd  -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 volume  test1 delete -c
 data:
     - description: volume name
       value: test1

@@ -125,21 +125,26 @@ class JDSSRollbackIsBlocked(JDSSException):
             clones = clones[10:]
 
         msg = (("Unable to rollback volume %(volume_name)s to snapshot "
-                "%(snapshot_name)s.\n "
-                "Because"
-                " %(ns)d snapshots" if nsnapshots > 0 else ""
-                " %(nc)d clones" if nclones > 0 else ""
-                " will be lost in process.\n"
-                "To proceed with rollback please remove\n"
-                "snapshots %(snaps)s\n" if len(snapshots) > 0 else ""
-                "clones %(clones)s\n" if len(clones) > 0 else ""
-                ),
+                "%(snapshot_name)s.\n") %
                {'volume_name': volume,
-                'snapshot_name': snapshot,
-                'ns': nsnapshots,
-                'nc': nclones,
-                'snaps': snaps_string,
-                'clones': clones_string})
+                'snapshot_name': snapshot})
+        if nsnapshots > 0 or nclones > 0:
+            msg += "Because "
+            if nsnapshots > 0:
+                msg += "%d snapshot(s) " % nsnapshots
+
+            if nclones > 0:
+                msg += "%d clone(s) " % nclones
+
+            msg += "will be lost in process.\n"
+
+        if len(snaps_string) > 0 or len(clones_string) > 0:
+            msg += "To proceed with rollback please remove\n"
+            if len(snaps_string) > 0:
+                msg += "snapshots: %s\n" % snaps_string
+            if len(clones_string) > 0:
+                msg += "clones: %s\n" % clones_string
+
         self.message = msg
         super().__init__(self.message)
 

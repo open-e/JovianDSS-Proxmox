@@ -19,14 +19,11 @@ use strict;
 use warnings;
 use Carp qw( confess );
 use IO::File;
-# use JSON::XS qw( decode_json );
 use Data::Dumper;
 use Storable qw(lock_store lock_retrieve);
-# use UUID "uuid";
 
 use File::Path qw(make_path);
 use File::Temp qw(tempfile);
-#use File::Sync qw(fsync sync);
 
 use Encode qw(decode encode);
 
@@ -34,7 +31,6 @@ use PVE::Tools qw(run_command);
 use PVE::Tools qw($IPV4RE);
 use PVE::Tools qw($IPV6RE);
 
-# use PVE::Tools qw(run_command file_read_firstline trim dir_glob_regex dir_glob_foreach $IPV4RE $IPV6RE);
 use PVE::INotify;
 use PVE::Storage;
 use PVE::Storage::Plugin;
@@ -56,7 +52,6 @@ my $default_multipath = 0;
 my $default_content_size = 100;
 my $default_path = "/mnt/joviandss";
 
-#my $default_jmultipathd = "/etc/multipath/conf.d/joviandssdisks";
 
 sub api {
 
@@ -348,7 +343,7 @@ sub iscsi_login {
     #TODO: for each IP run discovery
     eval { iscsi_discovery($target, $portal_in); };
     warn $@ if $@;
-    
+
     #TODO: for each target run login
     run_command([$ISCSIADM, '--mode', 'node', '-p', $portal_in, '--targetname',  $target, '--login']);
 }
@@ -541,6 +536,8 @@ sub stage_target {
             eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--login']); };
             warn $@ if $@;
     }
+
+    $targetpath = $class->get_target_path($scfg, $target, $storeid);
 
     print "Storage address is ${targetpath}\n" if get_debug($scfg);
 
@@ -867,7 +864,7 @@ sub volume_rollback_is_possible {
 
     my $res = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "rollback", "check"]);
     if ( length($res) > 1) {
-        die "Unable to rollback ". $volname . " to snapshot " . $snap . " because resources's: " . $res . " will be lost in process. Please remove depending resources before continuing.\n"
+        die "Unable to rollback ". $volname . " to snapshot " . $snap . " because resources(s) " . $res . " will be lost in process. Please remove depending resources before continuing.\n"
     }
 
     return 0;
@@ -929,7 +926,6 @@ sub status {
     my $pool = get_pool($scfg);
 
     my $jdssc =  $class->joviandss_cmd(["-c", $config, "pool", $pool, "get"]);
-
     my $gb = 1024*1024*1024;
     my ($total, $avail, $used) = split(" ", $jdssc);
 
@@ -1007,7 +1003,7 @@ sub ensure_content_volume {
     print "Checking file system on device ${tpath}\n";
     eval { run_command(["/usr/sbin/fsck", "-n", $tpath])};
     if ($@) {
-            die "Unable identify file system type for content storage, if that is a first run, format ${tpath} to a file sistem of your choise.\n";
+            die "Unable identify file system type for content storage, if that is a first run, format ${tpath} to a file system of your choise.\n";
     }
     print "Mounting device ${tpath}\n";
     mkdir "$content_path";
@@ -1216,8 +1212,6 @@ sub storage_can_replicate {
     my ($class, $scfg, $storeid, $format) = @_;
 
     return 1 if $format eq 'raw';
-    # TODO: additional testing of subvolumes is required
-    #return 1 if $format eq 'raw' || $format eq 'subvol';
 
     return 0;
 }

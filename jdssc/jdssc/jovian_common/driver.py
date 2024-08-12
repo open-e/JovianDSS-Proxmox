@@ -360,6 +360,8 @@ class JovianDSSDriver(object):
         bsnaps = self._list_busy_snapshots(vname,
                                            snapshots,
                                            exclude_dedicated_snapshots=True)
+        # TODO: make sure that in case there are volume clones and snapshots
+        # mount points, we show user only clones as dependency
         if len(bsnaps) > 0:
             cnames = []
             for s in snapshots:
@@ -1468,7 +1470,7 @@ class JovianDSSDriver(object):
                 "clones" in dependency):
             if (dependency["snapshots"] == 0 and
                     dependency["clones"] == 0):
-                LOG.info(("rolling back of volume %(vol)s to snapshot "
+                LOG.info(("rolling back volume %(vol)s to snapshot "
                           "%(snap)s"),
                          {'vol': jcom.idname(vname),
                           'snap': jcom.idname(sname)})

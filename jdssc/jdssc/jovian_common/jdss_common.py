@@ -115,6 +115,9 @@ def sname_to_id(sname):
         vid = JBase32ToStr(spl[2])
         return sid, vid
 
+    if spl[0] == 'autosnap':
+        return ('_'.join(spl[1:]), None)
+
     msg = "Incorrect snapshot name %s" % sname
     raise Exception(msg)
 
