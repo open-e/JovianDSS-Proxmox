@@ -178,7 +178,7 @@ sub get_content_volume_name {
         return $cv;
     }
     my $cvn = $scfg->{content_volume_name};
-    die "Content volume name should only include lower case, numbers and . - chars\n" if ( not ($cvn =~ /^[a-z0-9.-]*$/) );
+    die "Content volume name should only include lower case letters, numbers and . - characters\n" if ( not ($cvn =~ /^[a-z0-9.-]*$/) );
 
     return $cvn;
 }
@@ -410,7 +410,7 @@ sub get_subdir {
 
     my $path = $scfg->{path};
 
-    die "storage definition has no path\n" if !$path;
+    die "The storage definition has no path\n" if !$path;
 
     my $subdir = $vtype_subdirs->{$vtype};
 
@@ -425,7 +425,7 @@ sub create_base {
     my ($vtype, $name, $vmid, $basename, $basevmid, $isBase) =
         $class->parse_volname($volname);
 
-    die "create_base not possible with base image\n" if $isBase;
+    die "create_base is not possible with base image\n" if $isBase;
 
     $class->deactivate_volume($storeid, $scfg, $volname, undef, undef);
 
@@ -563,12 +563,12 @@ sub get_device_mapper_name {
     my ($class, $scfg, $wwid) = @_;
 
     print "Starget getting device mapper name ${wwid}\n" if get_debug($scfg); 
-    open(my $multipath_topology, '-|', "multipath -ll $wwid") or die "Unable to list multipath topology: $!";
-    
+    open(my $multipath_topology, '-|', "multipath -ll $wwid") or die "Unable to list multipath topology: $!\n";
+
     print "Cleaning output for ${wwid}\n" if get_debug($scfg); 
 
     my $device_mapper_name;
-    
+
     while (my $line = <$multipath_topology>) {
         chomp $line;
         print "line ${line}\n" if get_debug($scfg); 
@@ -610,10 +610,10 @@ sub remove_multipath_binding {
     my ($class, $scsiid, $target) = @_;
 
     eval {run_command(["sed", "-i", "/${scsiid}/Id", "/etc/multipath/bindings"], errmsg => 'sed command error') };
-    die "Unable remove scsi id from binding file ${scsiid} because of $@" if $@;
+    die "Unable to remove the SCSI ID from the binding file ${scsiid} because of $@\n" if $@;
 
     eval {run_command(["sed", "-i", "/${target}/Id", "/etc/multipath/bindings"], errmsg => 'sed command error') };
-    die "Unable remove target from binding file ${target} because of $@" if $@;
+    die "Unable to remove the target from the binding file ${target} because of $@\n" if $@;
 }
 
 sub stage_multipath {
@@ -624,13 +624,13 @@ sub stage_multipath {
     print "Staging ${target}\n" if get_debug($scfg);
 
     eval { run_command([$MULTIPATH, '-a', $scsiid]); };
-    die "Unable to add scsi id ${scsiid} $@" if $@;
+    die "Unable to add the SCSI ID ${scsiid} $@\n" if $@;
     eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
-    die "Unable to restart multipath daemon $@" if $@;
+    die "Unable to restart the multipath daemon: $@\n" if $@;
 
     my $mpathname = $class->get_device_mapper_name($scfg, $scsiid);
     unless (defined($mpathname)){
-        die "Unable to identify multipath name for ${mpathname}\n";
+        die "Unable to identify the multipath name for ${mpathname}\n";
     }
     print "Device mapper name ${mpathname}\n" if get_debug($scfg);
    
@@ -651,7 +651,7 @@ sub stage_multipath {
     }
 
     eval { run_command(["ln", "/dev/mapper/${mpathname}", "/dev/mapper/${target}"]); };
-    die "Unable to cretate link $@" if $@;
+    die "Unable to create link: $@\n" if $@;
     return;
 }
 
@@ -671,7 +671,7 @@ sub unstage_multipath {
 
     eval { $scsiid = $class->get_scsiid($scfg, $target, $storeid); };
     if ($@) {
-        die "Unable to identify scsiid for target ${target}";
+        die "Unable to identify the SCSI ID for target ${target}";
     }
 
     unless (defined($scsiid)) {
@@ -681,18 +681,18 @@ sub unstage_multipath {
 
     eval{ run_command([$MULTIPATH, '-f', ${scsiid}]); };
     if ($@) {
-        warn "Unable to remove multipath mapping for target ${target} because of $@\n" if $@;
+        warn "Unable to remove the multipath mapping for target ${target} because of $@\n" if $@;
         my $mapper_name = $class->get_device_mapper_name($scfg, $target);
         if (defined($mapper_name)) {
             eval{ run_command([$DMSETUP, "remove", "-f", $class->get_device_mapper_name($scfg, $target)]); };
-            die "Unable to remove multipath mapping for target ${target} with dmsetup $@\n" if $@;
+            die "Unable to remove the multipath mapping for target ${target} with dmsetup: $@\n" if $@;
         } else {
             warn "Unable to identify multipath mapper name for ${target}\n";
         }
     }
 
     eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
-    die "Unable to restart multipath daemon $@" if $@;
+    die "Unable to restart the multipath daemon $@\n" if $@;
 }
 
 sub get_multipath_path {
@@ -730,7 +730,7 @@ sub get_scsiid {
             eval {run_command($getscsiidcmd, outfunc => sub { $scsiid = shift; }); };
 
             if ($@) {
-                die "Unable to get iscsi id for ${targetpath} because of $@\n";
+                die "Unable to get the iSCSI ID for ${targetpath} because of $@\n";
             };
         } else {
             next;
@@ -760,14 +760,13 @@ sub get_target_name {
     }
 
     if (defined($target)) {
-        
-        
+
         $target = clean_word($target);
         if ($target =~ /^([\:\-\@\w.\/]+)$/) {
             return $1;
         }
     }
-    die "Unable to identify target name for ${volname} ".safe_var_print("snapshot", $snapname);
+    die "Unable to identify the target name for ${volname} ".safe_var_print("snapshot", $snapname);
 }
 
 sub get_target_path {
@@ -864,7 +863,7 @@ sub volume_rollback_is_possible {
 
     my $res = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "rollback", "check"]);
     if ( length($res) > 1) {
-        die "Unable to rollback ". $volname . " to snapshot " . $snap . " because resources(s) " . $res . " will be lost in process. Please remove depending resources before continuing.\n"
+        die "Unable to rollback ". $volname . " to snapshot " . $snap . " because the resources(s) " . $res . " will be lost in the process. Please remove the dependent resources before continuing.\n"
     }
 
     return 0;
@@ -974,7 +973,7 @@ sub ensure_content_volume {
         eval { run_command(['blkid', '-o', 'value', $tpath, '-s', 'UUID'], outfunc => sub { $tuuid = shift; }); };
         if ($@) {
                 warn $@;
-                die "Unable identify UUID of content volume.";
+                die "Unable to identify the UUID of content volume\n";
         }
 
         if ($findmntpath eq $tuuid) {
@@ -985,7 +984,7 @@ sub ensure_content_volume {
         warn "Another volume is mounted to the content volume ${content_path} location.";
         my $cmd = ['/bin/umount', $content_path];
         eval {run_command($cmd, errmsg => 'umount error') };
-        die "Unable to unmount unknown volume at content path ${content_path}" if $@;
+        die "Unable to unmount an unknown volume at content path ${content_path}\n" if $@;
 
     }
 
@@ -1003,7 +1002,7 @@ sub ensure_content_volume {
     print "Checking file system on device ${tpath}\n";
     eval { run_command(["/usr/sbin/fsck", "-n", $tpath])};
     if ($@) {
-            die "Unable identify file system type for content storage, if that is a first run, format ${tpath} to a file system of your choise.\n";
+            die "Unable to identify file system type for content storage, if this is the first run, format ${tpath} to the file system of your choice.\n";
     }
     print "Mounting device ${tpath}\n";
     mkdir "$content_path";
