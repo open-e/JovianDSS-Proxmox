@@ -1,0 +1,38 @@
+name: Single snapshot rollback
+prerequisites: 
+    - Plugin installed on proxmox
+    - JovianDSS have Pool-0
+    - JovianDSS have REST enabled
+    - Plugin and jdssc configured according git installation guide
+    - Logging level for jdssc INFO
+setup:
+id: plugin-rollback-001
+scenario: |
+    Create volume and snapshot and commit rollback using proxmox UI
+description: |
+    Basic test that verifys that plugin correctly interpretates
+    rollback to snapshot request from proxmox and commits rollback
+    to JovianDSS storage
+objective: ensure that revert to snapshot feature works as part of Proxmox
+steps:
+    - Create container test1
+    - Create snapshot snap1
+    - Start container and create file data
+    - Conduct rollback of container test1 to snap1
+data:
+    - description: container name
+      value: test1
+      name: test1
+    - description: snapshot name
+      value: snap1
+      name: snap1
+    - description: file name inside container test1tn
+      value: data
+      name: data
+parameters:
+references:
+expected_results: |
+    Container test1 should be rolled back to original steate and
+    file created on it should be gone
+    Logs should contain record of volume associated with vm test1
+    been rolled back to snap1

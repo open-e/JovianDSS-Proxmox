@@ -310,7 +310,7 @@ make uninstall
 Or by installing it from debian package
 
 ```bash
-apt install ./open-e-joviandss-proxmox-plugin_0.9.7.deb
+apt install ./open-e-joviandss-proxmox-plugin_0.9.8.deb
 ```
 
 Once installation is done, provide configuration.
@@ -331,7 +331,7 @@ Plugin have to be installed and configured on all nodes in cluster.
 - [x] Delete volume
 - [x] Create snapshot
 - [x] Delete snapshot
-- [ ] Restore snapshot
+- [X] Restore snapshot, only for latest one
 - [x] Create template
 - [x] Delete template
 - [x] ISO support

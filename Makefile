@@ -18,7 +18,7 @@ deb:
 	install -D -m 0555 ./DEBIAN/prerm $(debdir)/DEBIAN/postrm
 
 	dpkg-deb --build $(debdir)
-	@mv $(debdir).deb ./open-e-joviandss-proxmox-plugin_$(IMAGE_VERSION).deb
+	@mv $(debdir).deb ./open-e-joviandss-proxmox-plugin-$(IMAGE_VERSION).deb
 	@cp ./open-e-joviandss-proxmox-plugin-$(IMAGE_VERSION).deb ./open-e-joviandss-proxmox-plugin-latest.deb
 	rm -rf $(debdir)
 

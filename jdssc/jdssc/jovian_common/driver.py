@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import datetime
 import logging
 from oslo_utils import units as o_units
 import math
@@ -34,7 +35,7 @@ class JovianDSSDriver(object):
 
     def __init__(self, config):
 
-        self.VERSION = "0.9.7"
+        self.VERSION = "0.9.8"
 
         self.configuration = config
         self._pool = self.configuration.get('jovian_pool', 'Pool-0')
@@ -359,6 +360,8 @@ class JovianDSSDriver(object):
         bsnaps = self._list_busy_snapshots(vname,
                                            snapshots,
                                            exclude_dedicated_snapshots=True)
+        # TODO: make sure that in case there are volume clones and snapshots
+        # mount points, we show user only clones as dependency
         if len(bsnaps) > 0:
             cnames = []
             for s in snapshots:
@@ -648,11 +651,12 @@ class JovianDSSDriver(object):
 
                     if len(dsnaps) > 0:
                         msg = "Snapshot is busy, delete dependent snapshots firs"
-                        dsnames = [jcom.sid_from_sname(s['name']) for s in dsnaps]
+                        dsnames = [jcom.sid_from_sname(
+                            s['name']) for s in dsnaps]
                         jcom.dependency_error(msg, dsnames)
 
                         raise jexc.JDSSSnapshotIsBusyException(
-                                jcom.sid_from_sname(sname))
+                            jcom.sid_from_sname(sname))
                     else:
                         self._delete_volume(cvname, cascade=False)
 
@@ -1021,9 +1025,9 @@ class JovianDSSDriver(object):
             self.ra.modify_lun(jcom.vname(volume_name, prop=prop))
         except jexc.JDSSException as err:
             emsg = "Failed to set volume %(vol)s property %(pname)s with value %(pval)s" % {
-                              'vol': volume_name,
-                              'pname': property,
-                              'pval': value}
+                'vol': volume_name,
+                'pname': property,
+                'pval': value}
             raise Exception(emsg) from err
 
     def rename_volume(self, volume_name, new_volume_name):
@@ -1038,8 +1042,8 @@ class JovianDSSDriver(object):
             self.ra.modify_lun(vname, prop)
         except jexc.JDSSException as err:
             emsg = "Failed to rename volume %(vol)s to %(new_name)s" % {
-                              'vol': vname,
-                              'new_name': nvname}
+                'vol': vname,
+                'new_name': nvname}
             raise Exception(emsg) from err
 
     def _list_all_snapshots(self, f=None):
@@ -1082,12 +1086,6 @@ class JovianDSSDriver(object):
                 i += 1
             else:
                 break
-
-        # for snap in snaps:
-        #     for clone in jcom.snapshot_clones(snap):
-        #         LOG.debug("Add snapshots of clone %s", clone)
-
-        #         snaps.extend(self._list_all_volume_snapshots(clone, f))
 
         return snaps
 
@@ -1135,7 +1133,8 @@ class JovianDSSDriver(object):
 
                 out.append(snap)
                 for clone in jcom.snapshot_clones(snap):
-                    LOG.debug("List volume recursion step for list_volume_snapshots")
+                    LOG.debug(
+                        "List volume recursion step for list_volume_snapshots")
                     out.extend(self._list_volume_snapshots(ovolume_name,
                                                            clone))
                 continue
@@ -1264,35 +1263,6 @@ class JovianDSSDriver(object):
                     return out
         return None
 
-    def revert_to_snapshot(self, volume_name, snapshot_name):
-        """Revert volume to snapshot.
-
-        Note: the revert process should not change the volume's
-        current size, that means if the driver shrank
-        the volume during the process, it should extend the
-        volume internally.
-        """
-        raise jexc.JDSSException("Function not supported")
-        vname = jcom.vname(volume_name)
-        sname = jcom.sname(snapshot_name, volume_name)
-        LOG.debug('reverting %(vname)s to %(sname)s', {
-            "vname": vname,
-            "sname": sname})
-
-        pname = self._find_snapshot_parent(vname, sname)
-        if pname is None:
-            raise jexc.JDSSSnapshotNotFoundException(snapshot_name)
-
-        hname = self._hide_object(vname)
-        if pname == vname:
-            pname = hname
-        # TODO: make sure that sparsity of the volume depends on config
-        self._clone_object(vname, sname, pname,
-                           create_snapshot=False)
-        self._promote_volume(vname)
-        # TODO: catch if volume is busy with snapshots
-        # in this case we just ignore
-
     def _update_volume_stats(self):
         """Retrieve stats info."""
         LOG.debug('Updating volume stats')
@@ -1335,13 +1305,193 @@ class JovianDSSDriver(object):
 
     def get_volume_stats(self):
         """Return information about pool capacity
-        
+
         return (total_gb, free_gb)
         """
         self._update_volume_stats()
 
         return (self._stats['total_capacity_gb'],
                 self._stats['free_capacity_gb'])
+
+    def _list_snapshot_rollback_dependency(self, vname, sname):
+        """List snapshot rollback dependency return list of resource that
+            would be affected by rollback
+
+        List that is returned is not exact full list and should not be used
+        to make decision of rollback is possible
+
+        :param vname: physical volume id
+        :param sname: physical snapshot id that belongs to vname
+
+        :return: { 'snapshots': [<list of snapshots preventing rollback>],
+                   'clones':    [<list of clones preventing rollback>]}
+        """
+        rsnap = {}
+
+        try:
+            rsnap = self.ra.get_snapshot(vname, sname)
+        except jexc.JDSSResourceNotFoundException as nferr:
+            LOG.debug('Volume %s snapshot %s not found',
+                      jcom.idname(vname), jcom.idname(sname))
+            raise nferr
+        except jexc.JDSSException as jerr:
+            LOG.error(
+                "Unable to get volume %(volume)s snapshot %(snapshot)s "
+                "information %(err)s.", {
+                    "volume": vname,
+                    "snapshot": sname,
+                    "err": jerr})
+            raise jerr
+
+        dformat = "%Y-%m-%d %H:%M:%S"
+        rdate = None
+        if (('creation' in rsnap) and
+            (type(rsnap['creation']) is str) and
+                (len(rsnap['creation']) > 0)):
+            rdate = datetime.datetime.strptime(rsnap['creation'], dformat)
+            LOG.debug('Rollback date of snapshot %s is %s',
+                      sname, str(rdate))
+
+        def filter_older_snapshots(snap):
+
+            if snap['name'] == sname:
+                return False
+
+            if (('creation' in snap) and
+                (type(snap['creation']) is str) and
+                    (len(snap['creation']) > 0)):
+
+                date = datetime.datetime.strptime(snap['creation'], dformat)
+                if date >= rdate:
+                    return True
+                else:
+                    return False
+            else:
+                return True
+
+        snapshots = self._list_all_volume_snapshots(
+            vname, filter_older_snapshots)
+
+        snapshot_names = [jcom.idname(s['name']) for s in snapshots]
+        clone_names = []
+        for s in snapshots:
+            clone_names.extend([jcom.idname(c)
+                                for c in jcom.snapshot_clones(s)])
+
+        out = {'snapshots': snapshot_names,
+               'clones': clone_names}
+        return out
+
+    def rollback_check(self, volume_name, snapshot_name):
+        """Rollback check if volume can be rolled back to specific snapshot
+
+        It checks if other snapshots or clones depend on snapshot sname
+        If rollback can be commited sucessfully function returns empty list
+        If rollback cause deletion of resources, function will raise exception
+
+        :param vname: physical volume id
+        :param sname: physical snapshot id that belongs to vname
+
+        :return: { 'snapshots': [<list of snapshots preventing rollback>],
+                   'clones':    [<list of clones preventing rollback>]}
+        """
+        vname = jcom.vname(volume_name)
+        sname = jcom.sname(snapshot_name, volume_name)
+        dependency = {}
+        try:
+            dependency = self.ra.get_snapshot_rollback(vname, sname)
+        except jexc.JDSSResourceNotFoundException as nferr:
+            LOG.debug('Volumes %s snapshot %s not found', vname, sname)
+            raise nferr
+        except jexc.JDSSException as jerr:
+            LOG.error(
+                "Unable to continue volume %(volume)s rollback to "
+                "snapshot %(snapshot)s because of inability to check snapshot "
+                "rollback information %(err)s.", {
+                    "volume": jcom.idname(vname),
+                    "snapshot": jcom.idname(sname),
+                    "err": jerr})
+            raise jerr
+
+        if (len(dependency) > 0 and
+            "snapshots" in dependency and
+                "clones" in dependency):
+            if (dependency["snapshots"] == 0 and
+                    dependency["clones"] == 0):
+                return None
+            else:
+                LOG.debug("rolling back is blocked by resources %s",
+                          str(dependency))
+        out = self._list_snapshot_rollback_dependency(vname, sname)
+
+        if len(out['snapshots']) == 0 and dependency['snapshots'] > 0:
+            out['snapshots'] = ["Unknown"]
+
+        if len(out['clones']) == 0 and dependency['clones'] > 0:
+            out['clones'] = ["Unknown"]
+
+        return out
+
+    def rollback(self, volume_name, snapshot_name):
+        """Rollback volume to specific snapshot
+
+        This function operates around ZFS rollback.
+        It checks if other snapshots or clones depend on snapshot sname
+        And commits rollback if no dependecy is found.
+        In other case it raises ResourceIsBusy exception.
+
+        :param vname: physical volume id
+        :param sname: physical snapshot id that belongs to vname
+
+        :return: None
+        """
+
+        vname = jcom.vname(volume_name)
+        sname = jcom.sname(snapshot_name, volume_name)
+
+        dependency = {}
+        try:
+            dependency = self.ra.get_snapshot_rollback(vname, sname)
+        except jexc.JDSSResourceNotFoundException as nferr:
+            LOG.debug('Volumes %s snapshot %s not found', vname, sname)
+            raise nferr
+        except jexc.JDSSException as jerr:
+            LOG.error(
+                "Unable to continue volume %(volume)s rollback to "
+                "snapshot %(snapshot)s because of inability to check snapshot "
+                "rollback information %(err)s.", {
+                    "volume": jcom.idname(vname),
+                    "snapshot": jcom.idname(sname),
+                    "err": jerr})
+            raise jerr
+
+        if (len(dependency) > 0 and
+                "snapshots" in dependency and
+                "clones" in dependency):
+            if (dependency["snapshots"] == 0 and
+                    dependency["clones"] == 0):
+                LOG.info(("rolling back volume %(vol)s to snapshot "
+                          "%(snap)s"),
+                         {'vol': jcom.idname(vname),
+                          'snap': jcom.idname(sname)})
+                self.ra.snapshot_rollback(vname, sname)
+                LOG.info(("rolling back volume %(vol)s to snapshot "
+                          "%(snap)s done"),
+                         {'vol': jcom.idname(vname),
+                          'snap': jcom.idname(sname)})
+                return
+            else:
+                LOG.debug("rolling back is blocked by resources %s",
+                          dependency)
+
+        deplist = self._list_snapshot_rollback_dependency(vname, sname)
+
+        raise jexc.JDSSRollbackIsBlocked(volume_name,
+                                         snapshot_name,
+                                         deplist['snapshots'],
+                                         deplist['clones'],
+                                         dependency['snapshots'],
+                                         dependency['clones'])
 
     @property
     def backend_name(self):

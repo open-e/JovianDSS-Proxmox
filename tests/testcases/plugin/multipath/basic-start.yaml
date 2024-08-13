@@ -1,0 +1,32 @@
+name: Enable multipath for plugin
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have Pool-0
+    - JovianDSS have REST enabled
+    - Plugin and jdssc configured according git installation guide
+    - Multipath is not configured
+    - Logging level for jdssc INFO
+setup:
+id: plugin-multipath-enable-001
+scenario: |
+    Enable multipath option for plugin, start container and observe multipath
+    device get created
+description: |
+    Test that verifys that multipath feature is working for plugin
+objective: ensure that basic functionality for multipath feature is present and working
+steps:
+    - Enable multipath feature in config file
+    - Create container test1
+    - Start container test1
+    - Ensure that multipath device is present and mounted
+    - Turn off container
+data:
+    - description: container name
+      value: test1
+      name: test1
+parameters:
+references:
+expected_results: |
+    Container get test1 created and works properly
+    Container test1 should be created and removed without any error notifications.
+    Multipath device with proper scsi id get listed in topology `/usr/sbin/multipath -ll`

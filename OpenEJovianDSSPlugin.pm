@@ -19,18 +19,18 @@ use strict;
 use warnings;
 use Carp qw( confess );
 use IO::File;
-use JSON::XS qw( decode_json );
 use Data::Dumper;
 use Storable qw(lock_store lock_retrieve);
-use UUID "uuid";
 
 use File::Path qw(make_path);
 use File::Temp qw(tempfile);
-#use File::Sync qw(fsync sync);
 
 use Encode qw(decode encode);
 
-use PVE::Tools qw(run_command file_read_firstline trim dir_glob_regex dir_glob_foreach $IPV4RE $IPV6RE);
+use PVE::Tools qw(run_command);
+use PVE::Tools qw($IPV4RE);
+use PVE::Tools qw($IPV6RE);
+
 use PVE::INotify;
 use PVE::Storage;
 use PVE::Storage::Plugin;
@@ -40,7 +40,7 @@ use base qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.9.7';
+my $PLUGIN_VERSION = '0.9.8';
 
 # Configuration
 
@@ -52,7 +52,6 @@ my $default_multipath = 0;
 my $default_content_size = 100;
 my $default_path = "/mnt/joviandss";
 
-#my $default_jmultipathd = "/etc/multipath/conf.d/joviandssdisks";
 
 sub api {
 
@@ -128,7 +127,7 @@ sub print_dir {
     unless (get_debug($scfg)) {
         return;
     }
-    open(my $test_data, '-|', "ls -all ${dir}") or die "Unable to list dir: $!";
+    open(my $test_data, '-|', "ls -all ${dir}") or die "Unable to list dir: $!\n";
 
     while (my $line = <$test_data>) {
             print "${line}";
@@ -143,7 +142,7 @@ sub safe_var_print {
 
 sub get_pool {
     my ($scfg) = @_;
-    die "pool name required in storage.cfg" if !defined($scfg->{pool_name});
+    die "pool name required in storage.cfg\n" if !defined($scfg->{pool_name});
     return $scfg->{pool_name};
 }
 
@@ -179,7 +178,7 @@ sub get_content_volume_name {
         return $cv;
     }
     my $cvn = $scfg->{content_volume_name};
-    die "Content volume name should only include lower case, numbers and . - chars" if ( not ($cvn =~ /^[a-z0-9.-]*$/) );
+    die "Content volume name should only include lower case, numbers and . - chars\n" if ( not ($cvn =~ /^[a-z0-9.-]*$/) );
 
     return $cvn;
 }
@@ -344,7 +343,7 @@ sub iscsi_login {
     #TODO: for each IP run discovery
     eval { iscsi_discovery($target, $portal_in); };
     warn $@ if $@;
-    
+
     #TODO: for each target run login
     run_command([$ISCSIADM, '--mode', 'node', '-p', $portal_in, '--targetname',  $target, '--login']);
 }
@@ -496,7 +495,6 @@ sub free_image {
     if ('images' cmp "$vtype") {
         return $class->SUPER::free_image($storeid, $scfg, $volname, $isBase, $format);
     }
-    #die 1;
     print"Deleting volume ${volname} format ${format}\n" if get_debug($scfg);
 
     $class->deactivate_volume($storeid, $scfg, $volname, undef, undef);
@@ -538,6 +536,8 @@ sub stage_target {
             eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--login']); };
             warn $@ if $@;
     }
+
+    $targetpath = $class->get_target_path($scfg, $target, $storeid);
 
     print "Storage address is ${targetpath}\n" if get_debug($scfg);
 
@@ -796,7 +796,7 @@ sub list_images {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    my $jdssc =  $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "list", "--vmid"]);
+    my $jdssc = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "list", "--vmid"]);
 
     my $res = [];
     foreach (split(/\n/, $jdssc)) {
@@ -845,19 +845,27 @@ sub volume_snapshot_needs_fsfreeze {
 
 sub volume_snapshot_rollback {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
-    
-    die "Volume snapshot rollback is not supported\n";
 
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "rollback"]);
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "rollback", "do"]);
 }
 
 sub volume_rollback_is_possible {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
+
+    my $config = get_config($scfg);
+    my $pool = get_pool($scfg);
+
+    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+
+    my $res = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "rollback", "check"]);
+    if ( length($res) > 1) {
+        die "Unable to rollback ". $volname . " to snapshot " . $snap . " because resources(s) " . $res . " will be lost in process. Please remove depending resources before continuing.\n"
+    }
 
     return 0;
 }
@@ -918,7 +926,6 @@ sub status {
     my $pool = get_pool($scfg);
 
     my $jdssc =  $class->joviandss_cmd(["-c", $config, "pool", $pool, "get"]);
-
     my $gb = 1024*1024*1024;
     my ($total, $avail, $used) = split(" ", $jdssc);
 
@@ -996,8 +1003,7 @@ sub ensure_content_volume {
     print "Checking file system on device ${tpath}\n";
     eval { run_command(["/usr/sbin/fsck", "-n", $tpath])};
     if ($@) {
-            warn $@;
-            die "Unable identify file system type for content storage, if that is a first run, format ${tpath} to a file sistem of your choise.";
+            die "Unable identify file system type for content storage, if that is a first run, format ${tpath} to a file system of your choise.\n";
     }
     print "Mounting device ${tpath}\n";
     mkdir "$content_path";
@@ -1008,9 +1014,9 @@ sub ensure_content_volume {
 
 sub ensure_fs {
     my ( $class, $scfg) = @_; 
-    
+
     my $path = get_content_path($scfg);
-    
+
     make_path $path, {owner=>'root', group=>'root'};
     my $dir_path = "$path/iso";
     mkdir $dir_path;
@@ -1064,12 +1070,9 @@ sub activate_volume_ext {
     my $pool = get_pool($scfg);
 
     my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
-    
+
     my $targetpath = $class->get_target_path($scfg, $target, $storeid);
 
-    #if (-b $targetpath) {
-    #    print "Volume ${volname} ".safe_var_print("snapshot", $snapname)." present at path ${targetpath} \n" if get_debug($scfg);
-    #} else {
     my $createtargetcmd = ["-c", $config, "pool", $pool, "targets", "create", "-v", $volname];
     if ($snapname){
         push @$createtargetcmd, "--snapshot", $snapname;
@@ -1209,8 +1212,6 @@ sub storage_can_replicate {
     my ($class, $scfg, $storeid, $format) = @_;
 
     return 1 if $format eq 'raw';
-    # TODO: additional testing of subvolumes is required
-    #return 1 if $format eq 'raw' || $format eq 'subvol';
 
     return 0;
 }

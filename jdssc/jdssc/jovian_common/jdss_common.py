@@ -115,6 +115,9 @@ def sname_to_id(sname):
         vid = JBase32ToStr(spl[2])
         return sid, vid
 
+    if spl[0] == 'autosnap':
+        return ('_'.join(spl[1:]), None)
+
     msg = "Incorrect snapshot name %s" % sname
     raise Exception(msg)
 
@@ -138,16 +141,6 @@ def sname(sid, vid):
     # b for based
 
     out = 's_%(sid)s' % {'sid': sid}
-    return out
-
-    # if allowedPattern.match(sid):
-    #     out = 'se_%(sid)s' % {'sid': sid}
-    # else:
-    #     out = 'sb_%(sid)s' % {'sid': JBase32FromStr(sid)}
-
-    # if vid is not None and len(vid) > 0:
-    #     out += '_%(vid)s' % {'vid': JBase32FromStr(vid)}
-
     return out
 
 

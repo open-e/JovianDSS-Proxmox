@@ -1,0 +1,46 @@
+name: Impossible rollback due to existing newer snapshots
+prerequisites: 
+    - Plugin installed
+    - JovianDSS have Pool-0
+    - JovianDSS have REST enabled
+    - All initialization is done
+setup:
+id: rollback-003
+scenario: |
+    Create volume and 3 or even more snapshots in a row than rollback to
+    oldes one
+description: |
+    Test that checks mechanism that prevents rollback from deleting
+    newer snapshots and lister that lists all snapshots that get affected by
+    rollback
+objective: |
+    To ensure that rollback request will not lead to data loss and proper
+    notification will be shown to user
+steps:
+    - Create volume test1
+    - Format volume test1
+    - Create snapshot snap1
+    - Create snapshot snap2
+    - Create snapshot snap3
+    - Conduct rollback of test1 to snap1
+data:
+    - description: volume name
+      value: test1
+      name: test1
+    - description: |
+        Older snapshot that is created fisrt and will be used for rollback
+      value: snap1
+      name: snap1
+    - description: |
+        Newer snapshot that will be created after snap1
+      value: snap2
+      name: snap2
+    - description: |
+        Snapshot that will be created after snap2
+      value: snap3
+      name: snap3
+parameters: pool Pool-0 volume test1 snapshot snap1 rollback do
+references:
+expected_results: |
+    CLI should exit with error and print snapshot snap2 and snap3 as
+    one that have to be deleted first befor rollback can be done

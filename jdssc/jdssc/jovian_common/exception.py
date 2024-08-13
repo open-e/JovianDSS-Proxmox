@@ -108,6 +108,47 @@ class JDSSResourceVolumeIsBusyException(JDSSException):
         super().__init__(self.message)
 
 
+class JDSSRollbackIsBlocked(JDSSException):
+
+    def __init__(self,
+                 volume, snapshot,
+                 snapshots, clones,
+                 nsnapshots, nclones):
+        snaps_string = ""
+        while len(snapshots) > 0:
+            snaps_string = ' '.join(snapshots[:10]) + "\n"
+            snapshots = snapshots[10:]
+
+        clones_string = ""
+        while len(clones) > 0:
+            clones_string = ' '.join(clones[:10]) + "\n"
+            clones = clones[10:]
+
+        msg = (("Unable to rollback volume %(volume_name)s to snapshot "
+                "%(snapshot_name)s.\n") %
+               {'volume_name': volume,
+                'snapshot_name': snapshot})
+        if nsnapshots > 0 or nclones > 0:
+            msg += "Because "
+            if nsnapshots > 0:
+                msg += "%d snapshot(s) " % nsnapshots
+
+            if nclones > 0:
+                msg += "%d clone(s) " % nclones
+
+            msg += "will be lost in process.\n"
+
+        if len(snaps_string) > 0 or len(clones_string) > 0:
+            msg += "To proceed with rollback please remove\n"
+            if len(snaps_string) > 0:
+                msg += "snapshots: %s\n" % snaps_string
+            if len(clones_string) > 0:
+                msg += "clones: %s\n" % clones_string
+
+        self.message = msg
+        super().__init__(self.message)
+
+
 class JDSSSnapshotIsBusyException(JDSSResourceIsBusyException):
     """Snapshot have dependent clones"""
 
@@ -120,7 +161,8 @@ class JDSSOSException(JDSSException):
     """Storage internal system error"""
 
     def __init__(self, res):
-        self.message = ("JDSS internal system error %(message)s.")
+        self.message = ("JDSS internal system error %(res)s." %
+                        {'res': res})
         super().__init__(self.message)
 
 

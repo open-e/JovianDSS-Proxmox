@@ -23,6 +23,8 @@ from jdssc.jovian_common import exception as jexc
 from jdssc.jovian_common import rest_proxy
 from jdssc.jovian_common.stub import _
 
+from jdssc.jovian_common import jdss_common as jcom
+
 LOG = logging.getLogger(__name__)
 
 
@@ -142,8 +144,6 @@ class JovianRESTAPI(object):
         :param block_size: size of block
         :return:
         """
-        LOG.debug("create volume start")
-        LOG.debug("%s", volume_size)
         volume_size_str = str(volume_size)
         jbody = {
             'name': volume_name,
@@ -155,7 +155,10 @@ class JovianRESTAPI(object):
 
         req = '/volumes'
 
-        LOG.debug("create volume %s", str(jbody))
+        LOG.info("create volume %(vol)s of size %(size)s"
+                 " that is sparse" if sparse else "",
+                 {'vol': jcom.idname(volume_name),
+                  'size': volume_size_str})
         resp = self.rproxy.pool_request('POST', req, json_data=jbody)
 
         if not resp["error"] and resp["code"] in (200, 201):
@@ -183,9 +186,9 @@ class JovianRESTAPI(object):
             'size': volume_size_str
         }
 
-        LOG.debug("jdss extend volume %(volume)s to %(size)s",
-                  {"volume": volume_name,
-                   "size": volume_size_str})
+        LOG.info("extend volume %(volume)s to %(size)s",
+                 {"volume": jcom.idname(volume_name),
+                  "size": volume_size_str})
         resp = self.rproxy.pool_request('PUT', req, json_data=jbody)
 
         if not resp["error"] and resp["code"] == 201:
@@ -283,6 +286,9 @@ class JovianRESTAPI(object):
 
         req = '/volumes/' + volume_name
 
+        LOG.info("update volume %(vol)s properties %(prop)s",
+                 {'vol': jcom.idname(volume_name),
+                  'prop': str(prop)})
         resp = self.rproxy.pool_request('PUT', req, json_data=prop)
 
         if resp["code"] in (200, 201, 204):
@@ -317,6 +323,10 @@ class JovianRESTAPI(object):
 
         req = '/volumes/%s/properties' % volume_name
 
+        LOG.info("set volume %(vol)s propertie %(prop)s to %(value)s",
+                 {'vol': jcom.idname(volume_name),
+                  'prop': str(prop['property_name']),
+                  'value': str(prop['property_value'])})
         resp = self.rproxy.pool_request('PUT', req, json_data=prop)
 
         if resp["code"] in (200, 201, 204):
@@ -332,31 +342,6 @@ class JovianRESTAPI(object):
                 raise jexc.JDSSRESTException(request=req,
                                              reason=resp['error']['message'])
         raise jexc.JDSSRESTException(request=req, reason="unknown")
-
-    def promote(self, volume_name, snapshot_name, clone_name):
-        """promote volume
-
-        POST /volumes/<volumename>/snapshots/<snapshotname>/clones/
-                <clonename>/promoteclone_promote
-        :param volume_name: parent volume for the one that should be promoted
-        :param snapshot_name: snapshot that is linking parent and clone
-        :param clone_name: volume name that is going to be promoted
-        :return:
-        """
-        jbody = {}
-
-        req = '/volumes/' + volume_name + \
-              '/snapshots/' + snapshot_name + \
-              '/clones/' + clone_name + '/promote'
-
-        LOG.debug("promote clone %s", clone_name)
-        resp = self.rproxy.pool_request('POST', req, json_data=jbody)
-
-        if resp["code"] == 200:
-            LOG.debug("clone %s promoted", clone_name)
-            return
-
-        self._general_error(req, resp)
 
     def delete_lun(self, volume_name,
                    recursively_children=False,
@@ -375,10 +360,10 @@ class JovianRESTAPI(object):
             jbody['force_umount'] = True
 
         req = '/volumes/' + volume_name
-        LOG.debug(("delete volume:%(vol)s "
-                   "args:%(args)s"),
-                  {'vol': volume_name,
-                   'args': jbody})
+        LOG.info(("delete volume: %(vol)s"
+                  " recursively" if recursively_children else ""
+                  " with unmounting" if force_umount else ""),
+                 {'vol': jcom.idname(volume_name)})
 
         if len(jbody) > 0:
             resp = self.rproxy.pool_request('DELETE', req, json_data=jbody)
@@ -460,8 +445,6 @@ class JovianRESTAPI(object):
         """
         req = '/san/iscsi/targets'
 
-        LOG.debug("create target %s", target_name)
-
         jdata = {"name": target_name, "active": True}
 
         jdata["incoming_users_active"] = use_chap
@@ -471,6 +454,9 @@ class JovianRESTAPI(object):
 
         if deny_ip:
             jdata["deny_ip"] = deny_ip
+
+        LOG.info("create iSCSI target: %(target)s",
+                 {'target': target_name})
 
         resp = self.rproxy.pool_request('POST', req, json_data=jdata)
 
@@ -492,7 +478,8 @@ class JovianRESTAPI(object):
         """
         req = '/san/iscsi/targets/' + target_name
 
-        LOG.debug("delete target %s", target_name)
+        LOG.info("delete iSCSI target: %(target)s",
+                 {'target': target_name})
 
         resp = self.rproxy.pool_request('DELETE', req)
 
@@ -695,7 +682,9 @@ class JovianRESTAPI(object):
             'snapshot_name': snapshot_name
         }
 
-        LOG.debug("create snapshot %s", snapshot_name)
+        LOG.info("create snapshot %(snap)s for volume %(vol)s",
+                 {'snap': jcom.idname(snapshot_name),
+                  'vol': jcom.idname(volume_name)})
 
         resp = self.rproxy.pool_request('POST', req, json_data=jbody)
 
@@ -737,9 +726,9 @@ class JovianRESTAPI(object):
         if 'readonly' in options:
             jbody['readonly'] = options['readonly']
 
-        LOG.debug("create volume %(vol)s from snapshot %(snap)s",
-                  {'vol': volume_name,
-                   'snap': snapshot_name})
+        LOG.info("create volume %(vol)s from snapshot %(snap)s",
+                 {'vol': jcom.idname(volume_name),
+                  'snap': jcom.idname(snapshot_name)})
 
         resp = self.rproxy.pool_request('POST', req, json_data=jbody)
 
@@ -759,68 +748,6 @@ class JovianRESTAPI(object):
             if "message" in resp["error"]:
                 if self.no_space_left.match(resp["error"]["message"]):
                     raise jexc.JDSSResourceExhausted
-
-        self._general_error(req, resp)
-
-    def rollback_volume_to_snapshot(self, volume_name, snapshot_name):
-        """Rollback volume to its snapshot
-
-        POST /volumes/<volume_name>/snapshots/<snapshot_name>/rollback
-        :param volume_name: volume that is going to be restored
-        :param snapshot_name: snapshot of a volume above
-        :return:
-        """
-        req = ('/volumes/%(vol)s/snapshots/'
-               '%(snap)s/rollback') % {'vol': volume_name,
-                                       'snap': snapshot_name}
-
-        LOG.debug("rollback volume %(vol)s to snapshot %(snap)s",
-                  {'vol': volume_name,
-                   'snap': snapshot_name})
-
-        resp = self.rproxy.pool_request('POST', req)
-
-        if not resp["error"] and resp["code"] == 200:
-            return
-
-        if resp["code"] == 500:
-            if resp["error"]:
-                if resp["error"]["errno"] == 1:
-                    raise jexc.JDSSResourceNotFoundException(
-                        res="%(vol)s@%(snap)s" % {'vol': volume_name,
-                                                  'snap': snapshot_name})
-
-        self._general_error(req, resp)
-
-    def count_rollback_dependents(self, volume_name, snapshot_name):
-        """Count volumes and snapshots affected by rollback
-
-        GET /volumes/<volume_name>/snapshots/<snapshot_name>/rollback
-
-        :param str volume_name: volume that is going to be reverted
-        :param str snapshot_name: snapshot of a volume above
-
-        :return: None
-        """
-        req = ('/volumes/%(vol)s/snapshots/'
-               '%(snap)s/rollback') % {'vol': volume_name,
-                                       'snap': snapshot_name}
-
-        LOG.debug("get rollback count for volume %(vol)s to snapshot %(snap)s",
-                  {'vol': volume_name,
-                   'snap': snapshot_name})
-
-        resp = self.rproxy.pool_request('GET', req)
-
-        if not resp["error"] and resp["code"] == 200:
-            return resp['data']
-
-        if resp["code"] == 500:
-            if resp["error"]:
-                if resp["error"]["errno"] == 1:
-                    raise jexc.JDSSResourceNotFoundException(
-                        res="%(vol)s@%(snap)s" % {'vol': volume_name,
-                                                  'snap': snapshot_name})
 
         self._general_error(req, resp)
 
@@ -849,9 +776,6 @@ class JovianRESTAPI(object):
         req = '/volumes/%(vol)s/snapshots/%(snap)s' % {
             'vol': volume_name,
             'snap': snapshot_name}
-        LOG.debug("delete snapshot %(snap)s of volume %(vol)s",
-                  {'snap': snapshot_name,
-                   'vol': volume_name})
 
         jbody = {}
         if recursively_children:
@@ -859,6 +783,12 @@ class JovianRESTAPI(object):
 
         if force_umount:
             jbody['force_umount'] = True
+
+        LOG.info(("delete snapshot: %(snap) for volume: %(vol)s"
+                  " recursively" if recursively_children else ""
+                  " with unmounting" if force_umount else ""),
+                 {'vol': jcom.idname(volume_name),
+                  'snap': jcom.idname(snapshot_name)})
 
         resp = self.rproxy.pool_request('DELETE', req, json_data=jbody)
 
@@ -1103,5 +1033,63 @@ class JovianRESTAPI(object):
         resp = self.rproxy.pool_request('GET', req)
         if not resp["error"] and resp["code"] == 200:
             return resp["data"]
+
+        self._general_error(req, resp)
+
+    def get_snapshot_rollback(self, volume_name, snapshot_name):
+        """get snapshot rollback fetches number of resources affected by
+        volume rollback to specific snapshot
+
+        GET /volumes/<volume_name>/snapshots/<snapshot_name>/rollback
+
+        :param str volume_name: volume that is going to be reverted
+        :param str snapshot_name: snapshot of a volume above
+
+        :return: { 'clones': int, 'snapshots': int }
+        """
+        req = (('/volumes/%(vname)s/snapshots/%(sname)s/rollback') %
+               {'vname': volume_name, 'sname': snapshot_name})
+
+        LOG.info(("check rollback dependency count for volume %(vol)s"
+                 " to snapshot %(snap)s"),
+                 {'vol': jcom.idname(volume_name),
+                  'snap': jcom.idname(snapshot_name)})
+
+        resp = self.rproxy.pool_request('GET', req)
+
+        if not resp["error"] and resp["code"] == 200:
+            return resp["data"]
+
+        if resp["code"] == 500:
+            if resp["error"]:
+                if resp["error"]["errno"] == 1:
+                    raise jexc.JDSSResourceNotFoundException(
+                        res="%(vol)s@%(snap)s" % {'vol': volume_name,
+                                                  'snap': snapshot_name})
+
+        self._general_error(req, resp)
+
+    def snapshot_rollback(self, volume_name, snapshot_name):
+        """snapshot rollback rollbacks volume to its snapshot
+
+        POST /volumes/<volume_name>/snapshots/<snapshot_name>/rollback
+        :param volume_name: volume that is going to be restored
+        :param snapshot_name: snapshot of a volume above
+        :return:
+        """
+        req = (('/volumes/%(vname)s/snapshots/%(sname)s/rollback') %
+               {'vname': volume_name, 'sname': snapshot_name})
+
+        LOG.info("rollback volume %(vol)s to snapshot %(snap)s",
+                 {'vol': jcom.idname(volume_name),
+                  'snap': jcom.idname(snapshot_name)})
+
+        resp = self.rproxy.pool_request('POST', req)
+
+        if resp["code"] in (200, 201, 204):
+            LOG.debug("volume %s been rolled back to snapshot %s",
+                      volume_name,
+                      snapshot_name)
+            return
 
         self._general_error(req, resp)
