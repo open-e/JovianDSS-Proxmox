@@ -155,10 +155,11 @@ class JovianRESTAPI(object):
 
         req = '/volumes'
 
-        LOG.info("create volume %(vol)s of size %(size)s"
-                 " that is sparse" if sparse else "",
+        LOG.info("create volume %(vol)s of size %(size)s%(sparse)s",
                  {'vol': jcom.idname(volume_name),
-                  'size': volume_size_str})
+                  'size': volume_size_str,
+                  'sparse': ' that is sparse' if sparse else ''})
+
         resp = self.rproxy.pool_request('POST', req, json_data=jbody)
 
         if not resp["error"] and resp["code"] in (200, 201):

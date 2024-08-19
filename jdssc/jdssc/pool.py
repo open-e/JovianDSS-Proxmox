@@ -16,6 +16,7 @@
 import argparse
 import sys
 
+from jdssc.jovian_common import driver
 import jdssc.cifs as cifs
 import jdssc.nas_volumes as nas_volumes
 import jdssc.volumes as volumes
@@ -46,6 +47,7 @@ class Pools():
 
         if self.args['pool_name']:
             self.jdss.configuration['jovian_pool'] = self.args['pool_name']
+            self.jdss = driver.JovianDSSDriver(self.jdss.configuration)
 
         if 'pool_action' in self.args and args['pool_action'] is not None:
             self.pa[self.args.pop('pool_action')]()

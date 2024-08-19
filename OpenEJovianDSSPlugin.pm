@@ -40,7 +40,7 @@ use base qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.9.8';
+my $PLUGIN_VERSION = '0.9.8-2';
 
 # Configuration
 
@@ -366,7 +366,7 @@ sub volume_path {
     my ($class, $scfg, $volname, $storeid, $snapname) = @_;
 
     print"Getting path of volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
-    
+
     my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
 
     my $tpath;
@@ -633,7 +633,7 @@ sub stage_multipath {
         die "Unable to identify the multipath name for ${mpathname}\n";
     }
     print "Device mapper name ${mpathname}\n" if get_debug($scfg);
-   
+
     if ( -e $targetpath ){
         my ($tm, $mm);
         eval {run_command(["readlink", "-f", $targetpath], outfunc => sub {

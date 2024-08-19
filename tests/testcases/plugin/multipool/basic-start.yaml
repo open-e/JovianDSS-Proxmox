@@ -1,0 +1,53 @@
+name: Multiple storage entries
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have Pool-0
+    - JovianDSS have Pool-1
+    - JovianDSS have REST enabled
+    - Plugin and jdssc configured to have single pool according git installation guide
+    - Multipath is not configured
+    - Logging level for jdssc INFO
+setup:
+id: plugin-multiple-storages-001
+scenario: |
+    User starts proxmox with 2 storages provided by JovianDSS
+    creates contaners on both of them and removes containers afterward
+description: |
+    Test that verifys that multipath feature is working for plugin
+objective: ensure that plugin is capable of creating volumes for pools with different names
+steps:
+    - Add jdss-Pool-1 description to proxmox storage.cfg
+    - Create container test1 on jdss-Pool-0
+    - Create container test2 on jdss-Pool-1
+    - Start container test1
+    - Start container test2
+    - Check volumes on both pools
+    - Turn off containers
+    - Delete containers
+data:
+    - description: Pool name
+      value: Pool-0
+      name: Pool-0
+    - description: Pool name
+      value: Pool-1
+      name: Pool-1
+    - description: Storage name name
+      value: jdss-Pool-0
+      name: jdss-Pool-0
+    - description: Storage name name
+      value: jdss-Pool-1
+      name: jdss-Pool-1
+    - description: container name
+      value: test1
+      name: test1
+    - description: container name
+      value: test2
+      name: test2
+parameters:
+references:
+expected_results: |
+    Storages jdss-Pool-0 and jdss-Pool-1 get created
+    Content volumes get automaticaly created for both volumes
+    Containers get successfully created and their volumes present on both
+        pools respectively
+    Containers and their volumes get successfully deleted
