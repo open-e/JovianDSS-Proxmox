@@ -40,7 +40,7 @@ use base qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.9.8-2';
+my $PLUGIN_VERSION = '0.9.8-4';
 
 # Configuration
 

@@ -25,7 +25,12 @@ class JDSSException(Exception):
 class JDSSRESTException(JDSSException):
     """Unknown communication error"""
 
-    message = ("JDSS REST request %(request)s faild: %(reason)s.")
+    def __init__(self, request, reason):
+        msg = ("JDSS REST request %(request)s faild: %(reason)s." %
+               {"request": request,
+                "reason": reason})
+        self.message = msg
+        super().__init__(self.message)
 
 
 class JDSSRESTProxyException(JDSSException):

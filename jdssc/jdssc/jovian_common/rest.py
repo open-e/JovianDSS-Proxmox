@@ -45,6 +45,9 @@ class JovianRESTAPI(object):
         self.resource_has_clones_class = (
             re.compile(r'^opene.storage.zfs.ZfsOeError$'))
 
+        self.resource_has_clones2_class = (
+            re.compile(r'^opene.storage.zfs.zfs.ZfsOeError$'))
+
         self.resource_has_snapshots_msg = (
             re.compile(r"^cannot destroy '.*/.*': volume has children\nuse "
                        r"'-r' to destroy the following datasets:\n.*"))
@@ -112,7 +115,7 @@ class JovianRESTAPI(object):
         resp = self.rproxy.request('GET', req)
         if (resp['error'] is None) and (resp['code'] == 200):
             return resp['data']
-        raise jexc.JDSSRESTException(resp['error']['message'])
+        self._general_error(req, resp)
 
     def get_luns(self):
         """get_all_pool_volumes.
@@ -129,7 +132,7 @@ class JovianRESTAPI(object):
 
         if resp['error'] is None and resp['code'] == 200:
             return resp['data']
-        raise jexc.JDSSRESTException(resp['error']['message'])
+        self._general_error(req, resp)
 
     def create_lun(self, volume_name, volume_size, sparse=False,
                    block_size=None):
@@ -168,13 +171,11 @@ class JovianRESTAPI(object):
         if "error" in resp and resp["error"] is not None:
             if "errno" in resp['error']:
                 if resp["error"]["errno"] == str(5):
-                    msg = _('Failed to create volume %s.' %
-                            resp['error']['message'])
-                    raise jexc.JDSSRESTException(msg)
+                    self._general_error(req, resp)
             if "message" in resp["error"]:
                 if self.no_space_left.match(resp["error"]["message"]):
                     raise jexc.JDSSResourceExhausted
-        raise jexc.JDSSRESTException('Failed to create volume.')
+        self._general_error(req, resp)
 
     def extend_lun(self, volume_name, volume_size):
         """create_volume.
@@ -196,10 +197,10 @@ class JovianRESTAPI(object):
             return
 
         if resp["error"]:
-            raise jexc.JDSSRESTException(
-                _('Failed to extend volume %s' % resp['error']['message']))
+            raise jexc.JDSSRESTException(req,
+                                         _('Failed to extend volume %s' % volume_name))
 
-        raise jexc.JDSSRESTException('Failed to extend volume.')
+        self._general_error(req, resp)
 
     def is_lun(self, volume_name):
         """is_lun.
@@ -340,9 +341,7 @@ class JovianRESTAPI(object):
                 if resp["error"]["errno"] == 1:
                     raise jexc.JDSSResourceNotFoundException(
                         res=volume_name)
-                raise jexc.JDSSRESTException(request=req,
-                                             reason=resp['error']['message'])
-        raise jexc.JDSSRESTException(request=req, reason="unknown")
+        self._general_error(req, resp)
 
     def delete_lun(self, volume_name,
                    recursively_children=False,
@@ -388,20 +387,33 @@ class JovianRESTAPI(object):
         if resp["code"] == 500 and resp["error"]:
             if 'message' in resp['error'] and \
                'class' in resp['error']:
-                if self.resource_has_clones_msg.match(
-                        resp['error']['message']) and \
-                   self.resource_has_clones_class.match(
-                        resp['error']['class']):
+                if (self.resource_has_clones_msg.match(
+                        resp['error']['message']) and
+                   (self.resource_has_clones_class.match(
+                        resp['error']['class']) or
+                   self.resource_has_clones2_class.match(
+                        resp['error']['class']))):
                     LOG.warning("volume %s is busy", volume_name)
                     raise jexc.JDSSResourceIsBusyException(res=volume_name)
-                if self.resource_has_snapshots_msg.match(
-                        resp['error']['message']) and \
+                if (self.resource_has_snapshots_msg.match(
+                        resp['error']['message']) and
                    self.resource_has_snapshots_class.match(
-                        resp['error']['class']):
+                        resp['error']['class'])):
+                    LOG.warning("volume %s is busy", volume_name)
+                    raise jexc.JDSSResourceIsBusyException(res=volume_name)
+        if 'error' in resp and resp["error"] is not None:
+            if 'message' in resp['error'] and \
+               'class' in resp['error']:
+                if (self.resource_has_clones_msg.match(
+                        resp['error']['message']) and
+                   (self.resource_has_clones_class.match(
+                        resp['error']['class']) or
+                   self.resource_has_clones2_class.match(
+                        resp['error']['class']))):
                     LOG.warning("volume %s is busy", volume_name)
                     raise jexc.JDSSResourceIsBusyException(res=volume_name)
 
-        raise jexc.JDSSRESTException('Failed to delete volume.')
+        self._general_error(req, resp)
 
     def is_target(self, target_name):
         """is_target.

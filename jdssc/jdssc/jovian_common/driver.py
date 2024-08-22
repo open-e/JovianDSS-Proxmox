@@ -35,7 +35,7 @@ class JovianDSSDriver(object):
 
     def __init__(self, config):
 
-        self.VERSION = "0.9.8-2"
+        self.VERSION = "0.9.8-4"
 
         self.configuration = config
         self._pool = self.configuration.get('jovian_pool', 'Pool-0')
@@ -50,7 +50,7 @@ class JovianDSSDriver(object):
         self.block_size = (
             self.configuration.get('jovian_block_size', '16K'))
         self.jovian_sparse = (
-            self.configuration.get('san_thin_provision', True))
+            self.configuration.get('san_thin_provision', False))
         self.jovian_ignore_tpath = self.configuration.get(
             'jovian_ignore_tpath', None)
         self.jovian_hosts = self.configuration.get(
@@ -75,7 +75,7 @@ class JovianDSSDriver(object):
             'port': self.jovian_iscsi_target_portal_port,
             'name': self._get_target_name(volume_name)}
 
-    def create_volume(self, volume_id, volume_size, sparse=False,
+    def create_volume(self, volume_id, volume_size, sparse=None,
                       block_size=None,
                       direct_mode=False):
         """Create a volume.
@@ -91,12 +91,18 @@ class JovianDSSDriver(object):
         if direct_mode:
             vname = volume_id
 
-        LOG.debug("Create volume:%(name)s with size:%(size)s",
-                  {'name': volume_id, 'size': volume_size})
+        if sparse is None:
+            sparse = self.jovian_sparse
+
+        LOG.debug(("Create volume:%(name)s with size:%(size)s "
+                   "sparse is %(sparse)s"),
+                  {'name': volume_id,
+                   'size': volume_size,
+                   'sparse': self.jovian_sparse})
 
         self.ra.create_lun(vname,
                            volume_size,
-                           sparse=sparse,
+                           sparse=self.jovian_sparse,
                            block_size=block_size)
         return
 
@@ -294,7 +300,8 @@ class JovianDSSDriver(object):
             cnames.extend(jcom.snapshot_clones(s))
 
         volume_names = [jcom.idname(vn) for vn in cnames]
-        msg = ("Volume %(volume_name)s is busy, delete dependent volumes first:"
+        msg = (("Volume %(volume_name)s is busy, delete dependent "
+                "volumes first:")
                % {'volume_name': jcom.idname(vname)})
         jcom.dependency_error(msg, volume_names)
 
@@ -429,6 +436,9 @@ class JovianDSSDriver(object):
             "ovname": ovname,
             "coname": cvname})
 
+        if sparse is None:
+            sparse = self.jovian_sparse
+
         if create_snapshot:
             self.ra.create_snapshot(ovname, sname)
         try:
@@ -482,7 +492,7 @@ class JovianDSSDriver(object):
                              volume_name,
                              size,
                              snapshot_name=None,
-                             sparse=False):
+                             sparse=None):
         """Create a clone of the specified volume.
 
         :param str clone_name: new volume id
@@ -517,6 +527,11 @@ class JovianDSSDriver(object):
                                create_snapshot=True,
                                sparse=sparse,
                                readonly=jcom.is_snapshot(cvname))
+
+        if sparse is None:
+            sparse = self.jovian_sparse
+
+        self._set_provisioning_thin(cvname, sparse)
 
         size = str(size)
 
@@ -650,7 +665,8 @@ class JovianDSSDriver(object):
                     dsnaps = self._list_all_volume_snapshots(cvname, None)
 
                     if len(dsnaps) > 0:
-                        msg = "Snapshot is busy, delete dependent snapshots firs"
+                        msg = ("Snapshot is busy, delete dependent snapshots "
+                               "firs")
                         dsnames = [jcom.sid_from_sname(
                             s['name']) for s in dsnaps]
                         jcom.dependency_error(msg, dsnames)
@@ -756,9 +772,9 @@ class JovianDSSDriver(object):
         if multipath:
             iface_info = self.get_active_ifaces()
             if not iface_info:
-                raise jexc.JDSSRESTException(
-                    _('No available interfaces '
-                      'or config excludes them'))
+                raise jexc.JDSSRESTException("none",
+                                             _('No available interfaces '
+                                               'or config excludes them'))
 
         iscsi_properties = {}
 
@@ -1015,19 +1031,22 @@ class JovianDSSDriver(object):
 
         return ret
 
-    def modify_volume(self, volume_name, property, value):
-        LOG.debug("Update volume %s property %s with value %s",
-                  volume_name,
-                  property,
-                  value)
-        prop = {property: value}
+    def _set_provisioning_thin(self, vname, thinp):
+
+        provisioning = 'thin' if thinp else 'thick'
+
+        LOG.info("Setting volume %s provisioning %s",
+                 jcom.idname(vname),
+                 provisioning)
+
+        prop = {'provisioning': provisioning}
         try:
-            self.ra.modify_lun(jcom.vname(volume_name, prop=prop))
+            self.ra.modify_lun(vname, prop=prop)
         except jexc.JDSSException as err:
-            emsg = "Failed to set volume %(vol)s property %(pname)s with value %(pval)s" % {
-                'vol': volume_name,
-                'pname': property,
-                'pval': value}
+            emsg = (("Failed to set volume %(vol)s provisioning "
+                     "%(ptype)s") % {
+                'vol': jcom.idname(vname),
+                'ptype': provisioning})
             raise Exception(emsg) from err
 
     def rename_volume(self, volume_name, new_volume_name):
@@ -1116,7 +1135,8 @@ class JovianDSSDriver(object):
 
         # Each snapshot we check
         for snap in snapshots:
-            # if that is a linked clone one we might not want to list it for specific volume
+            # if that is a linked clone one we might not
+            # want to list it for specific volume
             if jcom.is_volume(snap['name']):
                 if all:
                     snap['volume_name'] = vname
@@ -1174,22 +1194,6 @@ class JovianDSSDriver(object):
             except Exception:
                 continue
         return ret
-
-    def _hide_object(self, vname):
-        """Mark volume/snapshot as hidden
-
-        :param vname: physical volume name
-        """
-        rename = {'name': jcom.hidden(vname)}
-        try:
-            self.ra.modify_lun(vname, rename)
-            return rename['name']
-        except jexc.JDSSException as err:
-            msg = _('Failure in hidding %(object)s, err: %(error)s,'
-                    ' object have to be removed manually') % {'object': vname,
-                                                              'error': err}
-            LOG.warning(msg)
-            raise err
 
     def _promote_volume(self, cname):
         """Promote volume.
