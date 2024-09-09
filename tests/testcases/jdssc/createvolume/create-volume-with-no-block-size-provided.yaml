@@ -1,0 +1,28 @@
+name: Create volume with no block size provided
+prerequisites: 
+    - Plugin installed
+    - JovianDSS have Pool-0
+    - JovianDSS have REST enabled
+    - All initialization is done
+setup:
+id: volume-create-001
+scenario: |
+    Create volume with no block size provided in config or as argument
+description: |
+    Test that checks it is possible to create volume without providing block
+    size and default block size is used in such case
+objective: |
+    To ensure that default value will be used for block size in process
+    of volume creation
+steps:
+    - Remove joviandss_block_size property from config
+    - Create volume test1
+data:
+    - description: volume name
+      value: test1
+      name: test1
+parameters: pool Pool-0 volumes create -n test1 -s 512M
+references:
+expected_results: |
+    Volume with name test1 should be created
+    It should have blocksize equal to 16K

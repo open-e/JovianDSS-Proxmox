@@ -17,6 +17,7 @@ import argparse
 import logging
 import sys
 
+from jdssc.jovian_common import exception as jexc
 
 """Targets related commands."""
 
@@ -90,6 +91,21 @@ class Targets():
         get.add_argument('--snapshot', dest='snapshot_name',
                          default=None,
                          help='Get target based on snapshot')
+        get.add_argument('-c',
+                         '--current',
+                         required=False,
+                         dest='current',
+                         default=False,
+                         action='store_true',
+                         help=('Current volume target, it will search for '
+                               'target that volume is attached to. '
+                               'This message should help to identify target '
+                               ' if user changes iscsi target prefix'))
+        get.add_argument('-d',
+                         dest='direct_mode',
+                         action='store_true',
+                         default=False,
+                         help='Use real volume name')
         get.add_argument('-v',
                          required=True,
                          dest='volume_name',
@@ -111,19 +127,19 @@ class Targets():
         if self.args['snapshot_name']:
 
             self.jdss.create_export_snapshot(
-                    self.args['snapshot_name'],
-                    self.args['volume_name'],
-                    None)
+                self.args['snapshot_name'],
+                self.args['volume_name'],
+                None)
             provider_location = self.jdss.get_provider_location(
-                    self.args['snapshot_name'])
+                self.args['snapshot_name'])
 
         else:
             self.jdss.ensure_export(
-                    self.args['volume_name'],
-                    None,
-                    direct_mode=self.args['direct_mode'])
+                self.args['volume_name'],
+                None,
+                direct_mode=self.args['direct_mode'])
             provider_location = self.jdss.get_provider_location(
-                    self.args['volume_name'])
+                self.args['volume_name'])
         out = ''
         if self.args['host']:
             out += ' ' + ':'.join(provider_location.split()[0].split(':')[:-1])
@@ -143,27 +159,42 @@ class Targets():
     def get(self):
 
         LOG.debug("Getting target for volume %s", self.args['volume_name'])
+
+        target = None
+
+        if self.args['current']:
+            try:
+                target = self.jdss.get_volume_target(
+                    self.args['volume_name'],
+                    self.args['snapshot_name'],
+                    self.args['direct'])
+            except jexc.JDSSTargetNotFoundException:
+                return
+
         provider_location = None
         if self.args['snapshot_name']:
             provider_location = self.jdss.get_provider_location(
-                    self.args['snapshot_name'])
+                self.args['snapshot_name'])
         elif self.args['volume_name']:
             provider_location = self.jdss.get_provider_location(
-                    self.args['volume_name'])
+                self.args['volume_name'])
         else:
             sys.exit(1)
 
         pvs = provider_location.split()
         ip = ''.join(pvs[0].split(':')[:-1])
         target_port = pvs[0].split(':')[-1].split(',')[0]
-        target = pvs[1]
+
+        if target is None:
+            target = pvs[1]
+
         lun = pvs[2]
         if self.args['path_format']:
             out = "ip-{ip}:{port}-iscsi-{target}-lun-{lun}".format(
-                    ip=ip,
-                    port=target_port,
-                    target=target,
-                    lun=lun)
+                ip=ip,
+                port=target_port,
+                target=target,
+                lun=lun)
             out = [chr(ord(c)) for c in out]
             print(''.join(out))
             return

@@ -1,0 +1,32 @@
+name: Create volume with block size provided as cli option
+prerequisites: 
+    - Plugin installed
+    - JovianDSS have Pool-0
+    - JovianDSS have REST enabled
+    - All initialization is done
+setup:
+id: volume-create-003
+scenario: |
+    Create volumes while changing block size cli options
+description: |
+    Test that checks cli block size option and block size of
+    newly created volume
+objective: |
+    To ensure that cli option have higher priority over config option
+    and that cli option take affect
+steps:
+    - Set joviandss_block_size config property to 4K
+    - Create volume test1 with block size 32K
+    - Create volume test2 with block size 64K
+data:
+    - description: volume name
+      value: test1
+      name: test1
+    - description: volume name
+      value: test2
+      name: test2
+parameters: pool Pool-0 volumes create -n test[1-2] -b [32K, 64K] -s 512M
+references:
+expected_results: |
+    Volumes will be created with block size provided in cli argument
+    test1 will be 32K, test2 will have block size 64K

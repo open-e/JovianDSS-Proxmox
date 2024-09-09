@@ -40,7 +40,7 @@ use base qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.9.8-4';
+my $PLUGIN_VERSION = '0.9.8-5';
 
 # Configuration
 
@@ -367,7 +367,7 @@ sub volume_path {
 
     print"Getting path of volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
 
-    my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
+    my $target = $class->get_target_name($scfg, $volname, $snapname);
 
     my $tpath;
 
@@ -505,7 +505,7 @@ sub free_image {
 
 sub clean_word {
     my ($word) = @_;
-    
+
     chomp($word);
     $word =~ s/[^[:ascii:]]//;
 
@@ -544,6 +544,20 @@ sub stage_target {
     return $targetpath;
 }
 
+sub unstage_volume {
+    my ($class, $scfg, $volume_name, $snapshot_name) = @_;
+
+    print "Unstaging target ${target}\n" if get_debug($scfg); 
+    my @hosts = $class->get_storage_addresses($scfg, $storeid);
+
+    foreach my $host (@hosts) {
+        eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--logout']); };
+        warn $@ if $@;
+        eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '-o', 'delete']); };
+        warn $@ if $@;
+    }
+}
+
 sub unstage_target {
     my ($class, $scfg, $storeid, $target) = @_;
 
@@ -557,7 +571,6 @@ sub unstage_target {
         warn $@ if $@;
     }
 }
-
 
 sub get_device_mapper_name {
     my ($class, $scfg, $wwid) = @_;
@@ -746,8 +759,34 @@ sub get_scsiid {
     return undef;
 }
 
+sub get_active_target_name {
+    my ($class, $scfg, $volname, $snapname, $content) = @_;
+
+    my $config = get_config($scfg);
+    my $pool = get_pool($scfg);
+
+
+    my $gettargetcmd = ["-c", $config, "pool", $pool, "targets", "get", "-v", $volname, "--current"];
+    if ($snapname){
+        push @$gettargetcmd, "--snapshot", $snapname;
+    }
+    if ($content) {
+        push @$createtargetcmd, '-d';
+    }
+
+    my $target;
+    $target = $class->joviandss_cmd($gettargetcmd);
+
+    if (defined($target)) {
+        $target = clean_word($target);
+        if ($target =~ /^([\:\-\@\w.\/]+)$/) {
+            return $1;
+        }
+    }
+}
+
 sub get_target_name {
-    my ($class, $scfg, $volname, $storeid, $snapname) = @_;
+    my ($class, $scfg, $volname, $snapname) = @_;
 
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
@@ -760,7 +799,6 @@ sub get_target_name {
     }
 
     if (defined($target)) {
-
         $target = clean_word($target);
         if ($target =~ /^([\:\-\@\w.\/]+)$/) {
             return $1;
@@ -966,14 +1004,27 @@ sub ensure_content_volume {
     my $findmntpath; 
     eval {run_command(["findmnt", $content_path, "-n", "-o", "UUID"], outfunc => sub { $findmntpath = shift; }); };
 
-    my $tname = $class->get_target_name($scfg, $content_volname, $storeid);
+    my $tname = $class->get_target_name($scfg, $content_volname);
 
     if (defined($findmntpath)) {
         my $tuuid;
         eval { run_command(['blkid', '-o', 'value', $tpath, '-s', 'UUID'], outfunc => sub { $tuuid = shift; }); };
         if ($@) {
-                warn $@;
-                die "Unable to identify the UUID of content volume\n";
+            deactivate_storage($storeid, $scfg, $cache);
+
+            #my $cmd = ['/bin/umount', $content_path];
+            #eval {run_command($cmd, errmsg => 'umount error') };
+
+            # if (multipath_enabled($scfg)) {
+
+            #     print "Removing multipath\n" if get_debug($scfg);
+            #     $class->unstage_multipath($scfg, $storeid, $tname);
+            # }
+            # print "Unstaging target\n" if get_debug($scfg);
+            # $class->unstage_target($scfg, $storeid, $tname);
+
+            warn $@;
+            die "Unable to identify the UUID of content volume\n";
         }
 
         if ($findmntpath eq $tuuid) {
@@ -1042,9 +1093,15 @@ sub activate_storage {
 sub deactivate_storage {
     my ( $class, $storeid, $scfg, $cache ) = @_;
 
+    print "Deactivating storage ${storeid}\n" if get_debug($scfg);
+
     my $path = get_content_path($scfg);
     my $content_volname = get_content_volume_name($scfg);
-    my $target = $class->get_target_name($scfg, $content_volname, $storeid);
+
+    my $target = $class->get_active_target_name($scfg, $content_volname, _, 1);
+    unless (defined($target)) {
+        $target = $class->get_target_name($scfg, $content_volname, _,);
+    }
 
     my $cmd = ['/bin/umount', $path];
     eval {run_command($cmd, errmsg => 'umount error') };
@@ -1068,7 +1125,7 @@ sub activate_volume_ext {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    my $target = $class->get_target_name($scfg, $volname, $storeid, $snapname);
+    my $target = $class->get_target_name($scfg, $volname, $snapname);
 
     my $targetpath = $class->get_target_path($scfg, $target, $storeid);
 
@@ -1131,7 +1188,12 @@ sub deactivate_volume {
 
     return 0 if ('images' ne "$vtype");
 
-    my $starget = $class->get_target_name($scfg, $volname, $storeid, $snapname);
+    my $target = $class->get_active_target_name($scfg, $volname, $snapname);
+    unless (defined($target)) {
+        $target = $class->get_target_name($scfg, $volname, $snapname);
+    }
+
+    my $starget = $class->get_target_name($scfg, $volname, $snapname);
     $class->unstage_multipath($scfg, $storeid, $starget) if multipath_enabled($scfg);
     $class->unstage_target($scfg, $storeid, $starget);
 
@@ -1140,13 +1202,13 @@ sub deactivate_volume {
         my @dsl = split(" ", $delitablesnaps);
 
         foreach (@dsl) {
-            my $starget = $class->get_target_name($scfg, $volname, $storeid, $_);
+            my $starget = $class->get_target_name($scfg, $volname, $_);
             $class->unstage_multipath($scfg, $storeid, $starget) if multipath_enabled($scfg);;
             $class->unstage_target($scfg, $storeid, $starget);
         }
         $class->unstage_multipath($scfg, $storeid, $starget) if multipath_enabled($scfg);;
     }
-    
+
     if ($snapname){
         $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "delete", "-v", $volname, "--snapshot", $snapname]);
     } else {

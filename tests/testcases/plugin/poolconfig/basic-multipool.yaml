@@ -1,4 +1,4 @@
-name: Multiple storage entries
+name: Multiple pool entries
 prerequisites: 
     - Plugin installed on Proxmox
     - JovianDSS have Pool-0

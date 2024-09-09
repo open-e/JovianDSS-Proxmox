@@ -35,7 +35,7 @@ class JovianDSSDriver(object):
 
     def __init__(self, config):
 
-        self.VERSION = "0.9.8-4"
+        self.VERSION = "0.9.8-5"
 
         self.configuration = config
         self._pool = self.configuration.get('jovian_pool', 'Pool-0')
@@ -710,6 +710,100 @@ class JovianDSSDriver(object):
         except jexc.JDSSResourceNotFoundException:
             self._delete_snapshot(vname, "s_" + snapshot_name)
 
+    def get_volume_target(self, volume_name, snapshot_name=None, direct=False):
+        """Get volume target
+
+        Find target that the volume is attached to
+
+        :param str volume_name: name of volume
+        :param str direct: flag that indicates that volume name
+            should not be changed
+
+        :return str target_name: name of target that volume is attached to
+        :raises jexc.JDSSTargetNotFoundException: if no target is found
+        """
+
+        rname = ''
+        resource_name = ''
+        if snapshot_name:
+            rname = snapshot_name if direct else jcom.sname(snapshot_name)
+            resource_name = snapshot_name
+        else:
+            rname = volume_name if direct else jcom.vname(volume_name)
+            resource_name = volume_name
+
+        target_name = self._get_target_name(resource_name)
+
+        if self.ra.is_target(target_name):
+            luns = self.ra.get_target_luns(target_name)
+            for lun in luns:
+                if lun['name'] == rname:
+                    return target_name
+
+        targets = self.ra.get_targets()
+        pattern = r'^.*:' + re.escape(resource_name) + r'$'
+
+        for t in targets:
+            if 'name' in t:
+                if re.match(pattern, t['name']):
+                    luns = self.ra.get_target_luns(t['name'])
+                    for lun in luns:
+                        if lun['name'] == rname:
+                            return t['name']
+
+        for t in targets:
+            if 'name' in t:
+                luns = self.ra.get_target_luns(t['name'])
+                for lun in luns:
+                    if 'name' in lun and lun['name'] == rname:
+                        return t['name']
+
+        raise jexc.JDSSTargetNotFoundException(target_name)
+
+    def _remove_target_if_volume_attached(self, targets, vname):
+        """Remove target if volume attached to it
+
+        Go through list of given targets and remove one that have vname
+        volume attached to it. Exists on first find
+
+        :param str targets: list of targets descriptions given by
+                .../pool/<pool name>/san/iscsi/targets
+        :param str vname: physical volume name
+
+        :return:
+        """
+        for t in [target['name'] for target in targets]:
+            luns = self.ra.get_target_luns(t)
+            for lun in luns:
+                if 'name' in lun and lun['name'] == vname:
+                    self.ra.detach_target_vol(t, vname)
+                    self.ra.delete_target(t)
+                    return True
+
+        return False
+
+    def _remove_volume_targets(self, vname):
+        """remove volume targets will clean volume associated targets
+
+        :param str vname: physical volume id
+        """
+        LOG.debug("remove targets associated with volume %s", vname)
+
+        targets = self.ra.get_targets()
+        volume_name = jcom.idname(vname)
+        pattern = r'^.*:' + re.escape(volume_name) + r'$'
+
+        vtargets = []
+        for t in targets:
+            if 'name' in t:
+                if re.match(pattern, t['name']):
+                    vtargets.append(t)
+
+        if self._remove_target_if_volume_attached(vtargets, vname):
+            return
+
+        self._remove_target_if_volume_attached(targets, vname)
+
     def _ensure_target_volume(self, id, vid, provider_auth, ro=False):
         """Checks if target configured properly and volume is attached to it
 
@@ -726,7 +820,12 @@ class JovianDSSDriver(object):
             LOG.debug("creating target for volume %s with no auth", id)
 
         if not self.ra.is_target(target_name):
+            try:
+                return self._create_target_volume(id, vid, provider_auth)
+            except jexc.JDSSResourceIsBusyException:
+                LOG.debug("looks like volume %s belogns to other target", vid)
 
+            self._remove_volume_targets(vid)
             return self._create_target_volume(id, vid, provider_auth)
 
         if not self.ra.is_target_lun(target_name, vid):

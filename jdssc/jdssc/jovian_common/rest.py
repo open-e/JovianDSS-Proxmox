@@ -54,6 +54,18 @@ class JovianRESTAPI(object):
         self.resource_has_snapshots_class = (
             re.compile(r'^zfslib.wrap.zfs.ZfsCmdError$'))
 
+        self.class_zfsresourceerror = (
+            re.compile(r'^zfslib.zfsapi.resources.ZfsResourceError$'))
+
+        self.class_item_conflict_error = (
+            re.compile(r'^opene.exceptions.ItemConflictError$'))
+
+        self.message_volume_already_used = (
+            re.compile(r'^Volume .* is already used.$'))
+
+        self.resource_already_exists_msg = (
+            re.compile(r"^Resource .* already exists.$"))
+
         self.dataset_exists_msg = (
             re.compile(r"^cannot create '.*': dataset already exists$"))
 
@@ -175,6 +187,9 @@ class JovianRESTAPI(object):
             if "message" in resp["error"]:
                 if self.no_space_left.match(resp["error"]["message"]):
                     raise jexc.JDSSResourceExhausted
+                if self.resource_already_exists_msg.match(
+                        resp["error"]["message"]):
+                    raise jexc.JDSSVolumeExistsException(volume_name)
         self._general_error(req, resp)
 
     def extend_lun(self, volume_name, volume_size):
@@ -198,7 +213,8 @@ class JovianRESTAPI(object):
 
         if resp["error"]:
             raise jexc.JDSSRESTException(req,
-                                         _('Failed to extend volume %s' % volume_name))
+                                         _('Failed to extend volume %s' %
+                                           volume_name))
 
         self._general_error(req, resp)
 
@@ -536,6 +552,45 @@ class JovianRESTAPI(object):
 
         self._general_error(req, resp)
 
+    def get_targets(self):
+        """get_all_pool_volumes.
+
+        GET
+        /san/iscsi/targets
+
+        :return list of all iscsi targets related to pool
+        """
+        req = "/san/iscsi/targets"
+
+        LOG.debug("get all targets")
+        resp = self.rproxy.pool_request('GET', req)
+
+        if resp['error'] is None and resp['code'] == 200:
+            return resp['data']
+        self._general_error(req, resp)
+
+    def get_target_luns(self, target_name):
+        """Get list of luns attached to target
+
+        GET
+        /san/iscsi/targets/<target_name>/luns
+
+        :param target_name:
+        """
+        req = "/san/iscsi/targets/%s/luns" % target_name
+
+        LOG.debug("get target %s luns", target_name)
+
+        resp = self.rproxy.pool_request('GET', req)
+
+        if not resp["error"] and resp["code"] == 200:
+            return resp['data']
+
+        if resp['code'] == 404:
+            raise jexc.JDSSResourceNotFoundException(res=target_name)
+
+        self._general_error(req, resp)
+
     def get_target_user(self, target_name):
         """Get name of CHAP user for accessing target
 
@@ -645,13 +700,26 @@ class JovianRESTAPI(object):
         if not resp["error"] and resp["code"] == 201:
             return
 
+        if resp["error"]:
+            if ('class' in resp["error"] and
+                    self.class_item_conflict_error.match(
+                        resp['error']['class']) and
+                    'message' in resp["error"] and
+                    self.message_volume_already_used.match(
+                        resp['error']['message'])):
+                raise jexc.JDSSResourceIsBusyException(lun_name)
+
+        if "message" in resp["error"]:
+            if self.no_space_left.match(resp["error"]["message"]):
+                raise jexc.JDSSResourceExhausted
+
         if resp['code'] == 409:
             raise jexc.JDSSResourceExistsException(res=lun_name)
 
         if resp['code'] == 404:
             raise jexc.JDSSResourceNotFoundException(res=target_name)
 
-        self._general_error(req, resp)
+            self._general_error(req, resp)
 
     def detach_target_vol(self, target_name, lun_name):
         """detach_target_vol.
@@ -730,7 +798,7 @@ class JovianRESTAPI(object):
         jbody = {
             'name': volume_name,
             'snapshot': snapshot_name,
-            'sparse': False
+            'sparse': False,
         }
 
         if 'sparse' in options:
