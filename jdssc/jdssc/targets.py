@@ -163,13 +163,16 @@ class Targets():
         target = None
 
         if self.args['current']:
+            LOG.debug("Getting current target")
+
             try:
                 target = self.jdss.get_volume_target(
                     self.args['volume_name'],
                     self.args['snapshot_name'],
-                    self.args['direct'])
+                    self.args['direct_mode'])
             except jexc.JDSSTargetNotFoundException:
                 return
+        LOG.debug("target is %s", target)
 
         provider_location = None
         if self.args['snapshot_name']:
@@ -204,6 +207,6 @@ class Targets():
             out += ' ' + ':'.join(provider_location.split()[0].split(':')[:-1])
         if self.args['lun']:
             out += ' ' + lun
-        out = provider_location.split()[1] + out
+        out = target + out
 
         print(out)

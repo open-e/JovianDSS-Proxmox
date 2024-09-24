@@ -229,6 +229,22 @@ sub joviandss_cmd {
     return $msg;
 }
 
+# sub retry_run_command {
+#     my ($cmd, $errmsg, $tries, $timeout) = @_;
+#     my $attempt = 0;
+# 
+#     while ($attempt < $tries) {
+#         eval {
+#             run_command(cmd); # Attempt to run the command
+#         };
+#         last unless $@; # Exit loop if successful
+# 
+#         $attempt++;
+#         sleep(2 ** $timeout); # Exponential backoff
+#     }
+#     die "Failed after $max_attempts attempts: $@" if $@;
+# }
+
 my $ISCSIADM = '/usr/bin/iscsiadm';
 $ISCSIADM = undef if ! -X $ISCSIADM;
 
@@ -499,6 +515,23 @@ sub free_image {
 
     $class->deactivate_volume($storeid, $scfg, $volname, undef, undef);
 
+    # Volume deletion will result in deletetion of all its snapshots
+    # Therefore we have to detach all volume snapshots that is expected to be
+    # removed along side with volume
+    my $delitablesnaps = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "delete", "-c", "-p"]);
+    my @dsl = split(" ", $delitablesnaps);
+
+    foreach my $snap (@dsl) {
+        my $starget = $class->get_active_target_name(scfg => $scfg,
+                                                    volname => $volname,
+                                                    snapname => $snap);
+        unless (defined($starget)) {
+            $starget = $class->get_target_name($scfg, $volname, $snapname);
+        }
+        $class->unstage_multipath($scfg, $storeid, $starget) if multipath_enabled($scfg);;
+        $class->unstage_target($scfg, $storeid, $starget);
+    }
+
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "delete", "-c"]);
     return undef;
 }
@@ -544,19 +577,19 @@ sub stage_target {
     return $targetpath;
 }
 
-sub unstage_volume {
-    my ($class, $scfg, $volume_name, $snapshot_name) = @_;
-
-    print "Unstaging target ${target}\n" if get_debug($scfg); 
-    my @hosts = $class->get_storage_addresses($scfg, $storeid);
-
-    foreach my $host (@hosts) {
-        eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--logout']); };
-        warn $@ if $@;
-        eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '-o', 'delete']); };
-        warn $@ if $@;
-    }
-}
+# sub unstage_volume {
+#     my ($class, $scfg, $volume_name, $snapshot_name) = @_;
+# 
+#     print "Unstaging volume ${volume}\n" if get_debug($scfg); 
+#     my @hosts = $class->get_storage_addresses($scfg, $storeid);
+# 
+#     foreach my $host (@hosts) {
+#         eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--logout']); };
+#         warn $@ if $@;
+#         eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '-o', 'delete']); };
+#         warn $@ if $@;
+#     }
+# }
 
 sub unstage_target {
     my ($class, $scfg, $storeid, $target) = @_;
@@ -638,8 +671,9 @@ sub stage_multipath {
 
     eval { run_command([$MULTIPATH, '-a', $scsiid]); };
     die "Unable to add the SCSI ID ${scsiid} $@\n" if $@;
-    eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
-    die "Unable to restart the multipath daemon: $@\n" if $@;
+    #eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
+    eval { run_command([$MULTIPATH]); };
+    die "Unable to call multipath: $@\n" if $@;
 
     my $mpathname = $class->get_device_mapper_name($scfg, $scsiid);
     unless (defined($mpathname)){
@@ -704,7 +738,8 @@ sub unstage_multipath {
         }
     }
 
-    eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
+    eval { run_command([$MULTIPATH]); };
+    #eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
     die "Unable to restart the multipath daemon $@\n" if $@;
 }
 
@@ -760,7 +795,15 @@ sub get_scsiid {
 }
 
 sub get_active_target_name {
-    my ($class, $scfg, $volname, $snapname, $content) = @_;
+
+    my ($class, %args) = @_;
+
+    my $scfg = $args{scfg};
+    my $volname = $args{volname};
+    my $snapname = $args{snapname};
+    my $content = $args{content};
+
+    # my ($class, $scfg, $volname, $snapname, $content) = @_;
 
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
@@ -771,7 +814,7 @@ sub get_active_target_name {
         push @$gettargetcmd, "--snapshot", $snapname;
     }
     if ($content) {
-        push @$createtargetcmd, '-d';
+        push @$gettargetcmd, '-d';
     }
 
     my $target;
@@ -1098,9 +1141,11 @@ sub deactivate_storage {
     my $path = get_content_path($scfg);
     my $content_volname = get_content_volume_name($scfg);
 
-    my $target = $class->get_active_target_name($scfg, $content_volname, _, 1);
+    my $target = $class->get_active_target_name(scfg => $scfg,
+                                                volname => $content_volname,
+                                                content => 1);
     unless (defined($target)) {
-        $target = $class->get_target_name($scfg, $content_volname, _,);
+        $target = $class->get_target_name($scfg, $content_volname);
     }
 
     my $cmd = ['/bin/umount', $path];
@@ -1188,26 +1233,16 @@ sub deactivate_volume {
 
     return 0 if ('images' ne "$vtype");
 
-    my $target = $class->get_active_target_name($scfg, $volname, $snapname);
+    my $target = $class->get_active_target_name(scfg => $scfg,
+                                                volname => $volname,
+                                                snapname => $snapname);
     unless (defined($target)) {
         $target = $class->get_target_name($scfg, $volname, $snapname);
     }
 
-    my $starget = $class->get_target_name($scfg, $volname, $snapname);
-    $class->unstage_multipath($scfg, $storeid, $starget) if multipath_enabled($scfg);
-    $class->unstage_target($scfg, $storeid, $starget);
-
-    unless ($snapname) {
-        my $delitablesnaps = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "delete", "-c", "-p"]);
-        my @dsl = split(" ", $delitablesnaps);
-
-        foreach (@dsl) {
-            my $starget = $class->get_target_name($scfg, $volname, $_);
-            $class->unstage_multipath($scfg, $storeid, $starget) if multipath_enabled($scfg);;
-            $class->unstage_target($scfg, $storeid, $starget);
-        }
-        $class->unstage_multipath($scfg, $storeid, $starget) if multipath_enabled($scfg);;
-    }
+    # my $starget = $class->get_target_name($scfg, $volname, $snapname);
+    $class->unstage_multipath($scfg, $storeid, $target) if multipath_enabled($scfg);
+    $class->unstage_target($scfg, $storeid, $target);
 
     if ($snapname){
         $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "delete", "-v", $volname, "--snapshot", $snapname]);

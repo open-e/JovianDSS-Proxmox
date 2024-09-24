@@ -723,6 +723,8 @@ class JovianDSSDriver(object):
         :raises jexc.JDSSTargetNotFoundException: if no target is found
         """
 
+        LOG.debug("Getting volume target for volume %s", volume_name)
+
         rname = ''
         resource_name = ''
         if snapshot_name:
