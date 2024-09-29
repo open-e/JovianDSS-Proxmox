@@ -532,7 +532,9 @@ sub free_image {
         $class->unstage_multipath($scfg, $storeid, $starget) if multipath_enabled($scfg);;
 
         $class->unstage_target($scfg, $storeid, $starget);
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "delete", "-v", $volname, "--snapshot", $snap]);
     }
+     $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "delete", "-v", $volname]);
 
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "delete", "-c"]);
     return undef;
@@ -567,6 +569,8 @@ sub stage_target {
     foreach my $host (@hosts) {
 
             eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '-o', 'new']); };
+            warn $@ if $@;
+            eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--op', 'update', '-n', 'node.startup', '-v', 'automatic']); };
             warn $@ if $@;
             eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--login']); };
             warn $@ if $@;
@@ -1060,9 +1064,9 @@ sub storage_mounted {
     for my $mp (@$mounts) {
     my ($dev, $dir, $fs) = $mp->@*;
 
-    	next if $dir !~ m!^$mounts(?:/|$)!;
-    	next if $dev ne $disk;
-    	return 1;
+        next if $dir !~ m!^$mounts(?:/|$)!;
+        next if $dev ne $disk;
+        return 1;
     }
     return 0;
 }
@@ -1098,22 +1102,6 @@ sub ensure_content_volume {
         eval { run_command(['blkid', '-o', 'value', $bdpath, '-s', 'UUID'], outfunc => sub { $tuuid = shift; }); };
         if ($@) {
             $class->deactivate_storage($storeid, $scfg, $cache);
-
-            # There is a volume findmntpath mounted to content_path
-            # 
-            #my $cmd = ['/bin/umount', $content_path];
-            #eval {run_command($cmd, errmsg => 'umount error') };
-
-            #if (multipath_enabled($scfg)) {
-
-            #    print "Removing multipath\n" if get_debug($scfg);
-            #    $class->unstage_multipath($scfg, $storeid, $tname);
-            #}
-            #print "Unstaging target\n" if get_debug($scfg);
-            #$class->unstage_target($scfg, $storeid, $tname);
-
-            #warn $@;
-            #die "Unable to identify the UUID of content volume\n";
         }
 
         if ($findmntpath eq $tuuid) {
@@ -1121,14 +1109,7 @@ sub ensure_content_volume {
             return 1;
         }
         $class->deactivate_storage($storeid, $scfg, $cache);
-
-        #warn "Another volume is mounted to the content volume ${content_path} location.";
-        #my $cmd = ['/bin/umount', $content_path];
-        #eval {run_command($cmd, errmsg => 'umount error') };
-        #die "Unable to unmount an unknown volume at content path ${content_path}\n" if $@;
     }
-
-    # Get volume
 
     eval { $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $content_volname, "get", "-d", "-s"]); };
     if ($@) {
@@ -1286,15 +1267,9 @@ sub deactivate_volume {
         $target = $class->get_target_name($scfg, $volname, $snapname);
     }
 
-    # my $starget = $class->get_target_name($scfg, $volname, $snapname);
     $class->unstage_multipath($scfg, $storeid, $target) if multipath_enabled($scfg);
     $class->unstage_target($scfg, $storeid, $target);
 
-    if ($snapname){
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "delete", "-v", $volname, "--snapshot", $snapname]);
-    } else {
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "delete", "-v", $volname]);
-    }
     return 1;
 }
 
@@ -1334,17 +1309,17 @@ sub parse_volname {
     if ($volname =~ m/^((base-(\d+)-\S+)\/)?((base)?(vm)?-(\d+)-\S+)$/) {
         return ('images', $4, $7, $2, $3, $5, 'raw');
     } elsif ($volname =~ m!^iso/([^/]+$iso_re)$!) {
-    	return ('iso', $1);
+        return ('iso', $1);
     } elsif ($volname =~ m!^vztmpl/([^/]+$vztmpl_re)$!) {
-    	return ('vztmpl', $1);
+        return ('vztmpl', $1);
     } elsif ($volname =~ m!^rootdir/(\d+)$!) {
-    	return ('rootdir', $1, $1);
+        return ('rootdir', $1, $1);
     } elsif ($volname =~ m!^backup/([^/]+(?:\.(?:tgz|(?:(?:tar|vma)(?:\.(?:${\COMPRESSOR_RE}))?))))$!) {
-    	my $fn = $1;
-    	if ($fn =~ m/^vzdump-(openvz|lxc|qemu)-(\d+)-.+/) {
-    	    return ('backup', $fn, $2);
-    	}
-    	return ('backup', $fn);
+        my $fn = $1;
+        if ($fn =~ m/^vzdump-(openvz|lxc|qemu)-(\d+)-.+/) {
+            return ('backup', $fn, $2);
+        }
+        return ('backup', $fn);
     }
 
     die "unable to parse joviandss volume name '$volname'\n";
