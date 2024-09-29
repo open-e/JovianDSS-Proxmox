@@ -142,7 +142,8 @@ sub safe_var_print {
 
 sub get_pool {
     my ($scfg) = @_;
-    die "pool name required in storage.cfg\n" if !defined($scfg->{pool_name});
+
+    die "pool name required in storage.cfg \n" if !defined($scfg->{pool_name});
     return $scfg->{pool_name};
 }
 
@@ -261,13 +262,13 @@ sub check_iscsi_support {
     my $noerr = shift;
 
     if (!$ISCSIADM) {
-	my $msg = "no iscsi support - please install open-iscsi";
-	if ($noerr) {
-	    warn "warning: $msg\n";
-	    return 0;
-	}
+        my $msg = "no iscsi support - please install open-iscsi";
+        if ($noerr) {
+            warn "warning: $msg\n";
+            return 0;
+        }
 
-	die "error: $msg\n";
+        die "error: $msg\n";
     }
 
     return 1;
@@ -282,18 +283,18 @@ sub iscsi_session_list {
     my $res = {};
 
     eval {
-	run_command($cmd, errmsg => 'iscsi session scan failed', outfunc => sub {
-	    my $line = shift;
+        run_command($cmd, errmsg => 'iscsi session scan failed', outfunc => sub {
+            my $line = shift;
 
-	    if ($line =~ m/^tcp:\s+\[(\S+)\]\s+\S+\s+(\S+)(\s+\S+)?\s*$/) {
-		my ($session, $target) = ($1, $2);
-		# there can be several sessions per target (multipath)
-		push @{$res->{$target}}, $session;
-	    }
-	});
+            if ($line =~ m/^tcp:\s+\[(\S+)\]\s+\S+\s+(\S+)(\s+\S+)?\s*$/) {
+                my ($session, $target) = ($1, $2);
+                # there can be several sessions per target (multipath)
+                push @{$res->{$target}}, $session;
+            }
+        });
     };
     if (my $err = $@) {
-	die $err if $err !~ m/: No active sessions.$/i;
+        die $err if $err !~ m/: No active sessions.$/i;
     }
 
     return $res;
@@ -331,13 +332,13 @@ sub iscsi_discovery {
 
     my $cmd = [$ISCSIADM, '--mode', 'discovery', '--type', 'sendtargets', '--portal', $portal];
     run_command($cmd, outfunc => sub {
-	my $line = shift;
-	if ($line =~ m/^((?:$IPV4RE|\[$IPV6RE\]):\d+)\,\S+\s+(\S+)\s*$/) {
-	    my $portal = $1;
-	    my $target = $2;
-	    # one target can have more than one portal (multipath).
-	    push @{$res->{$target}}, $portal;
-	}
+        my $line = shift;
+        if ($line =~ m/^((?:$IPV4RE|\[$IPV6RE\]):\d+)\,\S+\s+(\S+)\s*$/) {
+            my $portal = $1;
+            my $target = $2;
+            # one target can have more than one portal (multipath).
+            push @{$res->{$target}}, $portal;
+        }
     });
 
     return $res;
@@ -378,7 +379,7 @@ sub iscsi_session {
     return $cache->{iscsi_sessions}->{$target};
 }
 
-sub volume_path {
+sub block_device_path {
     my ($class, $scfg, $volname, $storeid, $snapname) = @_;
 
     print"Getting path of volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
@@ -406,7 +407,7 @@ sub path {
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
     if ($vtype eq "images") {
-        return $class->volume_path( $scfg, $volname, $storeid, $snapname);
+        return $class->block_device_path( $scfg, $volname, $storeid, $snapname);
     }
 
     return $class->filesystem_path($scfg, $volname, $snapname);
@@ -526,9 +527,10 @@ sub free_image {
                                                     volname => $volname,
                                                     snapname => $snap);
         unless (defined($starget)) {
-            $starget = $class->get_target_name($scfg, $volname, $snapname);
+            $starget = $class->get_target_name($scfg, $volname, $snap);
         }
         $class->unstage_multipath($scfg, $storeid, $starget) if multipath_enabled($scfg);;
+
         $class->unstage_target($scfg, $storeid, $starget);
     }
 
@@ -598,6 +600,15 @@ sub unstage_target {
     my @hosts = $class->get_storage_addresses($scfg, $storeid);
 
     foreach my $host (@hosts) {
+        my $tpath = $class->get_target_path($scfg, $target, $storeid);
+
+        eval { run_command(['sync', '-f', $tpath]); };
+        warn $@ if $@;
+        eval { run_command(['sync', $tpath]); };
+        warn $@ if $@;
+        eval { run_command(['umount', $tpath]); };
+        warn $@ if $@;
+
         eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--logout']); };
         warn $@ if $@;
         eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '-o', 'delete']); };
@@ -707,12 +718,22 @@ sub unstage_multipath {
 
     my $scsiid;
 
-    my $targetpath  = $class->get_multipath_path($scfg, $target);
-    if ( -e $targetpath ) {
-        if (unlink $targetpath) {
-            print "Removed ${targetpath} link\n" if get_debug($scfg);
+    # Multipath Block Device Link Path
+    # Link to actual block device representing multipath interface
+    my $mbdlpath  = $class->get_multipath_path($scfg, $target);
+    if ( -e $mbdlpath ) {
+
+        eval { run_command(['sync', '-f', $mbdlpath]); };
+        warn $@ if $@;
+        eval { run_command(['sync', $mbdlpath]); };
+        warn $@ if $@;
+        eval { run_command(['umount', $mbdlpath]); };
+        warn $@ if $@;
+
+        if (unlink $mbdlpath) {
+            print "Removed $mbdlpath} link\n" if get_debug($scfg);
         } else {
-            warn "Unable to remove ${targetpath} link$!\n";
+            warn "Unable to remove $mbdlpath} link$!\n";
         }
     }
 
@@ -725,6 +746,21 @@ sub unstage_multipath {
         warn "Unable to identify multipath resource ${target}\n";
         return ;
     };
+
+    # Multipath Block Device Mapper Name
+    my $mbdmname = $class->get_device_mapper_name($scfg, $scsiid);
+    # Multipath Block Device Mapper Path
+    my $mbdmpath = "/dev/mapper/${mbdmname}";
+    # If Multipath Block Device Mapper representation exists
+    # We synch cache
+    if ( -e $mbdmpath ) {
+        eval { run_command(['sync', '-f', $mbdmpath]); };
+        warn $@ if $@;
+        eval { run_command(['sync', $mbdmpath]); };
+        warn $@ if $@;
+        eval { run_command(['umount', $mbdmpath]); };
+        warn $@ if $@;
+    }
 
     eval{ run_command([$MULTIPATH, '-f', ${scsiid}]); };
     if ($@) {
@@ -1041,45 +1077,55 @@ sub ensure_content_volume {
     my $content_volname = get_content_volume_name($scfg);
     my $content_volume_size = get_content_volume_size($scfg);
 
-    my $tpath = $class->volume_path($scfg, $content_volname, $storeid);
+    # First we get expected path of block device representing content volume
+    # Block Device Path
+    my $bdpath = $class->block_device_path($scfg, $content_volname, $storeid);
 
-    # Check if content volume already present in system
+    # Acquire name of block device that is mounted to content volume folder
     my $findmntpath; 
     eval {run_command(["findmnt", $content_path, "-n", "-o", "UUID"], outfunc => sub { $findmntpath = shift; }); };
 
     my $tname = $class->get_target_name($scfg, $content_volname);
 
+    # if there is a block device mounted to content volume folder
     if (defined($findmntpath)) {
         my $tuuid;
-        eval { run_command(['blkid', '-o', 'value', $tpath, '-s', 'UUID'], outfunc => sub { $tuuid = shift; }); };
+        # We need to check that volume mounted to content volume folder is the one
+        # specified in config. This volume might change if user decide to change content volumes
+        # of if user decide to enable multipath or disable it
+        # We want to be sure that volume representing multipath block device is mounted if multipath is enabled
+        # If that is not a proper device we better unmount and do remounting
+        eval { run_command(['blkid', '-o', 'value', $bdpath, '-s', 'UUID'], outfunc => sub { $tuuid = shift; }); };
         if ($@) {
-            deactivate_storage($storeid, $scfg, $cache);
+            $class->deactivate_storage($storeid, $scfg, $cache);
 
+            # There is a volume findmntpath mounted to content_path
+            # 
             #my $cmd = ['/bin/umount', $content_path];
             #eval {run_command($cmd, errmsg => 'umount error') };
 
-            # if (multipath_enabled($scfg)) {
+            #if (multipath_enabled($scfg)) {
 
-            #     print "Removing multipath\n" if get_debug($scfg);
-            #     $class->unstage_multipath($scfg, $storeid, $tname);
-            # }
-            # print "Unstaging target\n" if get_debug($scfg);
-            # $class->unstage_target($scfg, $storeid, $tname);
+            #    print "Removing multipath\n" if get_debug($scfg);
+            #    $class->unstage_multipath($scfg, $storeid, $tname);
+            #}
+            #print "Unstaging target\n" if get_debug($scfg);
+            #$class->unstage_target($scfg, $storeid, $tname);
 
-            warn $@;
-            die "Unable to identify the UUID of content volume\n";
+            #warn $@;
+            #die "Unable to identify the UUID of content volume\n";
         }
 
         if ($findmntpath eq $tuuid) {
             $class->ensure_fs($scfg);
             return 1;
         }
+        $class->deactivate_storage($storeid, $scfg, $cache);
 
-        warn "Another volume is mounted to the content volume ${content_path} location.";
-        my $cmd = ['/bin/umount', $content_path];
-        eval {run_command($cmd, errmsg => 'umount error') };
-        die "Unable to unmount an unknown volume at content path ${content_path}\n" if $@;
-
+        #warn "Another volume is mounted to the content volume ${content_path} location.";
+        #my $cmd = ['/bin/umount', $content_path];
+        #eval {run_command($cmd, errmsg => 'umount error') };
+        #die "Unable to unmount an unknown volume at content path ${content_path}\n" if $@;
     }
 
     # Get volume
@@ -1093,14 +1139,14 @@ sub ensure_content_volume {
 
     $class->activate_volume_ext($storeid, $scfg, $content_volname, "", $cache, 1);
 
-    print "Checking file system on device ${tpath}\n";
-    eval { run_command(["/usr/sbin/fsck", "-n", $tpath])};
+    print "Checking file system on device ${bdpath}\n";
+    eval { run_command(["/usr/sbin/fsck", "-n", $bdpath])};
     if ($@) {
-            die "Unable to identify file system type for content storage, if this is the first run, format ${tpath} to the file system of your choice.\n";
+            die "Unable to identify file system type for content storage, if this is the first run, format ${bdpath} to the file system of your choice.\n";
     }
-    print "Mounting device ${tpath}\n";
+    print "Mounting device ${bdpath}\n";
     mkdir "$content_path";
-    run_command(["/usr/bin/mount", $tpath, $content_path], errmsg => "Unable to mount contant storage");
+    run_command(["/usr/bin/mount", $bdpath, $content_path], errmsg => "Unable to mount contant storage");
 
     $class->ensure_fs($scfg);
 }

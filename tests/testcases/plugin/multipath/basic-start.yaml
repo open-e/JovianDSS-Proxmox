@@ -27,6 +27,6 @@ data:
 parameters:
 references:
 expected_results: |
-    Container get test1 created and works properly
+    Container test1 got created and works properly
     Container test1 should be created and removed without any error notifications.
     Multipath device with proper scsi id get listed in topology `/usr/sbin/multipath -ll`
