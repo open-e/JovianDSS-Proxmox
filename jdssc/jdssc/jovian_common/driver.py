@@ -728,7 +728,8 @@ class JovianDSSDriver(object):
         rname = ''
         resource_name = ''
         if snapshot_name:
-            rname = snapshot_name if direct else jcom.sname(snapshot_name)
+            rname = snapshot_name if direct else jcom.sname(snapshot_name,
+                                                            volume_name)
             resource_name = snapshot_name
         else:
             rname = volume_name if direct else jcom.vname(volume_name)
