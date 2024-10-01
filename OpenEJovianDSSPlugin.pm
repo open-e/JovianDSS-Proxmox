@@ -1,4 +1,4 @@
-#    Copyright (c) 2022 Open-E, Inc.
+#    Copyright (c) 2024 Open-E, Inc.
 #    All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -41,6 +41,16 @@ use base qw(PVE::Storage::Plugin);
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
 my $PLUGIN_VERSION = '0.9.8-5';
+
+#    Open-E JovianDSS Proxmox plugin
+#
+#    0.9.8-5 - 2024.09.30
+#              Add rollback to the latest volume snapshot
+#              Introduce share option that substitutes proxmox code modification
+#              Fix migration failure
+#              Extend REST API error handling
+#              Fix volume provisioning bug
+#              Fix Pool selection bug
 
 # Configuration
 
@@ -118,6 +128,7 @@ sub options {
         content                         => { optional => 1 },
         content_volume_name             => { optional => 1 },
         content_volume_size             => { optional => 1 },
+        shared                          => { optional => 1 },
     };
 }
 
@@ -208,43 +219,39 @@ sub multipath_enabled {
 }
 
 sub joviandss_cmd {
-    my ($class, $cmd, $timeout) = @_;
+    my ($class, $cmd, $timeout, $retries) = @_;
 
     my $msg = '';
     my $err = undef;
     my $target;
     my $res = ();
+    my $retry_count = 0;
 
     $timeout = 40 if !$timeout;
+    $retries = 0 if !$retries;
 
-    my $output = sub { $msg .= "$_[0]\n" };
-    my $errfunc = sub { $err .= "$_[0]\n" };
-    eval {
-        run_command(['/usr/local/bin/jdssc', @$cmd], outfunc => $output, errfunc => $errfunc, timeout => $timeout);
-    };
-    if ($@) {
-        print "Error:\n";
-        print "${err}";
-        die "$@\n ${err}\n";
+    while ($retry_count <= $retries ) {
+        my $output = sub { $msg .= "$_[0]\n" };
+        my $errfunc = sub { $err .= "$_[0]\n" };
+        eval {
+            run_command(['/usr/local/bin/jdssc', @$cmd], outfunc => $output, errfunc => $errfunc, timeout => $timeout);
+        };
+        if (my $rerr = $@) {
+            if ($rerr =~ /got timeout/) {
+                $retry_count++;
+                sleep int(rand($timeout + 1));
+                next;
+            }
+            die "$@\n";
+        }
+        if ($err) {
+            print "Error:\n";
+            print "${err}";
+            die $err;
+        }
+        return $msg;
     }
-    return $msg;
 }
-
-# sub retry_run_command {
-#     my ($cmd, $errmsg, $tries, $timeout) = @_;
-#     my $attempt = 0;
-# 
-#     while ($attempt < $tries) {
-#         eval {
-#             run_command(cmd); # Attempt to run the command
-#         };
-#         last unless $@; # Exit loop if successful
-# 
-#         $attempt++;
-#         sleep(2 ** $timeout); # Exponential backoff
-#     }
-#     die "Failed after $max_attempts attempts: $@" if $@;
-# }
 
 my $ISCSIADM = '/usr/bin/iscsiadm';
 $ISCSIADM = undef if ! -X $ISCSIADM;
@@ -583,20 +590,6 @@ sub stage_target {
     return $targetpath;
 }
 
-# sub unstage_volume {
-#     my ($class, $scfg, $volume_name, $snapshot_name) = @_;
-# 
-#     print "Unstaging volume ${volume}\n" if get_debug($scfg); 
-#     my @hosts = $class->get_storage_addresses($scfg, $storeid);
-# 
-#     foreach my $host (@hosts) {
-#         eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--logout']); };
-#         warn $@ if $@;
-#         eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '-o', 'delete']); };
-#         warn $@ if $@;
-#     }
-# }
-
 sub unstage_target {
     my ($class, $scfg, $storeid, $target) = @_;
 
@@ -652,7 +645,6 @@ sub get_device_mapper_name {
         return $1;
     }
     return undef;
-    #die "Bad device mapper name";
 }
 
 
@@ -779,7 +771,6 @@ sub unstage_multipath {
     }
 
     eval { run_command([$MULTIPATH]); };
-    #eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
     die "Unable to restart the multipath daemon $@\n" if $@;
 }
 
@@ -842,8 +833,6 @@ sub get_active_target_name {
     my $volname = $args{volname};
     my $snapname = $args{snapname};
     my $content = $args{content};
-
-    # my ($class, $scfg, $volname, $snapname, $content) = @_;
 
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
@@ -996,8 +985,6 @@ sub volume_snapshot_delete {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    # return 1 if $running;
-
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "delete"]);
@@ -1105,12 +1092,14 @@ sub ensure_content_volume {
         }
 
         if ($findmntpath eq $tuuid) {
-            $class->ensure_fs($scfg);
+            #$class->ensure_fs($scfg);
             return 1;
         }
         $class->deactivate_storage($storeid, $scfg, $cache);
     }
 
+    # TODO: check for volume size on the level of OS
+    # If volume needs resize do it with jdssc
     eval { $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $content_volname, "get", "-d", "-s"]); };
     if ($@) {
         $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "-d", "-s", "${content_volume_size}G", '-n', $content_volname]);
@@ -1127,8 +1116,20 @@ sub ensure_content_volume {
     }
     print "Mounting device ${bdpath}\n";
     mkdir "$content_path";
-    run_command(["/usr/bin/mount", $bdpath, $content_path], errmsg => "Unable to mount contant storage");
 
+    my $already_mounted = 0;
+    my $mount_error = undef;
+    my $errfunc = sub {
+        my $line = shift;
+        if ($line =~ /already mounted on/) {
+            $already_mounted = 1;
+        };
+        $mount_error .= "$line\n";
+    };
+    run_command(["/usr/bin/mount", $bdpath, $content_path], errfunc => $errfunc, timeout => 10, noerr => 1 );
+    if ($mount_error && !$already_mounted) {
+        die $mount_error;
+    }
     $class->ensure_fs($scfg);
 }
 
@@ -1201,16 +1202,16 @@ sub activate_volume_ext {
 
     my $targetpath = $class->get_target_path($scfg, $target, $storeid);
 
-    my $createtargetcmd = ["-c", $config, "pool", $pool, "targets", "create", "-v", $volname];
+    my $create_target_cmd = ["-c", $config, "pool", $pool, "targets", "create", "-v", $volname];
     if ($snapname){
-        push @$createtargetcmd, "--snapshot", $snapname;
-        $class->joviandss_cmd($createtargetcmd);
+        push @$create_target_cmd, "--snapshot", $snapname;
     } else {
         if (defined($directmode)) {
-            push @$createtargetcmd, '-d';
+            push @$create_target_cmd, '-d';
         }
-        $class->joviandss_cmd($createtargetcmd);
     }
+
+    $class->joviandss_cmd($create_target_cmd, 80, 3);
 
     print "Staging target\n" if get_debug($scfg);
     $class->stage_target($scfg, $storeid, $target);

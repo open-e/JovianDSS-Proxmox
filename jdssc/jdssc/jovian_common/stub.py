@@ -1,4 +1,4 @@
-#    Copyright (c) 2020 Open-E, Inc.
+#    Copyright (c) 2024 Open-E, Inc.
 #    All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -16,5 +16,6 @@
 
 def do_nothing(arg):
     return arg
+
 
 _ = do_nothing

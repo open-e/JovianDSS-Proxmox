@@ -1,4 +1,4 @@
-#    Copyright (c) 2020 Open-E, Inc.
+#    Copyright (c) 2024 Open-E, Inc.
 #    All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -14,10 +14,8 @@
 #    under the License.
 
 import argparse
-import re
 import sys
 
-import jdssc.snapshots as snapshots
 
 """Target related commands."""
 
