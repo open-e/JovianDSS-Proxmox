@@ -1,0 +1,43 @@
+name: Enable multipath on working server
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have Pool-0
+    - JovianDSS have REST enabled
+    - Plugin and jdssc configured according git installation guide
+    - Multipath is not configured
+    - Logging level for jdssc INFO
+setup:
+id: plugin-multipath-enable-002
+scenario: |
+    User starts proxmox server with plugin with multipath disabled.
+    He creates content volume and starts container.
+    After he enables multipath and checks of all function properly.
+description: |
+    Test that verifies that enabling multipath feature in the middle of operation does not provide disruption
+objective: ensure that enabling multipath feature does not break operation after enabling
+steps:
+    - Create/Ensure content volume is present
+    - Load container image and stor it on content volume
+    - Create container test1
+    - Start container test1
+    - Enable multipath
+    - List present container images
+    - Start container test2
+    - Stop container test1
+    - Ensure that multipath device is present and mounted for container test2
+    - Stop container test2
+data:
+    - description: container name
+      value: test1
+      name: test1
+    - description: container name
+      value: test2
+      name: test2
+parameters:
+references:
+expected_results: |
+    Container test1 got created and works properly
+    Container image is visible in proxmox listing
+    Container test2 got created and works properly
+    Container test1 got stopped with no error
+    Container test2 got stopped with no error

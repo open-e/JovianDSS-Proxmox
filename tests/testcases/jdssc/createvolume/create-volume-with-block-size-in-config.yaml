@@ -1,0 +1,39 @@
+name: Create volume with block size provided in config file
+prerequisites: 
+    - Plugin installed
+    - JovianDSS have Pool-0
+    - JovianDSS have REST enabled
+    - All initialization is done
+setup:
+id: volume-create-002
+scenario: |
+    Create volumes while changing block size in jdssc config
+description: |
+    Test that checks if changing config file will affect
+    block size of newly created volumes
+objective: |
+    To ensure that value provided in config get passed to joviandss
+    during new volume creation
+steps:
+    - Set joviandss_block_size property to 4K
+    - Create volume test1
+    - Set joviandss_block_size property to 8K
+    - Create volume test2
+    - Set joviandss_block_size property to 1M
+    - Create volume test3
+    - Check block size of volumes test1, test2, test3
+data:
+    - description: volume name
+      value: test1
+      name: test1
+    - description: volume name
+      value: test2
+      name: test2
+    - description: volume name
+      value: test3
+      name: test3
+parameters: pool Pool-0 volumes create -n test[1-3] -s 512M
+references:
+expected_results: |
+    Volumes will be created with block size provided in config
+    test1 will be 4k, test2 will have block size 8K and test3 will be 1M

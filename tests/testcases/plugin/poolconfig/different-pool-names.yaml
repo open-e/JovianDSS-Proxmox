@@ -1,0 +1,53 @@
+name: Different pool names
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have pool Pool-0
+    - JovianDSS have pool Pool-1
+    - JovianDSS have pool TestPool
+    - JovianDSS have REST enabled
+    - Plugin and jdssc configured to have single pool according git installation guide
+    - Multipath is not configured
+    - Logging level for jdssc INFO
+setup:
+id: plugin-different-pool-names-001
+scenario: |
+    User starts proxmox with plugin configured to use Pool-0, then user
+    changes config to use Pool-1 and TestPool afterwards
+description: |
+    Test that verifys that multipath feature is working for plugin
+objective: |
+    Ensure that plugin is capable of reading pool inforamtion from config
+    and interact with proper pool
+steps:
+    - Ensure that Pool-0 is configured in storage.cfg
+    - Create container test1 on Pool-0
+    - Change pool_name property in storage.cfg to Pool-1
+    - Create container test2 on Pool-1
+    - Change pool_name property in storage.cfg to TestPool
+    - Create container test3 on Pool-1
+    - Ensure that apropriate volumes being created
+    - Delete containers
+data:
+    - description: Pool name
+      value: Pool-0
+      name: Pool-0
+    - description: Pool name
+      value: Pool-1
+      name: Pool-1
+    - description: Pool name
+      value: TestPool
+      name: TestPool
+    - description: container name
+      value: test1
+      name: test1
+    - description: container name
+      value: test2
+      name: test2
+    - description: container name
+      value: test3
+      name: test3
+parameters:
+references:
+expected_results: |
+    Container get created and pools Pool-0, Pool-1 and TestPool have
+    volume test1, test2 and test3 respectivly

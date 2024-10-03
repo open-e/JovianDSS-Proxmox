@@ -1,19 +1,4 @@
 #!/bin/sh
 
-ADDJOVIANDSSPATCH=$(cat <<'END'
-***************
-*** 30,35 ****
---- 30,36 ----
-  );
-
-  our @SHARED_STORAGE = (
-+     'joviandss',
-      'iscsi',
-      'nfs',
-      'cifs',
-END
-)
-echo "$ADDJOVIANDSSPATCH" | patch /usr/share/perl5/PVE/Storage/Plugin.pm
-
 chmod +x /usr/local/bin/jdssc
 exit 0

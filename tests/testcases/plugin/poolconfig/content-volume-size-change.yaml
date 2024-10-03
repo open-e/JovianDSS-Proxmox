@@ -1,0 +1,40 @@
+name: Content volume size change
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have pool Pool-0
+    - JovianDSS have REST enabled
+    - Plugin and jdssc configured to have single pool according git installation guide
+    - Multipath is not configured
+    - Content volume attached
+    - Logging level for jdssc INFO
+setup:
+id: content-volume-size-change-001
+scenario: |
+    User starts proxmox with plugin configured to use Pool-0 and Pool-0
+    is formatted and mounted so that plagin can use it.
+    User increase content volume size by 20G and observer results.
+description: |
+    Test that verifys that auto volume resize works properly
+objective: |
+    Ensure that plugin is capable of automatic content volume resize 
+    if content volume change in config
+steps:
+    - Ensure that Pool-0 is configured in storage.cfg
+    - Ensure that content volume is enabled and mounted apropriatly
+    - Download container image to content volume
+    - Change content volume size in config
+    - Ensure that content volume have size increased
+    - Create containet test1 from image dowloaded before
+    - Ensure that container is accesable
+data:
+    - description: Pool name
+      value: Pool-0
+      name: Pool-0
+    - description: container name
+      value: test1
+      name: test1
+parameters:
+references:
+expected_results: |
+    Content volume get resized and container get created.
+    Container image is not lost.

@@ -1,4 +1,4 @@
-#    Copyright (c) 2020 Open-E, Inc.
+#    Copyright (c) 2024 Open-E, Inc.
 #    All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -25,6 +25,9 @@ from jdssc.jovian_common import exception as jexc
 """Volume related commands."""
 
 LOG = logging.getLogger(__name__)
+
+block_size_options = ['4K', '8K', '16K', '32K', '64K', '128K', '256K', '512K',
+                      '1M']
 
 
 class Volumes():
@@ -60,12 +63,13 @@ class Volumes():
                             dest='volume_size',
                             type=str,
                             default='1G',
-                            help='New volume size in format num + [K M G]')
+                            help='New volume size in format num + [M G T]')
         create.add_argument('-b',
                             dest='block_size',
                             type=str,
                             default=None,
-                            help='Block size')
+                            choices=block_size_options,
+                            help=('Block size of new volume, default is 16K'))
         create.add_argument('-d',
                             dest='direct_mode',
                             action='store_true',
@@ -101,9 +105,15 @@ class Volumes():
     def create(self):
         size = self.args['volume_size'].upper()
 
-        block_size = None
-        if self.args['block_size'] is not None:
-            block_size = self.args['block_size'].upper()
+        block_size = self.args['block_size']
+
+        if block_size is not None and block_size.upper() in block_size_options:
+            block_size = block_size.upper()
+        elif (self.jdss.block_size is not None and
+              self.jdss.block_size.upper() in block_size_options):
+            block_size = self.jdss.block_size.upper()
+        else:
+            block_size = '16K'
 
         name = str(uuid.uuid1())
         if 'volume_name' in self.args:
@@ -113,6 +123,10 @@ class Volumes():
             self.jdss.create_volume(name, size,
                                     direct_mode=self.args['direct_mode'],
                                     block_size=block_size)
+        except (jexc.JDSSVolumeExistsException,
+                jexc.JDSSResourceExistsException):
+            LOG.error("Volume %s already exists", name)
+
         except jexc.JDSSResourceExhausted:
             LOG.error("No space left on the storage")
             exit(1)

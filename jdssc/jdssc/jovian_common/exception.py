@@ -1,4 +1,4 @@
-#    Copyright (c) 2020 Open-E, Inc.
+#    Copyright (c) 2024 Open-E, Inc.
 #    All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -36,7 +36,13 @@ class JDSSRESTException(JDSSException):
 class JDSSRESTProxyException(JDSSException):
     """Connection with host failed"""
 
-    message = ("JDSS connection with %(host)s failed: %(reason)s.")
+    def __init__(self, host, reason):
+
+        msg = ("JDSS connection with %(host)s failed: %(reason)s.",
+               {"host": host,
+                "reason": reason})
+        self.message = msg
+        super().__init__(self.msg)
 
 
 class JDSSResourceNotFoundException(JDSSException):
@@ -44,6 +50,14 @@ class JDSSResourceNotFoundException(JDSSException):
 
     def __init__(self, res):
         self.message = "JDSS resource %(res)s DNE." % {'res': res}
+        super().__init__(self.message)
+
+
+class JDSSTargetNotFoundException(JDSSResourceNotFoundException):
+    """Target does not exist"""
+
+    def __init__(self, target):
+        self.message = "target %(target)s" % {'target': target}
         super().__init__(self.message)
 
 

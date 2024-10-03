@@ -34,6 +34,7 @@ joviandss: jdss-Pool-0
         content_volume_name proxmox-content-jdss-pool-0
         content_volume_size 100
         path /mnt/jdss-Pool-0
+        shared 1
         debug 0
         multipath 0
 ```
@@ -46,7 +47,8 @@ joviandss: jdss-Pool-0
 | `content_volume_name`	     | proxmox-content-volume-\<pool\_name\>| Dedicated volume that would be used to store content resources. Only lowercase, numbers and symbols - . are allowed |
 | `content_volume_size`      | 100                               | Size of content volume, measured in Gigabytes                       |
 | `path`                     | /mnt/proxmox-content-jdss-\<pool\_name\> | Location that would be used to mount proxmox dedicated volume |
-| `debug`                    | 0                                 | Debuging flag, place 1 to enable                                    |
+| `shared`                   | 0                                 | Migrate flag, setting this flag indicate that plugin support VM and Container migration. It is recommended to enable this flag.|
+| `debug`                    | 0                                 | Debugging flag, place 1 to enable                                    |
 | `multipath`                | 0                                 | Multipath flag, place 1 to enable                                   |
 
 [1] [Can be created by going to JovianDSS Web interface/Storage](https://www.open-e.com/site_media/download/documents/Open-E-JovianDSS-Advanced-Metro-High-Avability-Cluster-Step-by-Step-2rings.pdf)
@@ -118,6 +120,7 @@ joviandss: jdss-Pool-0
         content_volume_name proxmox-content-jdss-pool-0
         content_volume_size 100
         path /mnt/jdss-Pool-0
+        shared 1
         debug 0
         multipath 0
 
@@ -128,6 +131,7 @@ joviandss: jdss-Pool-1
         content_volume_name proxmox-content-jdss-pool-1
         content_volume_size 100
         path /mnt/jdss-Pool-1
+        shared 1
         debug 0
         multipath 0
 ```
@@ -187,6 +191,7 @@ joviandss: jdss-Pool-0
         content_volume_name proxmox-content-jdss-pool-0
         content_volume_size 100
         path /mnt/jdss-Pool-0
+        shared 1
         debug 0
         multipath 0
 ```
@@ -224,6 +229,7 @@ joviandss: jdss-Pool-0
         content_volume_name proxmox-content-jdss-pool-0
         content_volume_size 100
         path /mnt/jdss-Pool-0
+        shared 1
         debug 0
         multipath 1
 ```

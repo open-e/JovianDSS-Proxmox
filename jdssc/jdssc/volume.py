@@ -1,4 +1,4 @@
-#    Copyright (c) 2020 Open-E, Inc.
+#    Copyright (c) 2024 Open-E, Inc.
 #    All Rights Reserved.
 #
 #    Licensed under the Apache License, Version 2.0 (the "License"); you may
@@ -125,11 +125,11 @@ class Volume():
         if self.args['snapshot_name']:
 
             self.jdss.create_cloned_volume(
-                    self.args['clone_name'],
-                    self.args['volume_name'],
-                    0,
-                    snapshot_name=self.args['snapshot_name'],
-                    sparse=self.jdss.jovian_sparse)
+                self.args['clone_name'],
+                self.args['volume_name'],
+                0,
+                snapshot_name=self.args['snapshot_name'],
+                sparse=self.jdss.jovian_sparse)
             return
         try:
             self.jdss.create_cloned_volume(self.args['clone_name'],
