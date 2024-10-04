@@ -71,7 +71,7 @@ def idname(name):
     if name.startswith('vb_'):
         return JBase32ToStr(name[3:])
 
-    LOG.warn("Unable to identify name type %s", name)
+    # LOG.warn("Unable to identify name type %s", name)
     return name
 
 
@@ -141,6 +141,13 @@ def sname(sid, vid):
     # b for based
 
     out = 's_%(sid)s' % {'sid': sid}
+
+    if allowedPattern.match(sid):
+        out = 'se_%(sid)s' % {'sid': sid}
+    else:
+        out = 'sb_%(sid)s' % {'sid': JBase32FromStr(sid)}
+    if vid is not None and len(vid) > 0:
+        out += '_%(vid)s' % {'vid': JBase32FromStr(vid)}
     return out
 
 

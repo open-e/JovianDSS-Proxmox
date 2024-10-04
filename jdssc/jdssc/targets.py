@@ -89,8 +89,12 @@ class Targets():
                          default=False,
                          help='Print lun')
         get.add_argument('--snapshot', dest='snapshot_name',
+                         # It is important to make default snapshot None
+                         # as it is used later to acquire target name
                          default=None,
-                         help='Get target based on snapshot')
+                         help='''Get target based on snapshot, using this flag
+                                with empty string will result in usage of
+                                snapshot with empty name''')
         get.add_argument('-c',
                          '--current',
                          required=False,
@@ -131,7 +135,8 @@ class Targets():
                 self.args['volume_name'],
                 None)
             provider_location = self.jdss.get_provider_location(
-                self.args['snapshot_name'])
+                self.arge['volume_name'],
+                snapshot_name=self.args['snapshot_name'])
 
         else:
             self.jdss.ensure_export(
@@ -177,7 +182,8 @@ class Targets():
         provider_location = None
         if self.args['snapshot_name']:
             provider_location = self.jdss.get_provider_location(
-                self.args['snapshot_name'])
+                self.args['snapshot_name'],
+                snapshot_name=self.args['snapshot_name'])
         elif self.args['volume_name']:
             provider_location = self.jdss.get_provider_location(
                 self.args['volume_name'])
