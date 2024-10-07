@@ -13,9 +13,9 @@ steps:
     - desc: Discover target
       cmd: iscsiadm --mode discovery --portal 192.168.21.100 --type sendtargets
     - desc: Login into target
-      cmd: iscsiadm --mode node --target iqn.2021-10.iscsi:test1 --portal 192.168.21.100 --login
+      cmd: iscsiadm --mode node --target iqn.2021-10.iscsi:v-test1 --portal 192.168.21.100 --login
     - desc: Format volume test1
-      cmd: mkfs.ext3 /dev/disk/by-path/ip-192.168.21.100:3260-iscsi-iqn.2021-10.iscsi:test1-lun-0
+      cmd: mkfs.ext3 /dev/disk/by-path/ip-192.168.21.100:3260-iscsi-iqn.2021-10.iscsi:v-test1-lun-0
     - desc: Create snapshot snap1
       cmd: /usr/local/bin/jdssc --loglvl info --logstd -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 volume test1 snapshots create -n snap1
     - desc: Mount test1

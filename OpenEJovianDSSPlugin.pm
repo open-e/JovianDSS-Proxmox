@@ -387,11 +387,11 @@ sub iscsi_session {
 }
 
 sub block_device_path {
-    my ($class, $scfg, $volname, $storeid, $snapname) = @_;
+    my ($class, $scfg, $volname, $storeid, $snapname, $content_volume_flag) = @_;
 
     print"Getting path of volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
 
-    my $target = $class->get_target_name($scfg, $volname, $snapname);
+    my $target = $class->get_target_name($scfg, $volname, $snapname, $content_volume_flag);
 
     my $tpath;
 
@@ -858,17 +858,21 @@ sub get_active_target_name {
 }
 
 sub get_target_name {
-    my ($class, $scfg, $volname, $snapname) = @_;
+    my ($class, $scfg, $volname, $snapname, $content_volume_flag) = @_;
 
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    my $target;
+    my $get_target_cmd = ["-c", $config, "pool", $pool, "targets", "get", "-v", $volname];
     if ($snapname){
-        $target = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "get", "-v", $volname, "--snapshot", $snapname]);
+        push @$get_target_cmd, "--snapshot", $snapname;
     } else {
-        $target = $class->joviandss_cmd(["-c", $config, "pool", $pool, "targets", "get", "-v", $volname]);
+        if (defined($content_volume_flag)) {
+            push @$get_target_cmd, '-d';
+        }
     }
+
+    my $target = $class->joviandss_cmd($get_target_cmd, 80, 3);
 
     if (defined($target)) {
         $target = clean_word($target);
@@ -1070,13 +1074,13 @@ sub ensure_content_volume {
 
     # First we get expected path of block device representing content volume
     # Block Device Path
-    my $bdpath = $class->block_device_path($scfg, $content_volname, $storeid);
+    my $bdpath = $class->block_device_path($scfg, $content_volname, $storeid, undef, 1);
 
     # Acquire name of block device that is mounted to content volume folder
     my $findmntpath; 
     eval {run_command(["findmnt", $content_path, "-n", "-o", "UUID"], outfunc => sub { $findmntpath = shift; }); };
 
-    my $tname = $class->get_target_name($scfg, $content_volname);
+    my $tname = $class->get_target_name($scfg, $content_volname, undef, 1);
 
     # if there is a block device mounted to content volume folder
     if (defined($findmntpath)) {
@@ -1114,7 +1118,7 @@ sub ensure_content_volume {
     if ($@) {
             die "Unable to identify file system type for content storage, if this is the first run, format ${bdpath} to the file system of your choice.\n";
     }
-    print "Mounting device ${bdpath}\n";
+    print "Mounting device ${bdpath} to ${content_path}\n";
     mkdir "$content_path";
 
     my $already_mounted = 0;
@@ -1167,13 +1171,15 @@ sub deactivate_storage {
     print "Deactivating storage ${storeid}\n" if get_debug($scfg);
 
     my $path = get_content_path($scfg);
+    my $pool = get_pool($scfg);
+
     my $content_volname = get_content_volume_name($scfg);
 
     my $target = $class->get_active_target_name(scfg => $scfg,
                                                 volname => $content_volname,
                                                 content => 1);
     unless (defined($target)) {
-        $target = $class->get_target_name($scfg, $content_volname);
+        $target = $class->get_target_name($scfg, $content_volname, undef, 1);
     }
 
     my $cmd = ['/bin/umount', $path];
@@ -1188,17 +1194,20 @@ sub deactivate_storage {
     print "Unstaging target\n" if get_debug($scfg);
     $class->unstage_target($scfg, $storeid, $target);
 
+    #my $delete_target_cmd = ["-c", $scfg, "pool", $pool, "targets", "delete", "-v", $content_volname, "-d"];
+    #$class->joviandss_cmd($delete_target_cmd, 80, 3);
+
     return undef;
 }
 
 sub activate_volume_ext {
-    my ( $class, $storeid, $scfg, $volname, $snapname, $cache, $directmode ) = @_;
+    my ( $class, $storeid, $scfg, $volname, $snapname, $cache, $content_volume_flag) = @_;
 
     print "Activating volume ext ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    my $target = $class->get_target_name($scfg, $volname, $snapname);
+    my $target = $class->get_target_name($scfg, $volname, $snapname, $content_volume_flag);
 
     my $targetpath = $class->get_target_path($scfg, $target, $storeid);
 
@@ -1206,7 +1215,7 @@ sub activate_volume_ext {
     if ($snapname){
         push @$create_target_cmd, "--snapshot", $snapname;
     } else {
-        if (defined($directmode)) {
+        if (defined($content_volume_flag)) {
             push @$create_target_cmd, '-d';
         }
     }
@@ -1270,6 +1279,13 @@ sub deactivate_volume {
 
     $class->unstage_multipath($scfg, $storeid, $target) if multipath_enabled($scfg);
     $class->unstage_target($scfg, $storeid, $target);
+
+    my $delete_target_cmd = ["-c", $config, "pool", $pool, "targets", "delete", "-v", $volname];
+    if ($snapname){
+        push @$delete_target_cmd, "--snapshot", $snapname;
+    }
+
+    $class->joviandss_cmd($delete_target_cmd, 80, 3);
 
     return 1;
 }

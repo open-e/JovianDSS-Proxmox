@@ -77,6 +77,11 @@ class Targets():
         delete.add_argument('--snapshot', dest='snapshot_name',
                             default=None,
                             help='Delete target based on snapshot')
+        delete.add_argument('-d',
+                            dest='direct_mode',
+                            action='store_true',
+                            default=False,
+                            help='Use real volume name')
 
         get = parsers.add_parser('get')
         get.add_argument('--path', dest='path_format', action='store_true',
@@ -159,7 +164,8 @@ class Targets():
             self.jdss.remove_export_snapshot(self.args['snapshot_name'],
                                              self.args['volume_name'])
         else:
-            self.jdss.remove_export(self.args['volume_name'])
+            self.jdss.remove_export(self.args['volume_name'],
+                                    direct_mode=self.args['direct_mode'])
 
     def get(self):
 
@@ -173,8 +179,8 @@ class Targets():
             try:
                 target = self.jdss.get_volume_target(
                     self.args['volume_name'],
-                    self.args['snapshot_name'],
-                    self.args['direct_mode'])
+                    snapshot_name=self.args['snapshot_name'],
+                    direct=self.args['direct_mode'])
             except jexc.JDSSTargetNotFoundException:
                 return
         LOG.debug("target is %s", target)
@@ -182,11 +188,12 @@ class Targets():
         provider_location = None
         if self.args['snapshot_name']:
             provider_location = self.jdss.get_provider_location(
-                self.args['snapshot_name'],
+                self.args['volume_name'],
                 snapshot_name=self.args['snapshot_name'])
         elif self.args['volume_name']:
             provider_location = self.jdss.get_provider_location(
-                self.args['volume_name'])
+                self.args['volume_name'],
+                direct=self.args['direct_mode'])
         else:
             sys.exit(1)
 
