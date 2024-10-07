@@ -522,7 +522,7 @@ class JovianDSSDriver(object):
             "id_clone": clone_name})
 
         if snapshot_name:
-            sname = jcom.sname(snapshot_name, volume_name)
+            sname = jcom.sname(snapshot_name, None)
 
             pname = self._find_snapshot_parent(ovname, sname)
             if pname is None:
@@ -573,7 +573,7 @@ class JovianDSSDriver(object):
             'vol': volume_name})
 
         vname = jcom.vname(volume_name)
-        sname = jcom.sname(snapshot_name, volume_name)
+        sname = jcom.sname(snapshot_name, None)
 
         snaps = self._list_volume_snapshots(volume_name, vname)
 
@@ -596,7 +596,7 @@ class JovianDSSDriver(object):
               '<auth method> <auth username> <auth password>'
         """
 
-        sname = jcom.sname(snapshot_name)
+        sname = jcom.sname(snapshot_name, None)
         ovname = jcom.vname(volume_name)
         scname = jcom.sname(snapshot_name, volume_name)
         try:
@@ -733,12 +733,13 @@ class JovianDSSDriver(object):
         :param str snapshot_name: snapshot id
         """
         vname = jcom.vname(volume_name)
-        sname = jcom.sname(snapshot_name, volume_name)
+        sname = jcom.sname(snapshot_name, None)
 
         try:
             self._delete_snapshot(vname, sname)
         except jexc.JDSSResourceNotFoundException:
-            self._delete_snapshot(vname, "s_" + snapshot_name)
+            self._delete_snapshot(vname, jcom.sname(snapshot_name,
+                                                    volume_name))
 
     def get_volume_target(self, volume_name, snapshot_name=None, direct=False):
         """Get volume target
@@ -1502,7 +1503,7 @@ class JovianDSSDriver(object):
                    'clones':    [<list of clones preventing rollback>]}
         """
         vname = jcom.vname(volume_name)
-        sname = jcom.sname(snapshot_name, volume_name)
+        sname = jcom.sname(snapshot_name, None)
         dependency = {}
         try:
             dependency = self.ra.get_snapshot_rollback(vname, sname)
@@ -1553,7 +1554,7 @@ class JovianDSSDriver(object):
         """
 
         vname = jcom.vname(volume_name)
-        sname = jcom.sname(snapshot_name, volume_name)
+        sname = jcom.sname(snapshot_name, None)
 
         dependency = {}
         try:
