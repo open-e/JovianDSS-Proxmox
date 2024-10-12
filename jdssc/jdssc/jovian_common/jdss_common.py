@@ -78,20 +78,6 @@ def idname(name):
 def vname(name):
     """Convert id into volume name"""
 
-    if name.startswith("v_"):
-        return name
-
-    if name.startswith("vb_"):
-        return name
-
-    if name.startswith('s_'):
-        msg = 'Attempt to use snapshot %s as a volume' % name
-        raise Exception(msg)
-
-    if name.startswith('t_'):
-        msg = 'Attempt to use deleted object %s as a volume' % name
-        raise Exception(msg)
-
     if allowedPattern.match(name):
         return "v_" + name
 
@@ -110,9 +96,11 @@ def sname_to_id(sname):
         vid = JBase32ToStr(spl[-1:][0])
         return sid, vid
 
-    if spl[0] == 'sb' and len(spl) == 3:
+    if spl[0] == 'sb' and len(spl) > 1:
         sid = JBase32ToStr(spl[1])
-        vid = JBase32ToStr(spl[2])
+        vid = None
+        if len(spl) > 2:
+            vid = JBase32ToStr(spl[2])
         return sid, vid
 
     if spl[0] == 'autosnap':

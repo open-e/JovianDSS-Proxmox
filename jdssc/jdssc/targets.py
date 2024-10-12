@@ -140,7 +140,7 @@ class Targets():
                 self.args['volume_name'],
                 None)
             provider_location = self.jdss.get_provider_location(
-                self.arge['volume_name'],
+                self.args['volume_name'],
                 snapshot_name=self.args['snapshot_name'])
 
         else:

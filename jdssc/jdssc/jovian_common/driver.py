@@ -18,6 +18,7 @@ import logging
 from oslo_utils import units as o_units
 import math
 import re
+import hashlib
 
 from jdssc.jovian_common import exception as jexc
 # from jdssc.jovian_common import cexception as exception
@@ -758,15 +759,11 @@ class JovianDSSDriver(object):
 
         # The actual volume name that will be attched to target
         rname = ''
-        # The name that should appear in target name
-        resource_name = ''
         if snapshot_name:
             rname = snapshot_name if direct else jcom.sname(snapshot_name,
                                                             volume_name)
-            resource_name = snapshot_name
         else:
             rname = volume_name if direct else jcom.vname(volume_name)
-            resource_name = volume_name
 
         target_name = self._get_target_name(rname)
 
@@ -777,15 +774,6 @@ class JovianDSSDriver(object):
                     return target_name
 
         targets = self.ra.get_targets()
-        pattern = r'.*' + re.escape(resource_name.replace("_", "-")) + r'.*'
-
-        for t in targets:
-            if 'name' in t:
-                if re.match(pattern, t['name']):
-                    luns = self.ra.get_target_luns(t['name'])
-                    for lun in luns:
-                        if lun['name'] == rname:
-                            return t['name']
 
         for t in targets:
             if 'name' in t:
@@ -826,17 +814,6 @@ class JovianDSSDriver(object):
         LOG.debug("remove targets associated with volume %s", vname)
 
         targets = self.ra.get_targets()
-        # volume_name = jcom.idname(vname)
-        pattern = r'.*' + re.escape(vname.replace("_", "-")) + r'.*'
-
-        vtargets = []
-        for t in targets:
-            if 'name' in t:
-                if re.match(pattern, t['name']):
-                    vtargets.append(t)
-
-        if self._remove_target_if_volume_attached(vtargets, vname):
-            return
 
         self._remove_target_if_volume_attached(targets, vname)
 
@@ -897,8 +874,8 @@ class JovianDSSDriver(object):
 
         This function is a final point target name generation.
         """
-
-        return f'{self.jovian_target_prefix}{vid.replace("_", "-")}'
+        vidstr = hashlib.sha256(vid.encode()).hexdigest()
+        return f'{self.jovian_target_prefix}{vidstr}'
 
     def get_target_name(self, volume_name, snapshot_name=None):
         """Return iSCSI target name to access volume."""
