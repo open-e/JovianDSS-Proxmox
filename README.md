@@ -34,7 +34,7 @@ joviandss: jdss-Pool-0
         content_volume_name proxmox-content-jdss-pool-0
         content_volume_size 100
         path /mnt/jdss-Pool-0
-        shared 1
+        shared 1 # Option is available since v0.9.8
         debug 0
         multipath 0
 ```
@@ -65,7 +65,7 @@ This config file should be placed according to the path provided in `storage.cfg
 
 ```yaml
 driver_use_ssl: True
-driver_ssl_cert_verify: False
+driver_ssl_cert_verify: False # Option is available since v0.9.8
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
@@ -120,7 +120,7 @@ joviandss: jdss-Pool-0
         content_volume_name proxmox-content-jdss-pool-0
         content_volume_size 100
         path /mnt/jdss-Pool-0
-        shared 1
+        shared 1 # Option is available since v0.9.8
         debug 0
         multipath 0
 
@@ -131,7 +131,7 @@ joviandss: jdss-Pool-1
         content_volume_name proxmox-content-jdss-pool-1
         content_volume_size 100
         path /mnt/jdss-Pool-1
-        shared 1
+        shared 1 # Option is available since v0.9.8
         debug 0
         multipath 0
 ```
@@ -141,7 +141,7 @@ And here is 2 `config` files referenced in `storage.cfg` file above:
 `/etc/pve/jdss-Pool-0.yaml`
 ```yaml
 driver_use_ssl: True
-driver_ssl_cert_verify: False
+driver_ssl_cert_verify: False # Option is available since v0.9.8
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
@@ -159,7 +159,7 @@ logfile: /var/log/jdss-Pool-0.log
 `/etc/pve/jdss-Pool-1.yaml`
 ```yaml
 driver_use_ssl: True
-driver_ssl_cert_verify: False
+driver_ssl_cert_verify: False # Option is available since v0.9.8
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
@@ -186,7 +186,7 @@ For instance if user wants to enable multipathing on for storage `jdss-Pool-0` d
 ```
 joviandss: jdss-Pool-0
         pool_name Pool-0
-        config /etc/pve/jdss-Pool-0.yaml
+        config /etc/pve/jdss-Pool-0.yaml # Option is available since v0.9.8
         content iso,backup,images,rootdir,vztmpl
         content_volume_name proxmox-content-jdss-pool-0
         content_volume_size 100
@@ -199,7 +199,7 @@ joviandss: jdss-Pool-0
 `/etc/pve/jdss-Pool-0.yaml`
 ```yaml
 driver_use_ssl: True
-driver_ssl_cert_verify: False
+driver_ssl_cert_verify: False # Option is available since v0.9.8
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
@@ -229,7 +229,7 @@ joviandss: jdss-Pool-0
         content_volume_name proxmox-content-jdss-pool-0
         content_volume_size 100
         path /mnt/jdss-Pool-0
-        shared 1
+        shared 1 # Option is available since v0.9.8
         debug 0
         multipath 1
 ```
@@ -241,7 +241,7 @@ Provide list of ip's that would be used for multipathing in `rest_api_addresses`
 `/etc/pve/jdss-Pool-0.yaml`
 ```yaml
 driver_use_ssl: True
-driver_ssl_cert_verify: False
+driver_ssl_cert_verify: False # Option is available since v0.9.8
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
