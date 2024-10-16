@@ -1,0 +1,101 @@
+name: Different pool names
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have pool Pool-0
+    - Plugin and jdssc configured to have single pool according git installation guide
+    - Multipath is not configured
+    - Logging level for jdssc INFO
+setup:
+id: concurent-vm-start-001
+scenario: |
+    User starts proxmox with plugin configured to use Pool-0.
+    User creates multiple virtual machines.
+    User starts all containers simultaniously.
+description: |
+    Multi volume simultanious attachment
+objective: |
+    Ensure that plugin is capable of providing access to multiple newly created
+    volumes simultaniously
+steps:
+    - Ensure that Pool-0 is configured in storage.cfg
+    - desc: Create snapshot of vm with id 100
+      cmd: qm snapshot 100 linked-snap --description "Snapshot for linked clone"
+    - desc: Create 20 vms from vm110 to vm120 on Pool-0
+      cmd: for i in {110..130}; do echo $i; qm clone 100 $i --snapname linked-snap --full false  ; done;
+    - desc: Ensure that apropriate volumes being created
+    - desc: Remove targets of volumes associated with VM's
+      cmd: for vmd in `jdssc -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 volumes list | awk '{print $1}'`; do echo $vmd; jdssc -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 targets delete -v $vmd  ;  done;
+    - desc: Start container from test1 to test20
+      cmd: for i in `qm list | grep stopped | awk '{print $1}'`; do echo $i; qm start $i ; done;
+    - Ensure that containers are up and running
+    - desc: Stop containers
+      cmd: for i in `qm list | grep running | awk '{print $1}'`; do echo $i; qm stop $i ; done
+    - desc: Delete vms
+data:
+    - description: Pool name
+      value: Pool-0
+      name: Pool-0
+    - description: vm name
+      value: test1
+      name: test1
+    - description: vm name
+      value: test2
+      name: test2
+    - description: vm name
+      value: test3
+      name: test3
+    - description: vm name
+      value: test4
+      name: test4
+    - description: vm name
+      value: test5
+      name: test5
+    - description: vm name
+      value: test6
+      name: test6
+    - description: vm name
+      value: test7
+      name: test7
+    - description: vm name
+      value: test8
+      name: test8
+    - description: vm name
+      value: test9
+      name: test9
+    - description: vm name
+      value: test10
+      name: test10
+    - description: vm name
+      value: test11
+      name: test11
+    - description: vm name
+      value: test12
+      name: test12
+    - description: vm name
+      value: test13 
+      name: test13
+    - description: vm name
+      value: test14
+      name: test14
+    - description: vm name
+      value: test15
+      name: test15
+    - description: vm name
+      value: test16
+      name: test16
+    - description: vm name
+      value: test17
+      name: test17
+    - description: vm name
+      value: test18
+      name: test18
+    - description: vm name
+      value: test19
+      name: test19
+    - description: vm name
+      value: test20
+      name: test20
+parameters:
+references:
+expected_results: |
+    VM's get created and started and pools Pool-0

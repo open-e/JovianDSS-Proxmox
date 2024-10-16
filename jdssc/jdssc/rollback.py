@@ -72,13 +72,13 @@ class Rollback():
                         len(dependency['snapshots']) > 0):
                     msg += ("by snapshots: %(dependency)s\n" %
                             {'dependency': ' '.join(dependency['snapshots'])})
-                    print("snapshots: " + ' '.join(dependency['snapshots']))
+                    print("snapshot(s): " + ' '.join(dependency['snapshots']))
 
                 if ('clones' in dependency and
                         len(dependency['clones']) > 0):
                     msg += ("by clones: %(dependency)s\n" %
                             {'dependency': ' '.join(dependency['clones'])})
-                    print("clones: " + ' '.join(dependency['clones']))
+                    print("clone(s): " + ' '.join(dependency['clones']))
 
                 LOG.info(msg)
                 return

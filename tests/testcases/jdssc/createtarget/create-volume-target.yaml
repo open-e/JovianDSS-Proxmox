@@ -1,0 +1,66 @@
+name: Create target for volume
+prerequisites: 
+    - Plugin installed
+    - JovianDSS have Pool-0
+    - JovianDSS have REST enabled
+    - Plugin and jdssc configured to have single pool according git installation guide
+    - Multipath is enabled
+    - Content volume attached
+    - Logging level for jdssc INFO
+    - All initialization is done
+setup:
+id: create-volume-target-001
+scenario: |
+    Create target for volumes with various names
+description: |
+    Test that checks that cli is capable of producing targets for various volume names
+objective: |
+    To ensure that cli do not break if volume name is not standard
+steps:
+    - desc: Create volume test1
+      cmd: /usr/local/bin/jdssc --loglvl info --logstd -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 volumes create -n test1
+    - desc: target for test1
+      cmd: /usr/local/bin/jdssc -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 targets create -v test1
+    - desc: Get target for volume test1
+      cmd: /usr/local/bin/jdssc -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 targets get -v test1
+    - desc: Delete target test1
+      cmd: /usr/local/bin/jdssc -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 targets delete -v test1
+    - desc: Delete volume test1
+
+    - desc: Create volume test2
+    - desc: Create target for test2
+      cmd: /usr/local/bin/jdssc --logstd -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 targets create -v test_-2-
+    - desc: Get target for volume test2
+      cmd: /usr/local/bin/jdssc --logstd -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 targets get -v test_-2-
+    - desc: Delete target test2
+      cmd: /usr/local/bin/jdssc --logstd -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 targets delete -v test_-2-
+    - desc: Delete volume test2
+      cmd: /usr/local/bin/jdssc --logstd -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 volume test_-2- delete
+
+    - desc: Create volume test3
+      cmd: /usr/local/bin/jdssc --logstd -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 volumes create -n 'test$@3#' -s 1G
+    - desc: Create target for test3
+      cmd: /usr/local/bin/jdssc --logstd -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 targets create -v 'test$@3#'
+    - desc: Get target for volume test3
+      cmd: /usr/local/bin/jdssc --logstd -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 targets get -v 'test$@3#'
+    - desc: Delete target test3
+      cmd: /usr/local/bin/jdssc --logstd -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 targets delete -v 'test$@3#'
+    - desc: Delete volume test3
+      cmd: /usr/local/bin/jdssc --logstd -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 volume 'test$@3#' delete
+
+data:
+    - description: volume name
+      value: test1
+      name: test1
+    - description: volume name
+      value: test_-2-
+      name: test2
+    - description: volume name
+      value: test$@3*
+      name: test3
+
+parameters: pool Pool-0 volumes create -n test[1-2] -b [32K, 64K] -s 512M
+references:
+expected_results: |
+    Volumes will be created with block size provided in cli argument
+    test1 will be 32K, test2 will have block size 64K

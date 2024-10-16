@@ -1,0 +1,51 @@
+name: Change iscsi target prefix after start
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have pool Pool-0
+    - JovianDSS have REST enabled
+    - Plugin and jdssc configured to have single pool according git installation guide
+    - Multipath is not configured
+    - Content volume attached
+    - Logging level for jdssc INFO
+setup:
+id: iscsi-target-prefix-chang-001
+scenario: |
+    User starts proxmox with plugin configured to use Pool-0 and Pool-0
+    is formatted and mounted so that plagin can use it.
+    User change iscsi target prefix in storage cfg file and downloads container image
+    checks presens of existing one, starts and stops container
+description: |
+    Test that verifys that plugin can handl scsi target prefix change
+objective: |
+    Ensure that plugin is capable of continue regualr operation is case of iscsi target
+    prefix change
+steps:
+    - Ensure that Pool-0 is configured in storage.cfg
+    - Ensure that content volume is enabled and mounted apropriatly
+    - Download debian-11 to content volume
+    - Create container test1
+    - Start container test1
+    - Change iscsi prefix
+    - Ensure that container test1 is accesable
+    - Download new container image
+    - Create test2 container from debian-11
+    - Stop container test2
+data:
+    - description: Pool name
+      value: Pool-0
+      name: Pool-0
+    - description: container image name
+      value: debian-11
+      name: debian-11
+    - description: container name
+      value: test1
+      name: test1
+    - description: container name
+      value: test2
+      name: test2
+parameters:
+references:
+expected_results: |
+    Content volume continue to be available.
+    Container test1 get resized and container get created.
+    Container image is not lost.

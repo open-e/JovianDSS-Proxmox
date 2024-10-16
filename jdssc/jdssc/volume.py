@@ -58,6 +58,11 @@ class Volume():
                          action='store_true',
                          default=False,
                          help='Print volume size')
+        get.add_argument('-G',
+                         dest='volume_gigabyte_size',
+                         action='store_true',
+                         default=False,
+                         help='Print volume size in gigabytes')
         get.add_argument('-d',
                          dest='direct_mode',
                          action='store_true',
@@ -151,6 +156,8 @@ class Volume():
                                      direct_mode=self.args['direct_mode'])
             if self.args['volume_size']:
                 print(d['size'])
+            if self.args['volume_gigabyte_size']:
+                print(int(int(d['size'])/(1024*1024*1024)))
         except jexc.JDSSException as err:
             LOG.error(err.message)
             exit(1)

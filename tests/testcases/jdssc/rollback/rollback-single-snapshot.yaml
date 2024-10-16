@@ -9,13 +9,15 @@ description: Basic test that checks general functionality of  properly
 objective: To ensure that rollback request being send to storage
 steps:
     - desc: Create volume test1
+      cmd: /usr/local/bin/jdssc -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 volumes create -n test1 -s 1G
     - desc: Create volume test1 target
-    - desc: Discover target
-      cmd: iscsiadm --mode discovery --portal 192.168.21.100 --type sendtargets
+      cmd: /usr/local/bin/jdssc -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 targets create -v test1
+    - desc: Add target
+      cmd: iscsiadm --mode node --target iqn.2021-10.iscsi:b0cf378adc8b89bcda7a10f1b1c53be0a76b7935a4724dba251e391e6cd4a504 --portal 192.168.21.100 -o new
     - desc: Login into target
-      cmd: iscsiadm --mode node --target iqn.2021-10.iscsi:test1 --portal 192.168.21.100 --login
+      cmd: iscsiadm --mode node --target iqn.2021-10.iscsi:b0cf378adc8b89bcda7a10f1b1c53be0a76b7935a4724dba251e391e6cd4a504 --portal 192.168.21.100 --login
     - desc: Format volume test1
-      cmd: mkfs.ext3 /dev/disk/by-path/ip-192.168.21.100:3260-iscsi-iqn.2021-10.iscsi:test1-lun-0
+      cmd: mkfs.ext3 /dev/disk/by-path/ip-192.168.21.100:3260-iscsi-iqn.2021-10.iscsi:b0cf378adc8b89bcda7a10f1b1c53be0a76b7935a4724dba251e391e6cd4a504-lun-0
     - desc: Create snapshot snap1
       cmd: /usr/local/bin/jdssc --loglvl info --logstd -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 volume test1 snapshots create -n snap1
     - desc: Mount test1
@@ -28,7 +30,9 @@ steps:
 cleanup:
     - desc: Umount test1
     - desc: Logout from iscsi target
-      cmd: iscsiadm --mode node --target iqn.2021-10.iscsi:test1 --portal 192.168.21.100 --logout
+      cmd: iscsiadm --mode node --target iqn.2021-10.iscsi:b0cf378adc8b89bcda7a10f1b1c53be0a76b7935a4724dba251e391e6cd4a504 --portal 192.168.21.100 --logout
+    - desc: Delete iscsi record
+      cmd: iscsiadm --mode node --target iqn.2021-10.iscsi:b0cf378adc8b89bcda7a10f1b1c53be0a76b7935a4724dba251e391e6cd4a504 --portal 192.168.21.100 -o delete
     - desc: Delete target for test1
       cmd: /usr/local/bin/jdssc --loglvl debug --logstd  -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 targets delete -v test1
     - desc: Delete volume and its snapshots
