@@ -51,6 +51,7 @@ my $PLUGIN_VERSION = '0.9.8-5';
 #              Extend REST API error handling
 #              Fix volume provisioning bug
 #              Fix Pool selection bug
+#              Prevent possible iscis target name collision
 
 # Configuration
 
@@ -599,17 +600,20 @@ sub unstage_target {
     foreach my $host (@hosts) {
         my $tpath = $class->get_target_path($scfg, $target, $storeid);
 
-        eval { run_command(['sync', '-f', $tpath]); };
-        warn $@ if $@;
-        eval { run_command(['sync', $tpath]); };
-        warn $@ if $@;
-        eval { run_command(['umount', $tpath]); };
-        warn $@ if $@;
+        if (-e $tpath) {
+            eval { run_command(['sync', '-f', $tpath]); };
+            warn $@ if $@;
+            eval { run_command(['sync', $tpath]); };
+            warn $@ if $@;
+            eval { run_command(['umount', $tpath]); };
+            warn $@ if $@;
 
-        eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--logout']); };
-        warn $@ if $@;
-        eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '-o', 'delete']); };
-        warn $@ if $@;
+            eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--logout']); };
+            warn $@ if $@;
+            eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '-o', 'delete']); };
+            warn $@ if $@;
+        }
+
     }
 }
 
@@ -714,17 +718,12 @@ sub unstage_multipath {
 
     my $scsiid;
 
+
     # Multipath Block Device Link Path
     # Link to actual block device representing multipath interface
     my $mbdlpath  = $class->get_multipath_path($scfg, $target);
-    if ( -e $mbdlpath ) {
 
-        eval { run_command(['sync', '-f', $mbdlpath]); };
-        warn $@ if $@;
-        eval { run_command(['sync', $mbdlpath]); };
-        warn $@ if $@;
-        eval { run_command(['umount', $mbdlpath]); };
-        warn $@ if $@;
+    if ( -e $mbdlpath ) {
 
         if (unlink $mbdlpath) {
             print "Removed $mbdlpath} link\n" if get_debug($scfg);
@@ -745,19 +744,20 @@ sub unstage_multipath {
 
     # Multipath Block Device Mapper Name
     my $mbdmname = $class->get_device_mapper_name($scfg, $scsiid);
-    # Multipath Block Device Mapper Path
-    my $mbdmpath = "/dev/mapper/${mbdmname}";
-    # If Multipath Block Device Mapper representation exists
-    # We synch cache
-    if ( -e $mbdmpath ) {
-        eval { run_command(['sync', '-f', $mbdmpath]); };
-        warn $@ if $@;
-        eval { run_command(['sync', $mbdmpath]); };
-        warn $@ if $@;
-        eval { run_command(['umount', $mbdmpath]); };
-        warn $@ if $@;
+    if (defined($mbdmname)) {
+        # Multipath Block Device Mapper Path
+        my $mbdmpath = "/dev/mapper/${mbdmname}";
+        # If Multipath Block Device Mapper representation exists
+        # We synch cache
+        if ( -e $mbdmpath ) {
+            eval { run_command(['sync', '-f', $mbdmpath]); };
+            warn $@ if $@;
+            eval { run_command(['sync', $mbdmpath]); };
+            warn $@ if $@;
+            eval { run_command(['umount', $mbdmpath]); };
+            warn $@ if $@;
+        }
     }
-
     eval{ run_command([$MULTIPATH, '-f', ${scsiid}]); };
     if ($@) {
         warn "Unable to remove the multipath mapping for target ${target} because of $@\n" if $@;
@@ -769,6 +769,8 @@ sub unstage_multipath {
             warn "Unable to identify multipath mapper name for ${target}\n";
         }
     }
+
+
 
     eval { run_command([$MULTIPATH]); };
     die "Unable to restart the multipath daemon $@\n" if $@;
@@ -989,6 +991,16 @@ sub volume_snapshot_delete {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
+    my $starget = $class->get_active_target_name(scfg => $scfg,
+                                                 volname => $volname,
+                                                 snapname => $snap);
+    unless (defined($starget)) {
+        $starget = $class->get_target_name($scfg, $volname, $snap);
+    }
+    $class->unstage_multipath($scfg, $storeid, $starget) if multipath_enabled($scfg);;
+
+    $class->unstage_target($scfg, $storeid, $starget);
+
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
     $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "delete"]);
@@ -1104,11 +1116,17 @@ sub ensure_content_volume {
 
     # TODO: check for volume size on the level of OS
     # If volume needs resize do it with jdssc
-    eval { $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $content_volname, "get", "-d", "-s"]); };
+    my $content_volume_size_current;
+    eval { $content_volume_size_current = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $content_volname, "get", "-d", "-G"]); };
     if ($@) {
         $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "-d", "-s", "${content_volume_size}G", '-n', $content_volname]);
     } else {
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $content_volname, "resize", "-d", "${content_volume_size}G"]);
+        # TODO: check for volume size on the level of OS
+        # If volume needs resize do it with jdssc
+        print "Current content volume size${content_volume_size_current}, config value ${content_volume_size}\n";
+        if ($content_volume_size > $content_volume_size_current) {
+            $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $content_volname, "resize", "-d", "${content_volume_size}G"]);
+        }
     }
 
     $class->activate_volume_ext($storeid, $scfg, $content_volname, "", $cache, 1);
@@ -1117,6 +1135,12 @@ sub ensure_content_volume {
     eval { run_command(["/usr/sbin/fsck", "-n", $bdpath])};
     if ($@) {
             die "Unable to identify file system type for content storage, if this is the first run, format ${bdpath} to the file system of your choice.\n";
+    }
+    if ($content_volume_size > $content_volume_size_current) {
+        eval { run_command(["/usr/sbin/resize2fs", $bdpath])};
+        if ($@) {
+            warn "Unable to resize content storage file system $@\n";
+        }
     }
     print "Mounting device ${bdpath} to ${content_path}\n";
     mkdir "$content_path";
@@ -1174,6 +1198,7 @@ sub deactivate_storage {
     my $pool = get_pool($scfg);
 
     my $content_volname = get_content_volume_name($scfg);
+    my $content_volume_size_cfg = get_content_volume_size($scfg);
 
     my $target = $class->get_active_target_name(scfg => $scfg,
                                                 volname => $content_volname,

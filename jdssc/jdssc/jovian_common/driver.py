@@ -18,6 +18,7 @@ import logging
 from oslo_utils import units as o_units
 import math
 import re
+import string
 import hashlib
 
 from jdssc.jovian_common import exception as jexc
@@ -335,7 +336,7 @@ class JovianDSSDriver(object):
         """
         LOG.debug("Deleting %s", vname)
         try:
-            self._remove_target_volume(jcom.idname(vname), vname)
+            self._remove_target_volume(self._get_target_name(vname), vname)
         except jexc.JDSSResourceNotFoundException:
             LOG.debug('target for volume %s does not exist', vname)
 
@@ -424,11 +425,12 @@ class JovianDSSDriver(object):
         bsnaps = self._list_busy_snapshots(vname,
                                            snapshots,
                                            exclude_dedicated_volumes=True)
+        LOG.debug("Busy snaps to delete %s", str(bsnaps))
 
         for snap in bsnaps:
             ret.extend([jcom.idname(c) for c in jcom.snapshot_clones(snap)
                         if jcom.is_snapshot(c)])
-
+        LOG.debug("Snaps to delete %s", str(ret))
         return ret
 
     def _clone_object(self, cvname, sname, ovname,
@@ -874,8 +876,23 @@ class JovianDSSDriver(object):
 
         This function is a final point target name generation.
         """
-        vidstr = hashlib.sha256(vid.encode()).hexdigest()
-        return f'{self.jovian_target_prefix}{vidstr}'
+        allowed = list(string.ascii_lowercase)
+        allowed.extend(['.', '-'])
+        allowed.extend(list(string.digits))
+        vidstr = ''
+        resource_name_lower = jcom.idname(vid).lower()
+        for c in resource_name_lower:
+            if c in allowed:
+                vidstr += c
+            else:
+                vidstr += '-'
+        if len(self.jovian_target_prefix) > 201:
+            raise Exception("Target prefix %s is too long",
+                            self.jovian_target_prefix)
+        vidstr += "-" + hashlib.sha256(vid.encode()).hexdigest()
+        vidstr = vidstr[-255+len(self.jovian_target_prefix):]
+        target_id = f'{self.jovian_target_prefix}{vidstr}'
+        return target_id[-255:]
 
     def get_target_name(self, volume_name, snapshot_name=None):
         """Return iSCSI target name to access volume."""
@@ -1080,10 +1097,13 @@ class JovianDSSDriver(object):
                 if not jcom.is_volume(r['name']):
                     continue
 
-                ret.append({
-                    'name': jcom.idname(r['name']),
-                    'id': r['san:volume_id'],
-                    'size': r['volsize']})
+                vdata = {'name': jcom.idname(r['name']),
+                         'size': r['volsize']}
+
+                if 'san:volume_id' in r:
+                    vdata['id'] = r['san:volume_id']
+
+                ret.append(vdata)
 
             except Exception:
                 pass
@@ -1106,8 +1126,10 @@ class JovianDSSDriver(object):
             return dict()
 
         ret = {'name': name,
-               'id': data['san:volume_id'],
                'size': data['volsize']}
+
+        if 'san:volume_id' in data:
+            ret['id'] = data['san:volume_id'],
 
         return ret
 

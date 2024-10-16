@@ -1,0 +1,16 @@
+name: Snapshot with intermediate clone delete
+prerequisites:
+setup:
+id: snapshot-delete-001
+scenario: |
+    User creates container and makes a snapshot s1.
+    Then user clones container test1 using snapshots s1 as source for the clone.
+    Once clone is done, user delets snapshot s1.
+description: |
+objective: |
+    Ensure that plugin clears temporary resources including multipath and iscsi target
+steps:
+data:
+parameters:
+references:
+expected_results:

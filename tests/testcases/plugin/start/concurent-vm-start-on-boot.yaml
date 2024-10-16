@@ -1,5 +1,5 @@
-name: Different pool names
-prerequisites: 
+name: Concurent vm start on boot
+prerequisites:
     - Plugin installed on Proxmox
     - JovianDSS have pool Pool-0
     - Plugin and jdssc configured to have single pool according git installation guide
@@ -10,23 +10,22 @@ id: concurent-vm-start-001
 scenario: |
     User starts proxmox with plugin configured to use Pool-0.
     User creates multiple virtual machines.
-    User starts all containers simultaniously.
+    User sets onboot flag for vms and reboots server
+    User observer virtual machines get started on boot
 description: |
-    Multi volume simultanious attachment
+    Multiple vm start on boot
 objective: |
-    Ensure that plugin is capable of providing access to multiple newly created
-    volumes simultaniously
+    Ensure that plugin is capable of starting multiple VM after reboot
 steps:
     - Ensure that Pool-0 is configured in storage.cfg
     - desc: Create snapshot of vm with id 100
       cmd: qm snapshot 100 linked-snap --description "Snapshot for linked clone"
     - desc: Create 20 vms from vm110 to vm120 on Pool-0
       cmd: for i in {110..130}; do echo $i; qm clone 100 $i --snapname linked-snap --full false  ; done;
-    - desc: Ensure that apropriate volumes being created
-    - desc: Remove targets of volumes associated with VM's
-      cmd: for vmd in `jdssc -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 volumes list | awk '{print $1}'`; do echo $vmd; jdssc -c /etc/pve/jdss-Pool-0.yaml pool Pool-0 targets delete -v $vmd  ;  done;
-    - desc: Start container from test1 to test20
-      cmd: for i in `qm list | grep stopped | awk '{print $1}'`; do echo $i; qm start $i ; done;
+    - desc: Ensure that apropriate volumes been created
+    - desc: Marc newly created(offline) vms to autostart on boot
+      cmd: for i in `qm list | grep stopped | awk '{print $1}'`; do echo $i; qm set $i --onboot 1; done;
+    - desc: Reboot proxmox server
     - Ensure that containers are up and running
     - desc: Stop containers
       cmd: for i in `qm list | grep running | awk '{print $1}'`; do echo $i; qm stop $i ; done
