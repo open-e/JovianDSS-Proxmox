@@ -34,7 +34,8 @@ joviandss: jdss-Pool-0
         content_volume_name proxmox-content-jdss-pool-0
         content_volume_size 100
         path /mnt/jdss-Pool-0
-        shared 1 # Option is available since v0.9.8
+        # shared option is available since v0.9.8
+        shared 1 
         debug 0
         multipath 0
 ```
@@ -65,7 +66,8 @@ This config file should be placed according to the path provided in `storage.cfg
 
 ```yaml
 driver_use_ssl: True
-driver_ssl_cert_verify: False # Option is available since v0.9.8
+# driver_ssl_cert_verify option is available since v0.9.8
+driver_ssl_cert_verify: False
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
@@ -120,7 +122,8 @@ joviandss: jdss-Pool-0
         content_volume_name proxmox-content-jdss-pool-0
         content_volume_size 100
         path /mnt/jdss-Pool-0
-        shared 1 # Option is available since v0.9.8
+        # shared option is available since v0.9.8
+        shared 1
         debug 0
         multipath 0
 
@@ -131,7 +134,8 @@ joviandss: jdss-Pool-1
         content_volume_name proxmox-content-jdss-pool-1
         content_volume_size 100
         path /mnt/jdss-Pool-1
-        shared 1 # Option is available since v0.9.8
+        # shared option is available since v0.9.8
+        shared 1
         debug 0
         multipath 0
 ```
@@ -191,6 +195,7 @@ joviandss: jdss-Pool-0
         content_volume_name proxmox-content-jdss-pool-0
         content_volume_size 100
         path /mnt/jdss-Pool-0
+        # shared option is available since v0.9.8
         shared 1
         debug 0
         multipath 0
@@ -229,7 +234,8 @@ joviandss: jdss-Pool-0
         content_volume_name proxmox-content-jdss-pool-0
         content_volume_size 100
         path /mnt/jdss-Pool-0
-        shared 1 # Option is available since v0.9.8
+        # shared option is available since v0.9.8
+        shared 1
         debug 0
         multipath 1
 ```
