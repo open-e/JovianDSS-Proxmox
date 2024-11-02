@@ -22,14 +22,14 @@ from jdssc.jovian_common import exception as jexc
 
 LOG = logging.getLogger(__name__)
 
-"""Shares related commands."""
+"""NAS volumes related commands."""
 
 
-class Shares():
+class NASVolumes():
     def __init__(self, args, uargs, jdss):
 
-        self.shares_action = {'create': self.create,
-                              'list': self.list}
+        self.nvsa = {'create': self.create,
+                     'list': self.list}
 
         self.args = args
         args, uargs = self.__parse(uargs)
@@ -38,19 +38,17 @@ class Shares():
         self.uargs = uargs
         self.jdss = jdss
 
-        action = args.shares_action
-        if ((action is not None) and
-                (len(action) > 0) and
-                (action in self.shares_action)):
-            self.shares_action[action]()
+        action = args.nas_volumes_action
+        if action is not None and len(action) > 0 and action in self.nvsa:
+            self.nvsa[action]()
         else:
             sys.exit(1)
 
     def __parse(self, args):
 
-        shares_parser = argparse.ArgumentParser(prog="Shares")
+        nas_volumes_parser = argparse.ArgumentParser(prog="NAS Volumes")
 
-        parsers = shares_parser.add_subparsers(dest='shares_action')
+        parsers = nas_volumes_parser.add_subparsers(dest='nas_volumes_action')
 
         create = parsers.add_parser('create')
         create.add_argument('-q',
@@ -75,7 +73,7 @@ class Shares():
                             help='Use real volume name')
         create.add_argument('-n',
                             required=True,
-                            dest='share_name',
+                            dest='nas_volume_name',
                             type=str,
                             help='New nas volume name')
 
@@ -85,21 +83,11 @@ class Shares():
                            action='store_true',
                            default=False,
                            help='Show only volumes with VM ID')
-        listp.add_argument('-d',
-                           dest='direct_mode',
-                           action='store_true',
-                           default=False,
-                           help='Print actual share names')
-        listp.add_argument('-p',
-                           dest='path',
-                           action='store_true',
-                           default=False,
-                           help='Print share path')
 
-        kargs, ukargs = shares_parser.parse_known_args(args)
+        kargs, ukargs = nas_volumes_parser.parse_known_args(args)
 
-        if kargs.shares_action is None:
-            shares_parser.print_help()
+        if kargs.nas_volumes_action is None:
+            nas_volumes_parser.print_help()
             sys.exit(1)
 
         return kargs, ukargs
@@ -108,11 +96,11 @@ class Shares():
         quota = self.args['volume_quota'].upper()
 
         name = str(uuid.uuid1())
-        if 'share_name' in self.args:
-            name = self.args['share_name']
+        if 'volume_name' in self.args:
+            name = self.args['volume_name']
 
         try:
-            self.jdss.create_share(
+            self.jdss.create_nas_volume(
                 name,
                 quota,
                 direct_mode=self.args['direct_mode'],
@@ -126,12 +114,17 @@ class Shares():
             LOG.error("No space left on the storage")
             exit(1)
 
-    def list(self):
-        data = self.jdss.list_shares()
-        LOG.debug(data)
-        for v in data:
+    def get(self):
 
-            line = ("%(name)s %(path)s\n" % {
-                    'name': v['name'],
-                    'path': v['path']})
-            sys.stdout.write(line)
+        volume_name = self.args['volume_name']
+
+        volume = {'id': volume_name}
+
+        d = self.jdss.get_volume(volume)
+
+        if self.args['volume_size']:
+            print(d['size'])
+
+    def delete(self):
+
+        self.jdss.ra.delete_nas_volume(self.args['nas_volume_name'])

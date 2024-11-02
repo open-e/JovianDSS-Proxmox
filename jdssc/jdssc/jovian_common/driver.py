@@ -120,6 +120,36 @@ class JovianDSSDriver(object):
                            block_size=block_size)
         return
 
+    def create_nas_volume(self, volume_id, volume_quota,
+                          reservation=None,
+                          direct_mode=False):
+        """Create a nas volume.
+
+        :param str volume_id: nas volume id
+        :param int volume_quota: size in Gi
+        :param bool sparse: thin or thick volume flag (default thin)
+        :param int block_size: size of block (default None)
+        :param bool direct_mode: indicates that volume id should be used
+                                for name without any changes
+
+        :return: None
+        """
+        vname = jcom.vname(volume_id)
+        if direct_mode:
+            vname = volume_id
+
+        LOG.debug(("Create nas volume:%(name)s with quota:%(size)s "
+                   "direct mode is %(direct)s and reservation:%(reserv)s "),
+                  {'name': volume_id,
+                   'size': volume_quota,
+                   'reserv': reservation,
+                   'direct': direct_mode})
+
+        self.ra.create_nas_volume(vname,
+                                  volume_quota,
+                                  reservation=reservation)
+        return
+
     def _promote_newest_delete(self, vname, snapshots=None, cascade=False):
         '''Promotes and delete volume
 
@@ -411,6 +441,20 @@ class JovianDSSDriver(object):
             return self._list_resources_to_delete(vname, cascade=True)
         else:
             return self._delete_volume(vname, cascade=cascade)
+
+    def delete_nas_volume(self, volume_name,
+                          direct_mode=False,
+                          print_and_exit=False):
+        """Delete nas volume
+
+        :param volume: volume reference
+        :param cascade: remove snapshots of a volume as well
+        """
+        vname = jcom.vname(volume_name)
+
+        LOG.info('deleting nas volume %s', vname)
+
+        self.ra.delete_nas_volume(vname)
 
     def _list_resources_to_delete(self, vname, cascade=False):
         ret = []
@@ -1083,14 +1127,15 @@ class JovianDSSDriver(object):
         """
 
         ret = []
+        data = []
         try:
-            data = self.ra.get_luns()
-
+            data = self._list_all_pages(self.ra.get_volumes_page)
         except jexc.JDSSException as ex:
             LOG.error("List volume error. Because %(err)s",
                       {"err": ex})
             raise Exception(('Failed to list volumes %s.') % ex)
 
+        LOG.debug(data)
         for r in data:
             try:
 
@@ -1133,6 +1178,24 @@ class JovianDSSDriver(object):
 
         return ret
 
+    def get_nas_volume(self, nas_volume_name, direct_mode=False):
+        """Get nas volume information.
+
+        :return: volume id, size
+        """
+        name = None
+
+        if direct_mode:
+            name = nas_volume_name
+        else:
+            name = jcom.vname(nas_volume_name)
+        data = self.ra.get_nas_volume(name)
+
+        ret = {'name': name,
+               'quota': data['quota']}
+
+        return ret
+
     def _set_provisioning_thin(self, vname, thinp):
 
         provisioning = 'thin' if thinp else 'thick'
@@ -1172,6 +1235,25 @@ class JovianDSSDriver(object):
         i = 0
         while True:
             spage = self.ra.get_snapshots_page(i)
+
+            if len(spage) > 0:
+                LOG.debug("Page: %s", str(spage))
+
+                if f is not None:
+                    resp.extend(filter(f, spage))
+                else:
+                    resp.extend(spage)
+                i += 1
+            else:
+                break
+
+        return resp
+
+    def _list_all_pages(self, resource_getter, f=None):
+        resp = []
+        i = 0
+        while True:
+            spage = resource_getter(i)
 
             if len(spage) > 0:
                 LOG.debug("Page: %s", str(spage))
@@ -1609,3 +1691,84 @@ class JovianDSSDriver(object):
         if not backend_name:
             backend_name = self.__class__.__name__
         return backend_name
+
+    def create_share(self, share_name, quota_size,
+                     reservation=None,
+                     direct_mode=False):
+
+        sharename = share_name if direct_mode else jcom.vname(share_name)
+        # create nas / ensure nas volume is present
+        # TODO: rework it so that there will be only one place of
+        # sharename generation
+        try:
+            self.create_nas_volume(share_name, quota_size,
+                                   reservation=reservation,
+                                   direct_mode=direct_mode)
+        except jexc.JDSSResourceExistsException:
+            LOG.debug("Looks like nas volume %s already exists", share_name)
+
+        sharename = jcom.vname(share_name)
+        path = "{}/{}".format(self._pool, sharename)
+
+        self.ra.create_share(sharename, path,
+                             active=True,
+                             proto='nfs',
+                             insecure_connections=False,
+                             synchronous_data_record=True)
+
+    def delete_share(self, share_name, direct_mode=False):
+        sharename = share_name if direct_mode else jcom.vname(share_name)
+
+        self.ra.delete_share(sharename)
+
+        self.delete_nas_volume(share_name, direct_mode=False)
+
+    def list_shares(self):
+        """List shares
+
+        :return: list of volumes
+        """
+
+        ret = []
+        try:
+            data = self._list_all_pages(self.ra.get_shares_page)
+
+        except jexc.JDSSException as ex:
+            LOG.error("List shares error. Because %(err)s",
+                      {"err": ex})
+            raise Exception(('Failed to list shares %s.') % ex)
+
+        for r in data:
+            try:
+
+                LOG.debug(r['name'])
+                if not jcom.is_volume(r['name']):
+                    continue
+
+                sdata = {'name': jcom.idname(r['name']),
+                         'path': r['path']}
+
+                if 'nfs' in r:
+                    sdata['proto'] = 'nfs'
+                    sdata['proto_data'] = r['nfs']
+
+                ret.append(sdata)
+
+            except Exception:
+                pass
+        return ret
+
+    def resize_share(self, share_name, new_size, direct_mode=False):
+        """Extend an existing volume.
+
+        :param str volume_name: volume id
+        :param int new_size: volume new size in Gi
+        """
+        LOG.debug("Extend share: %(name)s to size:%(size)s",
+                  {'name': share_name, 'size': new_size})
+
+        shname = jcom.vname(share_name)
+
+        if direct_mode:
+            shname = share_name
+        self.ra.extend_nas_volume(shname, new_size)

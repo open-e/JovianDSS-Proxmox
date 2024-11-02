@@ -112,6 +112,10 @@ sub properties {
             description => "Name of proxmox dedicated storage volume",
             type => 'string',
         },
+        content_volume_type => {
+            description => "Type of proxmox dedicated storage, allowed types are nfs and iscsi",
+            type => 'string',
+        },
         content_volume_size => {
             description => "Name of proxmox dedicated storage size",
             type => 'string',
@@ -128,8 +132,10 @@ sub options {
         multipath                       => { optional => 1 },
         content                         => { optional => 1 },
         content_volume_name             => { optional => 1 },
+        content_volume_type             => { optional => 1 },
         content_volume_size             => { optional => 1 },
         shared                          => { optional => 1 },
+        disable                         => { optional => 1 },
     };
 }
 
@@ -186,7 +192,7 @@ sub get_content_volume_name {
     if ( !defined($scfg->{content_volume_name}) ) {
 
         my $pool = get_pool($scfg);
-	my $cv = lc("proxmox-content-${default_prefix}${pool}");
+        my $cv = lc("proxmox-content-${default_prefix}${pool}");
         warn "Content volume name is not set up, using default value ${cv}\n";
         return $cv;
     }
@@ -194,6 +200,20 @@ sub get_content_volume_name {
     die "Content volume name should only include lower case letters, numbers and . - characters\n" if ( not ($cvn =~ /^[a-z0-9.-]*$/) );
 
     return $cvn;
+}
+
+sub get_content_volume_type {
+    my ($scfg) = @_;
+    if ( defined($scfg->{content_volume_type}) ) {
+            if ($scfg->{content_volume_type} eq 'nfs') {
+                return 'nfs';
+            }
+            if ($scfg->{content_volume_type} eq 'iscsi') {
+                return 'iscsi';
+            }
+            die "Uncnown type of content storage requered\n";
+    }
+    return  'iscsi';
 }
 
 sub get_content_volume_size {
@@ -1074,6 +1094,59 @@ sub storage_mounted {
     return 0;
 }
 
+sub ensure_content_volume_nfs {
+    my ($class, $storeid, $scfg, $cache) = @_;
+
+    my $content_path = get_content_path($scfg);
+    my $config = get_config($scfg);
+    my $pool = get_pool($scfg);
+
+    my $content_volume_name = get_content_volume_name($scfg);
+    my $content_volume_size = get_content_volume_size($scfg);
+
+    my $content_volume_size_current;
+
+    eval { $content_volume_size_current = $class->joviandss_cmd(["-c", $config, "pool", $pool, "share", $content_volume_name, "get", "-d", "-G"]); };
+    if ($@) {
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "shares", "create", "-d", "-q", "${content_volume_size}G", '-n', $content_volume_name]);
+    } else {
+        # TODO: check for volume size on the level of OS
+        # If volume needs resize do it with jdssc
+        print "Current content volume size${content_volume_size_current}, config value ${content_volume_size}\n" if get_debug($scfg);
+        if ($content_volume_size > $content_volume_size_current) {
+            $class->joviandss_cmd(["-c", $config, "pool", $pool, "share", $content_volume_name, "resize", "-d", "${content_volume_size}G"]);
+        }
+    }
+
+    my @hosts = $class->get_storage_addresses($scfg, $storeid);
+
+    foreach my $host (@hosts) {
+        my $not_found_code = 1;
+        my $nfs_path = "${host}:/Pools/${pool}/${content_volume_name}";
+        my $cmd = ['/usr/bin/findmnt', '-t', 'nfs', '-S', $nfs_path, '-M', $content_path];
+        eval { $not_found_code = run_command($cmd) };
+        return if $not_found_code == 0;
+    }
+
+    my $not_mounted = 1;
+    eval { $not_mounted = run_command(["findmnt", $content_path])};
+
+    if ($not_mounted == 0) {
+        $class->deactivate_storage($storeid, $scfg, $cache);
+    } else {
+        foreach my $host (@hosts) {
+            my $not_found_code = 1;
+            my $nfs_path = "${host}:/Pools/${pool}/${content_volume_name}";
+            run_command(["/usr/bin/mount", $nfs_path, $content_path], timeout => 10, noerr => 1 );
+
+            my $cmd = ['/usr/bin/findmnt', '-t', 'nfs', '-S', $nfs_path, '-M', $content_path];
+            eval { $not_found_code = run_command($cmd) };
+            return if $not_found_code == 0;
+        }
+    }
+    die "Unable to mount content storage\n";
+}
+
 sub ensure_content_volume {
     my ($class, $storeid, $scfg, $cache) = @_; 
 
@@ -1089,7 +1162,7 @@ sub ensure_content_volume {
     my $bdpath = $class->block_device_path($scfg, $content_volname, $storeid, undef, 1);
 
     # Acquire name of block device that is mounted to content volume folder
-    my $findmntpath; 
+    my $findmntpath;
     eval {run_command(["findmnt", $content_path, "-n", "-o", "UUID"], outfunc => sub { $findmntpath = shift; }); };
 
     my $tname = $class->get_target_name($scfg, $content_volname, undef, 1);
@@ -1181,11 +1254,41 @@ sub ensure_fs {
 
 sub activate_storage {
     my ( $class, $storeid, $scfg, $cache ) = @_;
+    print "Activate storage ${storeid}\n" if get_debug($scfg);
 
     return undef if !defined($scfg->{content});
 
-    $class->ensure_content_volume($storeid, $scfg, $cache);
+    my @content_types = ('iso', 'backup', 'vztmpl', 'rootdir', 'snippets');
 
+    # Convert the string into an array for easier processing
+    # my @items = split(',', get_content($scfg));
+
+    my $enabled_content = get_content($scfg);
+
+    #print "Content data $enabled_content\n" if get_debug($scfg);
+    while (my ($key, $value) = each %{ $enabled_content}) {
+        print "Content data: $key $value\n";
+    }
+    my $content_volume_needed = 0;
+    foreach my $content_type (@content_types) {
+        print "Checking content type $content_type\n" if get_debug($scfg);
+        if (exists $enabled_content->{$content_type}) {
+            print "Set content volume flag\n" if get_debug($scfg);
+            $content_volume_needed = 1;
+            last;
+        }
+    }
+
+    if ($content_volume_needed) {
+        my $cvt = get_content_volume_type($scfg);
+        print "Content volume type ${cvt}\n" if get_debug($scfg);
+
+        if ($cvt eq "nfs") {
+            $class->ensure_content_volume_nfs($storeid, $scfg, $cache);
+        } else {
+            $class->ensure_content_volume($storeid, $scfg, $cache);
+        }
+    }
     return undef;
 }
 

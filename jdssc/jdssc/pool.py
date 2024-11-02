@@ -18,10 +18,13 @@ import sys
 
 from jdssc.jovian_common import driver
 import jdssc.cifs as cifs
-import jdssc.nas_volumes as nas_volumes
-import jdssc.volumes as volumes
-import jdssc.volume as volume
+import jdssc.nasvolumes as nasvolumes
+import jdssc.shares as shares
+import jdssc.share as share
 import jdssc.targets as targets
+import jdssc.volume as volume
+import jdssc.volumes as volumes
+
 
 """Pool related commands."""
 
@@ -32,7 +35,9 @@ class Pools():
         self.pa = {'cifs': self.cifs,
                    'get': self.get,
                    'ip': self.ip,
-                   'nas_volumes': self.nas_volumes,
+                   'nas_volumes': self.nasvolumes,
+                   'share': self.share,
+                   'shares': self.shares,
                    'targets': self.targets,
                    'volume': self.volume,
                    'volumes': self.volumes}
@@ -62,6 +67,8 @@ class Pools():
         parsers.add_parser('ip', add_help=False)
         parsers.add_parser('cifs', add_help=False)
         parsers.add_parser('nas_volumes', add_help=False)
+        parsers.add_parser('share', add_help=False)
+        parsers.add_parser('shares', add_help=False)
         parsers.add_parser('targets', add_help=False)
         parsers.add_parser('volume', add_help=False)
         parsers.add_parser('volumes', add_help=False)
@@ -82,8 +89,14 @@ class Pools():
             line = ("%s\n" % i)
             sys.stdout.write(line)
 
-    def nas_volumes(self):
-        nas_volumes.NASVolumes(self.args, self.uargs, self.jdss)
+    def share(self):
+        share.Share(self.args, self.uargs, self.jdss)
+
+    def shares(self):
+        shares.Shares(self.args, self.uargs, self.jdss)
+
+    def nasvolumes(self):
+        nasvolumes.NASVolumes(self.args, self.uargs, self.jdss)
 
     def volume(self):
         volume.Volume(self.args, self.uargs, self.jdss)
