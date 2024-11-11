@@ -111,6 +111,7 @@ class Share():
             LOG.error(err.message)
             exit(1)
 
+        LOG.debug("nas volume data %s", str(d))
         if self.args['share_size']:
             if self.args['share_gigabyte_size']:
                 print(int(int(d['quota'])/(1024*1024*1024)))

@@ -61,7 +61,12 @@ def get_config():
     command = parser.add_subparsers(required=True, dest='command')
 
     command.add_parser('pool', add_help=False)
-    command.add_parser('hosts', add_help=False)
+    host_parser = command.add_parser('hosts', add_help=False)
+    host_parser.add_argument('-i', '--iscsi',
+                             dest='iscsi',
+                             action='store_true',
+                             default=False,
+                             help='Add iscsi port along side host address')
 
     args = parser.parse_known_args()
     return args
@@ -144,8 +149,9 @@ def duplicate_config_options(cfg):
 def hosts(args, uargs, jdss):
     for i in jdss.configuration['san_hosts']:
         addr = i
-        if 'target_port' in jdss.configuration:
-            addr = '%s:%s' % (addr, jdss.configuration['target_port'])
+        if 'iscsi' in args and args['iscsi']:
+            if 'target_port' in jdss.configuration:
+                addr = '%s:%s' % (addr, jdss.configuration['target_port'])
         sys.stdout.write(addr + "\n")
 
 

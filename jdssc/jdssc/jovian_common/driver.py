@@ -1707,7 +1707,6 @@ class JovianDSSDriver(object):
         except jexc.JDSSResourceExistsException:
             LOG.debug("Looks like nas volume %s already exists", share_name)
 
-        sharename = jcom.vname(share_name)
         path = "{}/{}".format(self._pool, sharename)
 
         self.ra.create_share(sharename, path,

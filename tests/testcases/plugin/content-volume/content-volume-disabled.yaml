@@ -1,0 +1,61 @@
+name: Content volume disabled
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have Pool-0
+    - JovianDSS have Pool-1
+    - JovianDSS have REST enabled
+    - Plugin and jdssc is not configured
+    - Multipath is not configured
+setup:
+id: content-volume-disabled-001
+scenario: |
+    User starts proxmox with 2 Pools provided by JovianDSS
+    User enables basic configuration without content volume
+description: |
+    Test that verifies that plugin is capable of operating without content volume in config
+objective: |
+    ensure that content volume will not be automaticaly created and mounted unless it is defined
+    storage.cfg
+steps:
+    - Add test-jdss-Pool-1 description to proxmox storage.cfg
+    - Add jdss-170.yaml to /etc/pve/ folder according to storage.conf
+    - desc: Run command that list resources on test-jdss-Pool-1 and inits content volume as a side effect
+      cmd: pvesm list test-jdss-Pool-1
+    - desc: Ensure that content volume do not exists on JovianDSS storage and it is not mounted anywhere
+      cmd: mount
+data:
+    - desc: Content of jdss-170.yaml file
+      value: |
+        driver_use_ssl: True
+        driver_ssl_cert_verify: False
+        target_prefix: 'iqn.2021-10.iscsi.170:'
+        jovian_block_size: '16K'
+        jovian_rest_send_repeats: 3
+        rest_api_addresses:
+          - '172.28.140.170'
+        rest_api_port: 82
+        target_port: 3260
+        rest_api_login: 'admin'
+        rest_api_password: 'admin'
+        thin_provision: True
+        loglevel: debug
+        logfile: /var/log/jdss-170-Pool-0.log
+      name: jdss-170.yaml
+    - desc: Content of storage.cfg file
+      value: |
+        joviandss: test-jdss-Pool-1
+          pool_name Pool-1
+          config /etc/pve/jdss-170.yaml
+          content images
+          content_volume_name proxmox-content-jdss-pool-nas-1
+          content_volume_size 10
+          content_volume_type nfs
+          debug 0
+          multipath 1
+          path /mnt/test-jdss-Pool-1
+          shared 1
+      name: storage.cfg
+parameters:
+references:
+expected_results: |
+    Content storages do not get created

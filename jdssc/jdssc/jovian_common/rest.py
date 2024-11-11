@@ -1240,6 +1240,8 @@ class JovianRESTAPI(object):
             if "message" in resp["error"]:
                 if self.no_space_left.match(resp["error"]["message"]):
                     raise jexc.JDSSResourceExhausted
+                if self.dataset_exists_msg.match(resp["error"]["message"]):
+                    raise jexc.JDSSVolumeExistsException(volume_name)
                 if self.resource_already_exists_msg.match(
                         resp["error"]["message"]):
                     raise jexc.JDSSVolumeExistsException(volume_name)
