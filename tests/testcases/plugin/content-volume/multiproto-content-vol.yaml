@@ -1,0 +1,70 @@
+name: Pool that serves multiple content volumes
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have Pool-0
+    - JovianDSS have REST enabled
+    - Plugin and jdssc is not configured
+    - Multipath is not configured
+setup:
+id: multi-content-volume-001
+scenario: |
+    User starts proxmox with Pool-0 provided by JovianDSS
+    And configures multiple content volumes on same Pool-0
+description: |
+    Test that verifies that user can configure iscsi and nfs pool on same pool
+objective: |
+    ensure that plugin is capable of providing multiple content volumes for single pool
+steps:
+    - Add test-jdss-Pool-0-nfs description to proxmox storage.cfg
+    - Add test-jdss-Pool-0-iscsi description to proxmox storage.cfg
+    - desc: Run command that list resources on test-jdss-Pool-0-iscsi and test-jdss-Pool-0-nfs
+      cmd: |
+           pvesm list test-jdss-Pool-0-iscsi
+           pvesm list test-jdss-Pool-0-nfs
+    - desc: Ensure that content volume exists for test-jdss-Pool-0-iscsi test-jdss-Pool-0-nfs
+data:
+    - desc: Content of jdss-170.yaml file
+      value: |
+        driver_use_ssl: True
+        driver_ssl_cert_verify: False
+        target_prefix: 'iqn.2021-10.iscsi.170:'
+        jovian_block_size: '16K'
+        jovian_rest_send_repeats: 3
+        rest_api_addresses:
+          - '172.28.140.170'
+        rest_api_port: 82
+        target_port: 3260
+        rest_api_login: 'admin'
+        rest_api_password: 'admin'
+        thin_provision: True
+        loglevel: debug
+        logfile: /var/log/jdss-170-Pool-0.log
+      name: jdss-170.yaml
+    - desc: Content of storage.cfg file
+      value: |
+        joviandss: test-jdss-Pool-0-iscsi
+          pool_name Pool-0
+          config /etc/pve/jdss-170.yaml
+          content images
+          content_volume_name proxmox-content-jdss-pool-iscsi-0
+          content_volume_size 10
+          content_volume_type iscsi
+          multipath 1
+          path /mnt/test-jdss-Pool-0-iscsi
+          shared 1
+        joviandss: test-jdss-Pool-0-nfs
+          pool_name Pool-0
+          config /etc/pve/jdss-170.yaml
+          content images
+          content_volume_name proxmox-content-jdss-pool-nfs-0
+          content_volume_size 10
+          content_volume_type nfs
+          multipath 1
+          path /mnt/test-jdss-Pool-0-nfs
+          shared 1
+      name: storage.cfg
+parameters:
+references:
+expected_results: |
+    Both content volume get created and operational
+

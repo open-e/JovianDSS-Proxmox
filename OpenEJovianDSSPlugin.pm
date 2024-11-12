@@ -215,7 +215,7 @@ sub get_content_volume_type {
 sub get_content_volume_size {
     my ($scfg) = @_;
 
-    if get_debug($scfg);
+    if (get_debug($scfg)) {
         print "content_volume_size property is not set up, using default $default_content_size\n" if (!defined($scfg->{content_volume_size}));
     }
     my $size = $scfg->{content_volume_size} || $default_content_size;
@@ -424,7 +424,9 @@ sub block_device_path {
         $tpath = $class->get_target_path($scfg, $target, $storeid);
     }
 
-    return $tpath
+    print"Block device path is ${tpath} of volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
+
+    return $tpath;
 }
 
 sub path {
@@ -437,7 +439,13 @@ sub path {
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
     if ($vtype eq "images") {
-        return $class->block_device_path( $scfg, $volname, $storeid, $snapname);
+        my $target = $class->get_target_name($scfg, $volname, $snapname, 0);
+
+        if (multipath_enabled($scfg)) {
+            return $class->get_multipath_path($scfg, $target, 1);
+        } else {
+            return $class->get_target_path($scfg, $target, $storeid, 1);
+        }
     }
 
     return $class->filesystem_path($scfg, $volname, $snapname);
@@ -747,9 +755,9 @@ sub unstage_multipath {
     if ( defined $mbdlpath && -e $mbdlpath ) {
 
         if (unlink $mbdlpath) {
-            print "Removed $mbdlpath} link\n" if get_debug($scfg);
+            print "Removed ${mbdlpath} link\n" if get_debug($scfg);
         } else {
-            warn "Unable to remove $mbdlpath} link$!\n";
+            warn "Unable to remove ${mbdlpath} link$!\n";
         }
     }
 
@@ -795,12 +803,28 @@ sub unstage_multipath {
     die "Unable to restart the multipath daemon $@\n" if $@;
 }
 
-sub get_multipath_path {
+sub get_expected_multipath_path {
     my ($class, $scfg, $target) = @_;
 
     if (defined $target && length $target) {
 
         my $mpath = "/dev/mapper/${target}";
+
+        return $mpath;
+    }
+    return undef;
+}
+
+sub get_multipath_path {
+    my ($class, $scfg, $target, $expected) = @_;
+
+    if (defined $target && length $target) {
+
+        my $mpath = "/dev/mapper/${target}";
+
+        if (defined $expected && $expected) {
+            return $mpath;
+        }
 
         if (-b $mpath) {
             return $mpath;
@@ -917,7 +941,7 @@ sub get_target_name {
     if ($snapname){
         push @$get_target_cmd, "--snapshot", $snapname;
     } else {
-        if (defined($content_volume_flag)) {
+        if (defined($content_volume_flag) && $content_volume_flag != 0) {
             push @$get_target_cmd, '-d';
         }
     }
@@ -934,7 +958,7 @@ sub get_target_name {
 }
 
 sub get_target_path {
-    my ($class, $scfg, $target, $storeid) = @_;
+    my ($class, $scfg, $target, $storeid, $expected) = @_;
 
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
@@ -944,11 +968,14 @@ sub get_target_path {
     my $path;
     foreach my $host (@hosts) {
         $path = "/dev/disk/by-path/ip-${host}-iscsi-${target}-lun-0";
+        if (defined $expected && $expected != 0) {
+            return $path;
+        }
         if ( -e $path ){
             return $path;
         }
     }
-    return $path;
+    return undef;
 }
 
 sub list_images {
@@ -1401,7 +1428,7 @@ sub activate_volume_ext {
 
     my $target = $class->get_target_name($scfg, $volname, $snapname, $content_volume_flag);
 
-    my $targetpath = $class->get_target_path($scfg, $target, $storeid);
+    my $targetpath = $class->get_target_path($scfg, $target, $storeid, 1);
 
     my $create_target_cmd = ["-c", $config, "pool", $pool, "targets", "create", "-v", $volname];
     if ($snapname){
