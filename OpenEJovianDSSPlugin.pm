@@ -493,7 +493,7 @@ sub create_base {
     my $newname = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "getfreename", "--prefix", $newnameprefix]);
     chomp($newname);
     $newname =~ s/[^[:ascii:]]//;
-	$class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "rename", $newname]);
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "rename", $newname]);
 
     return $newname;
 }
@@ -594,7 +594,7 @@ sub stage_target {
 
     my $targetpath = $class->get_target_path($scfg, $target, $storeid);
 
-    if ( -e $targetpath ) {
+    if (defined($targetpath) && -e $targetpath ) {
         print "Looks like target already pressent\n" if get_debug($scfg);
 
         $class->print_dir($scfg, $targetpath);
@@ -630,7 +630,7 @@ sub unstage_target {
     foreach my $host (@hosts) {
         my $tpath = $class->get_target_path($scfg, $target, $storeid);
 
-        if (-e $tpath) {
+        if (defined($tpath) && -e $tpath) {
             eval { run_command(['sync', '-f', $tpath], outfunc => sub {}); };
             warn $@ if $@;
             eval { run_command(['sync', $tpath], outfunc => sub {}); };
@@ -739,7 +739,7 @@ sub stage_multipath {
 
     eval { run_command(["ln", "/dev/mapper/${mpathname}", "/dev/mapper/${target}"], outfunc => sub {}); };
     die "Unable to create link: $@\n" if $@;
-    return;
+    return 0;
 }
 
 sub unstage_multipath {
@@ -822,13 +822,16 @@ sub get_multipath_path {
 
         my $mpath = "/dev/mapper/${target}";
 
-        if (defined $expected && $expected) {
+        if (-b $mpath) {
+            print "Multipath block device is ${mpath}\n" if get_debug($scfg);
             return $mpath;
         }
 
-        if (-b $mpath) {
+        if (defined $expected && $expected) {
+            print "Multipath expected to be ${mpath}\n" if get_debug($scfg);
             return $mpath;
         }
+
     }
     return undef;
 }
@@ -1164,7 +1167,7 @@ sub ensure_content_volume_nfs {
     my $content_volume_name = get_content_volume_name($scfg);
     my $content_volume_size = get_content_volume_size($scfg);
 
-    my $content_volume_size_current;
+    my $content_volume_size_current = undef;
 
     unless ( -d "$content_path") {
         mkdir "$content_path";
@@ -1182,7 +1185,7 @@ sub ensure_content_volume_nfs {
     } else {
         # TODO: check for volume size on the level of OS
         # If volume needs resize do it with jdssc
-
+        die "Unable to identify content volume ${content_volume_name} size\n" unless defined($content_volume_size);
         $content_volume_size_current = clean_word($content_volume_size_current);
         print "Current content volume size ${content_volume_size_current}, config value ${content_volume_size}\n" if get_debug($scfg);
         if ($content_volume_size > $content_volume_size_current) {
