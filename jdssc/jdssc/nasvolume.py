@@ -47,6 +47,29 @@ class NASVolumes():
         create = parsers.add_parser('create')
         create.add_argument('nas_volume_name', type=str,
                             help='New nas volume name')
+        create.add_argument('-s',
+                            '--size',
+                            required=True,
+                            dest='volume_size',
+                            type=str,
+                            default='1G',
+                            help='New volume size in format num + [M G T]')
+        create.add_argument('-b',
+                            dest='block_size',
+                            type=str,
+                            default=None,
+                            choices=block_size_options,
+                            help=('Block size of new volume, default is 16K'))
+        create.add_argument('-d',
+                            dest='direct_mode',
+                            action='store_true',
+                            default=False,
+                            help='Use real volume name')
+        create.add_argument('-n',
+                            required=True,
+                            dest='volume_name',
+                            type=str,
+                            help='New volume name')
 
         nas_volume_parser.add_argument(
             'nas_volume_name', help='NSA volume name')

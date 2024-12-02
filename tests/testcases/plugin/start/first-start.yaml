@@ -1,0 +1,52 @@
+name: Content volume nfs first start
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have pool Pool-0
+    - Plugin and jdssc configured to have single pool according git installation guide
+    - NFS share and NAS volume are not present Pool-0 
+    - Multipath is not configured
+    - Logging level for jdssc INFO
+setup:
+id: content-volume-nfs-init-001
+scenario: |
+    User starts proxmox with plugin configured to use Pool-0.
+    User opens console and lists resources for Pool-0 and observes output.
+description: |
+    First lpugin run after installation or after boot
+objective: |
+    Ensure that proxmox plugin capable of allocating and initializing
+    content volume on the basis of nfs protocol
+steps:
+    - desc: Ensure that Pool-0 is configured in storage.cfg
+    - desc: Run command that list resources on jdss-Pool-0 and inits content volume as a side effect
+      cmd: pvesm list jdss-Pool-0
+    - desc: Observe output
+    - desc: Ensure that content volume is mounted
+      cmd: findmnt /mnt/jdss-Pool-0
+data:
+    - desc: Pool name
+      value: Pool-0
+      name: Pool-0
+    - desc: Content of storage.cfg file
+      value: |
+        joviandss: jdss-Pool-0
+          pool_name Pool-0
+          config /etc/pve/jdss-Pool-0.yaml
+          content images,backup,vztmpl,iso,rootdir
+          content_volume_name proxmox-content-jdss-pool-nas-0
+          content_volume_size 102
+          content_volume_type nfs
+          debug 0
+          multipath 1
+          path /mnt/jdss-Pool-0
+          shared 1
+      name: storage.cfg
+    - desc: Output example
+      name: findmnt_ok
+      value: |
+        TARGET           SOURCE                                                       FSTYPE OPTIONS
+        /jdss-Pool-0 192.168.21.100:/Pools/Pool-0/proxmox-content-jdss-pool-nas-0 nfs    rw,relatime,vers=3,rsize=1048576,wsize=1048576,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,mountaddr=192.168.21.100,mountvers=3,mountport=46451,mountproto=udp,local_lock=none,addr=192.168.21.100
+parameters:
+references:
+expected_results: |
+    Content volume in fomr of NAS share provided over nfs get created and no addition debug or cmd related info get printed.

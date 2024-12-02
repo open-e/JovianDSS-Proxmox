@@ -41,8 +41,8 @@ class Shares():
         action = args.shares_action
         if ((action is not None) and
                 (len(action) > 0) and
-                (action in self.shares_action)):
-            self.shares_action[action]()
+                (action in self.sharesaction)):
+            self.sharesaction[action]()
         else:
             sys.exit(1)
 
@@ -85,16 +85,6 @@ class Shares():
                            action='store_true',
                            default=False,
                            help='Show only volumes with VM ID')
-        listp.add_argument('-d',
-                           dest='direct_mode',
-                           action='store_true',
-                           default=False,
-                           help='Print actual share names')
-        listp.add_argument('-p',
-                           dest='path',
-                           action='store_true',
-                           default=False,
-                           help='Print share path')
 
         kargs, ukargs = shares_parser.parse_known_args(args)
 
@@ -126,12 +116,17 @@ class Shares():
             LOG.error("No space left on the storage")
             exit(1)
 
-    def list(self):
-        data = self.jdss.list_shares()
-        LOG.debug(data)
-        for v in data:
+    def get(self):
 
-            line = ("%(name)s %(path)s\n" % {
-                    'name': v['name'],
-                    'path': v['path']})
-            sys.stdout.write(line)
+        volume_name = self.args['volume_name']
+
+        volume = {'id': volume_name}
+
+        d = self.jdss.get_volume(volume)
+
+        if self.args['volume_size']:
+            print(d['size'])
+
+    def delete(self):
+
+        self.jdss.delete_share(self.args['share_name'])

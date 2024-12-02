@@ -1,0 +1,86 @@
+name: Multiple pool entries with NFS content volumes
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have Pool-0
+    - JovianDSS have Pool-1
+    - JovianDSS have REST enabled
+    - Plugin and jdssc is not configured
+    - Multipath is not configured
+    - Logging level for jdssc INFO
+setup:
+id: plugin-multiple-storages-001
+scenario: |
+    User starts proxmox with 2 Pools provided by JovianDSS and
+    configures both pools to have NFS based content volumes
+description: |
+    Test that verifys that plugin is capable of serving multiple nfs content volumes from different pools
+objective: ensure that plugin is capable of serving multiple nfs content volumes from different pools
+steps:
+    - Add test-jdss-Pool-0 description to proxmox storage.cfg 
+    - Add test-jdss-Pool-1 description to proxmox storage.cfg
+    - Add jdss-170.yaml to /etc/pve/ folder according to storage.conf
+    - desc: Run command that list resources on test-jdss-Pool-0 and inits content volume as a side effect
+      cmd: pvesm list test-jdss-Pool-0
+    - desc: Run command that list resources on test-jdss-Pool-1 and inits content volume as a side effect
+      cmd: pvesm list test-jdss-Pool-1
+    - desc: Ensure that content volume is mounted and looks like findmnt_ok
+      cmd: findmnt /mnt/test-jdss-Pool-0
+    - desc: Ensure that content volume is mounted and looks like findmnt_ok
+      cmd: findmnt /mnt/test-jdss-Pool-1
+data:
+    - desc: Content of jdss-170.yaml file
+      value: |
+        driver_use_ssl: True
+        driver_ssl_cert_verify: False
+        target_prefix: 'iqn.2021-10.iscsi.170:'
+        jovian_block_size: '16K'
+        jovian_rest_send_repeats: 3
+        rest_api_addresses:
+          - '172.28.140.170'
+        rest_api_port: 82
+        target_port: 3260
+        rest_api_login: 'admin'
+        rest_api_password: 'admin'
+        thin_provision: True
+        loglevel: debug
+        logfile: /var/log/jdss-170-Pool-0.log
+      name: jdss-170.yaml
+    - desc: Content of storage.cfg file
+      value: |
+        joviandss: test-jdss-Pool-0
+          pool_name Pool-0
+          config /etc/pve/jdss-170.yaml
+          content images,backup,vztmpl,iso,rootdir
+          content_volume_name proxmox-content-jdss-pool-nas-0
+          content_volume_size 10
+          content_volume_type nfs
+          debug 0
+          multipath 1
+          path /mnt/test-jdss-Pool-0
+          shared 1
+        joviandss: test-jdss-Pool-1
+          pool_name Pool-1
+          config /etc/pve/jdss-170.yaml
+          content images,backup,vztmpl,iso,rootdir
+          content_volume_name proxmox-content-jdss-pool-nas-1
+          content_volume_size 10
+          content_volume_type nfs
+          debug 0
+          multipath 1
+          path /mnt/test-jdss-Pool-1
+          shared 1
+      name: storage.cfg
+    - desc: Output example
+      name: findmnt_ok
+      value: |
+        TARGET           SOURCE                                                       FSTYPE OPTIONS
+        /jdss-Pool-0 192.168.21.100:/Pools/Pool-0/proxmox-content-jdss-pool-nas-0 nfs    rw,relatime,vers=3,rsize=1048576,wsize=1048576,namlen=255,hard,proto=tcp,timeo=600,retrans=2,sec=sys,mountaddr=192.168.21.100,mountvers=3,mountport=46451,mountproto=udp,local_lock=none,addr=192.168.21.100
+
+parameters:
+references:
+expected_results: |
+    Storages jdss-Pool-0 and jdss-Pool-1 get created
+    Content volumes get automaticaly created for both volumes
+    Containers get successfully created and their volumes present on both
+        pools respectively
+    Containers and their volumes get successfully deleted
