@@ -31,8 +31,10 @@ joviandss: jdss-Pool-0
         pool_name Pool-0
         config /etc/pve/jdss-Pool-0.yaml
         content iso,backup,images,rootdir,vztmpl
-        content_volume_name proxmox-content-jdss-pool-0
+        content_volume_name proxmox-content-jdss-pool-0-nfs
         content_volume_size 100
+        # option is available since v0.9.9
+        content_volume_type nfs
         path /mnt/jdss-Pool-0
         # shared option is available since v0.9.8
         shared 1 
@@ -45,19 +47,23 @@ joviandss: jdss-Pool-0
 | `pool_name`                | Pool-0                            | Pool name that is going to be used. Must be created in \[1\]        |
 | `config`                   | /etc/pve/jdss-\<pool\_name\>.yaml | Path to `jdssc` configuration file                                  |
 | `content`                  | None                              | List content type that you expect JovianDSS to store. Supported values: iso,backup,images,rootdir,vztmpl |
-| `content_volume_name`	     | proxmox-content-volume-\<pool\_name\>| Dedicated volume that would be used to store content resources. Only lowercase, numbers and symbols - . are allowed |
+| `content_volume_name`      | None                              | Dedicated volume that would be used to store content resources. Only lowercase, numbers and symbols - . are allowed, this field is required |
 | `content_volume_size`      | 100                               | Size of content volume, measured in Gigabytes                       |
+| `content_volume_type`      | 'iscsi'                           | Specifies protocol to use to provide content volume. Available options are `nfs` and `iscsi`. This option is available since version v0.9.9 |
 | `path`                     | /mnt/proxmox-content-jdss-\<pool\_name\> | Location that would be used to mount proxmox dedicated volume |
 | `shared`                   | 0                                 | Migrate flag, setting this flag indicate that plugin support VM and Container migration. It is recommended to enable this flag.|
 | `debug`                    | 0                                 | Debugging flag, place 1 to enable                                    |
-| `multipath`                | 0                                 | Multipath flag, place 1 to enable                                   |
+| `multipath`                | 0                                 | Multipath flag, place 1 to enable                                    |
+| `disabled`                 | 0                                 | Flag that instructs Proxmox not to use this storage. Setting this flag will not result in volume deactivation or unmounting |
 
 [1] [Can be created by going to JovianDSS Web interface/Storage](https://www.open-e.com/site_media/download/documents/Open-E-JovianDSS-Advanced-Metro-High-Avability-Cluster-Step-by-Step-2rings.pdf)
 
 `content_volume` is a dedicated volume that is responsible for storing `iso`, `vztmpl` and `backup` files created and managed by proxmox.
-This volume gets automaticaly created on the pool `pool_name` and introduced to system as iscsi target.
-User is responsible for maintaining file system of `content_volume`.
-And if user wants to change size or modify this storage in other way, he should address it in `Storage/<pool_name>/iSCSI Targets` section of JovianDSS web UI.
+Plugin will go through configuration options and allocate content volume according to configuration provided in `storage.cfg`.
+This implies that plugin will create `nas-volume` if `NFS` is enabled as protocol or will create `volume` accessible through `iSCSI` if user specify `iscsi` as `content_volume_type`.
+In both cases `content_volume_name` will be used as a name for a new volume.
+User should keep in mind that name space for content volumes are common inside JovianDSS.
+And therefore user cannot have 2 different volumes for `NFS` and `iSCSI` protocols.
 
 ### Jdssc config
 
@@ -86,11 +92,10 @@ logfile: /var/log/jdss-Pool-0.log
 |----------------------------|-------------------------|---------------------------------------------------------------------|
 | `driver_use_ssl`           | True                    | Use SSL to send requests to JovianDSS\[1\]                          |
 | `driver_ssl_cert_verify`   | True                    | Verify authenticity of JovianDSS[1] certificate\[1\]                |
-| `driver_ssl_cert_path`     | None                    | Path to the JovianDSS[1] certificate for verification               |
 | `iscsi_target_prefix`      | iqn.2021-10.iscsi:      | Prefix that will be used to form target name for volume             |
 | `jovian_block_size`        | 16K                     | Block size of a new volume, can be: 16K, 32K, 64K, 128K, 256K, 512K, 1M  |
 | `jovian_rest_send_repeats` | 3                       | Number of times that driver will try to send REST request. This option is deprecated. Changing it will not affect behaviour  |
-| `rest_api_addresses`           |                         | Yaml list of IP address of the JovianDSS, only addresses specified here would be used for multipathing |
+| `rest_api_addresses`           |                         | Yaml list of IP address of the JovianDSS, only addresses specified here would be used for multipathing [check for more network related information](https://github.com/open-e/JovianDSS-Proxmox/wiki/Network-configuration)  |
 | `rest_api_port`             | 82                      | Rest port according to the settings in \[1\]                        |
 | `target_port`              | 3260                    | Port for iSCSI connections                                          |
 | `rest_api_login`                | admin                   | Must be set according to the settings in \[1\]                      |
@@ -120,6 +125,8 @@ joviandss: jdss-Pool-0
         config /etc/pve/jdss-Pool-0.yaml
         content iso,backup,images,rootdir,vztmpl
         content_volume_name proxmox-content-jdss-pool-0
+        # option is available since v0.9.9
+        content_volume_type nfs
         content_volume_size 100
         path /mnt/jdss-Pool-0
         # shared option is available since v0.9.8
@@ -132,6 +139,8 @@ joviandss: jdss-Pool-1
         config /etc/pve/jdss-Pool-1.yaml
         content iso,backup,images,rootdir,vztmpl
         content_volume_name proxmox-content-jdss-pool-1
+        # option is available since v0.9.9
+        content_volume_type nfs
         content_volume_size 100
         path /mnt/jdss-Pool-1
         # shared option is available since v0.9.8
@@ -181,7 +190,7 @@ logfile: /var/log/jdss-Pool-1.log
 
 ## Multipathing
 
-In order to enable multipathing user should provide a set of modifications to `storage.cfg` and `jdss-Pool-0.yaml`
+In order to enable multipathing user should provide a set of modifications to `storage.cfg`, `jdss-Pool-0.yaml` and `multipath.conf`
 
 For instance if user wants to enable multipathing on for storage `jdss-Pool-0` described in config files as:
 
@@ -193,6 +202,8 @@ joviandss: jdss-Pool-0
         config /etc/pve/jdss-Pool-0.yaml # Option is available since v0.9.8
         content iso,backup,images,rootdir,vztmpl
         content_volume_name proxmox-content-jdss-pool-0
+        # option is available since v0.9.9
+        content_volume_type nfs
         content_volume_size 100
         path /mnt/jdss-Pool-0
         # shared option is available since v0.9.8
@@ -219,7 +230,7 @@ loglevel: info
 logfile: /tmp/jdss.log
 ```
 
-You should apply folowing changes:
+User should apply following changes:
 
 ### storage.cfg
 
@@ -232,6 +243,8 @@ joviandss: jdss-Pool-0
         config /etc/pve/jdss-Pool-0.yaml
         content iso,backup,images,rootdir,vztmpl
         content_volume_name proxmox-content-jdss-pool-0
+        # option is available since v0.9.9
+        content_volume_type nfs
         content_volume_size 100
         path /mnt/jdss-Pool-0
         # shared option is available since v0.9.8
@@ -262,31 +275,53 @@ thin_provision: True
 loglevel: info
 logfile: /tmp/jdss.log
 ```
-### Proxmox multipathing configuration
+### multipath.conf
 
-Proxmox JovianDSS plugin does not require any specific changes in multipath configuration file in order to operate.
+Make sure that multipath service is present 
 
-Make sure that multipath service is present:
 ```bash
 apt install multipath-tools sg3-utils
 ```
-
-And running:
+Make sure that multipath service is running:
 ```bash
 systemctl enable multipathd
 systemctl start multipathd
+systemctl status multipathd
 ```
+Starting with version 0.9.7, the plugin uses the SCSI ID wwid to serve multipath volumes. Because of this, users should avoid blacklisting by wwid:
 
-### Storage.cfg
-Activate feature by setting `1` for `multipath` property in `storage.cfg` 
+```
+blacklist {
+        wwid .*
+}
+```
+The user must check their configuration and ensure that such a line is NOT present. If it is, it must be removed to allow the plugin to work properly with multipath volumes.
+
+Also to avoid unnecessary volumes to be managed by multipath, it is recommended to `blacklist` by vendor. If user choose to do so, he also have to set exception for JovianDSS volumes.
+Example of multipath blacklist and blacklist exception is provided below.
+
+```
+blacklist {
+    device {
+        vendor ".*"
+    }
+}
+
+blacklist_exceptions {
+    device {
+        vendor "SCST_BIO"
+    }
+}
+```
 
 ### Content volume
 
-If `content` being set in `storage.cfg` JovianDSS Proxmox plugin will try to use volume specified as `content_volume_name` in `storage.conf` as a storage for
-data described in `content` variable.
-User can create volume `content_volume_name` manually or let JovianDSS plugin create it automatically.
+Content volume is a dedicated volume that is allocated on JovianDSS for storing container templates, backups, iso.
+Since version v0.9.9 plugin provides 2 types of content volumes: `NFS` and `iSCSI`.
+User can create content volume `content_volume_name` manually or let JovianDSS proxmox plugin create it automatically.
 After activation plugin will try to mount content volume to directory specified as `path` in `storage.conf` file.
-If volume was not formatted administrator is expected to format it manually.
+
+`NFS` volume will be mounted straight away, but `iSCSI` volume will require manual formatting.
 
 Plugin will show path of device representation is OS through error message in web interface ![fs-error](pic/fs-error.png)
 
@@ -322,7 +357,7 @@ make uninstall
 Or by installing it from debian package
 
 ```bash
-apt install ./open-e-joviandss-proxmox-plugin_0.9.8.deb
+apt install ./open-e-joviandss-proxmox-plugin_0.9.9-0.deb
 ```
 
 Once installation is done, provide configuration.
