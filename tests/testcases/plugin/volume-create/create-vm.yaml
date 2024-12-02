@@ -1,0 +1,35 @@
+name: Create VM
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have pool Pool-0
+    - JovianDSS have REST enabled
+    - Plugin and jdssc configured to have single pool according git installation guide
+    - Multipath is enabled
+    - Content volume attached
+    - Logging level for jdssc INFO
+setup:
+id: create-vm-001
+scenario: |
+    User creates vm with single volume and checks its size after creation
+description: |
+    Basic vm creation test with additional volume check
+objective: |
+    Ensure that plugin creates volume of proper size
+steps:
+    - desc: |
+        Create VM vm-101 with proxmox UI and in process secelt volume size to be 32G and stored on Pool-0
+    - desc: |
+        Check volume size
+      cmd: |
+        qemu-img info /dev/mapper/iqn.2021-10.iscsi.2:vm-101-disk-0-6deefee73c2a26c83062bc79d555f072169d2ed2ff8c77f3a4121be1d9dfc002
+data:
+    - description: Pool name
+      value: Pool-0
+      name: Pool-0
+    - description: vm name
+      value: 101
+      name: vm-101
+parameters:
+references:
+expected_results: |
+    file length: 32 GiB (34359738368 bytes)

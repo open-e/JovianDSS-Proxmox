@@ -40,18 +40,23 @@ use base qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.9.8-5';
+my $PLUGIN_VERSION = '0.9.9-0';
 
 #    Open-E JovianDSS Proxmox plugin
 #
 #    0.9.8-5 - 2024.09.30
-#              Add rollback to the latest volume snapshot
-#              Introduce share option that substitutes proxmox code modification
-#              Fix migration failure
-#              Extend REST API error handling
-#              Fix volume provisioning bug
-#              Fix Pool selection bug
-#              Prevent possible iscis target name collision
+#               Add rollback to the latest volume snapshot
+#               Introduce share option that substitutes proxmox code modification
+#               Fix migration failure
+#               Extend REST API error handling
+#               Fix volume provisioning bug
+#               Fix Pool selection bug
+#               Prevent possible iscis target name collision
+#
+#    0.9.9.0 - 2024.11.15
+#               Add NFS base context volume
+#               Fix volume resize problem
+#               Fix volume migration problem
 
 # Configuration
 
@@ -533,8 +538,8 @@ sub alloc_image {
 
         my $config = get_config($scfg);
         my $pool = get_pool($scfg);
-        my $extsize = $size + 1023;
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "--size", "${extsize}K", "-n", $volume_name]);
+        #my $extsize = $size + 1023;
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "--size", "${size}K", "-n", $volume_name]);
     }
     return "$volume_name";
 }
@@ -717,7 +722,7 @@ sub stage_multipath {
 
     my $mpathname = $class->get_device_mapper_name($scfg, $scsiid);
     unless (defined($mpathname)){
-        die "Unable to identify the multipath name for ${mpathname}\n";
+        die "Unable to identify the multipath name for scsiid ${scsiid} with target ${target}\n";
     }
     print "Device mapper name ${mpathname}\n" if get_debug($scfg);
 
@@ -1518,7 +1523,7 @@ sub volume_resize {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    $class->joviandss_cmd(["-c", $config, "pool", "${pool}", "volume", "${volname}", "resize", "{$size}K"]);
+    $class->joviandss_cmd(["-c", $config, "pool", "${pool}", "volume", "${volname}", "resize", "${size}"]);
 
     return 1;
 }

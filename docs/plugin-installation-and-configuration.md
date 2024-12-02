@@ -294,7 +294,25 @@ blacklist {
         wwid .*
 }
 ```
-The user must check their configuration and ensure that such a line is not present. If it is, it must be removed to allow the plugin to work properly with multipath volumes.
+The user must check their configuration and ensure that such a line is NOT present. If it is, it must be removed to allow the plugin to work properly with multipath volumes.
+
+Also to avoid unnecessary volumes to be managed by multipath, it is recommended to `blacklist` by vendor. If user choose to do so, he also have to set exception for JovianDSS volumes.
+Example of multipath blacklist and blacklist exception is provided below.
+
+```
+blacklist {
+    device {
+        vendor ".*"
+    }
+}
+
+blacklist_exceptions {
+    device {
+        vendor "SCST_BIO"
+    }
+}
+```
+
 
 ### Content volume
 
