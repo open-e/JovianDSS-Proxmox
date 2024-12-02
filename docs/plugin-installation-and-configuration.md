@@ -66,7 +66,7 @@ Plugin will go through configuration options and allocate content volume accordi
 This implies that plugin will create `nas-volume` if `NFS` is enabled as protocol or will create `volume` accessible through `iSCSI` if user specify `iscsi` as `content_volume_type`.
 In both cases `content_volume_name` will be used as a name for a new volume.
 User should keep in mind that name space for content volumes are common inside JovianDSS.
-And therefore user cannon have 2 different volumes for `NFS` and `iSCSI` protocols.
+And therefore user cannot have 2 different volumes for `NFS` and `iSCSI` protocols.
 
 
 ### Jdssc config
@@ -76,6 +76,7 @@ This config file should be placed according to the path provided in `storage.cfg
 
 ```yaml
 driver_use_ssl: True
+# driver_ssl_cert_verify option is available since v0.9.8
 driver_ssl_cert_verify: False
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '16K'
@@ -97,7 +98,7 @@ logfile: /var/log/jdss-Pool-0.log
 | `driver_ssl_cert_verify`   | True                    | Verify TLS/SSL certificates of JovianDSS                            |
 | `iscsi_target_prefix`      | iqn.2021-10.iscsi:      | Prefix that will be used to form target name for volume             |
 | `jovian_block_size`        | 16K                     | Block size of a new volume, can be: 16K, 32K, 64K, 128K, 256K, 512K, 1M  |
-| `jovian_rest_send_repeats` | 3                       | Number of times that driver will try to send REST request           |
+| `jovian_rest_send_repeats` | 3                       | Number of times that driver will try to send REST request. This option is deprecated. Changing it will not affect behaviour |
 | `rest_api_addresses`           |                         | Yaml list of IP address of the JovianDSS, only addresses specified here would be used for multipathing, [check for more network related information](https://github.com/open-e/JovianDSS-Proxmox/wiki/Network-configuration) |
 | `rest_api_port`             | 82                      | Rest port according to the settings in \[1\]                        |
 | `target_port`              | 3260                    | Port for iSCSI connections                                          |
@@ -132,6 +133,7 @@ joviandss: jdss-Pool-0
         content_volume_type nfs
         content_volume_size 100
         path /mnt/jdss-Pool-0
+        # shared option is available since v0.9.8
         shared 1
         debug 0
         multipath 0
@@ -145,6 +147,7 @@ joviandss: jdss-Pool-1
         content_volume_type nfs
         content_volume_size 100
         path /mnt/jdss-Pool-1
+        # shared option is available since v0.9.8
         shared 1
         debug 0
         multipath 0
@@ -207,6 +210,7 @@ joviandss: jdss-Pool-0
         content_volume_type nfs
         content_volume_size 100
         path /mnt/jdss-Pool-0
+        # shared option is available since v0.9.8
         shared 1
         debug 0
         multipath 0
@@ -215,7 +219,7 @@ joviandss: jdss-Pool-0
 `/etc/pve/jdss-Pool-0.yaml`
 ```yaml
 driver_use_ssl: True
-driver_ssl_cert_verify: False
+driver_ssl_cert_verify: False # Option is available since v0.9.8
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
@@ -230,7 +234,7 @@ loglevel: info
 logfile: /tmp/jdss.log
 ```
 
-He should apply following changes:
+User should apply following changes:
 
 ### storage.cfg
 
@@ -247,6 +251,7 @@ joviandss: jdss-Pool-0
         content_volume_type nfs
         content_volume_size 100
         path /mnt/jdss-Pool-0
+        # shared option is available since v0.9.8
         shared 1
         debug 0
         multipath 1
@@ -259,7 +264,7 @@ Provide list of ip's that would be used for multipathing in `rest_api_addresses`
 `/etc/pve/jdss-Pool-0.yaml`
 ```yaml
 driver_use_ssl: True
-driver_ssl_cert_verify: False
+driver_ssl_cert_verify: False # Option is available since v0.9.8
 target_prefix: 'iqn.2021-10.iscsi:'
 jovian_block_size: '16K'
 jovian_rest_send_repeats: 3
@@ -362,7 +367,7 @@ make uninstall
 Or by installing it from debian package
 
 ```bash
-apt install ./open-e-joviandss-proxmox-plugin_0.9.5-1.deb
+apt install ./open-e-joviandss-proxmox-plugin_0.9.9-0.deb
 ```
 
 Once installation is done, provide configuration.
