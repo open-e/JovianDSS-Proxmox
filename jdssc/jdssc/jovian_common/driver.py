@@ -37,7 +37,7 @@ class JovianDSSDriver(object):
 
     def __init__(self, config):
 
-        self.VERSION = "0.9.8-6"
+        self.VERSION = "0.9.9-1"
 
         self.configuration = config
         self._pool = self.configuration.get('jovian_pool', 'Pool-0')
@@ -46,7 +46,7 @@ class JovianDSSDriver(object):
 
         self.jovian_target_prefix = self.configuration.get(
             'target_prefix',
-            'iqn.2020-04.com.open-e.cinder:')
+            'iqn.%Y-%m.com.open-e.cinder:')
         self.jovian_chap_pass_len = self.configuration.get(
             'chap_password_len', 12)
         self.block_size = (
@@ -920,6 +920,10 @@ class JovianDSSDriver(object):
 
         This function is a final point target name generation.
         """
+
+        now = datetime.datetime.now()
+        dated_prefix = now.strftime(self.jovian_target_prefix)
+
         allowed = list(string.ascii_lowercase)
         allowed.extend(['.', '-'])
         allowed.extend(list(string.digits))
@@ -930,12 +934,13 @@ class JovianDSSDriver(object):
                 vidstr += c
             else:
                 vidstr += '-'
-        if len(self.jovian_target_prefix) > 201:
+        if len(dated_prefix) > 201:
             raise Exception("Target prefix %s is too long",
-                            self.jovian_target_prefix)
+                            dated_prefix)
         vidstr += "-" + hashlib.sha256(vid.encode()).hexdigest()
-        vidstr = vidstr[-255+len(self.jovian_target_prefix):]
-        target_id = f'{self.jovian_target_prefix}{vidstr}'
+        vidstr = vidstr[-255+len(dated_prefix):]
+
+        target_id = f'{dated_prefix}{vidstr}'
         return target_id[-255:]
 
     def get_target_name(self, volume_name, snapshot_name=None):
