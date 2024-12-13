@@ -29,6 +29,8 @@ LOG = logging.getLogger(__name__)
 block_size_options = ['4K', '8K', '16K', '32K', '64K', '128K', '256K', '512K',
                       '1M']
 
+_MiB = 1048576
+
 
 class Volumes():
     def __init__(self, args, uargs, jdss):
@@ -103,8 +105,20 @@ class Volumes():
         return kargs, ukargs
 
     def create(self):
-        size = self.args['volume_size'].upper()
+        size = self.args['volume_size']
 
+        # Extend
+        try:
+            size = int(size)
+        except Exception:
+            LOG.error("Size %s is not numeric", size)
+
+        # if size < 8 * _MiB:
+        #    LOG.error(
+        #        "Unable to create volume smaller than 8MiB, requested %s",
+        #        size)
+
+        # size = size + 1 * _MiB
         block_size = self.args['block_size']
 
         if block_size is not None and block_size.upper() in block_size_options:
@@ -161,7 +175,7 @@ class Volumes():
 
         d = self.jdss.get_volume(volume, direct_mode=self.args['direct_mode'])
         if self.args['volume_size']:
-            print(d['size'])
+            print(int(d['size']))
 
     def getfreename(self):
 
@@ -203,10 +217,10 @@ class Volumes():
                 line = ("%(name)s %(vmid)s %(size)s\n" % {
                     'name': v['name'],
                     'vmid': vmid,
-                    'size': v['size']})
+                    'size': int(v['size'])})
                 sys.stdout.write(line)
             else:
                 line = ("%(name)s %(size)s\n" % {
                     'name': v['name'],
-                    'size': v['size']})
+                    'size': int(v['size'])})
                 sys.stdout.write(line)

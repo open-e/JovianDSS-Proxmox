@@ -82,13 +82,17 @@ class JovianDSSRESTProxy(object):
             session.verify = self.cert
         return session
 
-    def _get_base_url(self):
+    def _get_base_url(self, apiv):
         """Get url prefix with active host"""
 
-        url = ('%(proto)s://%(host)s:%(port)s/api/v3' % {
+        api = 'v3'
+        if str(apiv) == '4':
+            api = 'v4'
+        url = ('%(proto)s://%(host)s:%(port)s/api/%(apiv)s' % {
             'proto': self.proto,
             'host': self.hosts[self.active_host],
-            'port': self.port})
+            'port': self.port,
+            'apiv': api})
 
         return url
 
@@ -97,7 +101,7 @@ class JovianDSSRESTProxy(object):
 
         self.active_host = (self.active_host + 1) % len(self.hosts)
 
-    def request(self, request_method, req, json_data=None):
+    def request(self, request_method, req, json_data=None, apiv=3):
         """Send request to the specific url.
 
         :param request_method: GET, POST, DELETE
@@ -108,8 +112,9 @@ class JovianDSSRESTProxy(object):
         for i in range(3):
             for i in range(len(self.hosts)):
                 try:
-                    addr = "%(base)s%(req)s" % {'base': self._get_base_url(),
-                                                'req': req}
+                    addr = "%(base)s%(req)s" % {
+                        'base': self._get_base_url(apiv),
+                        'req': req}
                     LOG.debug("Sending %(t)s to %(addr)s data %(data)s",
                               {'t': request_method,
                                'addr': addr,
@@ -136,7 +141,7 @@ class JovianDSSRESTProxy(object):
                           {'data': out, 't': request_method, 'addr': addr})
                 return out
 
-    def pool_request(self, request_method, req, json_data=None):
+    def pool_request(self, request_method, req, json_data=None, apiv=3):
         """Send request to the specific url.
 
         :param request_method: GET, POST, DELETE
@@ -144,10 +149,13 @@ class JovianDSSRESTProxy(object):
         :param json_data: data
         """
         req = "/pools/{pool}{req}".format(pool=self.pool, req=req)
-        addr = "{base}{req}".format(base=self._get_base_url(), req=req)
+        addr = "{base}{req}".format(base=self._get_base_url(apiv), req=req)
         LOG.debug("Sending pool request %(t)s to %(addr)s",
                   {'t': request_method, 'addr': addr})
-        return self.request(request_method, req, json_data=json_data)
+        return self.request(request_method,
+                            req,
+                            json_data=json_data,
+                            apiv=apiv)
 
     @retry(json.JSONDecodeError,
            tries=3)

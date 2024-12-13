@@ -29,7 +29,8 @@ class Targets():
 
         self.tsa = {'create': self.create,
                     'get': self.get,
-                    'delete': self.delete}
+                    'delete': self.delete,
+                    'list': self.list}
 
         self.args = args
         args, uargs = self.__parse(uargs)
@@ -121,6 +122,8 @@ class Targets():
                          default=None,
                          type=str,
                          help='New volume name')
+
+        parsers.add_parser('list')
 
         kargs, ukargs = parser.parse_known_args(args)
 
@@ -223,3 +226,16 @@ class Targets():
         out = target + out
 
         print(out)
+
+    def list(self):
+
+        LOG.debug("Getting list of targets")
+
+        targets = None
+
+        try:
+            targets = self.jdss.list_targets()
+        except jexc.JDSSTargetNotFoundException:
+            return
+        for t in targets:
+            print(t)

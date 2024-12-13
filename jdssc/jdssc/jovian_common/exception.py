@@ -45,6 +45,15 @@ class JDSSRESTProxyException(JDSSException):
         super().__init__(self.msg)
 
 
+class JDSSVIPNotFoundException(JDSSException):
+    """General JovianDSS error"""
+
+    def __init__(self, vip_ips):
+        self.message = "Unable to identify VIP name for ip's: %(vip_ips)s" % {
+            'vip_ips': ','.join(vip_ips)}
+        super().__init__(self.message)
+
+
 class JDSSResourceNotFoundException(JDSSException):
     """Resource does not exist"""
 

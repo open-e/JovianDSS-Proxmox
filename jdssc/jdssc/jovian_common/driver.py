@@ -57,8 +57,13 @@ class JovianDSSDriver(object):
             'jovian_ignore_tpath', None)
         self.jovian_hosts = self.configuration.get(
             'san_hosts', [])
+        self.jovian_iscsi_vip_addresses = self.configuration.get(
+            'iscsi_vip_addresses', [])
+        self.jovian_nfs_vip_addresses = self.configuration.get(
+            'nfs_vip_addresses', [])
 
         self.ra = rest.JovianRESTAPI(config)
+        self.jovian_rest_port = self.ra.rproxy.port
 
     def rest_config_is_ok(self):
         """Check config correctness by checking pool availability"""
@@ -875,9 +880,15 @@ class JovianDSSDriver(object):
 
         if not provider_auth:
             LOG.debug("ensuring target %s for volume %s with no auth",
-                      target_id, id)
+                      target_id, vid)
+        target_data = None
+        clean_and_recrete = False
+        try:
+            target_data = self.ra.get_target(target_id)
+        except jexc.JDSSResourceNotFoundException:
+            clean_and_recrete = True
 
-        if not self.ra.is_target(target_id):
+        if clean_and_recrete:
             try:
                 # TODO: update this
                 return self._create_target_volume(target_id,
@@ -888,6 +899,14 @@ class JovianDSSDriver(object):
 
             self._remove_volume_targets(vid)
             return self._create_target_volume(target_id, vid, provider_auth)
+
+        expected_vips = self._get_pool_assigned_vips()
+        if (('vip_allowed_portals' in target_data) and
+                (set(target_data['vip_allowed_portals']['assigned_vips']) ==
+                 set(expected_vips))):
+            pass
+        else:
+            self.ra.set_target_assigned_vips(target_id, expected_vips)
 
         if not self.ra.is_target_lun(target_id, vid):
             self._attach_target_volume(target_id, vid)
@@ -1053,6 +1072,35 @@ class JovianDSSDriver(object):
 
         self._ensure_target_volume(target_name, vname, provider_auth)
 
+    def _get_pool_assigned_vips(self):
+        """Get pool assigned vips returns list of vip names for new target
+
+        This function calculated vip names that should be assigned to iscsi
+        target associated with specific pool on the basis of given config
+        restrictions
+
+        :return: list of vip names
+        """
+
+        assigned_vip_names = []
+        iscsi_addresses = []
+
+        if len(self.jovian_iscsi_vip_addresses) == 0:
+            iscsi_addresses.extend(self.jovian_hosts)
+        else:
+            iscsi_addresses.extend(self.jovian_iscsi_vip_addresses)
+
+        vip_data = self.ra.get_pool_vips()
+
+        for vip in vip_data:
+            if vip['address'] in iscsi_addresses:
+                assigned_vip_names.append(vip['name'])
+
+        if len(assigned_vip_names) == 0:
+            raise jexc.JDSSVIPNotFoundException(iscsi_addresses)
+
+        return assigned_vip_names
+
     def _create_target_volume(self, target_name, vid, provider_auth):
         """Creates target and attach volume to it
 
@@ -1064,8 +1112,11 @@ class JovianDSSDriver(object):
         """
         LOG.debug("create target and attach volume %s to it", vid)
 
+        assigned_vip_names = self._get_pool_assigned_vips()
+
         # Create target
         self.ra.create_target(target_name,
+                              assigned_vip_names,
                               use_chap=(provider_auth is not None))
 
         # Attach volume
@@ -1078,6 +1129,43 @@ class JovianDSSDriver(object):
                          "password": auth_secret}
 
             self._set_target_credentials(target_name, chap_cred)
+
+    def _list_targets(self):
+        """List volume snapshots
+
+        :return: list of volume related snapshots
+        """
+        targets = []
+        i = 0
+        # First we list all volume snapshots page by page
+        try:
+            while True:
+                tpage = self.ra.get_targets_page(i)
+
+                if len(tpage) > 0:
+                    LOG.debug("Page: %s", str(tpage))
+
+                    targets.extend(tpage)
+                    i += 1
+                else:
+                    break
+
+        except jexc.JDSSException as ex:
+            LOG.error("List targets error. Because %(err)s",
+                      {"err": ex})
+
+        return targets
+
+    def list_targets(self):
+        targets_data = self.ra.get_targets()
+        # TODO: switch to target listing with pages once
+        # it is supported with jovian
+        # self._list_targets()
+        target_names = []
+        for t in targets_data:
+            target_names.append(t['name'])
+
+        return target_names
 
     def _attach_target_volume(self, target_name, vname):
         """Attach target to volume and handles exceptions

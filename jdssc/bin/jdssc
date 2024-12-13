@@ -62,11 +62,26 @@ def get_config():
 
     command.add_parser('pool', add_help=False)
     host_parser = command.add_parser('hosts', add_help=False)
+    host_parser.add_argument('-r', '--rest',
+                             dest='rest',
+                             action='store_true',
+                             default=False,
+                             help='Provide REST VIP addresses')
     host_parser.add_argument('-i', '--iscsi',
                              dest='iscsi',
                              action='store_true',
                              default=False,
-                             help='Add iscsi port along side host address')
+                             help='Provide iSCSI VIP addresses')
+    host_parser.add_argument('-n', '--nfs',
+                             dest='nfs',
+                             action='store_true',
+                             default=False,
+                             help='Provide NFS VIP addresses')
+    host_parser.add_argument('-p', '--port',
+                             dest='port',
+                             action='store_true',
+                             default=False,
+                             help='Add port to addresses')
 
     args = parser.parse_known_args()
     return args
@@ -147,12 +162,38 @@ def duplicate_config_options(cfg):
 
 
 def hosts(args, uargs, jdss):
-    for i in jdss.configuration['san_hosts']:
-        addr = i
-        if 'iscsi' in args and args['iscsi']:
-            if 'target_port' in jdss.configuration:
-                addr = '%s:%s' % (addr, jdss.configuration['target_port'])
-        sys.stdout.write(addr + "\n")
+    if 'iscsi' in args and args['iscsi']:
+        ip_list = []
+        if len(jdss.jovian_iscsi_vip_addresses) > 0:
+            ip_list = jdss.jovian_iscsi_vip_addresses
+        else:
+            ip_list = jdss.jovian_hosts
+        for ip in ip_list:
+            addr = ip
+            if args['port']:
+                addr = '%s:%s' % (addr, jdss.jovian_iscsi_target_portal_port)
+            sys.stdout.write(addr + "\n")
+        return
+
+    if 'nfs' in args and args['nfs']:
+        ip_list = []
+        if len(jdss.jovian_nfs_vip_addresses) > 0:
+            ip_list = jdss.jovian_nfs_vip_addresses
+        else:
+            ip_list = jdss.jovian_hosts
+        for ip in ip_list:
+            addr = ip
+            sys.stdout.write(addr + "\n")
+        return
+
+    if 'rest' in args and args['rest']:
+
+        ip_list = jdss.jovian_hosts
+        for ip in ip_list:
+            addr = ip
+            if args['port']:
+                addr = '%s:%s' % (addr, jdss.jovian_rest_port)
+            sys.stdout.write(addr + "\n")
 
 
 def main():

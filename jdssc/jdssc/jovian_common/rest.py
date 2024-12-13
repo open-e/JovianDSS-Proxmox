@@ -462,19 +462,22 @@ class JovianRESTAPI(object):
         LOG.debug("check if targe %s exists", target_name)
         resp = self.rproxy.pool_request('GET', req)
 
-        if resp["error"] or resp["code"] not in (200, 201):
-            return False
+        if resp:
+            if "error" in resp:
+                if resp["error"] or resp["code"] not in (200, 201):
+                    return False
 
-        if "name" in resp["data"]:
-            if resp["data"]["name"] == target_name:
-                LOG.debug(
-                    "target %s exists", target_name)
-                return True
+            if "name" in resp["data"]:
+                if resp["data"]["name"] == target_name:
+                    LOG.debug(
+                        "target %s exists", target_name)
+                    return True
 
         return False
 
     def create_target(self,
                       target_name,
+                      assigned_vips,
                       use_chap=True,
                       allow_ip=None,
                       deny_ip=None):
@@ -503,10 +506,15 @@ class JovianRESTAPI(object):
         if deny_ip:
             jdata["deny_ip"] = deny_ip
 
+        vip_allowed_portals = {'enabled': True,
+                               'assigned_vips': assigned_vips}
+        if vip_allowed_portals:
+            jdata['vip_allowed_portals'] = vip_allowed_portals
+
         LOG.info("create iSCSI target: %(target)s",
                  {'target': target_name})
 
-        resp = self.rproxy.pool_request('POST', req, json_data=jdata)
+        resp = self.rproxy.pool_request('POST', req, json_data=jdata, apiv=4)
 
         if not resp["error"] and resp["code"] == 201:
             return
@@ -571,6 +579,58 @@ class JovianRESTAPI(object):
 
         self._general_error(req, resp)
 
+    def get_target(self, target_name):
+        """get target data
+
+        GET
+        /san/iscsi/targets/<target_name>
+
+        :return list of all iscsi targets related to pool
+        """
+        req = "/san/iscsi/targets/%s" % target_name
+
+        LOG.debug("get target %s", target_name)
+        resp = self.rproxy.pool_request('GET', req, apiv=4)
+
+        if resp['error'] is None and resp['code'] == 200:
+            return resp['data']
+
+        if resp['code'] == 404:
+            raise jexc.JDSSResourceNotFoundException(res=target_name)
+        self._general_error(req, resp)
+
+    def set_target_assigned_vips(self, target_name, assigned_vips):
+        """set target assigned vips
+
+        This function also enables vip allowed portal property
+
+        GET
+        /san/iscsi/targets/<target_name>
+
+        :return list of all iscsi targets related to pool
+        """
+        req = "/san/iscsi/targets/%s" % target_name
+
+        jdata = {"name": target_name}
+
+        vip_allowed_portals = {'enabled': True,
+                               'assigned_vips': assigned_vips}
+        jdata['vip_allowed_portals'] = vip_allowed_portals
+
+        LOG.info("set iSCSI target: %(target)s assigned vips "
+                 "to %(assigned_vips)s",
+                 {'target': target_name,
+                  'assigned_vips': ','.join(assigned_vips)})
+
+        resp = self.rproxy.pool_request('PUT', req, json_data=jdata, apiv=4)
+
+        if resp['error'] is None and resp['code'] in (200, 201, 204):
+            return resp['data']
+
+        if resp['code'] == 404:
+            raise jexc.JDSSResourceNotFoundException(res=target_name)
+        self._general_error(req, resp)
+
     def get_targets(self):
         """get_all_pool_volumes.
 
@@ -582,7 +642,7 @@ class JovianRESTAPI(object):
         req = "/san/iscsi/targets"
 
         LOG.debug("get all targets")
-        resp = self.rproxy.pool_request('GET', req)
+        resp = self.rproxy.pool_request('GET', req, apiv=4)
 
         if resp['error'] is None and resp['code'] == 200:
             return resp['data']
@@ -1356,6 +1416,25 @@ class JovianRESTAPI(object):
             return resp['data']['entries']
         self._general_error(req, resp)
 
+    def get_targets_page(self, page_id):
+        """get_all_pool_volumes.
+
+        GET
+        /pools/<string:poolname>/volumes
+        :param pool_name
+        :return list of all pool volumes
+        """
+        # TODO: cehck page=0&per_page=0&sort_by=name&order=asc
+        req = '/san/iscsi/targets?page=%s&per_page=25' % str(page_id)
+
+        LOG.debug("get 100 targets from page %s", page_id)
+        resp = self.rproxy.pool_request('GET', req, apiv=4)
+
+        if resp['error'] is None and resp['code'] == 200:
+            if 'data' in resp:
+                return resp['data']['entries']
+        self._general_error(req, resp)
+
     def extend_nas_volume(self, nas_volume, nas_volume_quota):
         """create_volume.
 
@@ -1379,5 +1458,15 @@ class JovianRESTAPI(object):
             raise jexc.JDSSRESTException(req,
                                          _('Failed to extend nas-volume %s' %
                                            nas_volume))
+
+        self._general_error(req, resp)
+
+    def get_pool_vips(self):
+        """Return list of VIP deffinitions for current pool."""
+        req = '/vips'
+        LOG.info("get vips")
+        resp = self.rproxy.pool_request('GET', req)
+        if not resp["error"] and resp["code"] == 200:
+            return resp['data']
 
         self._general_error(req, resp)

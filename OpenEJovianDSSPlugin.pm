@@ -24,6 +24,7 @@ use Storable qw(lock_store lock_retrieve);
 
 use File::Path qw(make_path);
 use File::Temp qw(tempfile);
+use File::Basename;
 
 use Encode qw(decode encode);
 
@@ -56,7 +57,12 @@ my $PLUGIN_VERSION = '0.9.9-0';
 #    0.9.9.0 - 2024.11.15
 #               Add NFS base context volume
 #               Fix volume resize problem
+#               Fix incorrect volume allocation size
 #               Fix volume migration problem
+#    0.9.9.1 - 2024.12.13
+#               Provide dynamic target name prefix generation
+#               Enforce VIP addresses for iscsi targets
+#               Fix volume resize for running machine
 
 # Configuration
 
@@ -534,12 +540,13 @@ sub alloc_image {
     $volume_name = $class->find_free_diskname($storeid, $scfg, $vmid, $fmt) if !$volume_name;
 
     if ('images' ne "${fmt}") {
-        print"Creating volume ${volume_name} format ${fmt}\n" if get_debug($scfg);
 
         my $config = get_config($scfg);
         my $pool = get_pool($scfg);
-        #my $extsize = $size + 1023;
-        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "--size", "${size}K", "-n", $volume_name]);
+        my $extsize = $size * 1024;
+        print"Creating volume ${volume_name} format ${fmt} requested size ${size}\n" if get_debug($scfg);
+
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "--size", "${extsize}", "-n", $volume_name]);
     }
     return "$volume_name";
 }
@@ -607,7 +614,7 @@ sub stage_target {
     }
 
     print "Get storage address\n" if get_debug($scfg);
-    my @hosts = $class->get_storage_addresses($scfg, $storeid);
+    my @hosts = $class->get_iscsi_addresses($scfg, $storeid, 1);
 
     foreach my $host (@hosts) {
 
@@ -621,6 +628,8 @@ sub stage_target {
 
     $targetpath = $class->get_target_path($scfg, $target, $storeid);
 
+    die "Unable to locate target ${target} block device location.\n" if !defined($targetpath);
+
     print "Storage address is ${targetpath}\n" if get_debug($scfg);
 
     return $targetpath;
@@ -630,7 +639,7 @@ sub unstage_target {
     my ($class, $scfg, $storeid, $target) = @_;
 
     print "Unstaging target ${target}\n" if get_debug($scfg); 
-    my @hosts = $class->get_storage_addresses($scfg, $storeid);
+    my @hosts = $class->get_iscsi_addresses($scfg, $storeid, 1);
 
     foreach my $host (@hosts) {
         my $tpath = $class->get_target_path($scfg, $target, $storeid);
@@ -841,15 +850,19 @@ sub get_multipath_path {
     return undef;
 }
 
-sub get_storage_addresses {
-    my ($class, $scfg, $storeid) = @_;
+sub get_iscsi_addresses {
+    my ($class, $scfg, $storeid, $port) = @_;
 
     my $config = get_config($scfg);
 
-    my $gethostscmd = ['/usr/local/bin/jdssc', '-c', $config, 'hosts', '--iscsi'];
+    my $getaddressesscmd = ['/usr/local/bin/jdssc', '-c', $config, 'hosts', '--iscsi'];
+
+    if (defined($port) && $port){
+        push @$getaddressesscmd, '--port';
+    }
 
     my @hosts = ();
-    run_command($gethostscmd, outfunc => sub {
+    run_command($getaddressesscmd, outfunc => sub {
         my $h = shift;
         print "Storage iscsi address ${h}\n" if get_debug($scfg);
 
@@ -858,12 +871,29 @@ sub get_storage_addresses {
     return @hosts;
 }
 
-sub get_host_addresses {
+sub get_rest_addresses {
     my ($class, $scfg, $storeid) = @_;
 
     my $config = get_config($scfg);
 
-    my $gethostscmd = ["/usr/local/bin/jdssc", "-c", $config, "hosts"];
+    my $gethostscmd = ["/usr/local/bin/jdssc", "-c", $config, "hosts", '--rest'];
+
+    my @hosts = ();
+    run_command($gethostscmd, outfunc => sub {
+        my $h = shift;
+        print "Storage address ${h}\n" if get_debug($scfg);
+
+        push @hosts, $h;
+    });
+    return @hosts;
+}
+
+sub get_nfs_addresses {
+    my ($class, $scfg, $storeid) = @_;
+
+    my $config = get_config($scfg);
+
+    my $gethostscmd = ["/usr/local/bin/jdssc", "-c", $config, "hosts", '--nfs'];
 
     my @hosts = ();
     run_command($gethostscmd, outfunc => sub {
@@ -878,7 +908,7 @@ sub get_host_addresses {
 sub get_scsiid {
     my ($class, $scfg, $target, $storeid) = @_;
 
-    my @hosts = $class->get_storage_addresses($scfg, $storeid);
+    my @hosts = $class->get_iscsi_addresses($scfg, $storeid, 1);
 
     foreach my $host (@hosts) {
         my $targetpath = "/dev/disk/by-path/ip-${host}-iscsi-${target}-lun-0";
@@ -971,7 +1001,7 @@ sub get_target_path {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    my @hosts = $class->get_storage_addresses($scfg, $storeid);
+    my @hosts = $class->get_iscsi_addresses($scfg, $storeid, 1);
 
     my $path;
     foreach my $host (@hosts) {
@@ -1198,7 +1228,7 @@ sub ensure_content_volume_nfs {
         }
     }
 
-    my @hosts = $class->get_host_addresses($scfg, $storeid);
+    my @hosts = $class->get_nfs_addresses($scfg, $storeid);
 
     foreach my $host (@hosts) {
         my $not_found_code = 1;
@@ -1436,7 +1466,7 @@ sub activate_volume_ext {
 
     my $target = $class->get_target_name($scfg, $volname, $snapname, $content_volume_flag);
 
-    my $targetpath = $class->get_target_path($scfg, $target, $storeid, 1);
+    # my $targetpath = $class->get_target_path($scfg, $target, $storeid, 1);
 
     my $create_target_cmd = ["-c", $config, "pool", $pool, "targets", "create", "-v", $volname];
     if ($snapname){
@@ -1451,6 +1481,8 @@ sub activate_volume_ext {
 
     print "Staging target\n" if get_debug($scfg);
     $class->stage_target($scfg, $storeid, $target);
+
+    my $targetpath = $class->get_target_path($scfg, $target, $storeid);
 
     for (my $i = 1; $i <= 10; $i++) {
         last if (-e $targetpath);
@@ -1523,7 +1555,61 @@ sub volume_resize {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
+    my $esize = $size;
+
+    print "Resize volume ${volname} to size ${size} request ${esize} from joviandss\n" if get_debug($scfg);
+
     $class->joviandss_cmd(["-c", $config, "pool", "${pool}", "volume", "${volname}", "resize", "${size}"]);
+
+    my @update_device_try = (1..10);
+    foreach(@update_device_try){
+
+        sleep(1);
+
+        my $target = $class->get_target_name($scfg, $volname, undef, 0);
+
+        my $tpath = $class->get_target_path($scfg, $target, $storeid);
+
+        my $bdpath;
+        eval {run_command(["readlink", "-f", $tpath], outfunc => sub { $bdpath = shift; }); };
+
+        $bdpath = clean_word($bdpath);
+        my $block_device_name = basename($bdpath);
+        if ($block_device_name =~ /^[a-z0-9]+$/) {
+            print "Block device name ${block_device_name} for target ${target}\n" if get_debug($scfg);
+        } else {
+            die "Invalide block device name ${block_device_name} for iscsi target ${target}\n";
+        }
+        my $rescan_file = "/sys/block/${block_device_name}/device/rescan";
+        open my $fh, '>', $rescan_file or die "Cannot open $rescan_file $!";
+        print $fh "1" or die "Cannot write to $rescan_file $!";
+        close $fh or die "Cannot close ${rescan_file} $!";
+
+        eval{ run_command([$ISCSIADM, '-m', 'node', '-R', '-T', ${target}], outfunc => sub {}); };
+
+        if (multipath_enabled($scfg)) {
+            my $multipath_device_path = get_multipath_path($target);
+            eval{ run_command([$MULTIPATH, '-r', ${multipath_device_path}], outfunc => sub {}); };
+        }
+
+        $bdpath = $class->block_device_path($scfg, $volname, $storeid, undef);
+
+        print("check device size $_","\n") if get_debug($scfg);
+
+        sleep(1);
+
+        my $updated_size;
+        run_command(['/sbin/blockdev', '--getsize64', $bdpath], outfunc => sub {
+            my ($line) = @_;
+            die "unexpected output from /sbin/blockdev: $line\n" if $line !~ /^(\d+)$/;
+            $updated_size = int($1);
+        });
+        print("Updated size ${updated_size} requested size ${size}\n") if get_debug($scfg);
+        if ($updated_size eq $size) {
+            last;
+        }
+
+    }
 
     return 1;
 }

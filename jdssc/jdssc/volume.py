@@ -16,6 +16,7 @@
 import argparse
 import sys
 import logging
+import time
 
 import jdssc.snapshot as snapshot
 import jdssc.snapshots as snapshots
@@ -24,6 +25,9 @@ from jdssc.jovian_common import exception as jexc
 """Volume related commands."""
 
 LOG = logging.getLogger(__name__)
+
+
+_MiB = 1048576
 
 
 class Volume():
@@ -155,9 +159,9 @@ class Volume():
             d = self.jdss.get_volume(volume,
                                      direct_mode=self.args['direct_mode'])
             if self.args['volume_size']:
-                print(d['size'])
+                print(int(d['size']))
             if self.args['volume_gigabyte_size']:
-                print(int(int(d['size'])/(1024*1024*1024)))
+                print(int((int(d['size'])) / (1024*1024*1024)))
         except jexc.JDSSException as err:
             LOG.error(err.message)
             exit(1)
@@ -191,12 +195,22 @@ class Volume():
 
         volume_name = self.args['volume_name']
 
-        size = self.args['new_size']
+        size = int(self.args['new_size'])
 
         if self.args['add_size']:
-            d = self.jdss.get_volume(volume_name,
-                                     direct_mode=self.args['direct_mode'])
-            size += int(d['size'])
+            volume = {'id': volume_name}
 
-        self.jdss.resize_volume(volume_name, size,
+            d = self.jdss.get_volume(volume,
+                                     direct_mode=self.args['direct_mode'])
+            size = int(size) + int(d['size'])
+
+        self.jdss.resize_volume(volume_name, int(size),
                                 direct_mode=self.args['direct_mode'])
+
+        for i in range(1, 10):
+            volume = {'id': volume_name}
+            d = self.jdss.get_volume(volume,
+                                     direct_mode=self.args['direct_mode'])
+            if int(d['size']) != size:
+                time.sleep(1)
+                continue
