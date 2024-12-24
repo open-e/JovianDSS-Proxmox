@@ -162,6 +162,15 @@ class Volume():
                 print(int(d['size']))
             if self.args['volume_gigabyte_size']:
                 print(int((int(d['size'])) / (1024*1024*1024)))
+
+        except jexc.JDSSCommunicationFailure as jerr:
+            LOG.error(("Unable to communicate with JovianDSS over given "
+                       "interfaces %(interfaces)s. "
+                       "Please make sure that addresses are correct and "
+                       "REST API is enabled for JovianDSS") %
+                      {'interfaces': ', '.join(jerr.interfaces)})
+            exit(1)
+
         except jexc.JDSSException as err:
             LOG.error(err.message)
             exit(1)

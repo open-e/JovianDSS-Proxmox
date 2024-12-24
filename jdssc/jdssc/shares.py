@@ -118,12 +118,28 @@ class Shares():
                 direct_mode=self.args['direct_mode'],
                 reservation=self.args['volume_reservation'])
 
-        except (jexc.JDSSVolumeExistsException,
-                jexc.JDSSResourceExistsException):
-            LOG.error("Volume %s already exists", name)
+        except jexc.JDSSVolumeExistsException:
+            LOG.error(("Please pick another name for Share/Dataset as given "
+                       "one %s is occupied by existing Volume"), name)
+            exit(2)
 
         except jexc.JDSSResourceExhausted:
             LOG.error("No space left on the storage")
+            exit(1)
+
+        except jexc.JDSSPoolNotFoundException:
+            LOG.error(("Unable to create NFS share %(share)s because pool "
+                       "%(pool)s not found.") %
+                      {'pool': self.jdss.get_pool_name(),
+                       'share': name})
+            exit(1)
+
+        except jexc.JDSSCommunicationFailure as jerr:
+            LOG.error(("Unable to communicate with JovianDSS over given "
+                       "interfaces %(interfaces)s. "
+                       "Please make sure that addresses are correct and "
+                       "REST API is enabled for JovianDSS") %
+                      {'interfaces': ', '.join(jerr.interfaces)})
             exit(1)
 
     def list(self):
@@ -132,6 +148,6 @@ class Shares():
         for v in data:
 
             line = ("%(name)s %(path)s\n" % {
-                    'name': v['name'],
-                    'path': v['path']})
+                'name': v['name'],
+                'path': v['path']})
             sys.stdout.write(line)

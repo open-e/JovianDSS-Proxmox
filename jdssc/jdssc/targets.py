@@ -136,23 +136,35 @@ class Targets():
     def create(self):
         provider_location = None
 
-        if self.args['snapshot_name']:
+        try:
+            if self.args['snapshot_name']:
 
-            self.jdss.create_export_snapshot(
-                self.args['snapshot_name'],
-                self.args['volume_name'],
-                None)
-            provider_location = self.jdss.get_provider_location(
-                self.args['volume_name'],
-                snapshot_name=self.args['snapshot_name'])
+                self.jdss.create_export_snapshot(
+                    self.args['snapshot_name'],
+                    self.args['volume_name'],
+                    None)
+                provider_location = self.jdss.get_provider_location(
+                    self.args['volume_name'],
+                    snapshot_name=self.args['snapshot_name'])
 
-        else:
-            self.jdss.ensure_export(
-                self.args['volume_name'],
-                None,
-                direct_mode=self.args['direct_mode'])
-            provider_location = self.jdss.get_provider_location(
-                self.args['volume_name'])
+            else:
+                self.jdss.ensure_export(
+                    self.args['volume_name'],
+                    None,
+                    direct_mode=self.args['direct_mode'])
+                provider_location = self.jdss.get_provider_location(
+                    self.args['volume_name'])
+        except jexc.JDSSVIPNotFoundException as jerr:
+            LOG.error(
+                "%s. Please make sure that VIP are assigned to the Pool",
+                jerr.message)
+            exit(1)
+        except jexc.JDSSOutdated:
+            LOG.error("It looks like your version of JovianDSS do not"
+                      " support VIP white listing for targets. Please update "
+                      "JovianDSS to the newest version.")
+            exit(1)
+
         out = ''
         if self.args['host']:
             out += ' ' + ':'.join(provider_location.split()[0].split(':')[:-1])

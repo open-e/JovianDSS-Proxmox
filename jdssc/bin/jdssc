@@ -28,7 +28,7 @@ import logging
 from logging.handlers import RotatingFileHandler
 
 
-def get_config():
+def parse_args():
     parser = argparse.ArgumentParser(description='JDSS simple CLI')
 
     parser.add_argument('-c', '--config', dest='config', required=True,
@@ -44,6 +44,7 @@ def get_config():
                         help='Logging level')
     parser.add_argument('--logfile',
                         dest='cli_log_file',
+                        default=None,
                         help='File to store log to',
                         required=False)
     parser.add_argument('--logstd',
@@ -60,8 +61,8 @@ def get_config():
 
     command = parser.add_subparsers(required=True, dest='command')
 
-    command.add_parser('pool', add_help=False)
-    host_parser = command.add_parser('hosts', add_help=False)
+    command.add_parser('pool', add_help=True)
+    host_parser = command.add_parser('hosts', add_help=True)
     host_parser.add_argument('-r', '--rest',
                              dest='rest',
                              action='store_true',
@@ -83,6 +84,14 @@ def get_config():
                              default=False,
                              help='Add port to addresses')
 
+    cfg = command.add_parser('cfg', add_help=True)
+    cfg.add_argument('--getlogfile',
+                     dest='get_log_file',
+                     action='store_true',
+                     default=False,
+                     help=('Provides path to current log Provide REST '
+                           'VIP addresses'))
+
     args = parser.parse_known_args()
     return args
 
@@ -99,10 +108,14 @@ def setup_logging(args, cfg):
         loglvl = args.loglvl
 
     logfile = None
-    if 'logfile' in cfg:
-        logfile = cfg['logfile']
+
     if args.cli_log_file:
+        cfg['logfile'] = args.cli_log_file
         logfile = args.cli_log_file
+    if 'logfile' not in cfg:
+        cfg['logfile'] = "/var/log/joviandss/joviandss.log"
+
+    logfile = cfg['logfile']
 
     handlers = []
     if logfile:
@@ -119,7 +132,8 @@ def setup_logging(args, cfg):
 
     logging.basicConfig(
         level=numeric_level,
-        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        format=(
+            '%(asctime)s.%(msecs)d - %(name)s - %(levelname)s - %(message)s'),
         datefmt='%Y-%m-%d %H:%M:%S',
         handlers=handlers
     )
@@ -127,7 +141,7 @@ def setup_logging(args, cfg):
     logger = logging.getLogger()
     err_handler = logging.StreamHandler(sys.stderr)  # Error handler
     err_handler.setLevel(logging.ERROR)  # Capture only errors
-    eformater = logging.Formatter('%(levelname)s - %(message)s')
+    eformater = logging.Formatter('%(message)s')
 
     err_handler.setFormatter(eformater)
 
@@ -196,8 +210,15 @@ def hosts(args, uargs, jdss):
             sys.stdout.write(addr + "\n")
 
 
+def cfg(args, uargs, jdss):
+    log_file_path = jdss.configuration.get('logfile')
+
+    if (('get_log_file' in args) and (args['get_log_file'] is True)):
+        sys.stdout.write(log_file_path + "\n")
+
+
 def main():
-    (args, uargs) = get_config()
+    (args, uargs) = parse_args()
 
     # TODO: give better error message for cases when user provides
     # incorrect config path that results in
@@ -207,10 +228,10 @@ def main():
     setup_logging(args, config)
     # list available commands
     cmd = {'pool': pool.Pools,
-           'hosts': hosts}
+           'hosts': hosts,
+           'cfg': cfg}
 
     jdss = driver.JovianDSSDriver(config)
-    # jdss.do_setup('')
 
     args = vars(args)
     # Run command

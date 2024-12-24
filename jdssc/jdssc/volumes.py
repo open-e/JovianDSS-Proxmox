@@ -107,18 +107,8 @@ class Volumes():
     def create(self):
         size = self.args['volume_size']
 
-        # Extend
-        try:
-            size = int(size)
-        except Exception:
-            LOG.error("Size %s is not numeric", size)
+        # Size here is a string of format 1G 1M and etc
 
-        # if size < 8 * _MiB:
-        #    LOG.error(
-        #        "Unable to create volume smaller than 8MiB, requested %s",
-        #        size)
-
-        # size = size + 1 * _MiB
         block_size = self.args['block_size']
 
         if block_size is not None and block_size.upper() in block_size_options:
@@ -137,12 +127,25 @@ class Volumes():
             self.jdss.create_volume(name, size,
                                     direct_mode=self.args['direct_mode'],
                                     block_size=block_size)
+        except jexc.JDSSDatasetExistsException:
+            LOG.error(("Please pick another name for volume as given one %s is"
+                       " occupied by existing Share/Dataset"), name)
+            exit(1)
         except (jexc.JDSSVolumeExistsException,
                 jexc.JDSSResourceExistsException):
             LOG.error("Volume %s already exists", name)
+            exit(1)
 
         except jexc.JDSSResourceExhausted:
             LOG.error("No space left on the storage")
+            exit(1)
+
+        except jexc.JDSSCommunicationFailure as jerr:
+            LOG.error(("Unable to communicate with JovianDSS over given "
+                       "interfaces %(interfaces)s. "
+                       "Please make sure that addresses are correct and "
+                       "REST API is enabled for JovianDSS") %
+                      {'interfaces': ', '.join(jerr.interfaces)})
             exit(1)
 
     def clone(self):
@@ -173,9 +176,18 @@ class Volumes():
 
         volume = {'id': volume_name}
 
-        d = self.jdss.get_volume(volume, direct_mode=self.args['direct_mode'])
-        if self.args['volume_size']:
-            print(int(d['size']))
+        try:
+            d = self.jdss.get_volume(volume,
+                                     direct_mode=self.args['direct_mode'])
+            if self.args['volume_size']:
+                print(int(d['size']))
+        except jexc.JDSSCommunicationFailure as jerr:
+            LOG.error(("Unable to communicate with JovianDSS over given "
+                       "interfaces %(interfaces)s. "
+                       "Please make sure that addresses are correct and "
+                       "REST API is enabled for JovianDSS") %
+                      {'interfaces': ', '.join(jerr.interfaces)})
+            exit(1)
 
     def getfreename(self):
 

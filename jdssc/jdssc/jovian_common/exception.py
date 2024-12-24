@@ -19,6 +19,7 @@ class JDSSException(Exception):
 
     def __init__(self, reason):
         self.message = "%(reason)s" % {'reason': reason}
+        self.errcode = 1
         super().__init__(self.message)
 
 
@@ -26,6 +27,7 @@ class JDSSRESTException(JDSSException):
     """Unknown communication error"""
 
     def __init__(self, request, reason):
+        self.errcode = 2
         msg = ("JDSS REST request %(request)s faild: %(reason)s." %
                {"request": request,
                 "reason": reason})
@@ -37,12 +39,38 @@ class JDSSRESTProxyException(JDSSException):
     """Connection with host failed"""
 
     def __init__(self, host, reason):
+        self.errcode = 3
 
         msg = ("JDSS connection with %(host)s failed: %(reason)s.",
                {"host": host,
                 "reason": reason})
         self.message = msg
-        super().__init__(self.msg)
+        super().__init__(self.message)
+
+
+class JDSSCommunicationFailure(JDSSException):
+    """Communication with host failed at all fiven IP"""
+
+    def __init__(self, hosts, request):
+        self.errcode = 4
+        self.interfaces = hosts
+        msg = ("None of interfaces: %(hosts)s responded to request "
+               "%(request)s." % {"hosts": ', '.join(hosts),
+                                 "request": request})
+        self.message = msg
+        super().__init__(self.message)
+
+
+class JDSSOutdated(JDSSException):
+    """Outdated"""
+
+    def __init__(self, feature):
+        self.errcode = 5
+        msg = (("Feature %(feature)s is not supported in current version of "
+               "JovianDSS") % {"feature": feature})
+
+        self.message = msg
+        super().__init__(self.message)
 
 
 class JDSSVIPNotFoundException(JDSSException):
@@ -86,6 +114,14 @@ class JDSSSnapshotNotFoundException(JDSSResourceNotFoundException):
         super().__init__(self.message)
 
 
+class JDSSPoolNotFoundException(JDSSResourceNotFoundException):
+    """Snapshot does not exist"""
+
+    def __init__(self, pool):
+        self.message = "pool %(pool)s" % {'pool': pool}
+        super().__init__(self.message)
+
+
 class JDSSResourceExistsException(JDSSException):
     """Resource with specified id exists"""
 
@@ -110,6 +146,14 @@ class JDSSVolumeExistsException(JDSSResourceExistsException):
 
     def __init__(self, volume):
         self.message = ("volume %(volume)s" % {'volume': volume})
+        super().__init__(self.message)
+
+
+class JDSSDatasetExistsException(JDSSResourceExistsException):
+    """Dataset with same id exists"""
+
+    def __init__(self, dataset):
+        self.message = ("dataset %(volume)s" % {'volume': dataset})
         super().__init__(self.message)
 
 

@@ -14,6 +14,7 @@
 #    under the License.
 
 import argparse
+import logging
 import sys
 
 from jdssc.jovian_common import driver
@@ -25,8 +26,11 @@ import jdssc.targets as targets
 import jdssc.volume as volume
 import jdssc.volumes as volumes
 
+from jdssc.jovian_common import exception as jexc
 
 """Pool related commands."""
+
+LOG = logging.getLogger(__name__)
 
 
 class Pools():
@@ -63,8 +67,8 @@ class Pools():
 
         parser.add_argument('pool_name', help='Pool name')
         parsers = parser.add_subparsers(dest='pool_action')
-        parsers.add_parser('get', add_help=False)
-        parsers.add_parser('ip', add_help=False)
+        parsers.add_parser('get', add_help=True)
+        parsers.add_parser('ip', add_help=True)
         parsers.add_parser('cifs', add_help=False)
         parsers.add_parser('nas_volumes', add_help=False)
         parsers.add_parser('share', add_help=False)
@@ -79,15 +83,29 @@ class Pools():
         cifs.CIFS(self.args, self.uargs, self.jdss)
 
     def get(self):
-        (total_gb, free_gb) = self.jdss.get_volume_stats()
+        try:
+            (total_gb, free_gb) = self.jdss.get_volume_stats()
+        except jexc.JDSSResourceNotFoundException:
+            msg = ("Unable to identify pool {name} on the storage, please "
+                   "make sure that you have provided correct pool name and "
+                   "it is present on JovianDSS".format(
+                       name=self.jdss.get_pool_name()))
+            LOG.error(msg)
+            exit(1)
+        except jexc.JDSSCommunicationFailure as jerr:
+            LOG.error(("Unable to communicate with JovianDSS over given "
+                       "interfaces %(interfaces)s. "
+                       "Please make sure that addresses are correct and "
+                       "REST API is enabled for JovianDSS") %
+                      {'interfaces': ', '.join(jerr.interfaces)})
+
         line = "{total} {free} {used}\n".format(
             total=total_gb, free=free_gb, used=total_gb-free_gb)
         sys.stdout.write(line)
 
     def ip(self):
-        for i in self.jdss.jovian_hosts:
-            line = ("%s\n" % i)
-            sys.stdout.write(line)
+        LOG.error("Listing IP throug this command is not supported anymore")
+        exit(1)
 
     def share(self):
         share.Share(self.args, self.uargs, self.jdss)
