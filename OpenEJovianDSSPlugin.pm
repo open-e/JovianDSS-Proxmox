@@ -449,17 +449,21 @@ sub path {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
+    my $path;
+
     if ($vtype eq "images") {
         my $target = $class->get_target_name($scfg, $volname, $snapname, 0);
 
         if (multipath_enabled($scfg)) {
-            return $class->get_multipath_path($scfg, $target, 1);
+            $path = $class->get_multipath_path($scfg, $target, 1);
         } else {
-            return $class->get_target_path($scfg, $target, $storeid, 1);
+            $path = $class->get_target_path($scfg, $target, $storeid, 1);
         }
+    } else {
+        $path = $class->filesystem_path($scfg, $volname, $snapname);
     }
-
-    return $class->filesystem_path($scfg, $volname, $snapname);
+    $class->debugmsg($scfg, "debug", "Volume ${volname} ".safe_var_print("snapshot", $snapname)"." have path ${path}");
+    return $volume_path;
 }
 
 my $vtype_subdirs = {
@@ -532,6 +536,46 @@ sub clone_image {
     return $clone_name;
 }
 
+my $ignore_no_medium_warnings = sub {
+    my $line = shift;
+    # ignore those, most of the time they're from (virtual) IPMI/iKVM devices
+    # and just spam the log..
+    if ($line !~ /open failed: No medium found/) {
+        print STDERR "$line\n";
+    }
+};
+
+sub clear_first_sector {
+    my ($dev) = shift;
+
+    if (my $fh = IO::File->new($dev, "w")) {
+        my $buf = 0 x 512;
+        syswrite $fh, $buf;
+        $fh->close();
+    }
+}
+
+sub lvm_create_volume_group {
+    my ($device, $vgname) = @_;
+
+    my $res = lvm_pv_info($device);
+
+    if ($res->{vgname}) {
+        return if $res->{vgname} eq $vgname; # already created
+        die "device '$device' is already used by volume group '$res->{vgname}'\n";
+    }
+
+    clear_first_sector($device); # else pvcreate fails
+
+    my $cmd = ['/sbin/pvcreate', '--metadatasize', '250k', $device];
+
+    run_command($cmd, errmsg => "pvcreate '$device' error");
+
+    $cmd = ['/sbin/vgcreate', '--shared', '-y', $vgname, $device];
+
+    run_command($cmd, errmsg => "vgcreate $vgname $device error", errfunc => $ignore_no_medium_warnings, outfunc => $ignore_no_medium_warnings);
+}
+
 sub alloc_image {
     my ( $class, $storeid, $scfg, $vmid, $fmt, $name, $size ) = @_;
 
@@ -547,6 +591,29 @@ sub alloc_image {
         print"Creating volume ${volume_name} format ${fmt} requested size ${size}\n" if get_debug($scfg);
 
         $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "--size", "${extsize}", "-n", $volume_name]);
+
+        $class->activate_volume_ext($storeid, $scfg, $volume_name, undef, undef);
+        my $lvm_volume = 0;
+        my $UUID;
+
+        my $cmd = ['/usr/bin/file', '-L', '-s', $device];
+        run_command($cmd, outfunc => sub {
+            my $line = shift;
+            $lvm_volume = 1 if $line =~ m/LVM2/;
+            while ($line =~ /UUID:\s*([A-Za-z0-9\-]+)/g) {
+                $UUID = $1;
+                print "Found UUID: $UUID\n" if get_debug($scfg);
+            }
+        });
+
+        if (!$lvm_volume) {
+            my $bd_path = $class->block_device_path($scfg, $volume_name, $storeid, undef, 0);
+            lvm_create_volume_group($bd_path, $volume_name);
+            my $lv_cmd = ['/sbin/lvcreate', '-an', '-V', "${size}k", '--name', $name, "$vg/$scfg->{thinpool}" ];
+
+            run_command($lv_cmd, errmsg => "lvcreate '$vg/$name' error");
+        }
+        $class->deactivate_volume($storeid, $scfg, $volume_name, undef, undef);
     }
     return "$volume_name";
 }
@@ -1588,7 +1655,7 @@ sub volume_resize {
         eval{ run_command([$ISCSIADM, '-m', 'node', '-R', '-T', ${target}], outfunc => sub {}); };
 
         if (multipath_enabled($scfg)) {
-            my $multipath_device_path = get_multipath_path($target);
+            my $multipath_device_path = get_multipath_path($scfg, $target);
             eval{ run_command([$MULTIPATH, '-r', ${multipath_device_path}], outfunc => sub {}); };
         }
 
