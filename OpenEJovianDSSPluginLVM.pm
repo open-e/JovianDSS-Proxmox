@@ -18,18 +18,15 @@ package PVE::Storage::Custom::OpenEJovianDSSPlugin;
 use strict;
 use warnings;
 use Carp qw( confess );
-
+use IO::File;
 use Data::Dumper;
-use Encode qw(decode encode);
 use Storable qw(lock_store lock_retrieve);
 
 use File::Path qw(make_path);
 use File::Temp qw(tempfile);
 use File::Basename;
 
-use IO::File;
-
-use Time::HiRes qw(gettimeofday);
+use Encode qw(decode encode);
 
 use PVE::Tools qw(run_command);
 use PVE::Tools qw($IPV4RE);
@@ -38,16 +35,13 @@ use PVE::Tools qw($IPV6RE);
 use PVE::INotify;
 use PVE::Storage;
 use PVE::Storage::Plugin;
-use PVE::SafeSyslog;
 use PVE::JSONSchema qw(get_standard_option);
-
-use PVE::VZDump::Plugin;
 
 use base qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.9.9-2';
+my $PLUGIN_VERSION = '0.9.9-0';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -69,9 +63,6 @@ my $PLUGIN_VERSION = '0.9.9-2';
 #               Provide dynamic target name prefix generation
 #               Enforce VIP addresses for iscsi targets
 #               Fix volume resize for running machine
-#    0.9.9.2 - 2024.12.17
-#               Add logging to jdssc debug file
-#               Fix data coruption during migration
 
 # Configuration
 
@@ -96,7 +87,7 @@ sub api {
 }
 
 sub type {
-    return 'joviandss';
+    return 'jdss-lvm';
 }
 
 sub plugindata {
@@ -200,50 +191,6 @@ sub get_debug {
     return $scfg->{debug} || $default_debug;
 }
 
-my $log_level = {
-    DEBUG => 'DEBUG',
-    ERROR =>  'ERROR',
-    INFO => 'INFO',
-    WARN => 'WARN',
-};
-
-my $log_file_path = undef;
-
-sub debugmsg {
-    my ($class, $scfg, $mtype, $msg) = @_;
-
-    chomp $msg;
-
-    return if !$msg;
-
-    my $level = $log_level->{uc($mtype)} ? uc($mtype) : 'DEBUG';
-
-
-    if (get_debug($scfg)) {
-
-        my $config = get_config($scfg);
-
-        if (!defined($log_file_path)) {
-            $log_file_path = clean_word($class->joviandss_cmd(["-c", $config, 'cfg', '--getlogfile']));
-        }
-
-        my ($seconds, $microseconds) = gettimeofday();
-
-        my $milliseconds = int($microseconds / 1000);
-
-        my ($sec, $min, $hour, $day, $month, $year) = localtime($seconds);
-        $year += 1900;
-        $month += 1;
-        my $line = sprintf("%04d-%02d-%02d %02d:%02d:%02d.%03d - Plugin - %s - %s", $year, $month, $day, $hour, $min, $sec, $milliseconds, $level, $msg);
-
-        open(my $fh, '>>', $log_file_path) or die "Could not open file '$log_file_path' $!";
-
-        print $fh "$line\n";
-
-        close($fh);
-    }
-}
-
 sub get_content {
     my ($scfg) = @_;
 
@@ -320,30 +267,24 @@ sub joviandss_cmd {
     while ($retry_count <= $retries ) {
         my $output = sub { $msg .= "$_[0]\n" };
         my $errfunc = sub { $err .= "$_[0]\n" };
-        my $exitcode = 0;
         eval {
-            $exitcode = run_command(['/usr/local/bin/jdssc', @$cmd], outfunc => $output, errfunc => $errfunc, timeout => $timeout, noerr => 1);
+            run_command(['/usr/local/bin/jdssc', @$cmd], outfunc => $output, errfunc => $errfunc, timeout => $timeout);
         };
-        my $rerr = $@;
-
-        if ($exitcode == 0) {
-            return $msg;
+        if (my $rerr = $@) {
+            if ($rerr =~ /got timeout/) {
+                $retry_count++;
+                sleep int(rand($timeout + 1));
+                next;
+            }
+            die "$@\n";
         }
-
-        if ($rerr =~ /got timeout/) {
-            $retry_count++;
-            sleep int(rand($timeout + 1));
-            next;
-        }
-
         if ($err) {
-            die "${err}\n";
+            print "Error:\n";
+            print "${err}";
+            die $err;
         }
-
-        die "$rerr\n";
+        return $msg;
     }
-
-    die "Unhadled state during running JovianDSS command\n";
 }
 
 my $ISCSIADM = '/usr/bin/iscsiadm';
@@ -508,17 +449,22 @@ sub path {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
+    my $path;
+
     if ($vtype eq "images") {
         my $target = $class->get_target_name($scfg, $volname, $snapname, 0);
 
         if (multipath_enabled($scfg)) {
-            return $class->get_multipath_path($scfg, $target, 1);
+            $path = $class->get_multipath_path($scfg, $target, 1);
         } else {
-            return $class->get_target_path($scfg, $target, $storeid, 1);
+            $path = $class->get_target_path($scfg, $target, $storeid, 1);
         }
+        $path = "/dev/$volname/$volname";
+    } else {
+        $path = $class->filesystem_path($scfg, $volname, $snapname);
     }
-
-    return $class->filesystem_path($scfg, $volname, $snapname);
+    $class->debugmsg($scfg, "debug", "Volume ${volname} ".safe_var_print("snapshot", $snapname)"." have path ${path}");
+    return $volume_path;
 }
 
 my $vtype_subdirs = {
@@ -591,6 +537,46 @@ sub clone_image {
     return $clone_name;
 }
 
+my $ignore_no_medium_warnings = sub {
+    my $line = shift;
+    # ignore those, most of the time they're from (virtual) IPMI/iKVM devices
+    # and just spam the log..
+    if ($line !~ /open failed: No medium found/) {
+        print STDERR "$line\n";
+    }
+};
+
+sub clear_first_sector {
+    my ($dev) = shift;
+
+    if (my $fh = IO::File->new($dev, "w")) {
+        my $buf = 0 x 512;
+        syswrite $fh, $buf;
+        $fh->close();
+    }
+}
+
+sub lvm_create_volume_group {
+    my ($device, $vgname) = @_;
+
+    my $res = lvm_pv_info($device);
+
+    if ($res->{vgname}) {
+        return if $res->{vgname} eq $vgname; # already created
+        die "device '$device' is already used by volume group '$res->{vgname}'\n";
+    }
+
+    clear_first_sector($device); # else pvcreate fails
+
+    my $cmd = ['/sbin/pvcreate', '--metadatasize', '250k', $device];
+
+    run_command($cmd, errmsg => "pvcreate '$device' error");
+
+    $cmd = ['/sbin/vgcreate', '--shared', '-y', $vgname, $device];
+
+    run_command($cmd, errmsg => "vgcreate $vgname $device error", errfunc => $ignore_no_medium_warnings, outfunc => $ignore_no_medium_warnings);
+}
+
 sub alloc_image {
     my ( $class, $storeid, $scfg, $vmid, $fmt, $name, $size ) = @_;
 
@@ -606,6 +592,30 @@ sub alloc_image {
         print"Creating volume ${volume_name} format ${fmt} requested size ${size}\n" if get_debug($scfg);
 
         $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "--size", "${extsize}", "-n", $volume_name]);
+
+        $class->activate_volume_ext($storeid, $scfg, $volume_name, undef, undef);
+        my $lvm_volume = 0;
+        my $UUID;
+
+        my $cmd = ['/usr/bin/file', '-L', '-s', $device];
+        run_command($cmd, outfunc => sub {
+            my $line = shift;
+            $lvm_volume = 1 if $line =~ m/LVM2/;
+            while ($line =~ /UUID:\s*([A-Za-z0-9\-]+)/g) {
+                $UUID = $1;
+                print "Found UUID: $UUID\n" if get_debug($scfg);
+            }
+        });
+
+        if (!$lvm_volume) {
+            my $bd_path = $class->block_device_path($scfg, $volume_name, $storeid, undef, 0);
+            lvm_create_volume_group($bd_path, $volume_name);
+            my $lv_cmd = ['/sbin/lvcreate', '-aly', '-Wy', '--yes', '--size', $size, '--name', $volume_name, $volume_name];
+            #my $lv_cmd = ['/sbin/lvcreate', '-an', '-V', "${size}k", '--name', $name, "$vg/$scfg->{thinpool}" ];
+
+            run_command($lv_cmd, errmsg => "lvcreate '$vg/$name' error");
+        }
+        $class->deactivate_volume($storeid, $scfg, $volume_name, undef, undef);
     }
     return "$volume_name";
 }
@@ -704,10 +714,12 @@ sub unstage_target {
         my $tpath = $class->get_target_path($scfg, $target, $storeid);
 
         if (defined($tpath) && -e $tpath) {
-
-            # Driver should not commit any write operation including sync before unmounting
-            # Because that myght lead to data corruption in case of active migration
-            # Also we do not do volume unmounting
+            eval { run_command(['sync', '-f', $tpath], outfunc => sub {}); };
+            warn $@ if $@;
+            eval { run_command(['sync', $tpath], outfunc => sub {}); };
+            warn $@ if $@;
+            eval { run_command(['umount', $tpath], outfunc => sub {}); };
+            warn $@ if $@;
 
             eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--logout'], outfunc => sub {}); };
             warn $@ if $@;
@@ -820,10 +832,9 @@ sub unstage_multipath {
 
     # Multipath Block Device Link Path
     # Link to actual block device representing multipath interface
-    my $mbdlpath = $class->get_multipath_path($scfg, $target, 1);
+    my $mbdlpath = $class->get_multipath_path($scfg, $target);
     print "Unstage multipath for target ${target}\n" if get_debug($scfg);
 
-    # Remove link to multipath file
     if ( defined $mbdlpath && -e $mbdlpath ) {
 
         if (unlink $mbdlpath) {
@@ -832,10 +843,6 @@ sub unstage_multipath {
             warn "Unable to remove ${mbdlpath} link$!\n";
         }
     }
-
-    # Driver should not commit any write operation including sync before unmounting
-    # Because that myght lead to data corruption in case of active migration
-    # Also we do not do any unmnounting to volume as that might cause unexpected writes
 
     eval { $scsiid = $class->get_scsiid($scfg, $target, $storeid); };
     if ($@) {
@@ -847,6 +854,22 @@ sub unstage_multipath {
         return ;
     };
 
+    # Multipath Block Device Mapper Name
+    my $mbdmname = $class->get_device_mapper_name($scfg, $scsiid);
+    if (defined($mbdmname)) {
+        # Multipath Block Device Mapper Path
+        my $mbdmpath = "/dev/mapper/${mbdmname}";
+        # If Multipath Block Device Mapper representation exists
+        # We synch cache
+        if ( -e $mbdmpath ) {
+            eval { run_command(['sync', '-f', $mbdmpath], outfunc => sub {}); };
+            warn $@ if $@;
+            eval { run_command(['sync', $mbdmpath], outfunc => sub {}); };
+            warn $@ if $@;
+            eval { run_command(['umount', $mbdmpath], outfunc => sub {}); };
+            warn $@ if $@;
+        }
+    }
     eval{ run_command([$MULTIPATH, '-f', ${scsiid}], outfunc => sub {}); };
     if ($@) {
         warn "Unable to remove the multipath mapping for target ${target} because of $@\n" if $@;
@@ -1257,13 +1280,12 @@ sub ensure_content_volume_nfs {
     eval { $content_volume_size_current = $class->joviandss_cmd(['-c', $config, 'pool', $pool, 'share', $content_volume_name, 'get', '-d', '-s', '-G']); };
 
     if ($@) {
-        $class->joviandss_cmd(['-c', $config, 'pool', $pool, 'shares', 'create', '-d', '-q', "${content_volume_size}G", '-n', $content_volume_name]);
-        #eval { $class->joviandss_cmd(['-c', $config, 'pool', $pool, 'shares', 'create', '-d', '-q', "${content_volume_size}G", '-n', $content_volume_name]); };
-        # if ($@) {
-        #    my $err_msg = $@;
-        #    $class->deactivate_storage($storeid, $scfg, $cache);
-        #    die "Unable to create content volume ${content_volume_name} because of ${err_msg}\n";
-        #}
+        eval { $class->joviandss_cmd(['-c', $config, 'pool', $pool, 'shares', 'create', '-d', '-q', "${content_volume_size}G", '-n', $content_volume_name]); };
+        if ($@) {
+            my $err_msg = $@;
+            $class->deactivate_storage($storeid, $scfg, $cache);
+            die "Unable to create content volume ${content_volume_name} because of ${err_msg}\n";
+        }
     } else {
         # TODO: check for volume size on the level of OS
         # If volume needs resize do it with jdssc
@@ -1507,12 +1529,13 @@ sub deactivate_storage {
 sub activate_volume_ext {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache, $content_volume_flag) = @_;
 
-    $class->debugmsg($scfg, "debug", "Activating volume ext ${volname} ".safe_var_print("snapshot", $snapname)."\n");
-
+    print "Activating volume ext ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my $target = $class->get_target_name($scfg, $volname, $snapname, $content_volume_flag);
+
+    # my $targetpath = $class->get_target_path($scfg, $target, $storeid, 1);
 
     my $create_target_cmd = ["-c", $config, "pool", $pool, "targets", "create", "-v", $volname];
     if ($snapname){
@@ -1526,7 +1549,6 @@ sub activate_volume_ext {
     $class->joviandss_cmd($create_target_cmd, 80, 3);
 
     print "Staging target\n" if get_debug($scfg);
-    $class->debugmsg($scfg, "debug", "Staging target ${target}");
     $class->stage_target($scfg, $storeid, $target);
 
     my $targetpath = $class->get_target_path($scfg, $target, $storeid);
@@ -1554,7 +1576,7 @@ sub activate_volume_ext {
 sub activate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
 
-    $class->debugmsg($scfg, "debug", "Activate volume ${volname}".safe_var_print("snapshot", $snapname)." start");
+    print "Activating volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
@@ -1562,15 +1584,13 @@ sub activate_volume {
 
     $class->activate_volume_ext($storeid, $scfg, $volname, $snapname, $cache);
 
-    $class->debugmsg($scfg, "debug", "Activate volume ${volname}".safe_var_print("snapshot", $snapname)." done");
-
     return 1;
 }
 
 sub deactivate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
 
-    $class->debugmsg($scfg, "debug", "Deactivate volume ".safe_var_print("snapshot", $snapname)."start");
+    print "Deactivating volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
@@ -1585,13 +1605,15 @@ sub deactivate_volume {
         $target = $class->get_target_name($scfg, $volname, $snapname);
     }
 
-    $class->unstage_multipath($scfg, $storeid, $target) if multipath_enabled($scfg);
-    $class->unstage_target($scfg, $storeid, $target);
+    #$class->unstage_multipath($scfg, $storeid, $target) if multipath_enabled($scfg);
+    #$class->unstage_target($scfg, $storeid, $target);
 
-    # We do not delete target on joviandss as this will lead to race condition
-    # in case of migration
+    #my $delete_target_cmd = ["-c", $config, "pool", $pool, "targets", "delete", "-v", $volname];
+    #if ($snapname){
+    #    push @$delete_target_cmd, "--snapshot", $snapname;
+    #}
 
-    $class->debugmsg($scfg, "debug", "Deactivate volume ".safe_var_print("snapshot", $snapname)."done");
+    #$class->joviandss_cmd($delete_target_cmd, 80, 3);
 
     return 1;
 }
@@ -1602,7 +1624,9 @@ sub volume_resize {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    $class->debugmsg($scfg, "debug", "Resize volume ${volname} to size ${size}");
+    my $esize = $size;
+
+    print "Resize volume ${volname} to size ${size} request ${esize} from joviandss\n" if get_debug($scfg);
 
     $class->joviandss_cmd(["-c", $config, "pool", "${pool}", "volume", "${volname}", "resize", "${size}"]);
 
@@ -1633,11 +1657,13 @@ sub volume_resize {
         eval{ run_command([$ISCSIADM, '-m', 'node', '-R', '-T', ${target}], outfunc => sub {}); };
 
         if (multipath_enabled($scfg)) {
-            my $multipath_device_path = get_multipath_path($target);
+            my $multipath_device_path = get_multipath_path($scfg, $target);
             eval{ run_command([$MULTIPATH, '-r', ${multipath_device_path}], outfunc => sub {}); };
         }
 
         $bdpath = $class->block_device_path($scfg, $volname, $storeid, undef);
+
+        print("check device size $_","\n") if get_debug($scfg);
 
         sleep(1);
 
@@ -1647,6 +1673,7 @@ sub volume_resize {
             die "unexpected output from /sbin/blockdev: $line\n" if $line !~ /^(\d+)$/;
             $updated_size = int($1);
         });
+        print("Updated size ${updated_size} requested size ${size}\n") if get_debug($scfg);
         if ($updated_size eq $size) {
             last;
         }
