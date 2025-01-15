@@ -140,6 +140,7 @@ class JovianDSSRESTProxy(object):
                 LOG.debug("Geting %(data)s from %(t)s to %(addr)s",
                           {'data': out, 't': request_method, 'addr': addr})
                 return out
+        raise jexc.JDSSCommunicationFailure(self.hosts, req)
 
     def pool_request(self, request_method, req, json_data=None, apiv=3):
         """Send request to the specific url.

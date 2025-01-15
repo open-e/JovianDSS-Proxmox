@@ -51,17 +51,19 @@ class Share():
 
         share_parser = argparse.ArgumentParser(prog="Share")
 
-        share_parser.add_argument('share_name', help='Volume name')
+        share_parser.add_argument(
+            'share_name',
+            help='Share name, one name for nas-volume and nfs share')
 
         parsers = share_parser.add_subparsers(dest='share_action')
 
-        delete = parsers.add_parser('delete')
+        delete = parsers.add_parser('delete', add_help=True)
         delete.add_argument('-d',
                             dest='direct_mode',
                             action='store_true',
                             default=False,
                             help='Print actual share names')
-        get = parsers.add_parser('get')
+        get = parsers.add_parser('get', add_help=True)
         get.add_argument('-d',
                          dest='direct_mode',
                          action='store_true',
@@ -106,7 +108,13 @@ class Share():
         try:
             d = self.jdss.get_nas_volume(self.args['share_name'],
                                          direct_mode=self.args['direct_mode'])
-
+        except jexc.JDSSCommunicationFailure as jerr:
+            LOG.error(("Unable to communicate with JovianDSS over given "
+                       "interfaces %(interfaces)s. "
+                       "Please make sure that addresses are correct and "
+                       "REST API is enabled for JovianDSS") %
+                      {'interfaces': ', '.join(jerr.interfaces)})
+            exit(1)
         except jexc.JDSSException as err:
             LOG.error(err.message)
             exit(1)

@@ -37,7 +37,7 @@ class JovianDSSDriver(object):
 
     def __init__(self, config):
 
-        self.VERSION = "0.9.9-1"
+        self.VERSION = "0.9.9-2"
 
         self.configuration = config
         self._pool = self.configuration.get('jovian_pool', 'Pool-0')
@@ -64,6 +64,9 @@ class JovianDSSDriver(object):
 
         self.ra = rest.JovianRESTAPI(config)
         self.jovian_rest_port = self.ra.rproxy.port
+
+    def get_pool_name(self):
+        return self._pool
 
     def rest_config_is_ok(self):
         """Check config correctness by checking pool availability"""
@@ -1797,7 +1800,7 @@ class JovianDSSDriver(object):
             self.create_nas_volume(share_name, quota_size,
                                    reservation=reservation,
                                    direct_mode=direct_mode)
-        except jexc.JDSSResourceExistsException:
+        except jexc.JDSSDatasetExistsException:
             LOG.debug("Looks like nas volume %s already exists", share_name)
 
         path = "{}/{}".format(self._pool, sharename)

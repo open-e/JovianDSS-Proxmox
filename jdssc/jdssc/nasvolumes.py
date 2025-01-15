@@ -109,6 +109,7 @@ class NASVolumes():
         except (jexc.JDSSVolumeExistsException,
                 jexc.JDSSResourceExistsException):
             LOG.error("Volume %s already exists", name)
+            exit(1)
 
         except jexc.JDSSResourceExhausted:
             LOG.error("No space left on the storage")

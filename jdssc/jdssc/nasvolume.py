@@ -54,12 +54,6 @@ class NASVolumes():
                             type=str,
                             default='1G',
                             help='New volume size in format num + [M G T]')
-        create.add_argument('-b',
-                            dest='block_size',
-                            type=str,
-                            default=None,
-                            choices=block_size_options,
-                            help=('Block size of new volume, default is 16K'))
         create.add_argument('-d',
                             dest='direct_mode',
                             action='store_true',

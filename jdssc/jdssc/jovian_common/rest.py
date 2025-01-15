@@ -51,17 +51,23 @@ class JovianRESTAPI(object):
         self.resource_has_snapshots_msg = (
             re.compile(r"^cannot destroy '.*/.*': volume has children\nuse "
                        r"'-r' to destroy the following datasets:\n.*"))
-        self.resource_has_snapshots_class = (
+        self.zfs_cmd_error_class = (
             re.compile(r'^zfslib.wrap.zfs.ZfsCmdError$'))
 
         self.class_zfsresourceerror = (
             re.compile(r'^zfslib.zfsapi.resources.ZfsResourceError$'))
+
+        self.class_item_not_found_error = (
+            re.compile(r"^opene.exceptions.ItemNotFoundError$"))
 
         self.class_item_conflict_error = (
             re.compile(r'^opene.exceptions.ItemConflictError$'))
 
         self.message_volume_already_used = (
             re.compile(r'^Volume .* is already used.$'))
+
+        self.message_dataset_do_not_exist = (
+            re.compile(r"^cannot open '.*': dataset does not exist$"))
 
         self.resource_already_exists_msg = (
             re.compile(r"^Resource .* already exists.$"))
@@ -72,6 +78,12 @@ class JovianRESTAPI(object):
         self.no_space_left = (
             re.compile(r"^New zvol size\(\d+\) exceeds available space on pool"
                        r" .+\(\d+\).$"))
+
+        self.message_vip_allowed_portals_not_supported = (
+            re.compile((r"^Additional properties are not allowed \('vip_allowed_portals' was unexpected\)$")))
+#                r"Additional properties are not allowed \('vip_allowed_portals' was unexpected\)"))
+        # (r"^Additional properties are not allowed "
+        #            "('vip_allowed_portals' was unexpected)$")))
 
     def _general_error(self, url, resp):
         reason = "Request %s failure" % url
@@ -196,7 +208,9 @@ class JovianRESTAPI(object):
 
         resp = self.rproxy.pool_request('POST', req, json_data=jbody)
 
-        if not resp["error"] and resp["code"] in (200, 201):
+        LOG.debug("response is %s", str(resp))
+        if resp["code"] in (200, 201):
+            # TODO: should we check for presence of error for this call
             return
 
         if "error" in resp and resp["error"] is not None:
@@ -209,6 +223,8 @@ class JovianRESTAPI(object):
                 if self.resource_already_exists_msg.match(
                         resp["error"]["message"]):
                     raise jexc.JDSSVolumeExistsException(volume_name)
+                if self.dataset_exists_msg.match(resp["error"]["message"]):
+                    raise jexc.JDSSDatasetExistsException(volume_name)
         self._general_error(req, resp)
 
     def extend_lun(self, volume_name, volume_size):
@@ -432,7 +448,7 @@ class JovianRESTAPI(object):
                     raise jexc.JDSSResourceIsBusyException(res=volume_name)
                 if (self.resource_has_snapshots_msg.match(
                         resp['error']['message']) and
-                   self.resource_has_snapshots_class.match(
+                   self.zfs_cmd_error_class.match(
                         resp['error']['class'])):
                     LOG.warning("volume %s is busy", volume_name)
                     raise jexc.JDSSResourceIsBusyException(res=volume_name)
@@ -522,6 +538,11 @@ class JovianRESTAPI(object):
         if resp["code"] == 409:
             raise jexc.JDSSResourceExistsException(res=target_name)
 
+        if 'error' in resp:
+            if 'message' in resp['error']:
+                if self.message_vip_allowed_portals_not_supported.match(
+                        resp['error']['message']):
+                    raise jexc.JDSSOutdated("VIP Restriction")
         self._general_error(req, resp)
 
     def delete_target(self, target_name):
@@ -1194,6 +1215,9 @@ class JovianRESTAPI(object):
         if not resp["error"] and resp["code"] == 200:
             return resp["data"]
 
+        if ("class" in resp['error'] and
+                self.class_item_not_found_error.match(resp['error']['class'])):
+            raise jexc.JDSSResourceNotFoundException(res="pool %s" % self.pool)
         self._general_error(req, resp)
 
     def get_snapshot_rollback(self, volume_name, snapshot_name):
@@ -1305,6 +1329,9 @@ class JovianRESTAPI(object):
                 if self.resource_already_exists_msg.match(
                         resp["error"]["message"]):
                     raise jexc.JDSSVolumeExistsException(volume_name)
+                if self.message_dataset_do_not_exist.match(
+                        resp['error']['message']):
+                    raise jexc.JDSSPoolNotFoundException(self.pool)
 
         self._general_error(req, resp)
 
