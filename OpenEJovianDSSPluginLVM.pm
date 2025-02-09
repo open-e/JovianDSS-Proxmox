@@ -513,9 +513,10 @@ sub path {
     my $path;
 
     if ($vtype eq "images") {
-        $path = "/dev/$volname/$volname";
+        my $vmvgname = $class->vm_vg_name($vmid, $snapname);
+        $path = "/dev/$vmvgname/$volname";
     } else {
-        $path = $class->filesystem_path($scfg, $volname, $snapname);
+        die "Only images are supported\n";
     }
     $class->debugmsg($scfg, "debug", "Volume ${volname} ".safe_var_print("snapshot", $snapname)." have path ${path}");
     return $path;
@@ -552,7 +553,7 @@ sub create_base {
 
     die "create_base is not possible with base image\n" if $isBase;
 
-    $class->vm_disk_deactivate($storeid, $scfg, $volname, undef, undef);
+    $class->deactivate_volume($storeid, $scfg, $volname, undef, undef);
 
     my $config = $scfg->{config};
 
@@ -703,7 +704,7 @@ sub vm_disk_list_volumes {
     my ($class, $scfg, $device) = @_;
 
     my @lvrecords;
-    $cmd = ['lvs', '--separator', ':', '--noheadings', '--units', 'b', '--options', 'lv_name,lv_size', '--devices', $device];
+    my $cmd = ['lvs', '--separator', ':', '--noheadings', '--units', 'b', '--options', 'lv_name,lv_size,lv_attr', '--nosuffix', '--devices', $device];
 
     my $lvsinfo;
     run_command($cmd, outfunc => sub {
@@ -711,11 +712,12 @@ sub vm_disk_list_volumes {
 
         $line = trim($line);
 
-        my ($lvname, $lvsize) = split(':', $line);
+        my ($lvname, $lvsize, $lvattr) = split(':', $line);
 
-        $volinfo = {
+        my $volinfo = {
             lvname => $lvname,
             lvsize => int($lvsize),
+            lvattr => $lvattr,
         };
         push @lvrecords, $volinfo;
     });
@@ -731,10 +733,10 @@ sub lvm_create_volume {
 }
 
 sub lvm_remove_volume {
-    my ($class, $scfg, $vgname, $volname) = @_;
+    my ($class, $scfg, $device, $vgname, $volname) = @_;
 
-    $class->debugmsg($scfg, "debug", "Remove lvm volume ${volname} of vg ${vgname}");
-    my $cmd = ['/sbin/lvremove', '-f', "$vgname/$volname"];
+    $class->debugmsg($scfg, "debug", "Remove lvm volume ${volname} from device ${device}");
+    my $cmd = ['/sbin/lvremove', '--devices', $device, '-f', "${vgname}/${volname}"];
     run_command($cmd, errmsg => "unable to remove ${volname} ");
 }
 
@@ -928,21 +930,21 @@ sub free_image {
     }
     print"Deleting volume ${volname} format ${format}\n" if get_debug($scfg);
 
+    my $vmdiskname = $class->vm_disk_name($vmid, 0);
+    my $device = $class->block_device_path($scfg, $vmdiskname, $storeid, undef, 0);
+
+    $class->lvm_remove_volume($scfg, $device, $vmvgname, $volname);
+
+    my $vols = $class->vm_disk_list_volumes($scfg, $device);
+
     # Deactivate lvm volume
-    $class->vm_disk_deactivate($storeid, $scfg, $volname, undef, undef);
+    $class->deactivate_volume($storeid, $scfg, $volname, undef, undef);
 
-    $class->lvm_remove_volume($scfg, $vmvgname, $volname);
-
-    my $vglvsdata = PVE::Storage::LVMPlugin::lvm_list_volumes($vmvgname);
-
-    # We remove snapshots ONLY if no lvm volumes left
-    # if none lvm volumes left we remove actual zvol
-    my $lvcount = scalar keys %$vglvsdata;
-    if (int($vglvsdata) == 0) {
-        my $vmdiskname = $class->vm_disk_name($vmid, 0);
+    if (scalar(@$vols) == 0) {
         $class->vm_disk_disconnect_all($storeid, $scfg, $vmdiskname, undef);
         $class->vm_disk_remove($storeid, $scfg, $vmdiskname, undef);
     }
+
     return undef;
 }
 
@@ -1369,31 +1371,43 @@ sub list_images {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    my $jdssc = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "list", "--vmid"]);
+    my $vmdisks = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "list", "--vmid"]);
 
     my $res = [];
-    foreach (split(/\n/, $jdssc)) {
-        my ($volname,$vm,$size) = split;
+    foreach (split(/\n/, $vmdisks)) {
+        my ($vmdiskname,$vm,$size) = split;
 
-        $volname = clean_word($volname);
+        $vmdiskname = clean_word($vmdiskname);
         $vm = clean_word($vm);
         $size = clean_word($size);
 
-        my $volid = "$storeid:$volname";
+        my $device = $class->block_device_path($scfg, $vmdiskname, $storeid, undef, 0);
 
-        if ($vollist) {
-            my $found = grep { $_ eq $volid } @$vollist;
-            next if !$found;
-        } else {
-            next if defined ($vmid) && ($vm ne $vmid);
+        if (! $device) {
+            $device = $class->vm_disk_iscsi_connect($storeid, $scfg, $vmdiskname, undef, $cache);
         }
 
-        push @$res, {
-            format => 'raw',
-            volid  => $volid,
-            size   => $size,
-            vmid   => $vm,
-        };
+        #print("List lv for device ${device}");
+        my $vols = $class->vm_disk_list_volumes($scfg, $device);
+
+        foreach my $vol (@$vols) {
+            #print("Found ${vol}");
+            my $volid = "$storeid:$vol->{lvname}";
+
+            if ($vollist) {
+                my $found = grep { $_ eq $volid } @$vollist;
+                next if !$found;
+            } else {
+                next if defined ($vmid) && ($vm ne $vmid);
+            }
+
+            push @$res, {
+                format => 'raw',
+                volid  => $volid,
+                size   => $vol->{lvsize},
+                vmid   => $vm,
+            };
+        }
     }
 
     return $res;
@@ -1876,6 +1890,44 @@ sub vm_disk_connect {
     return $targetpath;
 }
 
+# Activates zvol related to given vm to the level of iscsi
+sub vm_disk_iscsi_connect {
+    my ( $class, $storeid, $scfg, $vmdiskname, $snapname, $cache ) = @_;
+
+    $class->debugmsg($scfg, "debug", "Activate vm disk ${vmdiskname}\n");
+
+    my $config = get_config($scfg);
+    my $pool = get_pool($scfg);
+
+    my $target = $class->get_target_name($scfg, $vmdiskname, $snapname, 0);
+
+    my $create_target_cmd = ["-c", $config, "pool", $pool, "targets", "create", "-v", $vmdiskname];
+    if ($snapname){
+        push @$create_target_cmd, "--snapshot", $snapname;
+    }
+
+    $class->joviandss_cmd($create_target_cmd, 80, 3);
+
+    $class->debugmsg($scfg, "debug", "Staging target ${target}");
+    $class->stage_target($scfg, $storeid, $target);
+
+    my $updateudevadm = ['udevadm', 'trigger', '-t', 'all'];
+    run_command($updateudevadm, errmsg => "Failed to update udev devices after iscsi target attachment");
+
+    my $targetpath = $class->get_target_path($scfg, $target, $storeid);
+
+    for (my $i = 1; $i <= 10; $i++) {
+        last if (-e $targetpath);
+        sleep(1);
+    }
+
+    unless (-e $targetpath) {
+        die "Unable to confirm existance of volume at path ${targetpath}\n";
+    }
+
+    return $targetpath;
+}
+
 # Disconnect zvol or its snapshot from proxmox server
 sub vm_disk_disconnect {
     my ( $class, $storeid, $scfg, $vmdiskname, $snapshot, $cache ) = @_;
@@ -2007,6 +2059,8 @@ sub deactivate_volume {
     my $cmd = ['/sbin/lvchange', '-aln', $path];
     run_command($cmd, errmsg => "can't deactivate LV '$path'", noerr=>1);
 
+    $class->debugmsg($scfg, "debug", "Deactivate volume ".safe_var_print("snapshot", $snapname)."done");
+
     # We do not delete target on joviandss as this will lead to race condition
     # in case of migration
 
@@ -2014,7 +2068,28 @@ sub deactivate_volume {
     # We remove multipath device and logout of iscsi targets becaue there is no other way to guarantee
     # multipath deactivation if volume was migrated and deleted on other host
 
-    $class->debugmsg($scfg, "debug", "Deactivate volume ".safe_var_print("snapshot", $snapname)."done");
+    my $activepresent = 0;
+    my $notinactivepresent = 0;
+    my $vmdiskname = $class->vm_disk_name($vmid, 0);
+
+    my $device = $class->block_device_path($scfg, $vmdiskname, $storeid, undef, 0);
+
+    my $vols =  $class->vm_disk_list_volumes($scfg, $device);
+
+    foreach my $vol (@$vols){
+        my $attr = $vol->{lv_attr};
+        my $flag5 = substr($attr, 4, 1);
+
+        if ($flag5 ne 'i') {
+            $notinactivepresent = 1;
+        }
+        if ($flag5 eq 'a') {
+            $activepresent = 1;
+        }
+    }
+    if ($activepresent == 0 && $notinactivepresent == 0) {
+        $class->vm_disk_disconnect_all($storeid, $scfg, $vmdiskname, undef);
+    }
 
     return 1;
 }
