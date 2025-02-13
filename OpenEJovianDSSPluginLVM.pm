@@ -85,6 +85,7 @@ my $default_multipath = 0;
 my $default_content_size = 100;
 my $default_path = "/mnt/joviandss";
 
+my $LVM_RESERVATION = 4 * 1024 * 1024;
 
 sub api {
 
@@ -481,6 +482,46 @@ sub iscsi_session {
     return $cache->{iscsi_sessions}->{$target};
 }
 
+sub get_multipath_device_name {
+    my ($device_path) = @_;
+
+    my $cmd = [
+        'lsblk',
+        '-J',
+        '-o', 'NAME,SIZE,FSTYPE,UUID,LABEL,MOUNTPOINT,SERIAL,VENDOR,ZONED,HCTL,KNAME,TYPE,TRAN',
+        $device_path
+    ];
+
+    my $json_out = '';
+    my $outfunc = sub { $json_str .= "$_[0]\n" };
+
+    run_command($cmd, errmsg => "Getting multipath device for ${device_path} failed", outfunc => $outfunc);
+
+    # Decode the JSON output.
+    my $data = decode_json($json_out);
+
+    # Collect multipath device names.
+    my @mpath_names;
+    for my $dev (@{ $data->{blockdevices} }) {
+        if (exists $dev->{children} && ref($dev->{children}) eq 'ARRAY') {
+            for my $child (@{ $dev->{children} }) {
+                if (defined $child->{type} && $child->{type} eq 'mpath') {
+                    push @mpath_names, $child->{name};
+                }
+            }
+        }
+    }
+
+    # Return the proper result based on the number of multipath devices found.
+    if (@mpath_names == 1) {
+        return $mpath_names[0];
+    } elsif (@mpath_names == 0) {
+        return undef;
+    } else {
+        die "More than one multipath device found: " . join(", ", @mpath_names);
+    }
+}
+
 sub block_device_path {
     my ($class, $scfg, $volname, $storeid, $snapname, $content_volume_flag) = @_;
 
@@ -488,12 +529,27 @@ sub block_device_path {
 
     my $target = $class->get_target_name($scfg, $volname, $snapname, $content_volume_flag);
 
-    my $tpath;
+    my $tpath = $class->get_target_path($scfg, $target, $storeid);
+
+    unles(defined($tpath)) {
+        print"Unable to identify device path for ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
+        return undef;
+    }
+    my $bdpath;
+    eval {run_command(["readlink", "-f", $tpath], outfunc => sub { $bdpath = shift; }); };
+
+    $bdpath = clean_word($bdpath);
+    my $block_device_name = basename($bdpath);
+    if ($block_device_name =~ /^[a-z0-9]+$/) {
+        print "Block device ${bdpath} represents target ${target}\n" if get_debug($scfg);
+    } else {
+        die "Invalide block device name ${block_device_name} for iscsi target ${target}\n";
+    }
+
+    my $mpathname =  get_multipath_device_name($bdpath);
 
     if (multipath_enabled($scfg)) {
         $tpath = $class->get_multipath_path($scfg, $target);
-    } else {
-        $tpath = $class->get_target_path($scfg, $target, $storeid);
     }
 
     print"Block device path is ${tpath} of volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
@@ -624,11 +680,13 @@ sub vm_disk_vg_info {
 }
 
 sub vm_disk_lvm_update {
-    my ($class, $storeid, $scfg, $vmdiskname, $device) = @_;
+    my ($class, $storeid, $scfg, $vmdiskname, $device, $vmdisksize) = @_;
 
-    $class->update_block_device($scfg, $storeid, $vmdiskname, undef);
+    $class->update_block_device($storeid, $scfg, $vmdiskname, undef);
 
-    my $cmd = ['pvresize', $device];
+    my $info = vm_disk_lvm_info($device);
+
+    my $cmd = ['pvresize', '--devices', $device, '--setphysicalvolumesize', "${vmdisksize}b",  $info->{pvname}];
     run_command($cmd, outfunc => sub {});
 }
 
@@ -822,12 +880,14 @@ sub vm_disk_size {
 }
 
 sub vm_disk_extend_to {
-    my ($class, $scfg, $vmdiskname, $newsize) = @_;
+    my ($class,$storeid, $scfg, $vmdiskname, $device, $newsize) = @_;
 
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     $class->joviandss_cmd(["-c", $config, "pool", "${pool}", "volume", "${vmdiskname}", "resize", "${newsize}"]);
+
+    $class->vm_disk_lvm_update($storeid, $scfg, $vmdiskname, $device, $newsize);
 
     return ;
 }
@@ -891,20 +951,21 @@ sub alloc_image {
             # get zvol size
             my $vmdisksize = $class->vm_disk_size($scfg, $vmdiskname);
 
-            print("jdss size ${vmdisksize} vgs " . $vginfo->{vgsize} . "vgs free size " . $vginfo->{vgfree} . "\n") if get_debug($scfg);
+            print("jdss size ${vmdisksize} vgs " . $vginfo->{vgsize} . " vgs free size " . $vginfo->{vgfree} . "\n") if get_debug($scfg);
 
             # check if zvol size is not different from LVM size
             # that should handle cases of failure during volume resizing
             # when lvm data was not updated properly
             if ( abs($vmdisksize - $vginfo->{vgsize}) <= 0.01 * abs($vmdisksize) ) {
-                vm_disk_lvm_update($device);
+                print("vmdisk size ${vmdisksize} vgs " . $vginfo->{vgsize} . "vgs free size " . $vginfo->{vgfree} . "\n") if get_debug($scfg);
+                $class->vm_disk_lvm_update($storeid, $scfg, $vmdiskname, $device, $vmdisksize);
                 $vginfo = vm_disk_vg_info($device, $vmvgname);
             }
 
             if ($vginfo->{vgfree} < $size) {
                 my $newvolsize = 0;
                 $newvolsize = $size - $vginfo->{vgfree} + $vmdisksize;
-                $class->vm_disk_extend_to($scfg, $vmdiskname, $newvolsize);
+                $class->vm_disk_extend_to($storeid, $scfg, $vmdiskname, $device, $newvolsize);
             }
         }
 
@@ -1383,11 +1444,13 @@ sub list_images {
 
         my $device = $class->block_device_path($scfg, $vmdiskname, $storeid, undef, 0);
 
-        if (! $device) {
+        print("Block device path ${device}\n");
+
+        unless ( defined $device) {
             $device = $class->vm_disk_iscsi_connect($storeid, $scfg, $vmdiskname, undef, $cache);
         }
 
-        #print("List lv for device ${device}");
+        print("List lv for device ${device}");
         my $vols = $class->vm_disk_list_volumes($scfg, $device);
 
         foreach my $vol (@$vols) {
@@ -1421,7 +1484,9 @@ sub volume_snapshot {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshots", "create", $snap]);
+    my $vmdiskname = $class->vm_disk_name($vmid, 0);
+
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $vmdiskname, "snapshots", "create", '--ignoreexists', $snap]);
 
 }
 
@@ -2018,7 +2083,10 @@ sub activate_volume {
     my $vmvgname = $class->vm_vg_name($vmid, $snapname);
 
     if ($snapname) {
-        my $cmd = ['/sbin/vgimportclone', '--basevgname', $vmvgname, '--devices', $device, '-y'];
+        my $info = vm_disk_lvm_info($device);
+
+        my $cmd = ['/sbin/vgimportclone', '--basevgname', $vmvgname, '--devices', $device, '-y', $info->{pvname}];
+
         run_command($cmd, errmsg => "Failed to import lvm clone of volume ${vmdiskname} from snapshot ${snapname}", outfunc => sub {});
     }
 
@@ -2077,14 +2145,17 @@ sub deactivate_volume {
     my $vols =  $class->vm_disk_list_volumes($scfg, $device);
 
     foreach my $vol (@$vols){
-        my $attr = $vol->{lv_attr};
-        my $flag5 = substr($attr, 4, 1);
+        #TODO: recheck this construction
+        if ($vol->{lv_attr}){
+            my $attr = $vol->{lv_attr};
+            my $flag = substr($attr, 4, 1);
 
-        if ($flag5 ne 'i') {
-            $notinactivepresent = 1;
-        }
-        if ($flag5 eq 'a') {
-            $activepresent = 1;
+            if ($flag ne 'i') {
+                $notinactivepresent = 1;
+            }
+            if ($flag eq 'a') {
+                $activepresent = 1;
+            }
         }
     }
     if ($activepresent == 0 && $notinactivepresent == 0) {
@@ -2169,7 +2240,7 @@ sub volume_resize {
 
     $class->joviandss_cmd(["-c", $config, "pool", "${pool}", "volume", "${volname}", "resize", "${size}"]);
 
-    $class->update_block_device($scfg, $storeid, $volname);
+    $class->update_block_device($storeid, $scfg, $volname, $size);
 
     return 1;
 }
