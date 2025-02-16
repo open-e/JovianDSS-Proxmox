@@ -26,6 +26,7 @@ use Storable qw(lock_store lock_retrieve);
 use File::Path qw(make_path);
 use File::Temp qw(tempfile);
 use File::Basename;
+use JSON qw(decode_json);
 
 use IO::File;
 
@@ -493,29 +494,38 @@ sub get_multipath_device_name {
     ];
 
     my $json_out = '';
-    my $outfunc = sub { $json_str .= "$_[0]\n" };
+    my $outfunc = sub { $json_out .= "$_[0]\n" };
 
     run_command($cmd, errmsg => "Getting multipath device for ${device_path} failed", outfunc => $outfunc);
 
-    # Decode the JSON output.
     my $data = decode_json($json_out);
 
-    # Collect multipath device names.
+    print($json_out);
     my @mpath_names;
     for my $dev (@{ $data->{blockdevices} }) {
         if (exists $dev->{children} && ref($dev->{children}) eq 'ARRAY') {
+            print("Array exists.\n");
             for my $child (@{ $dev->{children} }) {
                 if (defined $child->{type} && $child->{type} eq 'mpath') {
+                    print("Add children $child->{name}.\n");
+
                     push @mpath_names, $child->{name};
                 }
             }
+        } else {
+            print "Not array $dev->{children}\n";
         }
     }
+    print("Mpath names 0 $mpath_names[0]\n");
+    print("Mpath names 1 $mpath_names[1]\n");
 
     # Return the proper result based on the number of multipath devices found.
     if (@mpath_names == 1) {
+        print("Returnign $mpath_names[0]\n");
         return $mpath_names[0];
     } elsif (@mpath_names == 0) {
+        print("Nothing to return\n");
+        print("Mpath names 0 $mpath_names[0]\n");
         return undef;
     } else {
         die "More than one multipath device found: " . join(", ", @mpath_names);
@@ -531,7 +541,7 @@ sub block_device_path {
 
     my $tpath = $class->get_target_path($scfg, $target, $storeid);
 
-    unles(defined($tpath)) {
+    unless (defined($tpath)) {
         print"Unable to identify device path for ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
         return undef;
     }
@@ -549,7 +559,7 @@ sub block_device_path {
     my $mpathname =  get_multipath_device_name($bdpath);
 
     if (multipath_enabled($scfg)) {
-        $tpath = $class->get_multipath_path($scfg, $target);
+        $tpath = $class->get_multipath_path($storeid, $scfg, $target);
     }
 
     print"Block device path is ${tpath} of volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
@@ -632,6 +642,8 @@ sub clone_image {
 
     my $pool = $scfg->{pool_name};
 
+    $class->debugmsg($scfg, "debug", "Start cloning of vm ${vmid} volume ${volname} ".safe_var_print("snapshot", $snap));
+
     my (undef, undef, undef, undef, undef, undef, $fmt) = $class->parse_volname($volname);
     my $clone_name = $class->find_free_diskname($storeid, $scfg, $vmid, $fmt);
 
@@ -645,6 +657,7 @@ sub clone_image {
     } else {
         $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "clone", "--size", $size, "-n", $clone_name]);
     }
+    $class->debugmsg($scfg, "debug", "Cloning of vm ${vmid} volume ${volname} ".safe_var_print("snapshot", $snap)."done");
     return $clone_name;
 }
 
@@ -762,7 +775,7 @@ sub vm_disk_list_volumes {
     my ($class, $scfg, $device) = @_;
 
     my @lvrecords;
-    my $cmd = ['lvs', '--separator', ':', '--noheadings', '--units', 'b', '--options', 'lv_name,lv_size,lv_attr', '--nosuffix', '--devices', $device];
+    my $cmd = ['lvs', '--separator', ':', '--noheadings', '--units', 'b', '--options', 'lv_name,lv_size,lv_attr,vg_name', '--nosuffix', '--devices', $device];
 
     my $lvsinfo;
     run_command($cmd, outfunc => sub {
@@ -770,12 +783,13 @@ sub vm_disk_list_volumes {
 
         $line = trim($line);
 
-        my ($lvname, $lvsize, $lvattr) = split(':', $line);
+        my ($lvname, $lvsize, $lvattr, $vgname) = split(':', $line);
 
         my $volinfo = {
             lvname => $lvname,
             lvsize => int($lvsize),
             lvattr => $lvattr,
+            vgname => $vgname,
         };
         push @lvrecords, $volinfo;
     });
@@ -1134,9 +1148,9 @@ sub remove_multipath_binding {
 }
 
 sub stage_multipath {
-    my ($class, $scfg, $scsiid, $target) = @_;
+    my ($class, $storeid, $scfg, $scsiid, $target) = @_;
 
-    my $targetpath  = $class->get_multipath_path($scfg, $target);
+    my $targetpath = $class->get_multipath_path($storeid, $scfg, $target);
 
     print "Staging ${target}\n" if get_debug($scfg);
 
@@ -1182,7 +1196,7 @@ sub unstage_multipath {
 
     # Multipath Block Device Link Path
     # Link to actual block device representing multipath interface
-    my $mbdlpath = $class->get_multipath_path($scfg, $target, 1);
+    my $mbdlpath = $class->get_multipath_path($storeid, $scfg, $target, 1);
     print "Unstage multipath for target ${target}\n" if get_debug($scfg);
 
     # Remove link to multipath file
@@ -1238,24 +1252,50 @@ sub get_expected_multipath_path {
 }
 
 sub get_multipath_path {
-    my ($class, $scfg, $target, $expected) = @_;
+    my ($class, $storeid, $scfg, $target, $expected) = @_;
 
-    if (defined $target && length $target) {
+    my $tpath = $class->get_target_path($scfg, $target, $storeid);
 
-        my $mpath = "/dev/mapper/${target}";
+    unless (defined($tpath)) {
+        print"Unable to identify device path for target ${target}\n" if get_debug($scfg);
+        return undef;
+    }
+    my $bdpath;
+    eval {run_command(["readlink", "-f", $tpath], outfunc => sub { $bdpath = shift; }); };
 
-        if (-b $mpath) {
-            print "Multipath block device is ${mpath}\n" if get_debug($scfg);
-            return $mpath;
-        }
+    $bdpath = clean_word($bdpath);
+    my $block_device_name = basename($bdpath);
+    if ($block_device_name =~ /^[a-z0-9]+$/) {
+        print "Block device ${bdpath} represents target ${target}\n" if get_debug($scfg);
+    } else {
+        die "Invalide block device name ${block_device_name} for iscsi target ${target}\n";
+    }
 
-        if (defined $expected && $expected) {
-            print "Multipath expected to be ${mpath}\n" if get_debug($scfg);
-            return $mpath;
-        }
+    my $mpathname = get_multipath_device_name($bdpath);
 
+    my $mpathpath = "/dev/mapper/${mpathname}";
+
+    if (-b $mpathpath) {
+        print "Multipath block device is ${mpathpath}\n" if get_debug($scfg);
+        return $mpathpath;
     }
     return undef;
+
+    #if (defined $target && length $target) {
+
+    #    my $mpath = "/dev/mapper/${target}";
+
+    #    if (-b $mpath) {
+    #        print "Multipath block device is ${mpath}\n" if get_debug($scfg);
+    #        return $mpath;
+    #    }
+
+    #    if (defined $expected && $expected) {
+    #        print "Multipath expected to be ${mpath}\n" if get_debug($scfg);
+    #        return $mpath;
+    #    }
+    #}
+    #return undef;
 }
 
 sub get_iscsi_addresses {
@@ -1454,7 +1494,7 @@ sub list_images {
         my $vols = $class->vm_disk_list_volumes($scfg, $device);
 
         foreach my $vol (@$vols) {
-            #print("Found ${vol}");
+
             my $volid = "$storeid:$vol->{lvname}";
 
             if ($vollist) {
@@ -1466,13 +1506,22 @@ sub list_images {
 
             push @$res, {
                 format => 'raw',
-                volid  => $volid,
-                size   => $vol->{lvsize},
-                vmid   => $vm,
+                volid  => "$volid",
+                size   => "$vol->{lvsize}",
+                vmid   => "$vm",
             };
         }
     }
-
+    print Dumper(\@$res);
+    my $none = [];
+    push @$none, {
+        format => 'raw',
+        volid  => "jdss-Pool-0-lvm:vm-101-disk-1",
+        size   => "1073741824",
+        vmid   => "101",
+    };
+    #print Dumper(\@$none);
+    #return $none;
     return $res;
 }
 
@@ -1566,17 +1615,28 @@ sub volume_size_info {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+    my ($vtype, $volume_name, $vmid, $basename, $basedvmid, $isBase, $format) = $class->parse_volname($volname);
 
-    if ('images' cmp "$vtype") {
-        return $class->SUPER::volume_size_info($scfg, $storeid, $volname, $timeout);
+    my $vmdiskname = $class->vm_disk_name($vmid, $isBase);
+
+    if ('images' eq "$vtype") {
+        my $device = $class->block_device_path($scfg, $vmdiskname, $storeid, undef, 0);
+
+        unless ( defined $device) {
+            $device = $class->vm_disk_iscsi_connect($storeid, $scfg, $vmdiskname, undef, undef);
+        }
+
+        my $vols = $class->vm_disk_list_volumes($scfg, $device);
+
+        foreach my $vol (@$vols) {
+            if ("${volname}" eq "$vol->{lvname}") {
+                my $size = "$vol->{lvsize}";
+                $size =~ s/[^[:ascii:]]//;
+                return $size;
+            }
+        }
     }
-
-    my $size = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "get", "-s"]);
-    chomp($size);
-    $size =~ s/[^[:ascii:]]//;
-
-    return $size;
+    return undef;
 }
 
 sub status {
@@ -1944,7 +2004,7 @@ sub vm_disk_connect {
         my $scsiid = $class->get_scsiid($scfg, $target, $storeid);
         print "Adding multipath\n" if get_debug($scfg);
         if (defined($scsiid)) {
-            my $multipathpath = $class->stage_multipath($scfg, $scsiid, $target);
+            my $multipathpath = $class->stage_multipath($storeid, $scfg, $scsiid, $target);
             run_command($updateudevadm, errmsg => "Failed to update udev devices after multipath creation");
             return $multipathpath;
         } else {
@@ -1997,6 +2057,7 @@ sub vm_disk_iscsi_connect {
 sub vm_disk_disconnect {
     my ( $class, $storeid, $scfg, $vmdiskname, $snapshot, $cache ) = @_;
     # virtual machine format is vm-id
+    $class->debugmsg($scfg, "debug", "Disconnect vm disk ${vmdiskname}".safe_var_print("snapshot", $snapshot)." start");
 
     my $target = $class->get_active_target_name(scfg => $scfg,
                                                 volname => $vmdiskname,
@@ -2016,6 +2077,7 @@ sub vm_disk_disconnect {
 sub vm_disk_disconnect_all {
     my ( $class, $storeid, $scfg, $vmdiskname, $cache ) = @_;
     # virtual machine format is vm-id
+    $class->debugmsg($scfg, "debug", "Disconnect all resources for vm disk ${vmdiskname} start");
 
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
@@ -2068,7 +2130,7 @@ sub vm_disk_remove {
 sub activate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
 
-    $class->debugmsg($scfg, "debug", "Activate volume ${volname}".safe_var_print("snapshot", $snapname)." start");
+    $class->debugmsg($scfg, "debug", "Activate volume ${volname} ".safe_var_print("snapshot", $snapname)." start");
 
     my ($vtype, $volume_name, $vmid, $basename, $basevmid, $isBase, $format) = $class->parse_volname($volname);
     # TODO: remove this print
@@ -2083,11 +2145,14 @@ sub activate_volume {
     my $vmvgname = $class->vm_vg_name($vmid, $snapname);
 
     if ($snapname) {
-        my $info = vm_disk_lvm_info($device);
+        my $info;
+        eval {  $info = vm_disk_vg_info($device, $vmvgname); };
 
-        my $cmd = ['/sbin/vgimportclone', '--basevgname', $vmvgname, '--devices', $device, '-y', $info->{pvname}];
-
-        run_command($cmd, errmsg => "Failed to import lvm clone of volume ${vmdiskname} from snapshot ${snapname}", outfunc => sub {});
+        if ($@) {
+            $info = vm_disk_lvm_info($device, $vmvgname);
+            my $cmd = ['/sbin/vgimportclone', '--basevgname', $vmvgname, '--devices', $device, '--nolocking', '-y', $info->{pvname}];
+            run_command($cmd, errmsg => "Failed to import lvm clone of volume ${vmdiskname} from snapshot ${snapname}", outfunc => sub {});
+        }
     }
 
     my $pvscan = ['/sbin/pvscan'];
@@ -2113,7 +2178,7 @@ sub activate_volume {
 sub deactivate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
 
-    $class->debugmsg($scfg, "debug", "Deactivate volume ".safe_var_print("snapshot", $snapname)."start");
+    $class->debugmsg($scfg, "debug", "Deactivate volume ${volname} ".safe_var_print("snapshot", $snapname)."start");
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
@@ -2127,7 +2192,7 @@ sub deactivate_volume {
     my $cmd = ['/sbin/lvchange', '-aln', $path];
     run_command($cmd, errmsg => "can't deactivate LV '$path'", noerr=>1);
 
-    $class->debugmsg($scfg, "debug", "Deactivate volume ".safe_var_print("snapshot", $snapname)."done");
+    $class->debugmsg($scfg, "debug", "Deactivate volume ${volname}".safe_var_print("snapshot", $snapname)."done");
 
     # We do not delete target on joviandss as this will lead to race condition
     # in case of migration
@@ -2146,8 +2211,9 @@ sub deactivate_volume {
 
     foreach my $vol (@$vols){
         #TODO: recheck this construction
-        if ($vol->{lv_attr}){
-            my $attr = $vol->{lv_attr};
+        if ($vol->{lvattr}){
+            print "Volume $vol->{lvname} $vol->{lvattr}\n" if get_debug($scfg);
+            my $attr = $vol->{lvattr};
             my $flag = substr($attr, 4, 1);
 
             if ($flag ne 'i') {
@@ -2196,7 +2262,7 @@ sub update_block_device {
         run_command($updateudevadm, errmsg => "Failed to update udev devices after iscsi target attachment");
 
         if (multipath_enabled($scfg)) {
-            my $multipath_device_path = get_multipath_path($target);
+            my $multipath_device_path = $class->get_multipath_path($storeid, $scfg, $target);
             eval{ run_command([$MULTIPATH, '-r', ${multipath_device_path}], outfunc => sub {}); };
         }
 
