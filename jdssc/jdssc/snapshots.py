@@ -51,6 +51,11 @@ class Snapshots():
         create.add_argument('snapshot_name',
                             type=str,
                             help='New snapshot name')
+        create.add_argument('--ignoreexists',
+                            dest='ignoreexists',
+                            action='store_true',
+                            default=False,
+                            help='Do not fail if snapshot with such name exists')
 
         parsers.add_parser('list')
         kargs, ukargs = parser.parse_known_args(args)
@@ -67,6 +72,8 @@ class Snapshots():
             self.jdss.create_snapshot(self.args['snapshot_name'],
                                       self.args['volume_name'])
         except jexc.JDSSSnapshotExistsException as exists:
+            if self.args['ignoreexists']:
+                return
             LOG.error(exists)
             exit(1)
         except jexc.JDSSException as err:
@@ -78,6 +85,6 @@ class Snapshots():
         volume = self.args['volume_name']
 
         data = self.jdss.list_snapshots(volume)
-        for v in data:
-            line = "{}\n".format(v['name'])
+        for s in data:
+            line = "{}\n".format(s['name'])
             sys.stdout.write(line)

@@ -216,7 +216,7 @@ class Volumes():
 
         vmid_re = None
         if self.args['vmid']:
-            vmid_re = re.compile(r'^(vm|base)-[0-9]+-')
+            vmid_re = re.compile(r'^(vm|base)-[0-9]+')
 
         for v in data:
 

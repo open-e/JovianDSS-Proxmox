@@ -601,25 +601,55 @@ sub get_subdir {
 sub create_base {
     my ( $class, $storeid, $scfg, $volname ) = @_;
 
-    my ($vtype, $name, $vmid, $basename, $basevmid, $isBase) =
-        $class->parse_volname($volname);
+    my ($vtype, $name, $vmid, $basename, $basevmid, $isBase) = $class->parse_volname($volname);
 
     die "create_base is not possible with base image\n" if $isBase;
 
-    $class->deactivate_volume($storeid, $scfg, $volname, undef, undef);
+    my $newvolname = $name;
 
-    my $config = $scfg->{config};
+    $newvolname =~ s/^vm-/base-/;
 
-    my $pool = $scfg->{pool_name};
+    $class->rename_volume($scfg, $storeid, $volname, $vmid, $newvolname);
+    return $newvolname;
 
-    my $newnameprefix = join '', 'base-', $vmid, '-disk-';
+}
 
-    my $newname = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "getfreename", "--prefix", $newnameprefix]);
-    chomp($newname);
-    $newname =~ s/[^[:ascii:]]//;
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "rename", $newname]);
+sub rename_volume {
+    my ($class, $scfg, $storeid, $source_volname, $target_vmid, $target_volname) = @_;
 
-    return $newname;
+    my ($source_vtype,
+        $source_volume_name,
+        $source_vmid,
+        $source_basename,
+        $source_basedvmid,
+        $source_isBase,
+        $source_format) = $class->parse_volname($source_volname);
+
+    if ("${source_vmid}" ne "${target_vmid}") {
+        die "Pluging does not allow volume movement to other VM";
+    }
+
+    $target_volname = $class->find_free_diskname($storeid, $scfg, $source_vmid, $source_format) if !$target_volname;
+
+    my $source_vmdiskname = $class->vm_disk_name($source_vmid, 0);
+
+    my $device = $class->block_device_path($scfg, $source_vmdiskname, $storeid, undef, 0);
+
+    my $vols =  $class->vm_disk_list_volumes($scfg, $device);
+
+    foreach my $vol (@$vols){
+        if ($vol->{lvname} eq $target_volname) {
+            die "Volume with name ${target_volname} already exists\n";
+        }
+    }
+
+    my $source_vmvgname = $class->vm_vg_name($source_vmid);
+
+    run_command(
+        ['/sbin/lvrename', $source_vmvgname, $source_volname, $target_volname],
+        errmsg => "Unable to rename '${source_volname}' to '${target_volname}' on vg '${source_vmvgname}'\n",
+    );
+    return "${storeid}:${target_volname}";
 }
 
 sub clone_image {
@@ -788,7 +818,7 @@ sub vm_disk_list_volumes {
 sub lvm_create_volume {
     my ($class, $scfg, $vgname, $volname, $size) = @_;
 
-    my $lv_cmd = ['/sbin/lvcreate', '-aly', '-Wy', '--yes', '--size', "${size}", '--name', $volname, $vgname];
+    my $lv_cmd = ['/sbin/lvcreate', '-aly', '-Wy', '--yes', '--size', "${size}b", '--name', $volname, $vgname];
     $class->debugmsg($scfg, "debug", "Allocate volume ${volname} at volume group ${vgname}");
     run_command($lv_cmd, errmsg => "lvcreate '$vgname/$volname' error");
 }
@@ -895,6 +925,56 @@ sub vm_disk_extend_to {
     return ;
 }
 
+sub alloc_image_routine {
+    my ($class, $storeid, $scfg, $vmid, $volname, $size_bytes) = @_;
+
+    my $config = get_config($scfg);
+    my $pool = get_pool($scfg);
+
+    my $vmdiskname = $class->vm_disk_name($vmid, 0);
+    my $vmvgname = $class->vm_vg_name($vmid);
+    my $vmdiskexists = $class->vm_disk_exists($scfg, $vmid, 0);
+
+    if ($vmdiskexists == 0) {
+        # we create additional space for volume
+        # In order to provide space for lvm
+        # TODO: check if difference in size of zvol and pve is more then 4M
+        # And provide addition resize options
+        my $extsize = $size_bytes + 4 * 1024 * 1024;
+        $class->debugmsg($scfg, "debug", "Creating vm disk  ${vmdiskname} of size ${extsize}\n");
+
+        $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "--size", "${extsize}", "-n", $vmdiskname]);
+
+        my $device = $class->vm_disk_connect($storeid, $scfg, $vmdiskname, undef, undef);
+        $class->vm_disk_create_volume_group($scfg, $device, $vmvgname);
+    } else {
+        my $device = $class->vm_disk_connect($storeid, $scfg, $vmdiskname, undef, undef);
+
+        my $vginfo = vm_disk_vg_info($device, $vmvgname);
+
+        my $vmdisksize = $class->vm_disk_size($scfg, $vmdiskname);
+
+        # check if zvol size is not different from LVM size
+        # that should handle cases of failure during volume resizing
+        # when lvm data was not updated properly
+        if ( abs($vmdisksize - $vginfo->{vgsize}) <= 0.01 * abs($vmdisksize) ) {
+            $class->vm_disk_lvm_update($storeid, $scfg, $vmdiskname, $device, $vmdisksize);
+            $vginfo = vm_disk_vg_info($device, $vmvgname);
+        }
+
+        if ($vginfo->{vgfree} < $size_bytes) {
+            my $newvolsize = 0;
+            $newvolsize = $size_bytes - $vginfo->{vgfree} + $vmdisksize;
+            $class->vm_disk_extend_to($storeid, $scfg, $vmdiskname, $device, $newvolsize);
+        }
+    }
+
+    $class->lvm_create_volume($scfg, $vmvgname, $volname, $size_bytes);
+    $class->debugmsg($scfg, "debug", "Creating lvm disk  ${volname} of size ${size_bytes} Bytes done\n");
+
+    return
+}
+
 sub alloc_image {
     my ( $class, $storeid, $scfg, $vmid, $fmt, $volname, $size ) = @_;
 
@@ -909,6 +989,7 @@ sub alloc_image {
 
     # TODO: remove unecessary print
 
+    my $isBase;
     #my $volname = $name;
     if ($volname) {
         my ($vtype, $volume_name, $vmid_from_volname, $basename, $basedvmid, $isBase, $format) = $class->parse_volname($volname);
@@ -927,46 +1008,11 @@ sub alloc_image {
 
     if ('raw' eq "${fmt}") {
 
-        my $vmdiskname = $class->vm_disk_name($vmid, 0);
-        my $vmvgname = $class->vm_vg_name($vmid);
-        my $vmdiskexists = $class->vm_disk_exists($scfg, $vmid, 0);
-
-        if ($vmdiskexists == 0) {
-            # we create additional space for volume
-            # In order to provide space for lvm
-            # TODO: check if difference in size of zvol and pve is more then 4M
-            # And provide addition resize options
-            my $extsize = $size_bytes + 4 * 1024 * 1024;
-            $class->debugmsg($scfg, "debug", "Creating vm disk  ${vmdiskname} of size ${extsize}\n");
-
-            $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "--size", "${extsize}", "-n", $vmdiskname]);
-
-            my $device = $class->vm_disk_connect($storeid, $scfg, $vmdiskname, undef, undef);
-            $class->vm_disk_create_volume_group($scfg, $device, $vmvgname);
-        } else {
-            my $device = $class->vm_disk_connect($storeid, $scfg, $vmdiskname, undef, undef);
-
-            my $vginfo = vm_disk_vg_info($device, $vmvgname);
-
-            my $vmdisksize = $class->vm_disk_size($scfg, $vmdiskname);
-
-            # check if zvol size is not different from LVM size
-            # that should handle cases of failure during volume resizing
-            # when lvm data was not updated properly
-            if ( abs($vmdisksize - $vginfo->{vgsize}) <= 0.01 * abs($vmdisksize) ) {
-                $class->vm_disk_lvm_update($storeid, $scfg, $vmdiskname, $device, $vmdisksize);
-                $vginfo = vm_disk_vg_info($device, $vmvgname);
-            }
-
-            if ($vginfo->{vgfree} < $size) {
-                my $newvolsize = 0;
-                $newvolsize = $size_bytes - $vginfo->{vgfree} + $vmdisksize;
-                $class->vm_disk_extend_to($storeid, $scfg, $vmdiskname, $device, $newvolsize);
-            }
+        eval {$class->alloc_image_routine($storeid, $scfg, $vmid, $volname, $size_bytes);};
+        if (my $err = $@) {
+            $class->free_image($storeid, $scfg, $volname, $isBase, $fmt);
+            die $err;
         }
-
-        $class->lvm_create_volume($scfg, $vmvgname, $volname, $size_bytes);
-        $class->debugmsg($scfg, "debug", "Creating lvm disk  ${volname} of size ${size_bytes} Bytes done\n");
 
     } else {
         die "Storage does not support ${fmt} format\n";
@@ -992,6 +1038,9 @@ sub free_image {
     my $vmdiskname = $class->vm_disk_name($vmid, 0);
     my $device = $class->block_device_path($scfg, $vmdiskname, $storeid, undef, 0);
 
+    # TODO: do not fail if lvm volume do not exists
+    # that is important for alloc_image that uses free_image to clean resources
+    # in case of volume creation failure
     $class->lvm_remove_volume($scfg, $device, $vmvgname, $volname);
 
     my $vols = $class->vm_disk_list_volumes($scfg, $device);
@@ -1520,7 +1569,14 @@ sub volume_snapshot_rollback {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "rollback", "do"]);
+    my $vmdiskname = $class->vm_disk_name($vmid, 0);
+
+    $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $vmdiskname, "snapshot", $snap, "rollback", "do"]);
+
+    $class->update_block_device($storeid, $scfg, $vmdiskname, undef);
+
+    $class->debugmsg($scfg, "debug", "Rollback of zvol ${vmdiskname} to snapshot ${snap} done\n");
+
 }
 
 sub volume_rollback_is_possible {
@@ -1531,7 +1587,9 @@ sub volume_rollback_is_possible {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-    my $res = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "rollback", "check"]);
+    my $vmdiskname = $class->vm_disk_name($vmid, 0);
+
+    my $res = $class->joviandss_cmd(["-c", $config, "pool", $pool, "volume", $vmdiskname, "snapshot", $snap, "rollback", "check"]);
     if ( length($res) > 1) {
         die "Unable to rollback ". $volname . " to snapshot " . $snap . " because the resources(s) " . $res . " will be lost in the process. Please remove the dependent resources before continuing.\n"
     }
