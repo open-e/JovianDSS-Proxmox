@@ -500,32 +500,21 @@ sub get_multipath_device_name {
 
     my $data = decode_json($json_out);
 
-    print($json_out);
     my @mpath_names;
     for my $dev (@{ $data->{blockdevices} }) {
         if (exists $dev->{children} && ref($dev->{children}) eq 'ARRAY') {
-            print("Array exists.\n");
             for my $child (@{ $dev->{children} }) {
                 if (defined $child->{type} && $child->{type} eq 'mpath') {
-                    print("Add children $child->{name}.\n");
-
                     push @mpath_names, $child->{name};
                 }
             }
-        } else {
-            print "Not array $dev->{children}\n";
         }
     }
-    print("Mpath names 0 $mpath_names[0]\n");
-    print("Mpath names 1 $mpath_names[1]\n");
 
     # Return the proper result based on the number of multipath devices found.
     if (@mpath_names == 1) {
-        print("Returnign $mpath_names[0]\n");
         return $mpath_names[0];
     } elsif (@mpath_names == 0) {
-        print("Nothing to return\n");
-        print("Mpath names 0 $mpath_names[0]\n");
         return undef;
     } else {
         die "More than one multipath device found: " . join(", ", @mpath_names);
@@ -535,14 +524,14 @@ sub get_multipath_device_name {
 sub block_device_path {
     my ($class, $scfg, $volname, $storeid, $snapname, $content_volume_flag) = @_;
 
-    print"Getting path of volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
+    #print"Getting path of volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
 
     my $target = $class->get_target_name($scfg, $volname, $snapname, $content_volume_flag);
 
     my $tpath = $class->get_target_path($scfg, $target, $storeid);
 
     unless (defined($tpath)) {
-        print"Unable to identify device path for ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
+        #print"Unable to identify device path for ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
         return undef;
     }
     my $bdpath;
@@ -550,9 +539,7 @@ sub block_device_path {
 
     $bdpath = clean_word($bdpath);
     my $block_device_name = basename($bdpath);
-    if ($block_device_name =~ /^[a-z0-9]+$/) {
-        print "Block device ${bdpath} represents target ${target}\n" if get_debug($scfg);
-    } else {
+    unless ($block_device_name =~ /^[a-z0-9]+$/) {
         die "Invalide block device name ${block_device_name} for iscsi target ${target}\n";
     }
 
@@ -562,7 +549,7 @@ sub block_device_path {
         $tpath = $class->get_multipath_path($storeid, $scfg, $target);
     }
 
-    print"Block device path is ${tpath} of volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
+    #print"Block device path is ${tpath} of volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
 
     return $tpath;
 }
@@ -699,7 +686,9 @@ sub vm_disk_lvm_update {
 
     my $info = vm_disk_lvm_info($device);
 
-    my $cmd = ['pvresize', '--devices', $device, '--setphysicalvolumesize', "${vmdisksize}b",  $info->{pvname}];
+    #print "VM disk ${vmdiskname} pv $info->{pvname} update to size ${vmdisksize}\n" if get_debug($scfg);
+
+    my $cmd = ['pvresize', '-y', '--devices', $device, '--setphysicalvolumesize', "${vmdisksize}b",  $info->{pvname}];
     run_command($cmd, outfunc => sub {});
 }
 
@@ -799,7 +788,7 @@ sub vm_disk_list_volumes {
 sub lvm_create_volume {
     my ($class, $scfg, $vgname, $volname, $size) = @_;
 
-    my $lv_cmd = ['/sbin/lvcreate', '-aly', '-Wy', '--yes', '--size', "${size}B", '--name', $volname, $vgname];
+    my $lv_cmd = ['/sbin/lvcreate', '-aly', '-Wy', '--yes', '--size', "${size}", '--name', $volname, $vgname];
     $class->debugmsg($scfg, "debug", "Allocate volume ${volname} at volume group ${vgname}");
     run_command($lv_cmd, errmsg => "lvcreate '$vgname/$volname' error");
 }
@@ -912,26 +901,28 @@ sub alloc_image {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
+    unless ($size =~ m/\d$/) {
+        die "Volume size should be strictly numerical, ${size} characters are not supported\n";
+    }
     # size is provided in kibibytes
-    $size = $size * 1024;
+    my $size_bytes = $size * 1024;
 
     # TODO: remove unecessary print
 
     #my $volname = $name;
     if ($volname) {
-        my ($vtype, $volume_name, undef, $basename, $basedvmid, $isBase, $format) = $class->parse_volname($volname);
-        print "vtype ${vtype} volume name ${volume_name} vmid ${vmid} basename ${basename} isbase ${isBase} format ${format}\n" if get_debug($scfg);
-
-        # VM id shoudl be defined, we use it for linking given volume with Jovian zvol
-        # activation and deletion will not be possible without have vmid
-        if (!defined($vmid) || $vmid !~ /^\d+$/) {
+        my ($vtype, $volume_name, $vmid_from_volname, $basename, $basedvmid, $isBase, $format) = $class->parse_volname($volname);
+        if (!defined($vmid_from_volname) || $vmid_from_volname !~ /^\d+$/) {
             die "Unable to identify vm id from volume name ${volname}\n";
         }
+        if ("${vmid_from_volname}" ne "${vmid}") {
+            die "VM id in volume name ${vmid_from_volname} is different from requested ${vmid}\n";
+        }
     } else {
-        print "Volname is not defined\n" if get_debug($scfg);
-        $volname = $class->find_free_diskname($storeid, $scfg, $vmid, $fmt) if !$volname;
+        #print "Volname is not defined\n" if get_debug($scfg);
+        $volname = $class->find_free_diskname($storeid, $scfg, $vmid, $fmt);
         my ($vtype, $volume_name, undef, $basename, $basedvmid, $isBase, $format) = $class->parse_volname($volname);
-        print "vtype ${vtype} volume name ${volume_name} vmid ${vmid} basename ${basename} isbase ${isBase} format ${format}\n" if get_debug($scfg);
+        #print "vtype ${vtype} volume name ${volume_name} vmid ${vmid} basename ${basename} isbase ${isBase} format ${format}\n" if get_debug($scfg);
     }
 
     if ('raw' eq "${fmt}") {
@@ -940,50 +931,43 @@ sub alloc_image {
         my $vmvgname = $class->vm_vg_name($vmid);
         my $vmdiskexists = $class->vm_disk_exists($scfg, $vmid, 0);
 
-        print "VM disk check: ${vmdiskexists}\n" if get_debug($scfg);
-
         if ($vmdiskexists == 0) {
             # we create additional space for volume
             # In order to provide space for lvm
             # TODO: check if difference in size of zvol and pve is more then 4M
             # And provide addition resize options
-            my $extsize = $size + 4 * 1024 * 1024;
-            $class->debugmsg($scfg, "debug", "Creating vm disk  ${vmdiskname}\n");
+            my $extsize = $size_bytes + 4 * 1024 * 1024;
+            $class->debugmsg($scfg, "debug", "Creating vm disk  ${vmdiskname} of size ${extsize}\n");
 
             $class->joviandss_cmd(["-c", $config, "pool", $pool, "volumes", "create", "--size", "${extsize}", "-n", $vmdiskname]);
 
             my $device = $class->vm_disk_connect($storeid, $scfg, $vmdiskname, undef, undef);
-            print "VM disk ${vmdiskname} is connected to ${device}\n" if get_debug($scfg);
             $class->vm_disk_create_volume_group($scfg, $device, $vmvgname);
         } else {
             my $device = $class->vm_disk_connect($storeid, $scfg, $vmdiskname, undef, undef);
 
-            print "VM disk ${vmdiskname} is connected to ${device}\n" if get_debug($scfg);
-
             my $vginfo = vm_disk_vg_info($device, $vmvgname);
 
-            # get zvol size
             my $vmdisksize = $class->vm_disk_size($scfg, $vmdiskname);
-
-            print("jdss size ${vmdisksize} vgs " . $vginfo->{vgsize} . " vgs free size " . $vginfo->{vgfree} . "\n") if get_debug($scfg);
 
             # check if zvol size is not different from LVM size
             # that should handle cases of failure during volume resizing
             # when lvm data was not updated properly
             if ( abs($vmdisksize - $vginfo->{vgsize}) <= 0.01 * abs($vmdisksize) ) {
-                print("vmdisk size ${vmdisksize} vgs " . $vginfo->{vgsize} . "vgs free size " . $vginfo->{vgfree} . "\n") if get_debug($scfg);
                 $class->vm_disk_lvm_update($storeid, $scfg, $vmdiskname, $device, $vmdisksize);
                 $vginfo = vm_disk_vg_info($device, $vmvgname);
             }
 
             if ($vginfo->{vgfree} < $size) {
                 my $newvolsize = 0;
-                $newvolsize = $size - $vginfo->{vgfree} + $vmdisksize;
+                $newvolsize = $size_bytes - $vginfo->{vgfree} + $vmdisksize;
                 $class->vm_disk_extend_to($storeid, $scfg, $vmdiskname, $device, $newvolsize);
             }
         }
 
-        $class->lvm_create_volume($scfg, $vmvgname, $volname, $size);
+        $class->lvm_create_volume($scfg, $vmvgname, $volname, $size_bytes);
+        $class->debugmsg($scfg, "debug", "Creating lvm disk  ${volname} of size ${size_bytes} Bytes done\n");
+
     } else {
         die "Storage does not support ${fmt} format\n";
     }
@@ -1265,9 +1249,7 @@ sub get_multipath_path {
 
     $bdpath = clean_word($bdpath);
     my $block_device_name = basename($bdpath);
-    if ($block_device_name =~ /^[a-z0-9]+$/) {
-        print "Block device ${bdpath} represents target ${target}\n" if get_debug($scfg);
-    } else {
+    unless ($block_device_name =~ /^[a-z0-9]+$/) {
         die "Invalide block device name ${block_device_name} for iscsi target ${target}\n";
     }
 
@@ -1276,7 +1258,7 @@ sub get_multipath_path {
     my $mpathpath = "/dev/mapper/${mpathname}";
 
     if (-b $mpathpath) {
-        print "Multipath block device is ${mpathpath}\n" if get_debug($scfg);
+        #print "Multipath block device is ${mpathpath}\n" if get_debug($scfg);
         return $mpathpath;
     }
     return undef;
@@ -1312,7 +1294,6 @@ sub get_iscsi_addresses {
     my @hosts = ();
     run_command($getaddressesscmd, outfunc => sub {
         my $h = shift;
-        print "Storage iscsi address ${h}\n" if get_debug($scfg);
 
         push @hosts, $h;
     });
@@ -1484,13 +1465,10 @@ sub list_images {
 
         my $device = $class->block_device_path($scfg, $vmdiskname, $storeid, undef, 0);
 
-        print("Block device path ${device}\n");
-
         unless ( defined $device) {
             $device = $class->vm_disk_iscsi_connect($storeid, $scfg, $vmdiskname, undef, $cache);
         }
 
-        print("List lv for device ${device}");
         my $vols = $class->vm_disk_list_volumes($scfg, $device);
 
         foreach my $vol (@$vols) {
@@ -1512,16 +1490,6 @@ sub list_images {
             };
         }
     }
-    print Dumper(\@$res);
-    my $none = [];
-    push @$none, {
-        format => 'raw',
-        volid  => "jdss-Pool-0-lvm:vm-101-disk-1",
-        size   => "1073741824",
-        vmid   => "101",
-    };
-    #print Dumper(\@$none);
-    #return $none;
     return $res;
 }
 
@@ -2246,9 +2214,9 @@ sub update_block_device {
 
         $bdpath = clean_word($bdpath);
         my $block_device_name = basename($bdpath);
-        if ($block_device_name =~ /^[a-z0-9]+$/) {
-            print "Block device name ${block_device_name} for target ${target}\n" if get_debug($scfg);
-        } else {
+        unless ($block_device_name =~ /^[a-z0-9]+$/) {
+            #    print "Block device name ${block_device_name} for target ${target}\n" if get_debug($scfg);
+            #} else {
             die "Invalide block device name ${block_device_name} for iscsi target ${target}\n";
         }
         my $rescan_file = "/sys/block/${block_device_name}/device/rescan";
@@ -2302,11 +2270,45 @@ sub volume_resize {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    $class->debugmsg($scfg, "debug", "Resize volume ${volname} to size ${size}");
+    my ($vtype, $volume_name, $vmid, $basename, $basedvmid, $isBase, $format) = $class->parse_volname($volname);
 
-    $class->joviandss_cmd(["-c", $config, "pool", "${pool}", "volume", "${volname}", "resize", "${size}"]);
+    my $vmdiskname = $class->vm_disk_name($vmid, 0);
+    my $vmvgname = $class->vm_vg_name($vmid);
 
-    $class->update_block_device($storeid, $scfg, $volname, $size);
+    my $device = $class->vm_disk_connect($storeid, $scfg, $vmdiskname, undef, undef);
+
+    #print "VM disk ${vmdiskname} is connected to ${device}\n" if get_debug($scfg);
+
+    my $vginfo = vm_disk_vg_info($device, $vmvgname);
+
+    # get zvol size
+    my $vmdisksize = $class->vm_disk_size($scfg, $vmdiskname);
+
+    #print("jdss size ${vmdisksize} vgs " . $vginfo->{vgsize} . " vgs free size " . $vginfo->{vgfree} . "\n") if get_debug($scfg);
+
+    # check if zvol size is not different from LVM size
+    # that should handle cases of failure during volume resizing
+    # when lvm data was not updated properly
+    if ( abs($vmdisksize - $vginfo->{vgsize}) <= 0.01 * abs($vmdisksize) ) {
+        print("vmdisk size ${vmdisksize} vgs " . $vginfo->{vgsize} . "vgs free size " . $vginfo->{vgfree} . "\n") if get_debug($scfg);
+        $class->vm_disk_lvm_update($storeid, $scfg, $vmdiskname, $device, $vmdisksize);
+        $vginfo = vm_disk_vg_info($device, $vmvgname);
+    }
+
+    if ($vginfo->{vgfree} < $size) {
+        my $newvolsize = 0;
+        $newvolsize = $size - $vginfo->{vgfree} + $vmdisksize;
+        $class->vm_disk_extend_to($storeid, $scfg, $vmdiskname, $device, $newvolsize);
+        $class->vm_disk_lvm_update($storeid, $scfg, $vmdiskname, $device, $vmdisksize);
+    }
+
+    my $path = $class->path($scfg, $volname);
+
+    my $lvextendcmd = ['/sbin/lvextend', '-L', "${size}B", $path];
+
+    run_command($lvextendcmd, errmsg => "Unable to extend volume ${volname} to size ${size}B");
+
+    $class->debugmsg($scfg, "debug", "Resize volume ${volname} to size ${size} done");
 
     return 1;
 }
