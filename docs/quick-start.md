@@ -49,7 +49,7 @@ Add storage pool record to `storage.cfg`. Make sure that option `pool_name` stor
 `/etc/pve/storage.cfg` 
 
 ```
-joviandss: jdss-Pool-0-nfs
+joviandss-lvm: jdss-Pool-0-nfs
           pool_name Pool-0
           config /etc/pve/jdss-170.yaml
           content images,rootdir
