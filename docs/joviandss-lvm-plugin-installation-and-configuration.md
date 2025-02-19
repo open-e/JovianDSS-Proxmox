@@ -110,7 +110,7 @@ Make sure that variables `pool_name`, `path` and `content_volume_name` are diffe
 Here is an example of presenting 2 pools `Pool-0` and `Pool-1` to `Proxmox` as 2 independent storage's `jdss-Pool-0` and `jdss-Pool-1` using `joviandss` plugin.
 
 ```
-joviandss: jdss-Pool-0
+joviandss-lvm: jdss-Pool-0
         pool_name Pool-0
         config /etc/pve/jdss-Pool-0.lvm.yaml
         content images,rootdir
@@ -119,7 +119,7 @@ joviandss: jdss-Pool-0
         debug 0
         multipath 0
 
-joviandss: jdss-Pool-1
+joviandss-lvm: jdss-Pool-1
         pool_name Pool-1
         config /etc/pve/jdss-Pool-1.lvm.yaml
         content images,rootdir
@@ -177,7 +177,7 @@ For instance if user wants to enable multipathing on for storage `jdss-Pool-0` d
 
 `/etc/pve/storage.cfg`
 ```
-joviandss: jdss-Pool-0
+joviandss-lvm: jdss-Pool-0
         pool_name Pool-0
         config /etc/pve/jdss-Pool-0.yaml
         content images,rootdir
