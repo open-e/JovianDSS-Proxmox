@@ -508,17 +508,20 @@ sub path {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
+    my $path;
+
     if ($vtype eq "images") {
         my $target = $class->get_target_name($scfg, $volname, $snapname, 0);
-
         if (multipath_enabled($scfg)) {
-            return $class->get_multipath_path($scfg, $target, 1);
+            $path = $class->get_multipath_path($scfg, $target, 1);
         } else {
-            return $class->get_target_path($scfg, $target, $storeid, 1);
+            $path = $class->get_target_path($scfg, $target, $storeid, 1);
         }
+    } else {
+        $path = $class->filesystem_path($scfg, $volname, $snapname);
     }
-
-    return $class->filesystem_path($scfg, $volname, $snapname);
+    # $class->debugmsg($scfg, "debug", "Volume ${volname} ".safe_var_print("snapshot", $snapname)." have path ${path}");
+    return $path;
 }
 
 my $vtype_subdirs = {
@@ -697,7 +700,7 @@ sub stage_target {
 sub unstage_target {
     my ($class, $scfg, $storeid, $target) = @_;
 
-    print "Unstaging target ${target}\n" if get_debug($scfg); 
+    print "Unstaging target ${target}\n" if get_debug($scfg);
     my @hosts = $class->get_iscsi_addresses($scfg, $storeid, 1);
 
     foreach my $host (@hosts) {
@@ -1258,12 +1261,6 @@ sub ensure_content_volume_nfs {
 
     if ($@) {
         $class->joviandss_cmd(['-c', $config, 'pool', $pool, 'shares', 'create', '-d', '-q', "${content_volume_size}G", '-n', $content_volume_name]);
-        #eval { $class->joviandss_cmd(['-c', $config, 'pool', $pool, 'shares', 'create', '-d', '-q', "${content_volume_size}G", '-n', $content_volume_name]); };
-        # if ($@) {
-        #    my $err_msg = $@;
-        #    $class->deactivate_storage($storeid, $scfg, $cache);
-        #    die "Unable to create content volume ${content_volume_name} because of ${err_msg}\n";
-        #}
     } else {
         # TODO: check for volume size on the level of OS
         # If volume needs resize do it with jdssc
@@ -1383,7 +1380,7 @@ sub ensure_content_volume {
     print "Checking file system on device ${bdpath}\n";
     eval { run_command(["/usr/sbin/fsck", "-n", $bdpath], outfunc => sub {}) };
     if ($@) {
-            die "Unable to identify file system type for content storage, if this is the first run, format ${bdpath} to the file system of your choice.\n";
+        die "Unable to identify file system type for content storage, if this is the first run, format ${bdpath} to the file system of your choice.\n";
     }
     if ($content_volume_size > $content_volume_size_current) {
         eval { run_command(["/usr/sbin/resize2fs", $bdpath], outfunc => sub {})};

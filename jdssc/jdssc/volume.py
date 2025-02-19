@@ -169,11 +169,11 @@ class Volume():
                        "Please make sure that addresses are correct and "
                        "REST API is enabled for JovianDSS") %
                       {'interfaces': ', '.join(jerr.interfaces)})
-            exit(1)
+            exit(jerr.errcode)
 
         except jexc.JDSSException as err:
             LOG.error(err.message)
-            exit(1)
+            exit(err.errcode)
 
     def delete(self):
         res = None

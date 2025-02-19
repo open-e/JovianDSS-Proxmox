@@ -1,7 +1,31 @@
-This guide provides brief description on how to quickly setup JovianDSS Proxmox plugin on a single proxmox server.
+This guide provides brief description on how to quickly setup JovianDSS-LVM Proxmox plugin on a single proxmox server.
 
 Please note that since version `v0.9.9-1` plugin is enforcing usage of VIP addresses to transfer iscsi data.
 User have to assign VIP addresses to JovianDSS Pool in order to make plugin work.
+
+
+
+## Overview
+
+Since version 0.9.9-3 multiple plugins are shipped under single debian package.
+Currently there are `joviandss` and `joviandss-lvm` plugins.
+Here is a table that provides comparison of plugin functionality:
+| Feature                     | Original JovianDSS Plugin        | JovianDSS-LVM Plugin                                                |
+|----------------------------|-----------------------------------|---------------------------------------------------------------------|
+| Srotage of iso, vztmpl, backup files| +                         | - |
+| Srotage of images, rootdit | +                         | + |
+| Image/rootdir to JovianDSS volume relation | each image and rootdir file are stored on dedicated volume | there is a single volume for virtual machine that stores all images/rootdir files related to it |
+| Snapshots                   | Each zfs volume have its own snapshot | All volumes have single snapshot |
+| Rollback                    | Rollback can be done to the latest snapshot only | Rollback can be done to the latest snapshot only |
+| Clonning                    | +                                 | + |
+| Volume movement from one vm to another | +                      | - |
+| Volume resizing             | +                                 | + |
+
+Core difference between them is usage of LVM on top of JovianDSS volumes for `joviandss-lvm` plugin.
+`joviandss` plugin is an old plugin that remains the same and get [configured the same way](https://github.com/open-e/JovianDSS-Proxmox/docs/plugin-installation-and-configuration.md)
+`joviandss-lvm` plugin utilises different aproach to store volumes related to virtual machine.
+Instead if creation of single volume for each proxmox viartual disk, it creates single JovianDSS Zvol for virtula machine or container and allocates virtual disks on this new zvol using LVM.
+This allows user to create 'atomic' snapshots of all disks at once, yet it comes with the price of impossibility to move proxmox virtual disks between machines as linkage between virtual disk and its snapshot will be lost.
 
 ## Installing plugin
 
@@ -11,6 +35,12 @@ Use `apt` package manager to install package.
 ```bash
 apt install ./open-e-joviandss-proxmox-plugin_0.9.9-1.deb
 ```
+
+This is short a guide on 'joviandss-lvm` plugin installation.
+
+Please note that extended guide for `joviandss-lvm` can be found [here](https://github.com/open-e/JovianDSS-Proxmox/docs/joviandss-lvm-plugin-installation-and-configuration.md)
+
+Configuration guide for original `joviandss` plugin can be found [here](https://github.com/open-e/JovianDSS-Proxmox/docs/plugin-installation-and-configuration.md)
 
 ## Configuring plugin
 
@@ -22,11 +52,7 @@ Add storage pool record to `storage.cfg`. Make sure that option `pool_name` stor
 joviandss: jdss-Pool-0-nfs
           pool_name Pool-0
           config /etc/pve/jdss-170.yaml
-          content iso,backup,images,rootdir,vztmpl
-          content_volume_name proxmox-content-jdss-pool-0-nfs
-          content_volume_size 100
-          # option is available since v0.9.9
-          content_volume_type nfs
+          content images,rootdir
           path /mnt/jdss-Pool-0-nfs
           shared 1
 ```

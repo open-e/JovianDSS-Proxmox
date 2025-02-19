@@ -33,6 +33,7 @@ class JDSSRESTException(JDSSException):
                 "reason": reason})
         self.message = msg
         super().__init__(self.message)
+        self.errcode = 2
 
 
 class JDSSRESTProxyException(JDSSException):
@@ -46,6 +47,7 @@ class JDSSRESTProxyException(JDSSException):
                 "reason": reason})
         self.message = msg
         super().__init__(self.message)
+        self.errcode = 3
 
 
 class JDSSCommunicationFailure(JDSSException):
@@ -59,43 +61,51 @@ class JDSSCommunicationFailure(JDSSException):
                                  "request": request})
         self.message = msg
         super().__init__(self.message)
+        self.errcode = 4
 
 
 class JDSSOutdated(JDSSException):
     """Outdated"""
 
     def __init__(self, feature):
-        self.errcode = 5
+
         msg = (("Feature %(feature)s is not supported in current version of "
                "JovianDSS") % {"feature": feature})
 
         self.message = msg
         super().__init__(self.message)
+        self.errcode = 5
 
 
 class JDSSVIPNotFoundException(JDSSException):
     """General JovianDSS error"""
 
     def __init__(self, vip_ips):
+
         self.message = "Unable to identify VIP name for ip's: %(vip_ips)s" % {
             'vip_ips': ','.join(vip_ips)}
         super().__init__(self.message)
+        self.errcode = 6
 
 
 class JDSSResourceNotFoundException(JDSSException):
     """Resource does not exist"""
 
     def __init__(self, res):
+
         self.message = "JDSS resource %(res)s DNE." % {'res': res}
         super().__init__(self.message)
+        self.errcode = 7
 
 
 class JDSSTargetNotFoundException(JDSSResourceNotFoundException):
     """Target does not exist"""
 
     def __init__(self, target):
+
         self.message = "target %(target)s" % {'target': target}
         super().__init__(self.message)
+        self.errcode = 8
 
 
 class JDSSVolumeNotFoundException(JDSSResourceNotFoundException):
