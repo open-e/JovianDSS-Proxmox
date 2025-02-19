@@ -27,6 +27,7 @@ class JDSSRESTException(JDSSException):
     """Unknown communication error"""
 
     def __init__(self, request, reason):
+        self.errcode = 2
         msg = ("JDSS REST request %(request)s faild: %(reason)s." %
                {"request": request,
                 "reason": reason})
@@ -39,6 +40,7 @@ class JDSSRESTProxyException(JDSSException):
     """Connection with host failed"""
 
     def __init__(self, host, reason):
+        self.errcode = 3
 
         msg = ("JDSS connection with %(host)s failed: %(reason)s.",
                {"host": host,
@@ -52,7 +54,7 @@ class JDSSCommunicationFailure(JDSSException):
     """Communication with host failed at all fiven IP"""
 
     def __init__(self, hosts, request):
-
+        self.errcode = 4
         self.interfaces = hosts
         msg = ("None of interfaces: %(hosts)s responded to request "
                "%(request)s." % {"hosts": ', '.join(hosts),
