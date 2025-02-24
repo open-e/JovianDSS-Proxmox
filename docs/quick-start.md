@@ -10,16 +10,19 @@ User have to assign VIP addresses to JovianDSS Pool in order to make plugin work
 Since version 0.9.9-3 multiple plugins are shipped under single debian package.
 Currently there are `joviandss` and `joviandss-lvm` plugins.
 Here is a table that provides comparison of plugin functionality:
-| Feature                     | Original JovianDSS Plugin        | JovianDSS-LVM Plugin                                                |
-|----------------------------|-----------------------------------|---------------------------------------------------------------------|
-| Srotage of iso, vztmpl, backup files| +                         | - |
-| Srotage of images, rootdit | +                         | + |
+
+| Feature                                    | Original JovianDSS Plugin         | JovianDSS-LVM Plugin                                                |
+|--------------------------------------------|-----------------------------------|---------------------------------------------------------------------|
+| Srotage of iso, vztmpl, backup files       | :white_check_mark:                | :x:                                                                 |
+| Srotage of images, rootdit                 | :white_check_mark:                | :white_check_mark:                                                  |
 | Image/rootdir to JovianDSS volume relation | each image and rootdir file are stored on dedicated volume | there is a single volume for virtual machine that stores all images/rootdir files related to it |
-| Snapshots                   | Each zfs volume have its own snapshot | All volumes have single snapshot |
-| Rollback                    | Rollback can be done to the latest snapshot only | Rollback can be done to the latest snapshot only |
-| Clonning                    | +                                 | + |
-| Volume movement from one vm to another | +                      | - |
-| Volume resizing             | +                                 | + |
+| Snapshots                                  | Each zfs volume have its own snapshot | All volumes have single snapshot                                |
+| Rollback                                   | Rollback can be done to the latest snapshot only | Rollback can be done to the latest snapshot only     |
+| Clonning                                   | :white_check_mark:                | :white_check_mark:                                                  |
+| Volume movement from one vm to another     | :white_check_mark:                | :x:                                                                 |
+| Volume resizing                            | :white_check_mark:                | :white_check_mark:                                                  |
+| VM atomic snapshots                        | :x:                               | :white_check_mark:                                                  |
+
 
 Core difference between them is usage of LVM on top of JovianDSS volumes for `joviandss-lvm` plugin.
 `joviandss` plugin is an old plugin that remains the same and get [configured the same way](https://github.com/open-e/JovianDSS-Proxmox/docs/plugin-installation-and-configuration.md)
