@@ -14,13 +14,15 @@ The difference in approches used by plugins can be summorised by following table
 |--------------------------------------------|-----------------------------------|---------------------------------------------------------------------|
 | Srotage of iso, vztmpl, backup files       | :white_check_mark:                | :x:                                                                 |
 | Srotage of images, rootdit                 | :white_check_mark:                | :white_check_mark:                                                  |
-| Image/rootdir to JovianDSS volume relation | each image and rootdir file are stored on dedicated volume | there is a single volume for virtual machine that stores all images/rootdir files related to it |
-| Snapshots                                  | Each zfs volume have its own snapshot | All volumes have single snapshot                                |
+| Image/rootdir to JovianDSS volume relation | :white_check_mark: Each image and rootdir file are stored on dedicated volume | :white_check_mark: There is a single volume for virtual machine that stores all images/rootdir files related to it |
+| Snapshots                                  | :white_check_mark: Each virtual volume have its own snapshot | :white_check_mark:All virtual volumes of a single VM receive an atomic snapshot simultaneously |
 | Rollback                                   | Rollback can be done to the latest snapshot only | Rollback can be done to the latest snapshot only     |
 | Clonning                                   | :white_check_mark:                | :white_check_mark:                                                  |
 | Volume movement from one vm to another     | :white_check_mark:                | :x:                                                                 |
 | Volume resizing                            | :white_check_mark:                | :white_check_mark:                                                  |
 | VM atomic snapshots                        | :x:                               | :white_check_mark:                                                  |
+| Supported format                           | `raw` **Snapshots supported**     | `raw` **Snapshots supported**                                       |
+| Thin provisioning                          | :white_check_mark: This feature is enabled through a YAML configuration file | :white_check_mark: This feature is enabled through a YAML configuration file   |
 
 `joviandss` plugin is an old plugin that remains the same and get [configured the same way](https://github.com/open-e/JovianDSS-Proxmox/docs/plugin-installation-and-configuration.md)
 
