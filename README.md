@@ -15,7 +15,7 @@ The difference in approches used by plugins can be summorised by following table
 | Storage of iso, vztmpl, backup files       | :white_check_mark:                | :x:                                                                 |
 | Storage of images, rootdit                 | :white_check_mark:                | :white_check_mark:                                                  |
 | Image/rootdir to JovianDSS volume relation | :white_check_mark: Each image and rootdir file are stored on dedicated volume | :white_check_mark: There is a single volume for virtual machine that stores all images/rootdir files related to it |
-| Snapshots                                  | :white_check_mark: Each virtual volume have its own snapshot | :white_check_mark:All virtual volumes of a single VM receive an atomic snapshot simultaneously |
+| Snapshots                                  | :white_check_mark: Each virtual volume have its own snapshot | :white_check_mark:All virtual volumes of a single VM/Container receive an atomic snapshot simultaneously |
 | Rollback                                   | Rollback can be done to the latest snapshot only | Rollback can be done to the latest snapshot only     |
 | Clonning                                   | :white_check_mark:                | :white_check_mark:                                                  |
 | Volume movement from one vm to another     | :white_check_mark:                | :x:                                                                 |
