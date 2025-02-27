@@ -18,7 +18,7 @@ The difference in approches used by plugins can be summorised by following table
 | Snapshots                                  | :white_check_mark: Each virtual volume have its own snapshot | :white_check_mark:All virtual volumes of a single VM/Container receive an atomic snapshot simultaneously |
 | Rollback                                   | Rollback can be done to the latest snapshot only | Rollback can be done to the latest snapshot only     |
 | Clonning                                   | :white_check_mark:                | :white_check_mark:                                                  |
-| Volume movement from one vm to another     | :white_check_mark:                | :x:                                                                 |
+| Volume movement from one VM to another     | :white_check_mark:                | :x:                                                                 |
 | Volume resizing                            | :white_check_mark:                | :white_check_mark:                                                  |
 | VM atomic snapshots                        | :x:                               | :white_check_mark:                                                  |
 | Supported format                           | `raw` **Snapshots supported**     | `raw` **Snapshots supported**                                       |
