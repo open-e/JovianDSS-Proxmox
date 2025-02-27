@@ -12,7 +12,7 @@ The difference in approches used by plugins can be summorised by following table
 
 | Feature                                    | Original JovianDSS Plugin         | JovianDSS-LVM Plugin                                                |
 |--------------------------------------------|-----------------------------------|---------------------------------------------------------------------|
-| Stotage of iso, vztmpl, backup files       | :white_check_mark:                | :x:                                                                 |
+| Storage of iso, vztmpl, backup files       | :white_check_mark:                | :x:                                                                 |
 | Storage of images, rootdit                 | :white_check_mark:                | :white_check_mark:                                                  |
 | Image/rootdir to JovianDSS volume relation | :white_check_mark: Each image and rootdir file are stored on dedicated volume | :white_check_mark: There is a single volume for virtual machine that stores all images/rootdir files related to it |
 | Snapshots                                  | :white_check_mark: Each virtual volume have its own snapshot | :white_check_mark:All virtual volumes of a single VM receive an atomic snapshot simultaneously |
