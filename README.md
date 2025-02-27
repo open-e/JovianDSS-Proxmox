@@ -12,21 +12,21 @@ The difference in approches used by plugins can be summorised by following table
 
 | Feature                                    | Original JovianDSS Plugin         | JovianDSS-LVM Plugin                                                |
 |--------------------------------------------|-----------------------------------|---------------------------------------------------------------------|
-| Storage of iso, vztmpl, backup files       | :white_check_mark:                | :x:                                                                 |
+| Storage of iso, vztmpl, backup files       | :white_check_mark:                | :x: this feature can be replaced with Proxmox original NFS plugin with  |
 | Storage of images, rootdit                 | :white_check_mark:                | :white_check_mark:                                                  |
 | Image/rootdir to JovianDSS volume relation | :white_check_mark: Each image and rootdir file are stored on dedicated volume | :white_check_mark: There is a single volume for virtual machine that stores all images/rootdir files related to it |
 | Snapshots                                  | :white_check_mark: Each virtual volume have its own snapshot | :white_check_mark:All virtual volumes of a single VM/Container receive an atomic snapshot simultaneously |
 | Rollback                                   | Rollback can be done to the latest snapshot only | Rollback can be done to the latest snapshot only     |
 | Clonning                                   | :white_check_mark:                | :white_check_mark:                                                  |
-| Volume movement from one VM to another     | :white_check_mark:                | :x:                                                                 |
+| Volume movement from one VM to another     | :white_check_mark:                | :x: User have to copy data from one VM to                           |
 | Volume resizing                            | :white_check_mark:                | :white_check_mark:                                                  |
 | VM atomic snapshots                        | :x:                               | :white_check_mark:                                                  |
-| Supported format                           | `raw` **Snapshots supported**     | `raw` **Snapshots supported**                                       |
-| Thin provisioning                          | :white_check_mark: This feature is enabled through a YAML configuration file | :white_check_mark: This feature is enabled through a YAML configuration file   |
+| Supported format for VM/CT                 | `raw` (with **Snapshots supported**) | `raw` (with **Snapshots supported**)                             |
+| Thin provisioning                          | :white_check_mark:                | :white_check_mark:                                                  |
 
 `joviandss` plugin is an old plugin that remains the same and get [configured the same way](https://github.com/open-e/JovianDSS-Proxmox/docs/plugin-installation-and-configuration.md)
 
-`joviandss-lvm` utilises LVM as additinal layer of volume abstraction over JovianDSS ZVols.
+`joviandss-lvm` utilises LVM over iSCSI as additinal layer of volume abstraction over JovianDSS ZVols.
 
 This approach have several benefits in comparison to original `joviandss` plugin:
 - All virtual disks associated with VM are stored on single ZVol, that simplifies backup and disaster recovery functionality provided by JovianDSS
