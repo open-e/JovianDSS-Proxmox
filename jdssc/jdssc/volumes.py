@@ -212,7 +212,16 @@ class Volumes():
         raise Exception("Unable to find free volume name")
 
     def list(self):
-        data = self.jdss.list_volumes()
+        data = None
+        try:
+            data = self.jdss.list_volumes()
+        except jexc.JDSSCommunicationFailure as jerr:
+            LOG.error(("Unable to communicate with JovianDSS over given "
+                       "interfaces %(interfaces)s. "
+                       "Please make sure that addresses are correct and "
+                       "REST API is enabled for JovianDSS") %
+                      {'interfaces': ', '.join(jerr.interfaces)})
+            exit(jerr.errcode)
 
         vmid_re = None
         if self.args['vmid']:

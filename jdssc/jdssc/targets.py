@@ -60,6 +60,15 @@ class Targets():
         create.add_argument('--lun', action='store_true',
                             default=False,
                             help='Print lun')
+        create.add_argument('--target_prefix',
+                            dest='target_prefix',
+                            default=None,
+                            help='''
+                            Pattern for target name prefix.
+                            User can specify plain text or template
+                            in python strftime format.
+                            Default is "iqn.%%Y-%%m.iscsi:"
+                            ''')
         create.add_argument('--snapshot',
                             dest='snapshot_name', default=None,
                             help='Create target based on snapshot')
@@ -70,6 +79,15 @@ class Targets():
                             help='Use real volume name')
 
         delete = parsers.add_parser('delete')
+        delete.add_argument('--target_prefix',
+                            dest='target_prefix',
+                            default=None,
+                            help='''
+                            Pattern for target name prefix.
+                            User can specify plain text or template
+                            in python strftime format.
+                            Default is "iqn.%%Y-%%m.iscsi:"
+                            ''')
         delete.add_argument('-v',
                             required=True,
                             dest='volume_name',
@@ -85,6 +103,15 @@ class Targets():
                             help='Use real volume name')
 
         get = parsers.add_parser('get')
+        get.add_argument('--target-prefix',
+                         dest='target_prefix',
+                         default=None,
+                         help='''
+                         Pattern for target name prefix.
+                         User can specify plain text or template
+                         in python strftime format.
+                         Default is "iqn.%%Y-%%m.iscsi:"
+                         ''')
         get.add_argument('--path', dest='path_format', action='store_true',
                          default=False,
                          help='Print in path format')
@@ -136,6 +163,8 @@ class Targets():
     def create(self):
         provider_location = None
 
+        if self.args['target_prefix']:
+            self.jdss.set_target_prefix(self.args['target_prefix'])
         try:
             if self.args['snapshot_name']:
 

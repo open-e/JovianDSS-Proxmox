@@ -31,8 +31,12 @@ from logging.handlers import RotatingFileHandler
 def parse_args():
     parser = argparse.ArgumentParser(description='JDSS simple CLI')
 
-    parser.add_argument('-c', '--config', dest='config', required=True,
-                        help='Path of configuration file')
+    parser.add_argument('-c',
+                        '--config',
+                        dest='config',
+                        default=None,
+                        required=False,
+                        help='Path to yaml configuration file')
     log_levels = ['critical', 'error', 'warning', 'info', 'debug',
                   'CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG']
     parser.add_argument('-l',
@@ -58,6 +62,17 @@ def parse_args():
                         action='store_true',
                         default=False,
                         help='Plain format')
+
+    # parser.add_argument('--iscsi-target-prefix',
+    #                     dest='iscsi_target_prefix',
+    #                     default='iqn.%Y-%m.iscsi:',
+    #                     help='''
+    #                     Pattern for target name prefix.
+    #                     User can specify plain text or template
+    #                     in python strftime format.
+    #                     Default is "iqn.%%Y-%%m.iscsi:"
+    #                     ''',
+    #                     required=False)
 
     command = parser.add_subparsers(required=True, dest='command')
 
@@ -148,7 +163,7 @@ def setup_logging(args, cfg):
     logger.addHandler(err_handler)
 
 
-def duplicate_config_options(cfg):
+def unify_config_options(args, cfg):
     """
     jdssc uses heavily OpenStack deiver code and since some options was renamed
     we have to ensure that old option names translate into new code properly
@@ -172,6 +187,8 @@ def duplicate_config_options(cfg):
     if 'loglevel' in cfg:
         cfg['loglvl'] = cfg['loglevel']
 
+    # if args.iscsi_target_prefix:
+    #    cfg['target_prefix'] = args.iscsi_target_prefix
     return cfg
 
 
@@ -223,8 +240,11 @@ def main():
     # TODO: give better error message for cases when user provides
     # incorrect config path that results in
     # FileNotFoundError: [Errno 2] No such file or directory: 'some file path'
-    config = yaml.safe_load(open(args.config))
-    config = duplicate_config_options(config)
+    config = dict()
+    if args.config:
+        config = yaml.safe_load(open(args.config))
+
+    config = unify_config_options(args, config)
     setup_logging(args, config)
     # list available commands
     cmd = {'pool': pool.Pools,

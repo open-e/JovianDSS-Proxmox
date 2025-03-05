@@ -65,6 +65,9 @@ class JovianDSSDriver(object):
         self.ra = rest.JovianRESTAPI(config)
         self.jovian_rest_port = self.ra.rproxy.port
 
+    def set_target_prefix(self, prefix):
+        self.jovian_target_prefix = prefix
+
     def get_pool_name(self):
         return self._pool
 
@@ -1226,10 +1229,13 @@ class JovianDSSDriver(object):
         data = []
         try:
             data = self._list_all_pages(self.ra.get_volumes_page)
+        except jexc.JDSSCommunicationFailure as jerr:
+            raise jerr
+
         except jexc.JDSSException as ex:
             LOG.error("List volume error. Because %(err)s",
                       {"err": ex})
-            raise Exception(('Failed to list volumes %s.') % ex)
+            raise Exception(('Failed to list volumes %s.') % ex.message)
 
         LOG.debug(data)
         for r in data:
