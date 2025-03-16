@@ -484,12 +484,19 @@ sub block_device_path {
 
     #print"Getting path of volume ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
 
-    my $target = $class->get_target_name($scfg, $volname, $snapname, $content_volume_flag);
+    #my $target = $class->get_target_name($scfg, $volname, $snapname, $content_volume_flag);
+    my $target = $class->get_active_target_name(scfg => $scfg,
+                                                volname => $volname,
+                                                snapname => $snapname,
+                                                content=>$content_volume_flag);
+
+    if (!defined($target)){
+        return undef;
+    }
 
     my $tpath = $class->get_target_path($scfg, $target, $storeid);
 
-    unless (defined($tpath)) {
-        #print"Unable to identify device path for ${volname} ".safe_var_print("snapshot", $snapname)."\n" if get_debug($scfg);
+    if (!defined($tpath)) {
         return undef;
     }
     my $bdpath;
@@ -980,6 +987,8 @@ sub alloc_image {
 
         eval {$class->alloc_image_routine($storeid, $scfg, $vmid, $volname, $size_bytes);};
         if (my $err = $@) {
+            # TODO:
+            # uncomment image cleaning routine
             $class->free_image($storeid, $scfg, $volname, $isBase, $fmt);
             die $err;
         }
@@ -1408,7 +1417,7 @@ sub get_active_target_name {
     my $pool = get_pool($scfg);
 
     my $prefix = get_target_prefix($scfg);
-    my $gettargetcmd = ["-c", $config, "pool", $pool, "targets", "get", '--target_prefix', $prefix, "-v", $volname, "--current"];
+    my $gettargetcmd = ["-c", $config, "pool", $pool, "targets", "get", '--target-prefix', $prefix, "-v", $volname, "--current"];
     if ($snapname){
         push @$gettargetcmd, "--snapshot", $snapname;
     }
@@ -1436,7 +1445,7 @@ sub get_target_name {
     my $pool = get_pool($scfg);
 
     my $prefix = get_target_prefix($scfg);
-    my $get_target_cmd = ["-c", $config, "pool", $pool, "targets", "get", '--target_prefix', $prefix, "-v", $volname];
+    my $get_target_cmd = ["-c", $config, "pool", $pool, "targets", "get", '--target-prefix', $prefix, "-v", $volname];
     if ($snapname){
         push @$get_target_cmd, "--snapshot", $snapname;
     } else {
@@ -1444,6 +1453,8 @@ sub get_target_name {
             push @$get_target_cmd, '-d';
         }
     }
+    # TODO: remove this line
+    #print_call_stack();
 
     my $target = $class->joviandss_cmd($scfg, $get_target_cmd, 80, 3);
 
@@ -1453,7 +1464,16 @@ sub get_target_name {
             return $1;
         }
     }
-    die "Unable to identify the target name for ${volname} ".safe_var_print("snapshot", $snapname);
+    die "Unable to identify the target name for ${volname} ".safe_var_print("snapshot", $snapname)."\n";
+}
+
+# TODO: remove this func
+sub print_call_stack {
+    my $i = 0;
+    while (my @call = caller($i++)) {
+        my ($package, $file, $line) = @call[0,1,2];
+        print "Frame $i: Package $package, File $file, Line $line\n";
+    }
 }
 
 sub get_target_path {
@@ -1497,14 +1517,31 @@ sub list_images {
 
         my $device = $class->block_device_path($scfg, $vmdiskname, $storeid, undef, 0);
 
-        unless ( defined $device) {
-            $device = $class->vm_disk_iscsi_connect($storeid, $scfg, $vmdiskname, undef, $cache);
+        unless ( defined($device)) {
+            push @$res, {
+                format => 'raw',
+                volid  => "$vmdiskname",
+                size   => "$size",
+                vmid   => "$vm",
+            };
+            next;
+            # $device = $class->vm_disk_iscsi_connect($storeid, $scfg, $vmdiskname, undef, $cache);
+        }
+
+        # Check of zvol size in comparison to lvm
+        # If zvol was resized on other host block device kernel data will not be updated
+        # automaticaly
+        # They have to be updated manuly on the side of each node in a cluster
+        my $vmvgname = $class->vm_vg_name($vm);
+        my $vginfo = vm_disk_vg_info($device, $vmvgname);
+        print("Size is ${size} vgsize ".$vginfo->{vgsize}."\n");
+        if ( abs($size - $vginfo->{vgsize}) <= 0.01 * abs($size) ) {
+            $class->vm_disk_lvm_update($storeid, $scfg, $vmdiskname, $device, $size);
         }
 
         my $vols = $class->vm_disk_list_volumes($scfg, $device);
 
         foreach my $vol (@$vols) {
-
             my $volid = "$storeid:$vol->{lvname}";
 
             if ($vollist) {
@@ -1689,7 +1726,7 @@ sub vm_disk_connect {
     my $target = $class->get_target_name($scfg, $vmdiskname, $snapname, 0);
 
     my $prefix = get_target_prefix($scfg);
-    my $create_target_cmd = ["-c", $config, "pool", $pool, "targets", "create", '--target_prefix', $prefix, "-v", $vmdiskname];
+    my $create_target_cmd = ["-c", $config, "pool", $pool, "targets", "create", '--target-prefix', $prefix, "-v", $vmdiskname];
     if ($snapname){
         push @$create_target_cmd, "--snapshot", $snapname;
     }
@@ -1729,6 +1766,9 @@ sub vm_disk_connect {
 }
 
 # Activates zvol related to given vm to the level of iscsi
+# This function will be called on nodes that use volume and not using it
+# Because of it, vm_disk_iscsi_connect do not removes or reasign volumes to target
+# It only creates new or operates on existing one
 sub vm_disk_iscsi_connect {
     my ( $class, $storeid, $scfg, $vmdiskname, $snapname, $cache ) = @_;
 
@@ -1737,10 +1777,13 @@ sub vm_disk_iscsi_connect {
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
-    my $target = $class->get_target_name($scfg, $vmdiskname, $snapname, 0);
+    my $target = $class->get_active_target_name(scfg => $scfg,
+                                                volname => $vmdiskname,
+                                                snapname => $snapname,
+                                                content=>0);
 
     my $prefix = get_target_prefix($scfg);
-    my $create_target_cmd = ["-c", $config, "pool", $pool, "targets", "create", '--target_prefix', $prefix, "-v", $vmdiskname];
+    my $create_target_cmd = ["-c", $config, "pool", $pool, "targets", "create", '--target-prefix', $prefix, "-v", $vmdiskname];
     if ($snapname){
         push @$create_target_cmd, "--snapshot", $snapname;
     }
@@ -1824,7 +1867,7 @@ sub vm_disk_disconnect_all {
 
         $class->unstage_target($scfg, $storeid, $starget);
 
-        $class->joviandss_cmd($scfg, ["-c", $config, "pool", $pool, "targets", "delete", '--target_prefix', $prefix, "-v", $vmdiskname, "--snapshot", $snap]);
+        $class->joviandss_cmd($scfg, ["-c", $config, "pool", $pool, "targets", "delete", '--target-prefix', $prefix, "-v", $vmdiskname, "--snapshot", $snap]);
     }
     $class->debugmsg($scfg, "debug", "Disconnect all resources for vm disk ${vmdiskname} done");
 }
@@ -1839,7 +1882,7 @@ sub vm_disk_remove {
 
     my $prefix = get_target_prefix($scfg);
 
-    $class->joviandss_cmd($scfg, ["-c", $config, "pool", $pool, "targets", "delete", '--target_prefix', $prefix, "-v", $vmdiskname]);
+    $class->joviandss_cmd($scfg, ["-c", $config, "pool", $pool, "targets", "delete", '--target-prefix', $prefix, "-v", $vmdiskname]);
 
     $class->joviandss_cmd($scfg, ["-c", $config, "pool", $pool, "volume", $vmdiskname, "delete", "-c"]);
 
@@ -1931,7 +1974,7 @@ sub deactivate_volume {
     foreach my $vol (@$vols){
         #TODO: recheck this construction
         if ($vol->{lvattr}){
-            print "Volume $vol->{lvname} $vol->{lvattr}\n" if get_debug($scfg);
+            #print "Volume $vol->{lvname} $vol->{lvattr}\n" if get_debug($scfg);
             my $attr = $vol->{lvattr};
             my $flag = substr($attr, 4, 1);
 

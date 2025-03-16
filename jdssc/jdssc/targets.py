@@ -60,7 +60,7 @@ class Targets():
         create.add_argument('--lun', action='store_true',
                             default=False,
                             help='Print lun')
-        create.add_argument('--target_prefix',
+        create.add_argument('--target-prefix',
                             dest='target_prefix',
                             default=None,
                             help='''
@@ -79,7 +79,7 @@ class Targets():
                             help='Use real volume name')
 
         delete = parsers.add_parser('delete')
-        delete.add_argument('--target_prefix',
+        delete.add_argument('--target-prefix',
                             dest='target_prefix',
                             default=None,
                             help='''
@@ -204,6 +204,9 @@ class Targets():
 
     def delete(self):
 
+        if self.args['target_prefix']:
+            self.jdss.set_target_prefix(self.args['target_prefix'])
+
         if self.args['snapshot_name']:
             self.jdss.remove_export_snapshot(self.args['snapshot_name'],
                                              self.args['volume_name'])
@@ -212,6 +215,8 @@ class Targets():
                                     direct_mode=self.args['direct_mode'])
 
     def get(self):
+        if self.args['target_prefix']:
+            self.jdss.set_target_prefix(self.args['target_prefix'])
 
         LOG.debug("Getting target for volume %s", self.args['volume_name'])
 

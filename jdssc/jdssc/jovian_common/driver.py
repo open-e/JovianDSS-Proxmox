@@ -976,57 +976,6 @@ class JovianDSSDriver(object):
             return self._get_target_name(sname)
         return self._get_target_name(jcom.vname(volume_name))
 
-    # def _get_iscsi_properties(self, volume_id, provider_auth, multipath=False):
-    #     """Return dict according to cinder/driver.py implementation.
-
-    #     :param volume_id: UUID of volume, might take snapshot UUID
-    #     :param str provider_auth: space-separated triple
-    #           '<auth method> <auth username> <auth password>'
-    #     :return:
-    #     """
-    #     tname = self._get_target_name(volume_id)
-    #     iface_info = []
-    #     if multipath:
-    #         iface_info = self.get_active_ifaces()
-    #         if not iface_info:
-    #             raise jexc.JDSSRESTException("none",
-    #                                          _('No available interfaces '
-    #                                            'or config excludes them'))
-
-    #     iscsi_properties = {}
-
-    #     if multipath:
-    #         iscsi_properties['target_iqns'] = []
-    #         iscsi_properties['target_portals'] = []
-    #         iscsi_properties['target_luns'] = []
-    #         LOG.debug('tpaths %s.', iface_info)
-    #         for iface in iface_info:
-    #             iscsi_properties['target_iqns'].append(
-    #                 self._get_target_name(volume_id))
-    #             iscsi_properties['target_portals'].append(
-    #                 iface +
-    #                 ":" +
-    #                 str(self.jovian_iscsi_target_portal_port))
-    #             iscsi_properties['target_luns'].append(0)
-    #     else:
-    #         iscsi_properties['target_iqn'] = tname
-    #         iscsi_properties['target_portal'] = (
-    #             self.ra.get_active_host() +
-    #             ":" +
-    #             str(self.jovian_iscsi_target_portal_port))
-
-    #     iscsi_properties['target_discovered'] = False
-
-    #     if provider_auth:
-    #         (auth_method, auth_username, auth_secret) = provider_auth.split()
-
-    #         iscsi_properties['auth_method'] = auth_method
-    #         iscsi_properties['auth_username'] = auth_username
-    #         iscsi_properties['auth_password'] = auth_secret
-
-    #     iscsi_properties['target_lun'] = 0
-    #     return iscsi_properties
-
     def _remove_target_volume(self, target_name, vid):
         """_remove_target_volume
 
