@@ -10,19 +10,19 @@ These plugins, are `joviandss` and `joviandss-lvm` approach allocation and usage
 ## Plugin difference
 The difference in approches used by plugins can be summorised by following table:
 
-| Feature                                                   |  JovianDSS-LVM Plugin                                                                                              |
-|-----------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------|
-| Storage of `iso`, `vztmpl`, `backup` files                | :x: for storing iso, vztmpl, backup files on side of JovianDSS please refere to the Proxmox NFS plugin             |
-| Storage of `images`(QEMU/KVM VM images), `rootdir`(container data)                   | :white_check_mark:                                                                      |
-| `images`(QEMU/KVM VM images)/`rootdir`(container data) to JovianDSS volume relation  | :white_check_mark: There is a single volume for VM/CT that stores all `images`/`rootdir` files related to it |
-| Snapshots                                                 | :white_check_mark: All virtual volumes of a single VM/Container receive an atomic snapshot simultaneously          |
-| Rollback                                                  | Rollback can be done to the latest snapshot only, user is recommended to use cloning from snapshot to restore to older state |
-| Clonning                                                  | :white_check_mark:                                                                                                 |
-| Volume movement from one VM to another                    | :x: User have to create new volume for VM and copy data using tools like `scp`                                     |
-| Volume resizing                                           | :white_check_mark:                                                                                                 |
-| VM atomic snapshots                                       | :white_check_mark:                                                                                                 |
-| Supported format of storing VM/CT data                    |  `raw` (with **Snapshots supported**)                                                                              |
-| Thin provisioning                                         | :white_check_mark:                                                                                                 |
+| Feature                                                                              |Original JovianDSS Plugin                                                 |  JovianDSS-LVM Plugin                                                               |
+|--------------------------------------------------------------------------------------|--------------------------------------------------------------------------|-------------------------------------------------------------------------------------|
+| Storage of `iso`, `vztmpl`, `backup` files                                           | :white_check_mark:                                                       | :x: for storing iso, vztmpl, backup files on side of JovianDSS please refere to the Proxmox NFS plugin  |
+| Storage of `images`(QEMU/KVM VM images), `rootdir`(container data)                   | :white_check_mark:                                                       | :white_check_mark:                                                                  |
+| `images`(QEMU/KVM VM images)/`rootdir`(container data) to JovianDSS volume relation  | :white_check_mark: Each VM/CT virtual disk is stored on dedicated volume | :white_check_mark: There is a single volume for VM/CT that stores all `images`/`rootdir` files related to it |
+| Snapshots                                                                            | :white_check_mark: Each volume maintains its own independent set of snapshots. Snapshotting is done individualy for each volume | :white_check_mark: All virtual volumes of a single VM/Container receive an atomic snapshot simultaneously |
+| Rollback                                                                             | Rollback can be done to the latest snapshot only, user is recommended to use cloning from snapshot to restore to older state  | Rollback can be done to the latest snapshot only, user is recommended to use cloning from snapshot to restore to older state |
+| Clonning                                                                             | :white_check_mark:                                                       | :white_check_mark:                                                                  |
+| Volume movement from one VM to another                                               | :white_check_mark:                                                       | :x: User have to create new volume for VM and copy data using tools like `scp`      |
+| Volume resizing                                                                      | :white_check_mark:                                                       | :white_check_mark:                                                                  |
+| VM atomic snapshots                                                                  | :x: Proxmox is responsible for maintaining data integrity during snapshot creation | :white_check_mark:                                                        |
+| Supported format of storing VM/CT data                                               | `raw` (with **Snapshots supported**)                                     | `raw` (with **Snapshots supported**)                                                |
+| Thin provisioning                                                                    | :white_check_mark:                                                       | :white_check_mark:                                                                  |
 
 [`joviandss`](https://github.com/open-e/JovianDSS-Proxmox/docs/plugin-installation-and-configuration.md) is deprecaded and will be removed, please move your data to `jovnadss-lvm` plugin. 
 
