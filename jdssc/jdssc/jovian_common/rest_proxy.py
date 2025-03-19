@@ -133,6 +133,9 @@ class JovianDSSRESTProxy(object):
                     LOG.warning(sslerr)
                     LOG.error(("SSL certificate error, make sure that you have"
                                " certificates configured properly"))
+                    # TODO: provide proper handling of ssl certificate error
+                    exit(1)
+
                 except requests.exceptions.ConnectionError:
                     self._next_host()
                     continue

@@ -84,10 +84,16 @@ my $default_prefix = "jdss-";
 my $default_pool = "Pool-0";
 my $default_config_path = "/etc/pve/";
 my $default_debug = 0;
+my $default_logfilepath = "/var/log/joviandss/joviandss.log";
 my $default_multipath = 0;
 my $default_content_size = 100;
 my $default_path = "/mnt/joviandss";
 my $default_target_prefix = "iqn.%Y-%m.iscsi:";
+my $default_ssl_cert_verify = 1;
+my $default_controll_port = '82';
+my $default_data_port = '3260';
+my $default_user_name = 'admin';
+
 
 my $LVM_RESERVATION = 4 * 1024 * 1024;
 
@@ -147,6 +153,34 @@ sub properties {
             type        => 'string',
             default     => $default_target_prefix,
         },
+        ssl_cert_verify => {
+            description => "Enforce certificate verification for REST over SSL/TLS",
+            type        => 'boolean',
+            #default     => $default_ssl_cert_verify,
+        },
+        controll_addresses => {
+            description => "Coma separated list of ip addresses, that will be used to send controll REST requests to JovianDSS storage",
+            type        => 'string',
+        },
+        controll_port => {
+            description => "Port number that will be used to send REST request, single for all addresses",
+            type        => 'string',
+            default     => '82',
+        },
+        data_addresses => {
+            description => "Coma separated list of ip addresses, that will be used to transfer storage data(iSCSI data)",
+            type        => 'string',
+        },
+        data_port => {
+            description => "Port number that will be used to transfer storage data(iSCSI data)",
+            type        => 'string',
+            default     => '82',
+        },
+        log_file => {
+            description => "Log file path",
+            type        => 'string',
+            default     => '/var/log/joviandss.log',
+        },
     };
 }
 
@@ -161,6 +195,12 @@ sub options {
         shared                          => { optional => 1 },
         disable                         => { optional => 1 },
         target_prefix                   => { optional => 1 },
+        ssl_cert_verify                 => { optional => 1 },
+        controll_addresses              => { optional => 1 },
+        controll_port                   => { optional => 1 },
+        data_addresses                  => { optional => 1 },
+        data_port                       => { optional => 1 },
+        log_file                        => { optional => 1 },
     };
 }
 
@@ -265,26 +305,97 @@ sub get_target_prefix {
     return $scfg->{target_prefix} || $default_target_prefix;
 }
 
+sub get_ssl_cert_verify {
+    my ($scfg) = @_;
+    return $scfg->{ssl_cert_verify};
+}
+
+sub get_controll_addresses {
+    my ($scfg) = @_;
+    if (defined($scfg->{controll_addresses})) {
+        if (length($scfg->{controll_addresses}) > 4) {
+            return $scfg->{controll_addresses};
+        }
+    }
+    return undef;
+}
+
+sub get_controll_port {
+    my ($scfg) = @_;
+    return $scfg->{controll_port} || $default_controll_port;
+}
+
+sub get_data_addresses {
+    my ($scfg) = @_;
+
+    if (defined($scfg->{data_addresses})) {
+        return $scfg->{data_addresses};
+    }
+    return undef;
+}
+
+sub get_data_port {
+    my ($scfg) = @_;
+    return $scfg->{data_port} || $default_data_port;
+}
+
+sub get_user_name {
+    my ($scfg) = @_;
+    return $scfg->{user_name} || $default_user_name;
+}
+
+sub get_user_password {
+    my ($scfg) = @_;
+    return $scfg->{user_password};
+}
+
 sub joviandss_cmd {
     my ($class, $scfg, $cmd, $timeout, $retries) = @_;
 
     my $msg = '';
     my $err = undef;
     my $target;
-    my $res = ();
     my $retry_count = 0;
 
-    #my $target_prefix =
-    #my @cfg_args = ()
     $timeout = 40 if !$timeout;
     $retries = 0 if !$retries;
+    my $connection_options = [];
+
+    my $ssl_cert_verify = get_ssl_cert_verify($scfg);
+    if (defined($ssl_cert_verify)) {
+        print("Cert verify flag $ssl_cert_verify\n");
+        push @$connection_options, '--ssl-cert-verify', $ssl_cert_verify;
+    }
+
+    my $controll_addresses = get_controll_addresses($scfg);
+    if (defined($controll_addresses)) {
+        push @$connection_options, '--controll-addresses', "${controll_addresses}";
+    }
+
+    my $controll_port = get_controll_port($scfg);
+    if (defined($controll_port)) {
+        push @$connection_options, '--controll-port', ${controll_port};
+    }
+
+    my $user_name = get_user_name($scfg);
+    if (defined($user_name)) {
+        push @$connection_options, '--user-name', ${user_name};
+    }
+
+    my $user_password = get_user_password($scfg);
+    if (defined($user_password)) {
+        push @$connection_options, '--user-password', ${user_password};
+    }
 
     while ($retry_count <= $retries ) {
         my $output = sub { $msg .= "$_[0]\n" };
         my $errfunc = sub { $err .= "$_[0]\n" };
         my $exitcode = 0;
         eval {
-            $exitcode = run_command(['/usr/local/bin/jdssc', @$cmd], outfunc => $output, errfunc => $errfunc, timeout => $timeout, noerr => 1);
+
+            print Data::Dumper->Dump(['/usr/local/bin/jdssc', @$connection_options, @$cmd]);
+            $exitcode = run_command(['/usr/local/bin/jdssc', @$connection_options, @$cmd],
+                outfunc => $output, errfunc => $errfunc, timeout => $timeout, noerr => 1);
         };
         my $rerr = $@;
 
