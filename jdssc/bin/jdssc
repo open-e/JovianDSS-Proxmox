@@ -145,6 +145,12 @@ def parse_args():
                              default=False,
                              help='Provide iSCSI VIP addresses')
 
+    host_parser.add_argument('--iscsi-port',
+                             dest='iscsi_port',
+                             action='store_true',
+                             default=False,
+                             help='Provide iSCSI port number')
+
     host_parser.add_argument('-n', '--nfs',
                              dest='nfs',
                              action='store_true',
@@ -280,6 +286,10 @@ def hosts(args, uargs, jdss):
             if args['port']:
                 addr = '%s:%s' % (addr, jdss.jovian_iscsi_target_portal_port)
             sys.stdout.write(addr + "\n")
+        return
+
+    if 'iscsi_port' in args and args['iscsi_port']:
+        sys.stdout.write(str(jdss.jovian_iscsi_target_portal_port) + "\n")
         return
 
     if 'nfs' in args and args['nfs']:

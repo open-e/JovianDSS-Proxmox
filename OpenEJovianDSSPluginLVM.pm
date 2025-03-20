@@ -283,6 +283,7 @@ sub debugmsg {
 
         open(my $fh, '>>', $log_file_path) or die "Could not open file '$log_file_path' $!";
 
+        # TODO: do not remove this line
         print $fh "$line\n";
 
         close($fh);
@@ -335,8 +336,22 @@ sub get_data_addresses {
 }
 
 sub get_data_port {
-    my ($scfg) = @_;
-    return $scfg->{data_port} || $default_data_port;
+    my ($class, $scfg) = @_;
+
+    if (defined($scfg->{data_port})) {
+        return $scfg->{data_port};
+    }
+    my $configpath = get_config($scfg);
+
+    my $getportcmd = ['-c', $configpath, 'hosts', '--iscsi-port'];
+
+    my $cmdout = $class->joviandss_cmd($scfg, $getportcmd);
+
+    my $port = clean_word($cmdout);
+    if (length($port) > 0) {
+        return $port;
+    }
+    return '3260';
 }
 
 sub get_user_name {
@@ -363,7 +378,7 @@ sub joviandss_cmd {
 
     my $ssl_cert_verify = get_ssl_cert_verify($scfg);
     if (defined($ssl_cert_verify)) {
-        print("Cert verify flag $ssl_cert_verify\n");
+        #print("Cert verify flag $ssl_cert_verify\n");
         push @$connection_options, '--ssl-cert-verify', $ssl_cert_verify;
     }
 
@@ -393,7 +408,7 @@ sub joviandss_cmd {
         my $exitcode = 0;
         eval {
 
-            print Data::Dumper->Dump(['/usr/local/bin/jdssc', @$connection_options, @$cmd]);
+            #print Data::Dumper->Dump(['/usr/local/bin/jdssc', @$connection_options, @$cmd]);
             $exitcode = run_command(['/usr/local/bin/jdssc', @$connection_options, @$cmd],
                 outfunc => $output, errfunc => $errfunc, timeout => $timeout, noerr => 1);
         };
@@ -608,6 +623,8 @@ sub block_device_path {
     my $tpath = $class->get_target_path($scfg, $target, $storeid);
 
     if (!defined($tpath)) {
+        print("Target path for ${volname} not found\n") if get_debug($scfg);
+
         return undef;
     }
     my $bdpath;
@@ -619,7 +636,7 @@ sub block_device_path {
         die "Invalide block device name ${block_device_name} for iscsi target ${target}\n";
     }
 
-    my $mpathname =  get_multipath_device_name($bdpath);
+    #my $mpathname =  get_multipath_device_name($bdpath);
 
 
     if (multipath_enabled($scfg)) {
@@ -745,7 +762,7 @@ sub clone_image {
     chomp($size);
     $size =~ s/[^[:ascii:]]//;
 
-    print"Clone ${volname} with size ${size} to ${clone_name}".safe_var_print(" with snapshot", $snap)."\n" if get_debug($scfg);
+    #print"Clone ${volname} with size ${size} to ${clone_name}".safe_var_print(" with snapshot", $snap)."\n" if get_debug($scfg);
     if ($snap){
         $class->joviandss_cmd($scfg, ["-c", $config, "pool", $pool, "volume", $volname, "clone", "--size", $size, "--snapshot", $snap, "-n", $clone_name]);
     } else {
@@ -974,7 +991,7 @@ sub vm_disk_exists {
         }
         die "Unable to identify volume ${vmdiskname} status\n";
     }
-    print("disk exists and its size is ${output}\n");
+    #print("disk exists and its size is ${output}\n");
 
     return 1;
 }
@@ -1266,16 +1283,16 @@ sub get_device_mapper_name {
 }
 
 
-sub add_multipath_binding {
-    my ($class, $scsiid, $target) = @_;
-
-    $class->remove_multipath_binding($scsiid, $target);
-    my $binding = "${target} ${scsiid}";
-
-    open my $bfile, '>>', "/etc/multipath/bindings" or die "Unable to add ${target} to binding file $!";
-    print $bfile $binding;
-    close $bfile
-}
+#sub add_multipath_binding {
+#    my ($class, $scsiid, $target) = @_;
+#
+#    $class->remove_multipath_binding($scsiid, $target);
+#    my $binding = "${target} ${scsiid}";
+#
+#    open my $bfile, '>>', "/etc/multipath/bindings" or die "Unable to add ${target} to binding file $!";
+#    print $bfile $binding;
+#    close $bfile
+#}
 
 sub remove_multipath_binding {
     my ($class, $scsiid, $target) = @_;
@@ -1305,29 +1322,6 @@ sub stage_multipath {
         die "Unable to identify the multipath name for scsiid ${scsiid} with target ${target}\n";
     }
     return "/dev/mapper/${mpathname}";
-    #print "Device mapper name ${mpathname}\n" if get_debug($scfg);
-
-    #if ( defined($targetpath) && -e $targetpath ){
-    #    my ($tm, $mm);
-    #    eval {run_command(["readlink", "-f", $targetpath], outfunc => sub {
-    #        $tm = shift;
-    #    }); };
-    #    eval {run_command(["readlink", "-f", "/dev/mapper/${mpathname}"], outfunc => sub {
-    #        $mm = shift;
-    #    }); };
-
-    #    if ($tm eq $mm) {
-    #        return $targetpath;
-    #    } else {
-    #        unlink $targetpath;
-    #    }
-    #}
-
-    #my $exitcode = run_command(["ln", "/dev/mapper/${mpathname}", "/dev/mapper/${target}"], outfunc => sub {}, noerr => 1);
-    #if ($exitcode != 0) {
-    #    die "Unable to create link\n";
-    #}
-    #return "/dev/mapper/${target}";
 }
 
 sub unstage_multipath {
@@ -1432,58 +1426,73 @@ sub get_multipath_path {
 }
 
 sub get_iscsi_addresses {
-    my ($class, $scfg, $storeid, $port) = @_;
+    my ($class, $scfg, $storeid, $addport) = @_;
 
     my $config = get_config($scfg);
 
-    my $getaddressesscmd = ['/usr/local/bin/jdssc', '-c', $config, 'hosts', '--iscsi'];
+    my $da = get_data_addresses($scfg);
 
-    if (defined($port) && $port){
-        push @$getaddressesscmd, '--port';
+    my $dp = $class->get_data_port($scfg);
+
+    if (defined($da)){
+        my @iplist = split(/\s*,\s*/, $da);
+        if (defined($addport) && $addport) {
+            foreach (@iplist) {
+                $_ .= ":${dp}";
+            }
+        }
+        return @iplist;
     }
 
-    my @hosts = ();
-    run_command($getaddressesscmd, outfunc => sub {
-        my $h = shift;
+    my $getaddressescmd = ['-c', $config, 'hosts', '--iscsi'];
 
-        push @hosts, $h;
-    });
-    return @hosts;
+    my $cmdout = $class->joviandss_cmd($scfg, $getaddressescmd);
+
+    if (length($cmdout) > 1) {
+        my @hosts = ();
+
+        foreach (split(/\n/, $cmdout)) {
+            my ($host) = split;
+            if (defined($addport) && $addport) {
+                push @hosts, "${host}:${dp}";
+            } else {
+                push @hosts, $host;
+            }
+        }
+
+        if (@hosts > 0) {
+            return @hosts;
+        }
+    }
+
+    my $ca = get_controll_addresses($scfg);
+
+    my @iplist = split(/\s*,\s*/, $ca);
+    if (defined($addport) && $addport) {
+        foreach (@iplist) {
+            $_ .= ":${dp}";
+        }
+    }
+
+    return @iplist;
 }
 
-sub get_rest_addresses {
-    my ($class, $scfg, $storeid) = @_;
-
-    my $config = get_config($scfg);
-
-    my $gethostscmd = ["/usr/local/bin/jdssc", "-c", $config, "hosts", '--rest'];
-
-    my @hosts = ();
-    run_command($gethostscmd, outfunc => sub {
-        my $h = shift;
-        print "Storage address ${h}\n" if get_debug($scfg);
-
-        push @hosts, $h;
-    });
-    return @hosts;
-}
-
-sub get_nfs_addresses {
-    my ($class, $scfg, $storeid) = @_;
-
-    my $config = get_config($scfg);
-
-    my $gethostscmd = ["/usr/local/bin/jdssc", "-c", $config, "hosts", '--nfs'];
-
-    my @hosts = ();
-    run_command($gethostscmd, outfunc => sub {
-        my $h = shift;
-        print "Storage address ${h}\n" if get_debug($scfg);
-
-        push @hosts, $h;
-    });
-    return @hosts;
-}
+#sub get_rest_addresses {
+#    my ($class, $scfg, $storeid) = @_;
+#
+#    my $config = get_config($scfg);
+#
+#    my $gethostscmd = ["/usr/local/bin/jdssc", "-c", $config, "hosts", '--rest'];
+#
+#    my @hosts = ();
+#    run_command($gethostscmd, outfunc => sub {
+#        my $h = shift;
+#        print "Storage address ${h}\n" if get_debug($scfg);
+#
+#        push @hosts, $h;
+#    });
+#    return @hosts;
+#}
 
 sub get_scsiid {
     my ($class, $scfg, $target, $storeid) = @_;
@@ -1598,6 +1607,7 @@ sub get_target_path {
     my $path;
     foreach my $host (@hosts) {
         $path = "/dev/disk/by-path/ip-${host}-iscsi-${target}-lun-0";
+        #print("Checking path ${path}\n") if get_debug($scfg);
         if (defined $expected && $expected != 0) {
             return $path;
         }
@@ -1628,7 +1638,9 @@ sub list_images {
 
         my $device = $class->block_device_path($scfg, $vmdiskname, $storeid, undef, 0);
 
-        unless ( defined($device)) {
+        if (!defined($device)) {
+            print("Block device for ${vmdiskname} not found\n") if get_debug($scfg);
+
             push @$res, {
                 format => 'raw',
                 volid  => "$vmdiskname",
@@ -1747,23 +1759,6 @@ sub volume_snapshot_delete {
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
     $class->joviandss_cmd($scfg, ["-c", $config, "pool", $pool, "volume", $volname, "snapshot", $snap, "delete"]);
-}
-
-sub volume_snapshot_list {
-    my ($class, $scfg, $storeid, $volname) = @_;
-
-    my $config = get_config($scfg);
-    my $pool = get_pool($scfg);
-
-    my $jdssc =  $class->joviandss_cmd($scfg, ["-c", $config, "pool", $pool, "volume", "$volname", "snapshots", "list"]);
-
-    my $res = [];
-    foreach (split(/\n/, $jdssc)) {
-      my ($sname) = split;
-      push @$res, { 'name' => '$sname'};
-    }
-
-    return $res;
 }
 
 sub volume_size_info {
@@ -1893,14 +1888,15 @@ sub vm_disk_iscsi_connect {
                                                 snapname => $snapname,
                                                 content=>0);
 
-    my $prefix = get_target_prefix($scfg);
-    my $create_target_cmd = ["-c", $config, "pool", $pool, "targets", "create", '--target-prefix', $prefix, "-v", $vmdiskname];
-    if ($snapname){
-        push @$create_target_cmd, "--snapshot", $snapname;
+    if (!defined($target)) {
+        my $prefix = get_target_prefix($scfg);
+        my $create_target_cmd = ["-c", $config, "pool", $pool, "targets", "create", '--target-prefix', $prefix, "-v", $vmdiskname];
+        if ($snapname){
+            push @$create_target_cmd, "--snapshot", $snapname;
+        }
+
+        $class->joviandss_cmd($scfg, $create_target_cmd, 80, 3);
     }
-
-    $class->joviandss_cmd($scfg, $create_target_cmd, 80, 3);
-
     $class->debugmsg($scfg, "debug", "Staging target ${target}");
     $class->stage_target($scfg, $storeid, $target);
 
