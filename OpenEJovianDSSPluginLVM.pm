@@ -176,6 +176,16 @@ sub properties {
             type        => 'string',
             default     => '82',
         },
+        block_size => {
+            description => 'Block size for newly created volumes, allowed values are: '.
+                           '4K 8K 16K 32K 64K 128K 256K 512K 1M',
+            type        => 'string',
+            #default     => '16K',
+        },
+        thin_provisioning => {
+            description => 'Create new volumes as thin',
+            type        => 'boolean',
+        },
         log_file => {
             description => "Log file path",
             type        => 'string',
@@ -200,6 +210,8 @@ sub options {
         controll_port                   => { optional => 1 },
         data_addresses                  => { optional => 1 },
         data_port                       => { optional => 1 },
+        block_size                      => { optional => 1 },
+        thin_provisioning               => { optional => 1 },
         log_file                        => { optional => 1 },
     };
 }
@@ -362,6 +374,19 @@ sub get_user_name {
 sub get_user_password {
     my ($scfg) = @_;
     return $scfg->{user_password};
+}
+
+sub get_block_size{
+    my ($scfg) = @_;
+    return $scfg->{block_size};
+}
+
+sub get_thin_provisioning{
+    my ($scfg) = @_;
+    if (defined($scfg->{thin_provisioning})) {
+            return $scfg->{thin_provisioning};
+    }
+    return undef;
 }
 
 sub joviandss_cmd {
@@ -1022,7 +1047,7 @@ sub vm_disk_extend_to {
 }
 
 sub alloc_image_routine {
-    my ($class, $storeid, $scfg, $vmid, $volname, $size_bytes) = @_;
+    my ($class, $storeid, $scfg, $vmid, $volname, $size_bytes, $thin_provisioning, $block_size) = @_;
 
     my $config = get_config($scfg);
     my $pool = get_pool($scfg);
@@ -1038,8 +1063,17 @@ sub alloc_image_routine {
         # And provide addition resize options
         my $extsize = $size_bytes + 4 * 1024 * 1024;
         $class->debugmsg($scfg, "debug", "Creating vm disk  ${vmdiskname} of size ${extsize}\n");
+        my $createvolcmd = ["-c", $config, "pool", $pool, "volumes", "create", "--size", "${extsize}", "-n", $vmdiskname];
 
-        $class->joviandss_cmd($scfg, ["-c", $config, "pool", $pool, "volumes", "create", "--size", "${extsize}", "-n", $vmdiskname]);
+        if (defined($thin_provisioning)) {
+            push @$createvolcmd, '--thin-provisioning', $thin_provisioning;
+        }
+
+        if (defined($block_size)) {
+            push @$createvolcmd, '--block-size', $block_size;
+        }
+
+        $class->joviandss_cmd($scfg, $createvolcmd);
 
         my $device = $class->vm_disk_connect($storeid, $scfg, $vmdiskname, undef, undef);
         $class->vm_disk_create_volume_group($scfg, $device, $vmvgname);
@@ -1092,10 +1126,11 @@ sub alloc_image {
     # size is provided in kibibytes
     my $size_bytes = $size * 1024;
 
+    my $block_size = get_block_size($scfg);
+    my $thin_provisioning = get_thin_provisioning($scfg);
     # TODO: remove unecessary print
 
     my $isBase;
-    #my $volname = $name;
     if ($volname) {
         my ($vtype, $volume_name, $vmid_from_volname, $basename, $basedvmid, $isBase, $format) = $class->parse_volname($volname);
         if (!defined($vmid_from_volname) || $vmid_from_volname !~ /^\d+$/) {
