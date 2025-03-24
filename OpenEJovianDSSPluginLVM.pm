@@ -422,6 +422,16 @@ sub joviandss_cmd {
         push @$connection_options, '--controll-port', ${controll_port};
     }
 
+    my $data_addresses = get_data_addresses($scfg);
+    if (defined($data_addresses)) {
+        push @$connection_options, '--data-addresses', "${data_addresses}";
+    }
+
+    my $data_port = get_controll_port($scfg);
+    if (defined($data_port)) {
+        push @$connection_options, '--data-port', ${data_port};
+    }
+
     my $user_name = get_user_name($scfg);
     if (defined($user_name)) {
         push @$connection_options, '--user-name', ${user_name};
@@ -1217,6 +1227,10 @@ sub alloc_image_routine {
     return
 }
 
+#sub find_free_diskname {
+#    my ($class, $storeid, $scfg, $vmid, $fmt) = @_;
+#}
+
 sub alloc_image {
     my ( $class, $storeid, $scfg, $vmid, $fmt, $volname, $size ) = @_;
 
@@ -1243,10 +1257,8 @@ sub alloc_image {
             die "VM id in volume name ${vmid_from_volname} is different from requested ${vmid}\n";
         }
     } else {
-        #print "Volname is not defined\n" if get_debug($scfg);
         $volname = $class->find_free_diskname($storeid, $scfg, $vmid, $fmt);
         my ($vtype, $volume_name, undef, $basename, $basedvmid, $isBase, $format) = $class->parse_volname($volname);
-        #print "vtype ${vtype} volume name ${volume_name} vmid ${vmid} basename ${basename} isbase ${isBase} format ${format}\n" if get_debug($scfg);
     }
 
     if ('raw' eq "${fmt}") {
@@ -1278,14 +1290,20 @@ sub free_image {
     if ('images' ne "$vtype") {
         return $class->SUPER::free_image($storeid, $scfg, $volname, $isBase, $format);
     }
-    print"Deleting volume ${volname} format ${format}\n" if get_debug($scfg);
+    $class->debugmsg($scfg, "debug", "Deleting volume ${volname} format ${format}\n");
 
     my $vmdiskname = $class->vm_disk_name($vmid, 0);
     my $device = $class->block_device_path($scfg, $vmdiskname, $storeid, undef, 0);
 
+    my $connect_flag = undef;
     # TODO: do not fail if lvm volume do not exists
     # that is important for alloc_image that uses free_image to clean resources
     # in case of volume creation failure
+    if (!defined($device)) {
+        $device = $class->vm_disk_connect($storeid, $scfg, $vmdiskname, undef, undef);
+        $connect_flag = 1;
+    }
+
     my $pvsinfo = vm_disk_lvm_info($device);
     if (defined($pvsinfo)) {
         if ($pvsinfo->{vgname} eq $vmvgname) {
@@ -1313,6 +1331,15 @@ sub free_image {
             my $groupfound = $pvsinfo->{vgname};
             die "VM Disk is expected to have group ${vmvgname}, group found ${groupfound}\n";
         }
+    } else {
+        if ($connect_flag) {
+            $class->vm_disk_disconnect($storeid, $scfg, $vmdiskname, undef, undef);
+        }
+        die "Unable to process lvm data for disk ${volname} to remove it. ".
+             "Please remove it manualy\n";
+    }
+    if ($connect_flag) {
+        $class->vm_disk_disconnect($storeid, $scfg, $vmdiskname, undef, undef);
     }
 
     return undef;
@@ -1771,13 +1798,17 @@ sub _list_images_single_vm {
     if (!defined($device)) {
         print("Block device for ${vmdiskname} not found\n") if get_debug($scfg);
 
-        my $size = $class->joviandss_cmd($scfg, ["pool", $pool, "volume", $vmdiskname, 'get', '-s']);
+        my $size;
+        eval {$size = $class->joviandss_cmd($scfg, ["pool", $pool, "volume", $vmdiskname, 'get', '-s']); };
+        if ($@) {
+            return $res;
+        }
 
         $size = clean_word($size);
 
         push @$res, {
             format => 'raw',
-            volid  => "$vmdiskname",
+            volid  => "${storeid}:${vmdiskname}",
             size   => "$size",
             vmid   => "$vmid",
         };
@@ -1871,11 +1902,13 @@ sub list_images {
     foreach (split(/\n/, $vmdisks)) {
         my ($vmdiskname,$vmid,$size) = split;
 
-        $vmid = clean_word($vmid);
+        if ($vmdiskname =~ /^(?:base|vm)-(\d+)$/) {
+            #$vmid = clean_word($vmid);
 
-        my $vm_disks_info = $class->_list_images_single_vm($storeid, $scfg, $vmid);
+            my $vm_disks_info = $class->_list_images_single_vm($storeid, $scfg, $1);
 
-        push(@$res, @$vm_disks_info);
+            push(@$res, @$vm_disks_info);
+        }
     }
     return $res;
 }
@@ -2057,11 +2090,14 @@ sub vm_disk_connect {
         if (defined($scsiid)) {
             my $multipathpath = $class->stage_multipath($storeid, $scfg, $scsiid, $target);
             run_command($updateudevadm, errmsg => "Failed to update udev devices after multipath creation");
+            $class->debugmsg($scfg, "debug", "Activate vm disk ${vmdiskname} done. Created multipath device ${multipathpath}\n");
+
             return $multipathpath;
         } else {
             die "Unable to get scsi id for multipath device ${target}\n";
         }
     }
+    $class->debugmsg($scfg, "debug", "Activate vm disk ${vmdiskname} done. Created iSCSI device ${targetpath}\n");
 
     return $targetpath;
 }
@@ -2206,6 +2242,9 @@ sub activate_volume {
 
     my $device = $class->vm_disk_connect($storeid, $scfg, $vmdiskname, $snapname, $cache);
 
+    if (!defined($device)) {
+        die "Unable to connect disk ${volname}".safe_var_print("snapshot", $snapname)."\n";
+    }
     my $vmvgname = $class->vm_vg_name($vmid, $snapname);
 
     if ($snapname) {

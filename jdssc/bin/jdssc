@@ -265,6 +265,12 @@ def unify_config_options(args, cfg):
     if args.controll_port:
         cfg['san_api_port'] = args.controll_port
 
+    if args.data_addresses:
+        cfg['iscsi_vip_addresses'] = args.data_addresses.split(',')
+
+    if args.data_port:
+        cfg['target_port'] = args.data_port
+
     if args.user_name:
         cfg['san_login'] = args.user_name
 

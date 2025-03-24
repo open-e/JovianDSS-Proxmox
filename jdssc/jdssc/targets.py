@@ -72,6 +72,7 @@ class Targets():
         create.add_argument('--snapshot',
                             dest='snapshot_name', default=None,
                             help='Create target based on snapshot')
+
         create.add_argument('-d',
                             dest='direct_mode',
                             action='store_true',
@@ -165,6 +166,7 @@ class Targets():
 
         if self.args['target_prefix']:
             self.jdss.set_target_prefix(self.args['target_prefix'])
+
         try:
             if self.args['snapshot_name']:
 

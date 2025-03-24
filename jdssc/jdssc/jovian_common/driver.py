@@ -1065,7 +1065,8 @@ class JovianDSSDriver(object):
               '<auth method> <auth username> <auth password>'
         :return:
         """
-        LOG.debug("create target and attach volume %s to it", vid)
+        LOG.debug("create target %s and attach volume %s to it",
+                  target_name, vid)
 
         assigned_vip_names = self._get_pool_assigned_vips()
 
