@@ -66,12 +66,19 @@ class Volumes():
                             type=str,
                             default='1G',
                             help='New volume size in format num + [M G T]')
-        create.add_argument('-b',
+        create.add_argument('-b', '--block-size',
                             dest='block_size',
                             type=str,
                             default=None,
                             choices=block_size_options,
                             help=('Block size of new volume, default is 16K'))
+        create.add_argument('-t', '--thin-provisioning',
+                            dest='thin_provisioning',
+                            type=str,
+                            default=None,
+                            choices=['y', 'n', 'Y', 'N'],
+                            help=('Create new volume as thin. '
+                                  'Default is False.'))
         create.add_argument('-d',
                             dest='direct_mode',
                             action='store_true',
@@ -119,6 +126,17 @@ class Volumes():
         else:
             block_size = '16K'
 
+        thin_provisioning = self.args['block_size']
+
+        sparse = False
+        if thin_provisioning:
+            if thin_provisioning.lower() == 'y':
+                sparse = True
+            if thin_provisioning.lower() == 'n':
+                sparse = False
+        else:
+            sparse = self.jdss.jovian_sparse
+
         name = str(uuid.uuid1())
         if 'volume_name' in self.args:
             name = self.args['volume_name']
@@ -126,6 +144,7 @@ class Volumes():
         try:
             self.jdss.create_volume(name, size,
                                     direct_mode=self.args['direct_mode'],
+                                    sparse=sparse,
                                     block_size=block_size)
         except jexc.JDSSDatasetExistsException:
             LOG.error(("Please pick another name for volume as given one %s is"
@@ -212,7 +231,16 @@ class Volumes():
         raise Exception("Unable to find free volume name")
 
     def list(self):
-        data = self.jdss.list_volumes()
+        data = None
+        try:
+            data = self.jdss.list_volumes()
+        except jexc.JDSSCommunicationFailure as jerr:
+            LOG.error(("Unable to communicate with JovianDSS over given "
+                       "interfaces %(interfaces)s. "
+                       "Please make sure that addresses are correct and "
+                       "REST API is enabled for JovianDSS") %
+                      {'interfaces': ', '.join(jerr.interfaces)})
+            exit(jerr.errcode)
 
         vmid_re = None
         if self.args['vmid']:
