@@ -75,7 +75,7 @@ my $PLUGIN_VERSION = '0.9.9-3';
 #               Fix data coruption during migration
 #    0.9.9.3 - 2025.01.18
 #               Add LVM based plugin
-#    0.9.10-0 - 2025.02.25
+#    0.9.10-0 - 2025.03.25
 #               Unify config options for jdssc and proxmox plugin
 
 # Configuration
@@ -90,7 +90,7 @@ my $default_content_size = 100;
 my $default_path = "/mnt/joviandss";
 my $default_target_prefix = "iqn.%Y-%m.iscsi:";
 my $default_ssl_cert_verify = 1;
-my $default_controll_port = '82';
+my $default_control_port = '82';
 my $default_data_port = '3260';
 my $default_user_name = 'admin';
 
@@ -121,33 +121,15 @@ sub plugindata {
 
 sub properties {
     return {
-        #pool_name => {
-        #    description => "Pool name",
-        #    type        => 'string',
-        #    default     => $default_pool,
-        #},
-        #config => {
-        #    description => "JovianDSS config address",
-        #    type        => 'string',
-        #},
-        #    debug => {
-        #        description => "Allow debug prints",
-        #        type => 'boolean',
-        #        default     => $default_debug,
-        #    },
-        #    multipath => {
-        #        description => "Enable multipath support",
-        #        type => 'boolean',
-        #        default     => $default_multipath,
-        #    },
-        #    content_volume_name => {
-        #        description => "Name of proxmox dedicated storage volume",
-        #        type => 'string',
-        #    },
-        #    content_volume_type => {
-        #        description => "Type of proxmox dedicated storage, allowed types are nfs and iscsi",
-        #        type => 'string',
-        #    },
+        user_name => {
+            description => "User name that will be used in REST communication",
+            type        => 'string',
+            default     => $default_user_name,
+        },
+        user_password => {
+            description => "User password that will be used in REST communication",
+            type        => 'string',
+        },
         target_prefix => {
             description => "Prefix of iSCSI target 'iqn.%Y-%m.iscsi:'",
             type        => 'string',
@@ -158,11 +140,11 @@ sub properties {
             type        => 'boolean',
             #default     => $default_ssl_cert_verify,
         },
-        controll_addresses => {
-            description => "Coma separated list of ip addresses, that will be used to send controll REST requests to JovianDSS storage",
+        control_addresses => {
+            description => "Coma separated list of ip addresses, that will be used to send control REST requests to JovianDSS storage",
             type        => 'string',
         },
-        controll_port => {
+        control_port => {
             description => "Port number that will be used to send REST request, single for all addresses",
             type        => 'string',
             default     => '82',
@@ -206,8 +188,10 @@ sub options {
         disable                         => { optional => 1 },
         target_prefix                   => { optional => 1 },
         ssl_cert_verify                 => { optional => 1 },
-        controll_addresses              => { optional => 1 },
-        controll_port                   => { optional => 1 },
+        user_name                       => { optional => 1 },
+        user_password                   => { optional => 1 },
+        control_addresses               => { optional => 1 },
+        control_port                    => { optional => 1 },
         data_addresses                  => { optional => 1 },
         data_port                       => { optional => 1 },
         block_size                      => { optional => 1 },
@@ -323,19 +307,19 @@ sub get_ssl_cert_verify {
     return $scfg->{ssl_cert_verify};
 }
 
-sub get_controll_addresses {
+sub get_control_addresses {
     my ($scfg) = @_;
-    if (defined($scfg->{controll_addresses})) {
-        if (length($scfg->{controll_addresses}) > 4) {
-            return $scfg->{controll_addresses};
+    if (defined($scfg->{control_addresses})) {
+        if (length($scfg->{control_addresses}) > 4) {
+            return $scfg->{control_addresses};
         }
     }
     return undef;
 }
 
-sub get_controll_port {
+sub get_control_port {
     my ($scfg) = @_;
-    return $scfg->{controll_port} || $default_controll_port;
+    return $scfg->{control_port} || $default_control_port;
 }
 
 sub get_data_addresses {
@@ -348,20 +332,10 @@ sub get_data_addresses {
 }
 
 sub get_data_port {
-    my ($class, $scfg) = @_;
+    my ($scfg) = @_;
 
     if (defined($scfg->{data_port})) {
         return $scfg->{data_port};
-    }
-    #my $configpath = get_config($scfg);
-
-    my $getportcmd = ['hosts', '--iscsi-port'];
-
-    my $cmdout = $class->joviandss_cmd($scfg, $getportcmd);
-
-    my $port = clean_word($cmdout);
-    if (length($port) > 0) {
-        return $port;
     }
     return '3260';
 }
@@ -412,14 +386,14 @@ sub joviandss_cmd {
         push @$connection_options, '--ssl-cert-verify', $ssl_cert_verify;
     }
 
-    my $controll_addresses = get_controll_addresses($scfg);
-    if (defined($controll_addresses)) {
-        push @$connection_options, '--controll-addresses', "${controll_addresses}";
+    my $control_addresses = get_control_addresses($scfg);
+    if (defined($control_addresses)) {
+        push @$connection_options, '--control-addresses', "${control_addresses}";
     }
 
-    my $controll_port = get_controll_port($scfg);
-    if (defined($controll_port)) {
-        push @$connection_options, '--controll-port', ${controll_port};
+    my $control_port = get_control_port($scfg);
+    if (defined($control_port)) {
+        push @$connection_options, '--control-port', ${control_port};
     }
 
     my $data_addresses = get_data_addresses($scfg);
@@ -427,7 +401,7 @@ sub joviandss_cmd {
         push @$connection_options, '--data-addresses', "${data_addresses}";
     }
 
-    my $data_port = get_controll_port($scfg);
+    my $data_port = get_data_port($scfg);
     if (defined($data_port)) {
         push @$connection_options, '--data-port', ${data_port};
     }
@@ -1597,7 +1571,7 @@ sub get_iscsi_addresses {
 
     my $da = get_data_addresses($scfg);
 
-    my $dp = $class->get_data_port($scfg);
+    my $dp = get_data_port($scfg);
 
     if (defined($da)){
         my @iplist = split(/\s*,\s*/, $da);
@@ -1630,7 +1604,7 @@ sub get_iscsi_addresses {
         }
     }
 
-    my $ca = get_controll_addresses($scfg);
+    my $ca = get_control_addresses($scfg);
 
     my @iplist = split(/\s*,\s*/, $ca);
     if (defined($addport) && $addport) {

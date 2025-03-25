@@ -77,16 +77,16 @@ def parse_args():
                         help='''Enforce certificate verification.
                         Enabled by default.''')
 
-    parser.add_argument('--controll-addresses',
-                        dest='controll_addresses',
+    parser.add_argument('--control-addresses',
+                        dest='control_addresses',
                         required=False,
                         default=None,
                         help='''Coma separated list of ip addresses,
-                        that will be used to send controll REST requests
+                        that will be used to send control REST requests
                         to JovianDSS storage.''')
 
-    parser.add_argument('--controll-ports',
-                        dest='controll_port',
+    parser.add_argument('--control-ports',
+                        dest='control_port',
                         required=False,
                         default=None,
                         help='''Port number that will be used to send REST
@@ -259,11 +259,11 @@ def unify_config_options(args, cfg):
     cfg['driver_use_ssl'] = True
     cfg['jovian_rest_send_repeats'] = 3
 
-    if args.controll_addresses:
-        cfg['san_hosts'] = args.controll_addresses.split(',')
+    if args.control_addresses:
+        cfg['san_hosts'] = args.control_addresses.split(',')
 
-    if args.controll_port:
-        cfg['san_api_port'] = args.controll_port
+    if args.control_port:
+        cfg['san_api_port'] = args.control_port
 
     if args.data_addresses:
         cfg['iscsi_vip_addresses'] = args.data_addresses.split(',')

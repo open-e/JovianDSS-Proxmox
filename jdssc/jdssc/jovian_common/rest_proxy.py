@@ -177,7 +177,15 @@ class JovianDSSRESTProxy(object):
             ret["data"] = None
             return ret
 
+        if ret['code'] == 401:
+            if response_obj.text == '401 unauthorized':
+                LOG.error(("Authentication Error. Please make sure that "
+                           "user name and password are correct"))
+                # TODO: provide proper error handling with dedicated exception
+                exit(1)
+
         data = json.loads(response_obj.text)
+
         ret["error"] = data.get("error")
         ret["data"] = data.get("data")
 
