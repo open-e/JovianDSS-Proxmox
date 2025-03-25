@@ -85,19 +85,20 @@ class Pools():
     def get(self):
         try:
             (total_gb, free_gb) = self.jdss.get_volume_stats()
-        except jexc.JDSSResourceNotFoundException:
+        except jexc.JDSSResourceNotFoundException as rnferr:
             msg = ("Unable to identify pool {name} on the storage, please "
                    "make sure that you have provided correct pool name and "
                    "it is present on JovianDSS".format(
                        name=self.jdss.get_pool_name()))
             LOG.error(msg)
-            exit(1)
+            exit(rnferr.errcode)
         except jexc.JDSSCommunicationFailure as jerr:
             LOG.error(("Unable to communicate with JovianDSS over given "
                        "interfaces %(interfaces)s. "
                        "Please make sure that addresses are correct and "
                        "REST API is enabled for JovianDSS") %
                       {'interfaces': ', '.join(jerr.interfaces)})
+            exit(jerr.errcode)
 
         line = "{total} {free} {used}\n".format(
             total=total_gb, free=free_gb, used=total_gb-free_gb)

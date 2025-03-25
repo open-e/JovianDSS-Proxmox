@@ -31,10 +31,15 @@ from logging.handlers import RotatingFileHandler
 def parse_args():
     parser = argparse.ArgumentParser(description='JDSS simple CLI')
 
-    parser.add_argument('-c', '--config', dest='config', required=True,
-                        help='Path of configuration file')
+    parser.add_argument('-c',
+                        '--config',
+                        dest='config',
+                        default=None,
+                        required=False,
+                        help='Path to yaml configuration file')
     log_levels = ['critical', 'error', 'warning', 'info', 'debug',
                   'CRITICAL', 'ERROR', 'WARNING', 'INFO', 'DEBUG']
+
     parser.add_argument('-l',
                         '--loglvl',
                         dest='loglvl',
@@ -59,6 +64,72 @@ def parse_args():
                         default=False,
                         help='Plain format')
 
+    true_false = ['true', 'True', 'TRUE', '1', 1, 'yes', 'YES', 'y', 'Y', 't',
+                  'T',
+                  'false', 'False', 'FALSE', '0', 0, 'no', 'NO', 'n', 'N', 'f',
+                  'F']
+
+    parser.add_argument('--ssl-cert-verify',
+                        dest='ssl_cert_verify',
+                        required=False,
+                        choices=true_false,
+                        default=None,
+                        help='''Enforce certificate verification.
+                        Enabled by default.''')
+
+    parser.add_argument('--control-addresses',
+                        dest='control_addresses',
+                        required=False,
+                        default=None,
+                        help='''Coma separated list of ip addresses,
+                        that will be used to send control REST requests
+                        to JovianDSS storage.''')
+
+    parser.add_argument('--control-ports',
+                        dest='control_port',
+                        required=False,
+                        default=None,
+                        help='''Port number that will be used to send REST
+                        request, single for all addresses''')
+
+    parser.add_argument('--user-name',
+                        dest='user_name',
+                        required=False,
+                        default=None,
+                        help='User name')
+
+    parser.add_argument('--user-password',
+                        dest='user_password',
+                        required=False,
+                        default=None,
+                        help='User password')
+
+    parser.add_argument('--data-addresses',
+                        dest='data_addresses',
+                        required=False,
+                        default=None,
+                        help='''Coma separated list of ip addresses,
+                        that will be used to transfer storage data
+                        (iSCSI data)''')
+
+    parser.add_argument('--data-ports',
+                        dest='data_port',
+                        required=False,
+                        default=None,
+                        help='''Port number that will be used to
+                        transfer storage data(iSCSI data)''')
+
+    # parser.add_argument('--iscsi-target-prefix',
+    #                     dest='iscsi_target_prefix',
+    #                     default='iqn.%Y-%m.iscsi:',
+    #                     help='''
+    #                     Pattern for target name prefix.
+    #                     User can specify plain text or template
+    #                     in python strftime format.
+    #                     Default is "iqn.%%Y-%%m.iscsi:"
+    #                     ''',
+    #                     required=False)
+
     command = parser.add_subparsers(required=True, dest='command')
 
     command.add_parser('pool', add_help=True)
@@ -73,6 +144,13 @@ def parse_args():
                              action='store_true',
                              default=False,
                              help='Provide iSCSI VIP addresses')
+
+    host_parser.add_argument('--iscsi-port',
+                             dest='iscsi_port',
+                             action='store_true',
+                             default=False,
+                             help='Provide iSCSI port number')
+
     host_parser.add_argument('-n', '--nfs',
                              dest='nfs',
                              action='store_true',
@@ -148,7 +226,7 @@ def setup_logging(args, cfg):
     logger.addHandler(err_handler)
 
 
-def duplicate_config_options(cfg):
+def unify_config_options(args, cfg):
     """
     jdssc uses heavily OpenStack deiver code and since some options was renamed
     we have to ensure that old option names translate into new code properly
@@ -172,6 +250,33 @@ def duplicate_config_options(cfg):
     if 'loglevel' in cfg:
         cfg['loglvl'] = cfg['loglevel']
 
+    if args.ssl_cert_verify:
+        if args.ssl_cert_verify.lower() in ('true', '1', 1, 'yes', 'y', 't'):
+            cfg['driver_ssl_cert_verify'] = True
+        if args.ssl_cert_verify.lower() in ('false', '0', 0, 'no', 'n', 'f'):
+            cfg['driver_ssl_cert_verify'] = False
+
+    cfg['driver_use_ssl'] = True
+    cfg['jovian_rest_send_repeats'] = 3
+
+    if args.control_addresses:
+        cfg['san_hosts'] = args.control_addresses.split(',')
+
+    if args.control_port:
+        cfg['san_api_port'] = args.control_port
+
+    if args.data_addresses:
+        cfg['iscsi_vip_addresses'] = args.data_addresses.split(',')
+
+    if args.data_port:
+        cfg['target_port'] = args.data_port
+
+    if args.user_name:
+        cfg['san_login'] = args.user_name
+
+    if args.user_password:
+        cfg['san_password'] = args.user_password
+
     return cfg
 
 
@@ -187,6 +292,10 @@ def hosts(args, uargs, jdss):
             if args['port']:
                 addr = '%s:%s' % (addr, jdss.jovian_iscsi_target_portal_port)
             sys.stdout.write(addr + "\n")
+        return
+
+    if 'iscsi_port' in args and args['iscsi_port']:
+        sys.stdout.write(str(jdss.jovian_iscsi_target_portal_port) + "\n")
         return
 
     if 'nfs' in args and args['nfs']:
@@ -223,8 +332,11 @@ def main():
     # TODO: give better error message for cases when user provides
     # incorrect config path that results in
     # FileNotFoundError: [Errno 2] No such file or directory: 'some file path'
-    config = yaml.safe_load(open(args.config))
-    config = duplicate_config_options(config)
+    config = dict()
+    if args.config:
+        config = yaml.safe_load(open(args.config))
+
+    config = unify_config_options(args, config)
     setup_logging(args, config)
     # list available commands
     cmd = {'pool': pool.Pools,
