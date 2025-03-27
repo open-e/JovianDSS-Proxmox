@@ -39,9 +39,6 @@ use PVE::INotify;
 use PVE::Storage;
 use PVE::Storage::Plugin;
 use PVE::SafeSyslog;
-use PVE::JSONSchema qw(get_standard_option);
-
-use PVE::VZDump::Plugin;
 
 use base qw(PVE::Storage::Plugin);
 
