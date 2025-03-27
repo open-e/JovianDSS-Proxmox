@@ -45,9 +45,9 @@ use base qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.9.9-3';
+my $PLUGIN_VERSION = '0.9.10-3';
 
-#    Open-E JovianDSS Proxmox plugin
+#    Open-E JovianDSS Proxmox-LVM plugin
 #
 #    0.9.8-5 - 2024.09.30
 #               Add rollback to the latest volume snapshot
