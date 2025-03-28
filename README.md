@@ -9,7 +9,7 @@ Once it is done plugins get natively integrated in Proxmox and its user interfac
 ## Plugin difference
 The difference in approches used by plugins can be summorised by following table:
 
-| Feature                                                                              |Original JovianDSS Plugin                                                 |
+| Feature                                                                              | JovianDSS Plugin                                                         |
 |--------------------------------------------------------------------------------------|--------------------------------------------------------------------------|
 | Storage of `iso`, `vztmpl`, `backup` files                                           | :white_check_mark:                                                       | 
 | Storage of `images`(QEMU/KVM VM images), `rootdir`(container data)                   | :white_check_mark:                                                       |
