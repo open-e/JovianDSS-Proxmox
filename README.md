@@ -1,13 +1,11 @@
 # JovianDSS-Proxmox
 
-The JovianDSS Proxmox package provides a set of plugins that extends Proxmox with the capability to use JovianDSS as a storage system.
-The plugins: `joviandss` and `joviandss-lvm` have been installed together since version 0.9.9-3 along side with the internal cli `jdssc`.
-Plugins installation requires manual editing of the Proxmox storage configuration file and providing addition communication information in form of `jdssc` yaml config file.
-Once it is done plugins get natively integrated in Proxmox and its user interface.
+The JovianDSS Proxmox package provides a set of plugins that extend Proxmox VE with the capability to use JovianDSS as a storage system.
+Plugin installation requires manual editing of the Proxmox VE storage configuration file.
+Once completed, the plugins are natively integrated into Proxmox VE and its user interface.
 
 
-## Plugin difference
-The difference in approches used by plugins can be summorised by following table:
+## Plugin features
 
 | Feature                                                                              | JovianDSS Plugin                                                         |
 |--------------------------------------------------------------------------------------|--------------------------------------------------------------------------|
