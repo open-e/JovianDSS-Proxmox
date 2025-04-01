@@ -21,8 +21,6 @@ Once completed, the plugins are natively integrated into Proxmox VE and its user
 | Supported format of storing VM/CT data                                               | `raw` (with **Snapshots supported**)                                     |
 | Thin provisioning                                                                    | :white_check_mark:                                                       |
 
-[`joviandss` config](https://github.com/open-e/JovianDSS-Proxmox/docs/plugin-installation-and-configuration.md) is deprecaded and will be removed, please move your data to `jovnadss-lvm` plugin. 
-
 
 ## Docs
 
