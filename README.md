@@ -4,6 +4,7 @@ The JovianDSS Proxmox package provides a set of plugins that extend Proxmox VE w
 Plugin installation requires manual editing of the Proxmox VE storage configuration file.
 Once completed, the plugins are natively integrated into Proxmox VE and its user interface.
 
+## The plugin is currently under active development. You may experience occasional malfunctions, and some features might change in future updates.
 
 ## Plugin features
 
