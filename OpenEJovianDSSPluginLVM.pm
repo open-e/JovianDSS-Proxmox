@@ -117,60 +117,7 @@ sub plugindata {
 }
 
 sub properties {
-    return {
-        user_name => {
-            description => "User name that will be used in REST communication",
-            type        => 'string',
-            default     => $default_user_name,
-        },
-        user_password => {
-            description => "User password that will be used in REST communication",
-            type        => 'string',
-        },
-        target_prefix => {
-            description => "Prefix of iSCSI target 'iqn.%Y-%m.iscsi:'",
-            type        => 'string',
-            default     => $default_target_prefix,
-        },
-        ssl_cert_verify => {
-            description => "Enforce certificate verification for REST over SSL/TLS",
-            type        => 'boolean',
-            #default     => $default_ssl_cert_verify,
-        },
-        control_addresses => {
-            description => "Coma separated list of ip addresses, that will be used to send control REST requests to JovianDSS storage",
-            type        => 'string',
-        },
-        control_port => {
-            description => "Port number that will be used to send REST request, single for all addresses",
-            type        => 'string',
-            default     => '82',
-        },
-        data_addresses => {
-            description => "Coma separated list of ip addresses, that will be used to transfer storage data(iSCSI data)",
-            type        => 'string',
-        },
-        data_port => {
-            description => "Port number that will be used to transfer storage data(iSCSI data)",
-            type        => 'string',
-            default     => '82',
-        },
-        block_size => {
-            description => 'Block size for newly created volumes, allowed values are: '.
-                           '4K 8K 16K 32K 64K 128K 256K 512K 1M',
-            type        => 'string',
-            #default     => '16K',
-        },
-        thin_provisioning => {
-            description => 'Create new volumes as thin',
-            type        => 'boolean',
-        },
-        log_file => {
-            description => "Log file path",
-            type        => 'string',
-            default     => '/var/log/joviandss.log',
-        },
-    };
+    return {};
 }
 
 sub options {
@@ -429,7 +376,6 @@ sub joviandss_cmd {
         my $exitcode = 0;
         eval {
 
-            #print Data::Dumper->Dump(['/usr/local/bin/jdssc', @$connection_options, @$cmd]);
             $exitcode = run_command(['/usr/local/bin/jdssc', @$connection_options, @$cmd],
                 outfunc => $output, errfunc => $errfunc, timeout => $timeout, noerr => 1);
         };

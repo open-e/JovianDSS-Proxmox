@@ -62,14 +62,17 @@ my $PLUGIN_VERSION = '0.9.9-2';
 #               Fix volume resize problem
 #               Fix incorrect volume allocation size
 #               Fix volume migration problem
+#
 #    0.9.9.1 - 2024.12.13
 #               Provide dynamic target name prefix generation
 #               Enforce VIP addresses for iscsi targets
 #               Fix volume resize for running machine
+#
 #    0.9.9.2 - 2024.12.17
 #               Add logging to jdssc debug file
 #               Fix data coruption during migration
-
+#
+#    0.9.10.8 - 2025.04.02
 # Configuration
 
 my $default_prefix       = "jdss-";
@@ -79,6 +82,11 @@ my $default_debug        = 0;
 my $default_multipath    = 0;
 my $default_content_size = 100;
 my $default_path         = "/mnt/joviandss";
+my $default_target_prefix = "iqn.%Y-%m.iscsi:";
+my $default_ssl_cert_verify = 1;
+my $default_control_port = '82';
+my $default_data_port = '3260';
+my $default_user_name = 'admin';
 
 sub api {
 
@@ -147,6 +155,56 @@ sub properties {
             description => "Name of proxmox dedicated storage size",
             type        => 'string',
         },
+        user_name => {
+            description => "User name that will be used in REST communication",
+            type        => 'string',
+            default     => $default_user_name,
+        },
+        user_password => {
+            description => "User password that will be used in REST communication",
+            type        => 'string',
+        },
+        target_prefix => {
+            description => "Prefix of iSCSI target 'iqn.%Y-%m.iscsi:'",
+            type        => 'string',
+            default     => $default_target_prefix,
+        },
+        ssl_cert_verify => {
+            description => "Enforce certificate verification for REST over SSL/TLS",
+            type        => 'boolean',
+        },
+        control_addresses => {
+            description => "Coma separated list of ip addresses, that will be used to send control REST requests to JovianDSS storage",
+            type        => 'string',
+        },
+        control_port => {
+            description => "Port number that will be used to send REST request, single for all addresses",
+            type        => 'string',
+            default     => '82',
+        },
+        data_addresses => {
+            description => "Coma separated list of ip addresses, that will be used to transfer storage data(iSCSI data)",
+            type        => 'string',
+        },
+        data_port => {
+            description => "Port number that will be used to transfer storage data(iSCSI data)",
+            type        => 'string',
+            default     => '82',
+        },
+        block_size => {
+            description => 'Block size for newly created volumes, allowed values are: '.
+                           '4K 8K 16K 32K 64K 128K 256K 512K 1M',
+            type        => 'string',
+        },
+        thin_provisioning => {
+            description => 'Create new volumes as thin',
+            type        => 'boolean',
+        },
+        log_file => {
+            description => "Log file path",
+            type        => 'string',
+            default     => '/var/log/joviandss.log',
+        },
     };
 }
 
@@ -163,6 +221,17 @@ sub options {
         content_volume_size => { optional => 1 },
         shared              => { optional => 1 },
         disable             => { optional => 1 },
+        target_prefix       => { optional => 1 },
+        ssl_cert_verify     => { optional => 1 },
+        user_name           => { optional => 1 },
+        user_password       => { optional => 1 },
+        control_addresses   => { optional => 1 },
+        control_port        => { optional => 1 },
+        data_addresses      => { optional => 1 },
+        data_port           => { optional => 1 },
+        block_size          => { optional => 1 },
+        thin_provisioning   => { optional => 1 },
+        log_file            => { optional => 1 },
     };
 }
 
@@ -207,6 +276,77 @@ sub get_debug {
     my ($scfg) = @_;
 
     return $scfg->{debug} || $default_debug;
+}
+
+sub get_target_prefix {
+    my ($scfg) = @_;
+    return $scfg->{target_prefix} || $default_target_prefix;
+}
+
+sub get_ssl_cert_verify {
+    my ($scfg) = @_;
+    return $scfg->{ssl_cert_verify};
+}
+
+sub get_control_addresses {
+    my ($scfg) = @_;
+    if (defined($scfg->{control_addresses})) {
+        if (length($scfg->{control_addresses}) > 4) {
+            return $scfg->{control_addresses};
+        }
+    }
+    return undef;
+}
+
+sub get_control_port {
+    my ($scfg) = @_;
+    return $scfg->{control_port} || $default_control_port;
+}
+
+sub get_data_addresses {
+    my ($scfg) = @_;
+
+    if (defined($scfg->{data_addresses})) {
+        return $scfg->{data_addresses};
+    }
+    return undef;
+}
+
+sub get_data_port {
+    my ($scfg) = @_;
+
+    if (defined($scfg->{data_port})) {
+        return $scfg->{data_port};
+    }
+    return '3260';
+}
+
+sub get_user_name {
+    my ($scfg) = @_;
+    return $scfg->{user_name} || $default_user_name;
+}
+
+sub get_user_password {
+    my ($scfg) = @_;
+    return $scfg->{user_password};
+}
+
+sub get_block_size{
+    my ($scfg) = @_;
+    return $scfg->{block_size};
+}
+
+sub get_thin_provisioning{
+    my ($scfg) = @_;
+    if (defined($scfg->{thin_provisioning})) {
+            return $scfg->{thin_provisioning};
+    }
+    return undef;
+}
+
+sub get_log_file {
+    my ($scfg) = @_;
+    return $scfg->{log_file};
 }
 
 my $log_level = {
