@@ -85,7 +85,7 @@ my $default_logfilepath = "/var/log/joviandss/joviandss.log";
 my $default_multipath = 0;
 my $default_content_size = 100;
 my $default_path = "/mnt/joviandss";
-my $default_target_prefix = "iqn.%Y-%m.iscsi:";
+my $default_target_prefix = "iqn.2025-04.proxmox.joviandss-lvm.iscsi:";
 my $default_ssl_cert_verify = 1;
 my $default_control_port = '82';
 my $default_data_port = '3260';
@@ -128,7 +128,7 @@ sub properties {
             type        => 'string',
         },
         target_prefix => {
-            description => "Prefix of iSCSI target 'iqn.%Y-%m.iscsi:'",
+            description => "Prefix of iSCSI target 'iqn.2025-04.proxmox.joviandss-lvm.iscsi:'",
             type        => 'string',
             default     => $default_target_prefix,
         },

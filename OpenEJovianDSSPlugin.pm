@@ -1296,7 +1296,7 @@ sub ensure_content_volume_nfs {
     foreach my $host (@hosts) {
         my $not_found_code = 1;
         my $nfs_path = "${host}:/Pools/${pool}/${content_volume_name}";
-        run_command(["/usr/bin/mount", "-t", "nfs", "-o", "vers=3,nconnect=4", $nfs_path, $content_path], outfunc => sub {}, timeout => 10, noerr => 1 );
+        run_command(["/usr/bin/mount", "-t", "nfs", "-o", "vers=3,nconnect=4,sync", $nfs_path, $content_path], outfunc => sub {}, timeout => 10, noerr => 1 );
 
         my $cmd = ['/usr/bin/findmnt', '-t', 'nfs', '-S', $nfs_path, '-M', $content_path];
         eval { $not_found_code = run_command($cmd, outfunc => sub {}) };

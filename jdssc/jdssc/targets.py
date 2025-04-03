@@ -195,7 +195,9 @@ class Targets():
                       " support VIP white listing for targets. Please update "
                       "JovianDSS to the newest version.")
             exit(1)
-
+        except jexc.JDSSException as jgerr:
+            LOG.error(jgerr.message)
+            exit(1)
         out = ''
         if self.args['host']:
             out += ' ' + ':'.join(provider_location.split()[0].split(':')[:-1])
@@ -209,12 +211,16 @@ class Targets():
         if self.args['target_prefix']:
             self.jdss.set_target_prefix(self.args['target_prefix'])
 
-        if self.args['snapshot_name']:
-            self.jdss.remove_export_snapshot(self.args['snapshot_name'],
-                                             self.args['volume_name'])
-        else:
-            self.jdss.remove_export(self.args['volume_name'],
-                                    direct_mode=self.args['direct_mode'])
+        try:
+            if self.args['snapshot_name']:
+                self.jdss.remove_export_snapshot(self.args['snapshot_name'],
+                                                 self.args['volume_name'])
+            else:
+                self.jdss.remove_export(self.args['volume_name'],
+                                        direct_mode=self.args['direct_mode'])
+        except jexc.JDSSException as jgerr:
+            LOG.error(jgerr.message)
+            exit(1)
 
     def get(self):
         if self.args['target_prefix']:
@@ -234,17 +240,29 @@ class Targets():
                     direct=self.args['direct_mode'])
             except jexc.JDSSTargetNotFoundException:
                 return
+            except jexc.JDSSException as jgerr:
+                LOG.error(jgerr.message)
+                exit(1)
         LOG.debug("target is %s", target)
 
         provider_location = None
         if self.args['snapshot_name']:
-            provider_location = self.jdss.get_provider_location(
-                self.args['volume_name'],
-                snapshot_name=self.args['snapshot_name'])
+            try:
+                provider_location = self.jdss.get_provider_location(
+                    self.args['volume_name'],
+                    snapshot_name=self.args['snapshot_name'])
+            except jexc.JDSSException as jgerr:
+                LOG.error(jgerr.message)
+                exit(1)
+
         elif self.args['volume_name']:
-            provider_location = self.jdss.get_provider_location(
-                self.args['volume_name'],
-                direct=self.args['direct_mode'])
+            try:
+                provider_location = self.jdss.get_provider_location(
+                    self.args['volume_name'],
+                    direct=self.args['direct_mode'])
+            except jexc.JDSSException as jgerr:
+                LOG.error(jgerr.message)
+                exit(1)
         else:
             sys.exit(1)
 
