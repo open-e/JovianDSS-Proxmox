@@ -26,6 +26,7 @@ install:
 	@echo "Installing proxmox plugin"
 	install -D -m 0644 ./OpenEJovianDSSPlugin.pm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
 	install -D -m 0644 ./OpenEJovianDSSPluginLVM.pm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPluginLVM.pm
+	install -D -m 0644 ./OpenEJovianDSS/Common.pm $(DESTDIR)/usr/share/perl5/OpenEJovianDSS/Common.pm
 
 	$(MAKE) -C jdssc install DESTDIR=$(DESTDIR)
 
