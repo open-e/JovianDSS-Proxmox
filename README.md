@@ -1,15 +1,14 @@
 # JovianDSS-Proxmox
 
-The JovianDSS Proxmox package provides a set of plugins that extends Proxmox with the capability to use JovianDSS as a storage system.
-The plugins: `joviandss` and `joviandss-lvm` have been installed together since version 0.9.9-3 along side with the internal cli `jdssc`.
-Plugins installation requires manual editing of the Proxmox storage configuration file and providing addition communication information in form of `jdssc` yaml config file.
-Once it is done plugins get natively integrated in Proxmox and its user interface.
+The JovianDSS Proxmox package provides a set of plugins that extend Proxmox VE with the capability to use JovianDSS as a storage system.
+Plugin installation requires manual editing of the Proxmox VE storage configuration file.
+Once completed, the plugins are natively integrated into Proxmox VE and its user interface.
 
+## The plugin is currently under active development. You may experience occasional malfunctions, and some features might change in future updates.
 
-## Plugin difference
-The difference in approches used by plugins can be summorised by following table:
+## Plugin features
 
-| Feature                                                                              |Original JovianDSS Plugin                                                 |
+| Feature                                                                              | JovianDSS Plugin                                                         |
 |--------------------------------------------------------------------------------------|--------------------------------------------------------------------------|
 | Storage of `iso`, `vztmpl`, `backup` files                                           | :white_check_mark:                                                       | 
 | Storage of `images`(QEMU/KVM VM images), `rootdir`(container data)                   | :white_check_mark:                                                       |
@@ -22,8 +21,6 @@ The difference in approches used by plugins can be summorised by following table
 | VM atomic snapshots                                                                  | :x: Proxmox is responsible for maintaining data integrity during snapshot creation |
 | Supported format of storing VM/CT data                                               | `raw` (with **Snapshots supported**)                                     |
 | Thin provisioning                                                                    | :white_check_mark:                                                       |
-
-[`joviandss` config](https://github.com/open-e/JovianDSS-Proxmox/docs/plugin-installation-and-configuration.md) is deprecaded and will be removed, please move your data to `jovnadss-lvm` plugin. 
 
 
 ## Docs

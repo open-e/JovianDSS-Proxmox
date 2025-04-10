@@ -31,6 +31,7 @@ LOG = logging.getLogger(__name__)
 
 
 Size_Pattern = re.compile(r"^(\d+[GgMmKk]?)$")
+Allowed_ISCSI_Symbols = re.compile(r"^[a-z\-\.\:\d]+$")
 
 
 class JovianDSSDriver(object):
@@ -946,9 +947,13 @@ class JovianDSSDriver(object):
         This function is a final point target name generation.
         """
 
-        now = datetime.datetime.now()
-        dated_prefix = now.strftime(self.jovian_target_prefix)
+        target_prefix = self.jovian_target_prefix
+        if not Allowed_ISCSI_Symbols.match(target_prefix):
+            raise jexc.JDSSException(
+                "Target prefix %s contains forbiden symbols" %
+                target_prefix)
 
+        Allowed_ISCSI_Symbols
         allowed = list(string.ascii_lowercase)
         allowed.extend(['.', '-'])
         allowed.extend(list(string.digits))
@@ -959,13 +964,13 @@ class JovianDSSDriver(object):
                 vidstr += c
             else:
                 vidstr += '-'
-        if len(dated_prefix) > 201:
+        if len(target_prefix) > 201:
             raise Exception("Target prefix %s is too long",
-                            dated_prefix)
+                            target_prefix)
         vidstr += "-" + hashlib.sha256(vid.encode()).hexdigest()
-        vidstr = vidstr[-255+len(dated_prefix):]
+        vidstr = vidstr[-255+len(target_prefix):]
 
-        target_id = f'{dated_prefix}{vidstr}'
+        target_id = f'{target_prefix}{vidstr}'
         return target_id[-255:]
 
     def get_target_name(self, volume_name, snapshot_name=None):
