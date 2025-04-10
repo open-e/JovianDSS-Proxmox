@@ -45,7 +45,7 @@ use base qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.9.10-9';
+my $PLUGIN_VERSION = '0.9.10-8';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -73,7 +73,10 @@ my $PLUGIN_VERSION = '0.9.10-9';
 #               Add logging to jdssc debug file
 #               Fix data coruption during migration
 #
-#    0.9.10-9 - 2025.04.02
+#    0.9.10-8 - 2025.04.02
+#                Make plugin configurable solely by from storage.cfg
+#                Provide code style improvement
+
 # Configuration
 
 
