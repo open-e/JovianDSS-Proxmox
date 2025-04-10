@@ -18,6 +18,10 @@ package OpenEJovianDSS::Common;
 use strict;
 use warnings;
 use Exporter 'import';
+use Carp qw( confess );
+use Data::Dumper;
+
+#use PVE::SafeSyslog;
 
 use Time::HiRes qw(gettimeofday);
 
@@ -136,6 +140,7 @@ sub get_target_prefix {
 
 sub get_ssl_cert_verify {
     my ($scfg) = @_;
+
     return $scfg->{ssl_cert_verify};
 }
 
@@ -276,30 +281,6 @@ sub clean_word {
 
 my $log_file_path = undef;
 
-#my $log_level_getter = do {
-#
-#    my %log_level = {
-#        DEBUG => 'DEBUG',
-#        ERROR => 'ERROR',
-#        INFO  => 'INFO',
-#        WARN  => 'WARN',
-#    };
-#
-#    sub {
-#        my ($lvl) = @_;
-#        my $uclvl = uc($lvl);
-#
-#        return exists $log_level{$uclvl} ? $log_level{$uclvl} : 'DEBUG';
-#    }
-#};
-
-#sub get_log_level {
-#    my ($scfg) = @_;
-#    $scfg->{multipath} || $default_multipath;
-#
-#    #return $log_level_getter->($scfg);
-#}
-
 sub map_log_level_to_number {
     my ($level) = @_;
     my $upper = uc($level);
@@ -328,6 +309,7 @@ sub debugmsg {
     my $config_level = get_log_level($scfg);
     if ( $config_level >= $msg_level ) {
 
+        $log_file_path = get_log_file($scfg);
         if ( !defined($log_file_path) ) {
             $log_file_path =
               clean_word( joviandss_cmd( $scfg, [ 'cfg', '--getlogfile' ] ) );
@@ -375,8 +357,6 @@ sub joviandss_cmd {
 
     my $ssl_cert_verify = get_ssl_cert_verify($scfg);
     if ( defined($ssl_cert_verify) ) {
-
-        #print("Cert verify flag $ssl_cert_verify\n");
         push @$connection_options, '--ssl-cert-verify', $ssl_cert_verify;
     }
 
@@ -426,7 +406,6 @@ sub joviandss_cmd {
         my $errfunc  = sub { $err .= "$_[0]\n" };
         my $exitcode = 0;
         eval {
-
             $exitcode = run_command(
                 [ '/usr/local/bin/jdssc', @$connection_options, @$cmd ],
                 outfunc => $output,
@@ -450,7 +429,6 @@ sub joviandss_cmd {
         if ($err) {
             die "${err}\n";
         }
-
         die "$rerr\n";
     }
 
