@@ -68,6 +68,8 @@ our @EXPORT_OK = qw(
   safe_var_print
   debugmsg
   joviandss_cmd
+  joviandss_volume_snapshot_info
+  joviandss_volume_rollback_is_possible
 );
 
 our %EXPORT_TAGS = ( all => [@EXPORT_OK], );
@@ -111,8 +113,7 @@ sub get_config {
 
     return $scfg->{config} if ( defined( $scfg->{config} ) );
 
-    my $pool = get_pool($scfg);
-    return "/etc/pve/${default_prefix}${pool}.yaml";
+    return undef;
 }
 
 sub get_debug {
@@ -322,11 +323,10 @@ sub debugmsg {
         my ( $sec, $min, $hour, $day, $month, $year ) = localtime($seconds);
         $year  += 1900;
         $month += 1;
-        my $line = sprintf(
-            "%04d-%02d-%02d %02d:%02d:%02d.%03d - Plugin - %s - %s",
-            $year, $month,        $day,    $hour, $min,
-            $sec,  $milliseconds, $dlevel, $msg
-        );
+        my $line =
+          sprintf( "%04d-%02d-%02d %02d:%02d:%02d.%03d - plugin - %s - %s",
+            $year, $month,        $day,        $hour, $min,
+            $sec,  $milliseconds, uc($dlevel), $msg );
 
         open( my $fh, '>>', $log_file_path )
           or die "Could not open file '$log_file_path' $!";
@@ -435,4 +435,100 @@ sub joviandss_cmd {
     die "Unhadled state during running JovianDSS command\n";
 }
 
+# Returns a hash with the snapshot names as keys and the following data:
+# id        - Unique id to distinguish different snapshots even if the have the same name.
+# timestamp - Creation time of the snapshot (seconds since epoch).
+# Returns an empty hash if the volume does not exist.
+sub joviandss_volume_snapshot_info {
+    my ( $scfg, $storeid, $volname ) = @_;
+
+    my $pool = get_pool($scfg);
+
+    my $output = joviandss_cmd(
+        $scfg,
+        [
+            'pool',      $pool,  'volume', $volname,
+            'snapshots', 'list', '--guid', '--creation'
+        ]
+    );
+
+    my $snapshots = {};
+    my @lines     = split( /\n/, $output );
+    for my $line (@lines) {
+        my ( $name, $guid, $creation ) = split( /\s+/, $line );
+        my ($sname) = split;
+        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+"Volume ${volname} has snapshot ${name} with id ${guid} made at ${creation}\n"
+        );
+        $snapshots->{$name} = {
+            id        => $guid,
+            timestamp => $creation,
+        };
+    }
+
+    return $snapshots;
+}
+
+sub joviandss_volume_rollback_is_possible {
+    my ( $scfg, $storeid, $volname, $snap, $blockers ) = @_;
+
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
+
+    my $res;
+    eval {
+        $res = joviandss_cmd(
+            $scfg,
+            [
+                "pool",     $pool, "volume",   $volname,
+                "snapshot", $snap, "rollback", "check",
+                '--concise'
+            ]
+        );
+    };
+    if ($@) {
+        die
+"Unable to rollback volume '${volname}' to snapshot '${snap}' because of: $@";
+    }
+
+    my $blocker_found = 0;
+    $blockers //= [];
+    foreach my $line ( split( /\n/, $res ) ) {
+        foreach my $obj ( split( /\s+/, $line ) ) {
+            push $blockers->@*, $obj;
+            $blocker_found = 1;
+        }
+    }
+
+    die
+"Unable to rollback volume '${volname}' to snapshot ${snap}' as resources ${res} will be lost in the process\n"
+      if $blocker_found > 0;
+
+    return 1;
+}
+
+sub get_vm_statate {
+    my ($vmid) = @_;
+
+    my $cmd = [
+        'pvesh', 'get', 'cluster/resources', '-type', 'vm', '--output-format',
+        'json'
+    ];
+
+    my $json_out = '';
+    my $outfunc  = sub { $json_out .= "$_[0]\n" };
+
+    run_command(
+        $cmd,
+        errmsg  => "Getting VM/CT info failed",
+        outfunc => $outfunc
+    );
+
+    my $data = decode_json($json_out);
+    foreach my $entry (@$data) {
+        if ( $entry->{vmid} == $vmid ) {
+            return $entry->{status};
+        }
+    }
+    return undef;
+}
 1;

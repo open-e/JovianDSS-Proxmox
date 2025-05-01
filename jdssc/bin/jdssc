@@ -119,17 +119,6 @@ def parse_args():
                         help='''Port number that will be used to
                         transfer storage data(iSCSI data)''')
 
-    # parser.add_argument('--iscsi-target-prefix',
-    #                     dest='iscsi_target_prefix',
-    #                     default='iqn.%Y-%m.iscsi:',
-    #                     help='''
-    #                     Pattern for target name prefix.
-    #                     User can specify plain text or template
-    #                     in python strftime format.
-    #                     Default is "iqn.%%Y-%%m.iscsi:"
-    #                     ''',
-    #                     required=False)
-
     command = parser.add_subparsers(required=True, dest='command')
 
     command.add_parser('pool', add_help=True)
@@ -211,7 +200,7 @@ def setup_logging(args, cfg):
     logging.basicConfig(
         level=numeric_level,
         format=(
-            '%(asctime)s.%(msecs)d - %(name)s - %(levelname)s - %(message)s'),
+            '%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s'),
         datefmt='%Y-%m-%d %H:%M:%S',
         handlers=handlers
     )

@@ -57,7 +57,17 @@ class Snapshots():
                             default=False,
                             help='Do not fail if snapshot with such name exists')
 
-        parsers.add_parser('list')
+        list = parsers.add_parser('list')
+        list.add_argument('--creation',
+                          dest='creation',
+                          action='store_true',
+                          default=False,
+                          help='Add creation time to output')
+        list.add_argument('--guid',
+                          dest='guid',
+                          action='store_true',
+                          default=False,
+                          help='Add guid to output')
         kargs, ukargs = parser.parse_known_args(args)
 
         if kargs.snapshots_action is None:
@@ -86,5 +96,10 @@ class Snapshots():
 
         data = self.jdss.list_snapshots(volume)
         for s in data:
-            line = "{}\n".format(s['name'])
+            line = "{}".format(s['name'])
+            if self.args['guid']:
+                line += " {}".format(s['guid'])
+            if self.args['creation']:
+                line += " {}".format(s['creation'])
+            line += "\n"
             sys.stdout.write(line)

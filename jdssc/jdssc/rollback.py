@@ -49,7 +49,12 @@ class Rollback():
 
         parsers = parser.add_subparsers(dest='rollback_action')
 
-        parsers.add_parser('check')
+        check = parsers.add_parser('check')
+        check.add_argument('--concise',
+                           dest='concise',
+                           action='store_true',
+                           default=False,
+                           help='Print only resources that will be affected')
         parsers.add_parser('do')
         kargs, ukargs = parser.parse_known_args(args)
 
@@ -70,15 +75,22 @@ class Rollback():
                         'snapshot': self.args['snapshot_name']})
                 if ('snapshots' in dependency and
                         len(dependency['snapshots']) > 0):
-                    msg += ("by snapshots: %(dependency)s\n" %
-                            {'dependency': ' '.join(dependency['snapshots'])})
-                    print("snapshot(s): " + ' '.join(dependency['snapshots']))
+                    if self.args['concise']:
+                        print(' '.join(dependency['snapshots']))
+                    else:
+                        msg += ("by snapshots: %(dependency)s\n" %
+                                {'dependency': ' '.join(dependency['snapshots'])})
+                        print("snapshot(s): " +
+                              ' '.join(dependency['snapshots']))
 
                 if ('clones' in dependency and
                         len(dependency['clones']) > 0):
-                    msg += ("by clones: %(dependency)s\n" %
-                            {'dependency': ' '.join(dependency['clones'])})
-                    print("clone(s): " + ' '.join(dependency['clones']))
+                    if self.args['concise']:
+                        print(' '.join(dependency['clones']))
+                    else:
+                        msg += ("by clones: %(dependency)s\n" %
+                                {'dependency': ' '.join(dependency['clones'])})
+                        print("clone(s): " + ' '.join(dependency['clones']))
 
                 LOG.info(msg)
                 return

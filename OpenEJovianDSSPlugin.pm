@@ -18,7 +18,7 @@ package PVE::Storage::Custom::OpenEJovianDSSPlugin;
 use strict;
 use warnings;
 
-#use Data::Dumper;
+use Data::Dumper;
 #use Encode   qw(decode encode);
 #use Storable qw(lock_store lock_retrieve);
 
@@ -81,13 +81,10 @@ my $PLUGIN_VERSION = '0.9.10-8';
 
 
 sub api {
-    my $apiver = PVE::Storage::APIVER;
 
-    if ( $apiver >= 3 and $apiver <= 10 ) {
-        return $apiver;
-    }
+    my $apiver = 11;
 
-    return 10;
+    return $apiver;
 }
 
 sub type {
@@ -223,6 +220,9 @@ sub options {
         block_size          => { optional => 1 },
         thin_provisioning   => { optional => 1 },
         log_file            => { optional => 1 },
+        'create-subdirs'    => { optional => 1 },
+        'create-base-path'  => { optional => 1 },
+        'content-dirs'      => { optional => 1 },
     };
 }
 
@@ -340,6 +340,31 @@ sub path {
     return $path;
 }
 
+sub rename_volume {
+    my ($class, $scfg, $storeid, $source_volname, $target_vmid, $target_volname) = @_;
+
+    my $pool   = OpenEJovianDSS::Common::get_pool($scfg);
+
+    my ($source_vtype,
+        $source_volume_name,
+        $source_vmid,
+        $source_basename,
+        $source_basedvmid,
+        $source_isBase,
+        $source_format) = $class->parse_volname($source_volname);
+
+    $target_volname = $class->find_free_diskname($storeid, $scfg, $source_vmid, $source_format) if (! defined($target_volname));
+
+    OpenEJovianDSS::Common::joviandss_cmd(
+        $scfg,
+        [
+            "pool", $pool,
+            "volume", $source_volname,
+            "rename", $target_volname
+        ]
+    );
+
+}
 
 sub create_base {
     my ( $class, $storeid, $scfg, $volname ) = @_;
@@ -1050,6 +1075,15 @@ sub volume_snapshot {
     );
 
 }
+# Returns a hash with the snapshot names as keys and the following data:
+# id        - Unique id to distinguish different snapshots even if the have the same name.
+# timestamp - Creation time of the snapshot (seconds since epoch).
+# Returns an empty hash if the volume does not exist.
+sub volume_snapshot_info {
+    my ($class, $scfg, $storeid, $volname) = @_;
+
+    return OpenEJovianDSS::Common::joviandss_volume_snapshot_info($scfg, $storeid, $volname);
+}
 
 sub volume_snapshot_needs_fsfreeze {
 
@@ -1060,8 +1094,6 @@ sub volume_snapshot_rollback {
     my ( $class, $scfg, $storeid, $volname, $snap ) = @_;
 
     my $pool   = OpenEJovianDSS::Common::get_pool($scfg);
-
-    my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
     OpenEJovianDSS::Common::joviandss_cmd(
         $scfg,
@@ -1074,33 +1106,11 @@ sub volume_snapshot_rollback {
     );
 }
 
+
 sub volume_rollback_is_possible {
-    my ( $class, $scfg, $storeid, $volname, $snap ) = @_;
+    my ($class, $scfg, $storeid, $volname, $snap, $blockers) = @_;
 
-    my $pool   = OpenEJovianDSS::Common::get_pool($scfg);
-
-    my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
-
-    my $res = OpenEJovianDSS::Common::joviandss_cmd(
-        $scfg,
-        [
-            "pool",     $pool,
-            "volume",   $volname,
-            "snapshot", $snap,
-            "rollback", "check"
-        ]
-    );
-    if ( length($res) > 1 ) {
-        die "Unable to rollback "
-          . $volname
-          . " to snapshot "
-          . $snap
-          . " because the resources(s) "
-          . $res
-          . " will be lost in the process. Please remove the dependent resources before continuing.\n";
-    }
-
-    return 0;
+    return OpenEJovianDSS::Common::joviandss_volume_rollback_is_possible($scfg, $storeid, $volname, $snap, $blockers);
 }
 
 sub volume_snapshot_delete {
@@ -1237,7 +1247,11 @@ sub ensure_content_volume_nfs {
         );
     };
 
-    if ($@) {
+    if ( ! defined($content_volume_size_current)) {
+        # If we are not able to identify size of content volume
+        # most likely it does not exists
+        # there fore we have to create it
+        OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Creating content volume with size ${content_volume_size}\n");
         OpenEJovianDSS::Common::joviandss_cmd(
             $scfg,
             [
@@ -1246,8 +1260,10 @@ sub ensure_content_volume_nfs {
                 'create', '-d', '-q', "${content_volume_size}G", '-n', $content_volume_name
             ]
         );
-    }
-    else {
+    } elsif (defined($content_volume_size_current) &&
+             $content_volume_size_current =~ /^\d+$/ &&
+             $content_volume_size_current > 0 ) {
+
         # TODO: check for volume size on the level of OS
         # If volume needs resize do it with jdssc
         die "Unable to identify content volume ${content_volume_name} size\n"
@@ -1264,6 +1280,9 @@ sub ensure_content_volume_nfs {
                 ]
             );
         }
+    } else {
+        OpenEJovianDSS::Common::debugmsg( $scfg, "warning", "Unable to process current size of content volume <${content_volume_size_current}>, please make sure that JovianDSS is accessible over network\n");
+        die "Unable to process current size of content volume <${content_volume_size_current}>, please make sure that JovianDSS is accessible over network\n";
     }
 
     my @hosts = $class->get_nfs_addresses( $scfg, $storeid );
@@ -1414,13 +1433,14 @@ sub ensure_content_volume {
             ]
         );
     };
-    if ($@) {
+    if ( ! defined($content_volume_size_current)) {
         OpenEJovianDSS::Common::joviandss_cmd(
             $scfg,
             $create_vol_cmd
         );
-    }
-    else {
+    } elsif (defined($content_volume_size_current) &&
+             $content_volume_size_current =~ /^\d+$/ &&
+             $content_volume_size_current > 0 ) {
         # TODO: check for volume size on the level of OS
         # If volume needs resize do it with jdssc
         $content_volume_size_current = OpenEJovianDSS::Common::clean_word($content_volume_size_current);
@@ -1434,6 +1454,9 @@ sub ensure_content_volume {
                 ]
             );
         }
+    } else {
+        OpenEJovianDSS::Common::debugmsg( $scfg, "warning", "Unable to process current size of content volume size <${content_volume_size_current}>, please make sure that JovianDSS is accessible over network\n");
+        die "Unable to process current size of content volume size <${content_volume_size_current}>, please make sure that JovianDSS is accessible over network\n";
     }
 
     $class->activate_volume_ext( $storeid, $scfg, $content_volname, "", $cache,
@@ -1496,6 +1519,10 @@ sub ensure_fs {
         $dir_path = "$path/rootdir";
         mkdir $dir_path;
         $dir_path = "$path/snippets";
+        mkdir $dir_path;
+        $dir_path = "$path/template";
+        mkdir $dir_path;
+        $dir_path = "$path/template/cache";
         mkdir $dir_path;
     }
 }
@@ -1837,8 +1864,6 @@ m!^backup/([^/]+(?:\.(?:tgz|(?:(?:tar|vma)(?:\.(?:${\COMPRESSOR_RE}))?))))$!
 sub storage_can_replicate {
     my ( $class, $scfg, $storeid, $format ) = @_;
 
-    return 1 if $format eq 'raw';
-
     return 0;
 }
 
@@ -1849,12 +1874,38 @@ sub volume_has_feature {
     ) = @_;
 
     my $features = {
-        snapshot   => { base    => 1, current => 1, snap => 1 },
-        clone      => { base    => 1, current => 1, snap => 1, images => 1 },
-        template   => { current => 1 },
-        copy       => { base    => 1,            current => 1, snap => 1 },
-        sparseinit => { base    => { raw => 1 }, current => { raw => 1 } },
-        replicate  => { base    => 1,            current => 1, raw => 1 },
+        snapshot   => {
+            base    => 1,
+            current => 1,
+            snap => 1
+        },
+        clone      => {
+            base    => 1,
+            current => 1,
+            snap => 1,
+            images => 1
+        },
+        template   => {
+            current => 1
+        },
+        copy       => {
+            base    => 1,
+            current => 1,
+            snap => 1
+        },
+        sparseinit => {
+            base    => {
+                raw => 1
+            },
+            current => {
+                raw => 1
+            }
+        },
+        rename     => {
+            current => {
+                raw => 1
+            },
+        }
     };
 
     my ( $vtype, $name, $vmid, $basename, $basevmid, $isBase ) =

@@ -81,13 +81,9 @@ my $LVM_RESERVATION = 4 * 1024 * 1024;
 
 sub api {
 
-   my $apiver = PVE::Storage::APIVER;
+    my $apiver = 11;
 
-   if ($apiver >= 3 and $apiver <= 10) {
-      return $apiver;
-   }
-
-   return 10;
+    return $apiver;
 }
 
 sub type {
@@ -699,7 +695,6 @@ sub vm_disk_exists {
 
     $vmdiskname = $class->vm_disk_name($vmid, $isBase);
 
-   #my $config = get_config($scfg);
     my $pool   = get_pool($scfg);
 
     my $output;
@@ -720,7 +715,6 @@ sub vm_disk_exists {
 sub vm_disk_size {
     my ($class, $scfg, $vmdiskname) = @_;
 
-   #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my $output = OpenEJovianDSS::Common::joviandss_cmd($scfg, ["pool", $pool, "volume", $vmdiskname, "get", "-s"]);
@@ -732,7 +726,6 @@ sub vm_disk_size {
 sub vm_disk_extend_to {
     my ($class,$storeid, $scfg, $vmdiskname, $device, $newsize) = @_;
 
-   #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     OpenEJovianDSS::Common::joviandss_cmd($scfg, ["pool", "${pool}", "volume", "${vmdiskname}", "resize", "${newsize}"]);
@@ -745,7 +738,6 @@ sub vm_disk_extend_to {
 sub alloc_image_routine {
     my ($class, $storeid, $scfg, $vmid, $volname, $size_bytes, $thin_provisioning, $block_size) = @_;
 
-   #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my $vmdiskname = $class->vm_disk_name($vmid, 0);
@@ -818,7 +810,6 @@ sub alloc_image_routine {
 sub alloc_image {
     my ( $class, $storeid, $scfg, $vmid, $fmt, $volname, $size ) = @_;
 
-   #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     unless ($size =~ m/\d$/) {
@@ -873,7 +864,6 @@ sub alloc_image {
 sub free_image {
     my ( $class, $storeid, $scfg, $volname, $isBase, $format) = @_;
 
-   #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my ($vtype, undef, $vmid, undef, undef, undef, undef) = $class->parse_volname($volname);
@@ -1147,8 +1137,6 @@ sub get_multipath_path {
 sub get_iscsi_addresses {
     my ($class, $scfg, $storeid, $addport) = @_;
 
-   #my $config = get_config($scfg);
-
     my $da = get_data_addresses($scfg);
 
     my $dp = get_data_port($scfg);
@@ -1262,7 +1250,6 @@ sub get_active_target_name {
 sub get_target_name {
     my ($class, $scfg, $volname, $snapname, $content_volume_flag) = @_;
 
-   #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my $prefix = get_target_prefix($scfg);
@@ -1289,7 +1276,6 @@ sub get_target_name {
 sub get_target_path {
     my ($class, $scfg, $target, $storeid, $expected) = @_;
 
-   #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my @hosts = $class->get_iscsi_addresses($scfg, $storeid, 1);
@@ -1369,7 +1355,6 @@ sub list_images {
 
     #my $nodename = PVE::INotify::nodename();
 
-    #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my $res = [];
@@ -1437,7 +1422,6 @@ sub list_images {
 sub volume_snapshot {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
 
-    #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
@@ -1448,6 +1432,16 @@ sub volume_snapshot {
 
 }
 
+sub volume_snapshot_info {
+    my ($class, $scfg, $storeid, $volname) = @_;
+
+    my ($vtype, $name, $vmid) = $class->parse_volname($volname);
+
+    my $vmdiskname = $class->vm_disk_name($vmid, 0);
+
+    return OpenEJovianDSS::Common::joviandss_volume_snapshot_info($scfg, $storeid, $vmdiskname);
+}
+
 sub volume_snapshot_needs_fsfreeze {
 
     return 0;
@@ -1456,7 +1450,6 @@ sub volume_snapshot_needs_fsfreeze {
 sub volume_snapshot_rollback {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
 
-    #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
@@ -1472,27 +1465,18 @@ sub volume_snapshot_rollback {
 }
 
 sub volume_rollback_is_possible {
-    my ($class, $scfg, $storeid, $volname, $snap) = @_;
-
-    #my $config = get_config($scfg);
-    my $pool = get_pool($scfg);
+    my ($class, $scfg, $storeid, $volname, $snap, $blockers) = @_;
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
     my $vmdiskname = $class->vm_disk_name($vmid, 0);
 
-    my $res = OpenEJovianDSS::Common::joviandss_cmd($scfg, ["pool", $pool, "volume", $vmdiskname, "snapshot", $snap, "rollback", "check"]);
-    if ( length($res) > 1) {
-        die "Unable to rollback ". $volname . " to snapshot " . $snap . " because the resources(s) " . $res . " will be lost in the process. Please remove the dependent resources before continuing.\n"
-    }
-
-    return 0;
+    return OpenEJovianDSS::Common::joviandss_volume_rollback_is_possible($scfg, $storeid, $vmdiskname, $snap, $blockers);
 }
 
 sub volume_snapshot_delete {
     my ($class, $scfg, $storeid, $volname, $snap, $running) = @_;
 
-    #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my $starget = $class->get_active_target_name(scfg => $scfg,
@@ -1513,7 +1497,6 @@ sub volume_snapshot_delete {
 sub volume_size_info {
     my ($class, $scfg, $storeid, $volname, $timeout) = @_;
 
-    #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my ($vtype, $volume_name, $vmid, $basename, $basedvmid, $isBase, $format) = $class->parse_volname($volname);
@@ -1543,7 +1526,6 @@ sub volume_size_info {
 sub status {
     my ( $class, $storeid, $scfg, $cache ) = @_;
 
-    #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my $jdssc =  OpenEJovianDSS::Common::joviandss_cmd($scfg, ["pool", $pool, "get"]);
@@ -1575,7 +1557,6 @@ sub vm_disk_connect {
 
     OpenEJovianDSS::Common::debugmsg($scfg, "debug", "Activate vm disk ${vmdiskname}\n");
 
-    #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my $target = $class->get_target_name($scfg, $vmdiskname, $snapname, 0);
@@ -1632,7 +1613,6 @@ sub vm_disk_iscsi_connect {
 
     OpenEJovianDSS::Common::debugmsg($scfg, "debug", "Activate vm disk ${vmdiskname}\n");
 
-    #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my $target = $class->get_active_target_name(scfg => $scfg,
@@ -1695,7 +1675,6 @@ sub vm_disk_disconnect_all {
     # virtual machine format is vm-id
     OpenEJovianDSS::Common::debugmsg($scfg, "debug", "Disconnect all resources for vm disk ${vmdiskname} start");
 
-    #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my $target = $class->get_active_target_name(scfg => $scfg,
@@ -1736,7 +1715,6 @@ sub vm_disk_disconnect_all {
 sub vm_disk_remove {
     my ( $class, $storeid, $scfg, $vmdiskname, $cache ) = @_;
 
-    #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my $prefix = get_target_prefix($scfg);
@@ -1916,7 +1894,6 @@ sub update_vm_disk {
 sub volume_resize {
     my ( $class, $scfg, $storeid, $volname, $size, $running ) = @_;
 
-   #my $config = get_config($scfg);
     my $pool = get_pool($scfg);
 
     my ($vtype, $volume_name, $vmid, $basename, $basedvmid, $isBase, $format) = $class->parse_volname($volname);
@@ -2005,8 +1982,6 @@ sub parse_volname {
 sub storage_can_replicate {
     my ($class, $scfg, $storeid, $format) = @_;
 
-    return 1 if $format eq 'raw';
-
     return 0;
 }
 
@@ -2020,7 +1995,11 @@ sub volume_has_feature {
         template => { current => 1 },
         copy => { base => 1, current => 1, snap => 1},
         sparseinit => { base => { raw => 1 }, current => { raw => 1} },
-        replicate => { base => 1, current => 1, raw => 1},
+        rename     => {
+            current => {
+                raw => 1
+            },
+        }
     };
 
     my ( $vtype, $name, $vmid, $basename, $basevmid, $isBase ) =
