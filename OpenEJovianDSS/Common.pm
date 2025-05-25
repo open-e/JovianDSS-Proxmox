@@ -20,6 +20,7 @@ use warnings;
 use Exporter 'import';
 use Carp qw( confess );
 use Data::Dumper;
+use File::Basename;
 
 #use PVE::SafeSyslog;
 
@@ -70,9 +71,35 @@ our @EXPORT_OK = qw(
   joviandss_cmd
   joviandss_volume_snapshot_info
   joviandss_volume_rollback_is_possible
+
+  get_iscsi_addresses
+  get_target_path
+  get_active_target_name
+  get_vm_target_group_name
+  get_content_target_group_name
+
+  get_scsiid_from_target
+  get_scsiid_from_target_paths
+
+  publish_volume
+  stage_volume_iscsi
+  stage_volume_multipath
+
+  unpublish_volume
+  unstage_volume_iscsi
+  unstage_volume_multipath
 );
 
 our %EXPORT_TAGS = ( all => [@EXPORT_OK], );
+
+my $ISCSIADM = '/usr/bin/iscsiadm';
+$ISCSIADM = undef if !-X $ISCSIADM;
+
+my $MULTIPATH = '/usr/sbin/multipath';
+$MULTIPATH = undef if !-X $MULTIPATH;
+
+my $DMSETUP = '/usr/sbin/dmsetup';
+$DMSETUP = undef if !-X $DMSETUP;
 
 my $default_prefix          = "jdss-";
 my $default_pool            = "Pool-0";
@@ -531,4 +558,527 @@ sub get_vm_statate {
     }
     return undef;
 }
+
+sub get_iscsi_addresses {
+    my ($scfg, $storeid, $addport) = @_;
+
+    my $da = get_data_addresses($scfg);
+
+    my $dp = get_data_port($scfg);
+
+    if (defined($da)){
+        my @iplist = split(/\s*,\s*/, $da);
+        if (defined($addport) && $addport) {
+            foreach (@iplist) {
+                $_ .= ":${dp}";
+            }
+        }
+        return @iplist;
+    }
+
+    my $getaddressescmd = ['hosts', '--iscsi'];
+
+    my $cmdout = joviandss_cmd($scfg, $getaddressescmd);
+
+    if (length($cmdout) > 1) {
+        my @hosts = ();
+
+        foreach (split(/\n/, $cmdout)) {
+            my ($host) = split;
+            if (defined($addport) && $addport) {
+                push @hosts, "${host}:${dp}";
+            } else {
+                push @hosts, $host;
+            }
+        }
+
+        if (@hosts > 0) {
+            return @hosts;
+        }
+    }
+
+    my $ca = get_control_addresses($scfg);
+
+    my @iplist = split(/\s*,\s*/, $ca);
+    if (defined($addport) && $addport) {
+        foreach (@iplist) {
+            $_ .= ":${dp}";
+        }
+    }
+
+    return @iplist;
+}
+
+sub get_iscsi_device_paths {
+    my ($scfg, $target, $lunid, @hosts) = @_;
+
+    my @targets_block_devices = ();
+    my $path;
+    foreach my $host (@hosts) {
+        $path = "/dev/disk/by-path/ip-${host}-iscsi-${target}-lun-${lunid}";
+        if ( -e $path ){
+            debugmsg( $scfg, "debug", "Target ${target} mapped to ${path}\n");
+            push(@targets_block_devices, $path);
+        }
+    }
+    return @targets_block_devices;
+}
+
+sub get_active_target_info {
+    my ($scfg, $tgname, $volname, $snapname, $contentvolflag) = @_;
+
+    my $pool   = get_pool($scfg);
+    my $prefix = get_target_prefix($scfg);
+
+    my $gettargetcmd = [
+        'pool', $pool,
+        'targets',
+        'get',
+        '--target-prefix', $prefix,
+        '--target-group-name', $tgname,
+        '-v', $volname,
+        '--current'
+    ];
+    if ($snapname) {
+        push @$gettargetcmd, "--snapshot", $snapname;
+    }
+    if ( defined($contentvolflag) && $contentvolflag ) {
+        push @$gettargetcmd, '-d';
+    }
+
+    my $target;
+    $target = joviandss_cmd($scfg, $gettargetcmd);
+
+    if ( defined($target) ) {
+        $target = clean_word($target);
+        if ( $target =~ /^([\:\-\@\w.\/]+)$/ ) {
+            debugmsg( $scfg, "debug", "Active target name for volume ${volname} is $1\n");
+            return $1;
+        }
+    }
+    return undef;
+}
+
+sub get_vm_target_group_name {
+    my ($scfg, $vmid) = @_;
+    return "vm-${vmid}";
+}
+
+sub get_content_target_group_name {
+    my ($scfg) = @_;
+    return "proxmox-content";
+}
+
+sub publish_volume {
+    my ($scfg, $tgname, $volname, $snapname, $content_volume_flag) = @_;
+
+    my $pool = get_pool($scfg);
+    my $prefix = get_target_prefix($scfg);
+
+    my $create_target_cmd =
+      [
+        'pool', $pool,
+        'targets',
+        'create',
+        '--target-prefix', $prefix,
+        '--target-group-name', $tgname,
+        "-v", $volname
+      ];
+    if ($snapname) {
+        push @$create_target_cmd, "--snapshot", $snapname;
+    }
+    else {
+        if ( defined($content_volume_flag) && $content_volume_flag ) {
+            push @$create_target_cmd, '-d';
+        }
+    }
+
+    my $out = joviandss_cmd( $scfg, $create_target_cmd, 80, 3 );
+    my ($targetname, $lunid, $ips) = split( ' ', $out );
+
+    my @iplist = split /\s*,\s*/, $ips;
+    return ($targetname, $lunid, @iplist);
+}
+
+sub stage_volume_iscsi {
+    my ( $scfg, $storeid, $targetname, $lunid, @hosts ) = @_;
+
+    debugmsg( $scfg, "debug", "Stage target ${targetname}\n");
+    my @targets_block_devices = get_iscsi_device_paths( $scfg, $targetname, $lunid, @hosts);
+
+    if (@targets_block_devices == @hosts) {
+        return @targets_block_devices;
+    }
+
+    foreach my $host (@hosts) {
+
+        eval {
+            run_command(
+                [
+                    $ISCSIADM, '--mode',       'node',  '-p',
+                    $host,     '--targetname', $targetname, '-o',
+                    'new'
+                ],
+                outfunc => sub { }
+            );
+        };
+        warn $@ if $@;
+        eval {
+            run_command(
+                [
+                    $ISCSIADM,
+                    '--mode', 'node',
+                    '-p', $host,
+                    '--targetname', $targetname,
+                    '--op', 'update',
+                    '-n', 'node.startup',
+                    '-v', 'automatic'
+                ],
+                outfunc => sub { }
+            );
+        };
+        warn $@ if $@;
+        eval {
+            run_command(
+                [
+                    $ISCSIADM,
+                    '--mode', 'node',
+                    '-p', $host,
+                    '--targetname', $targetname,
+                    '--login'
+                ],
+                outfunc => sub { }
+            );
+        };
+        warn $@ if $@;
+    }
+
+    for ( my $i = 1 ; $i <= 5 ; $i++ ) {
+        sleep(1);
+
+        @targets_block_devices = get_iscsi_device_paths( $scfg, $targetname, $lunid, @hosts);
+
+        if (@targets_block_devices) {
+            return @targets_block_devices;
+        }
+    }
+    die "Unable to locate target ${targetname} block device location.\n";
+}
+
+sub stage_volume_multipath {
+    my ( $scfg, $scsiid ) = @_;
+
+    eval { run_command([$MULTIPATH, '-a', $scsiid], outfunc => sub {}); };
+    die "Unable to add the SCSI ID ${scsiid} $@\n" if $@;
+    eval { run_command([$MULTIPATH], outfunc => sub {}); };
+    die "Unable to call multipath: $@\n" if $@;
+
+    my $mpathname = get_device_mapper_name($scfg, $scsiid);
+    unless (defined($mpathname)){
+        die "Unable to identify the multipath name for scsiid ${scsiid} with target ${target}\n";
+    }
+    return "/dev/mapper/${mpathname}";
+}
+
+sub block_device_path {
+    my ($scfg, $tgname, $volname, $snapname, $content_volume_flag) = @_;
+
+    debugmsg( $scfg, "debug", "Getting path of volume ${volname} ".safe_var_print("snapshot", $snapname)."\n");
+
+    my $target = OpenEJovianDSS::Common::get_active_target_name(scfg => $scfg,
+                                                volname => $volname,
+                                                snapname => $snapname,
+                                                content=>$content_volume_flag);
+
+    if (!defined($target)){
+        return undef;
+    }
+
+    my $tpath = get_target_path($scfg, $target, $storeid);
+
+    if (!defined($tpath)) {
+        OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Target path for ${volname} not found\n");
+
+        return undef;
+    }
+    my $bdpath;
+    eval {run_command(["readlink", "-f", $tpath], outfunc => sub { $bdpath = shift; }); };
+
+    $bdpath = OpenEJovianDSS::Common::clean_word($bdpath);
+    my $block_device_name = File::Basename::basename($bdpath);
+    unless ($block_device_name =~ /^[a-z0-9]+$/) {
+        die "Invalide block device name ${block_device_name} for iscsi target ${target}\n";
+    }
+
+    if (get_multipath($scfg)) {
+        $tpath = get_multipath_path($storeid, $scfg, $target);
+    }
+    if (defined($tpath)) {
+        debugmsg( $scfg, "debug", "Block device path is ${tpath} of volume ${volname} ".OpenEJovianDSS::Common::safe_var_print("snapshot", $snapname)."\n");
+    } else {
+        debugmsg( $scfg, "debug", "Unable to identify path for volume ${volname} ".OpenEJovianDSS::Common::safe_var_print("snapshot", $snapname)."\n");
+    }
+    return $tpath;
+}
+
+sub block_device_update {
+    my ( $class, $storeid, $scfg, $vmdiskname, $expectedsize) = @_;
+
+    my @update_device_try = (1..10);
+    foreach(@update_device_try){
+
+        my $target = $class->get_target_name($scfg, $vmdiskname, undef, 0);
+
+        my $tpath = OpenEJovianDSS::Common::get_target_path($scfg, $target, $storeid);
+
+        my $bdpath;
+        eval {run_command(["readlink", "-f", $tpath], outfunc => sub { $bdpath = shift; }); };
+
+        $bdpath = OpenEJovianDSS::Common::clean_word($bdpath);
+        my $block_device_name = basename($bdpath);
+        unless ($block_device_name =~ /^[a-z0-9]+$/) {
+            die "Invalide block device name ${block_device_name} for iscsi target ${target}\n";
+        }
+        my $rescan_file = "/sys/block/${block_device_name}/device/rescan";
+        open my $fh, '>', $rescan_file or die "Cannot open $rescan_file $!";
+        print $fh "1" or die "Cannot write to $rescan_file $!";
+        close $fh or die "Cannot close ${rescan_file} $!";
+
+        eval{ run_command([$ISCSIADM, '-m', 'node', '-R', '-T', ${target}], outfunc => sub {}); };
+
+        my $updateudevadm = ['udevadm', 'trigger', '-t', 'all'];
+        run_command($updateudevadm, errmsg => "Failed to update udev devices after iscsi target attachment");
+
+        if (OpenEJovianDSS::Common::get_multipath($scfg)) {
+            my $multipath_device_path = $class->get_multipath_path($storeid, $scfg, $target);
+            eval{ run_command([$MULTIPATH, '-r', ${multipath_device_path}], outfunc => sub {}); };
+        }
+
+        $bdpath = $class->block_device_path($scfg, $vmdiskname, $storeid, undef);
+
+        sleep(1);
+
+        my $updated_size;
+        run_command(['/sbin/blockdev', '--getsize64', $bdpath], outfunc => sub {
+            my ($line) = @_;
+            die "unexpected output from /sbin/blockdev: $line\n" if $line !~ /^(\d+)$/;
+            $updated_size = int($1);
+        });
+
+        if ($expectedsize) {
+            if ($updated_size eq $expectedsize) {
+                last;
+            }
+        } else {
+            last;
+        }
+        sleep(1);
+    }
+
+}
+
+sub get_device_mapper_name {
+    my ( $scfg, $wwid ) = @_;
+
+    open( my $multipath_topology, '-|', "multipath -ll $wwid" )
+      or die "Unable to list multipath topology: $!\n";
+
+    my $device_mapper_name;
+
+    while ( my $line = <$multipath_topology> ) {
+        chomp $line;
+        if ( $line =~ /\b$wwid\b/ ) {
+            my @parts = split( /\s+/, $line );
+            $device_mapper_name = $parts[0];
+        }
+    }
+    unless ($device_mapper_name) {
+        return undef;
+    }
+
+    close $multipath_topology;
+
+    if ( $device_mapper_name =~ /^([\:\-\@\w.\/]+)$/ ) {
+
+        debugmsg( $scfg, "debug", "Mapper name for ${wwid} is ${1}\n");
+        return $1;
+    }
+    return undef;
+}
+
+sub get_multipath_device_name {
+    my ($device_path) = @_;
+
+    my $cmd = [
+        'lsblk',
+        '-J',
+        '-o', 'NAME,SIZE,FSTYPE,UUID,LABEL,MOUNTPOINT,SERIAL,VENDOR,ZONED,HCTL,KNAME,TYPE,TRAN',
+        $device_path
+    ];
+
+    my $json_out = '';
+    my $outfunc = sub { $json_out .= "$_[0]\n" };
+
+    run_command($cmd, errmsg => "Getting multipath device for ${device_path} failed", outfunc => $outfunc);
+
+    my $data = decode_json($json_out);
+
+    my @mpath_names;
+    for my $dev (@{ $data->{blockdevices} }) {
+        if (exists $dev->{children} && ref($dev->{children}) eq 'ARRAY') {
+            for my $child (@{ $dev->{children} }) {
+                if (defined $child->{type} && $child->{type} eq 'mpath') {
+                    push @mpath_names, $child->{name};
+                }
+            }
+        }
+    }
+
+    # Return the proper result based on the number of multipath devices found.
+    if (@mpath_names == 1) {
+        return $mpath_names[0];
+    } elsif (@mpath_names == 0) {
+        return undef;
+    } else {
+        die "More than one multipath device found: " . join(", ", @mpath_names);
+    }
+}
+
+sub get_multipath_path {
+    my ($storeid, $scfg, $target, $expected) = @_;
+
+    my $tpath = get_target_path($scfg, $target, $storeid);
+
+    unless (defined($tpath)) {
+        debugmsg( $scfg, "debug", "Unable to identify device path for target ${target}\n");
+        return undef;
+    }
+    my $bdpath;
+    eval {run_command(["readlink", "-f", $tpath], outfunc => sub { $bdpath = shift; }); };
+
+    $bdpath = clean_word($bdpath);
+    my $block_device_name = File::Basename::basename($bdpath);
+    unless ($block_device_name =~ /^[a-z0-9]+$/) {
+        die "Invalide block device name ${block_device_name} for iscsi target ${target}\n";
+    }
+
+    my $mpathname = get_multipath_device_name($bdpath);
+
+    if (!defined($mpathname)) {
+        return undef;
+    }
+
+    my $mpathpath = "/dev/mapper/${mpathname}";
+
+    if (-b $mpathpath) {
+        debugmsg( $scfg, "debug", "Multipath block device is ${mpathpath}\n");
+        return $mpathpath;
+    }
+    return undef;
+}
+
+sub get_scsiid_from_target {
+    my ( $scfg, $target, $lunid , $storeid) = @_;
+
+    my @hosts = OpenEJovianDSS::Common::get_iscsi_addresses($scfg, $storeid, 1);
+
+    foreach my $host (@hosts) {
+        my $targetpath = "/dev/disk/by-path/ip-${host}-iscsi-${target}-lun-0";
+        my $getscsiidcmd = ["/lib/udev/scsi_id", "-g", "-u", "-d", $targetpath];
+        my $scsiid;
+
+        if (-e $targetpath) {
+            eval {run_command($getscsiidcmd, outfunc => sub { $scsiid = shift; }); };
+
+            if ($@) {
+                die "Unable to get the iSCSI ID for ${targetpath} because of $@\n";
+            };
+        } else {
+            next;
+        };
+
+        if (defined($scsiid)) {
+            if ($scsiid =~ /^([\-\@\w.\/]+)$/) {
+                OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Identified scsi id ${1}\n");
+                return $1;
+            }
+        }
+    }
+    return undef;
+}
+
+sub get_scsiid_from_target_paths {
+    my ( $scfg, @targetpaths) = @_;
+
+    foreach my $targetpath (@targetpaths) {
+        my $getscsiidcmd = ["/lib/udev/scsi_id", "-g", "-u", "-d", $targetpath];
+        my $scsiid;
+
+        if (-e $targetpath) {
+            eval {run_command($getscsiidcmd, outfunc => sub { $scsiid = shift; }); };
+
+            if ($@) {
+                die "Unable to get the iSCSI ID for ${targetpath} because of $@\n";
+            };
+        } else {
+            next;
+        };
+
+        if (defined($scsiid)) {
+            if ($scsiid =~ /^([\-\@\w.\/]+)$/) {
+                OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Identified scsi id ${1}\n");
+                return $1;
+            }
+        }
+    }
+    return undef;
+}
+
+sub unstage_volume_iscsi {
+    my ($scfg, $storeid, $targetname, $lunid, @hosts) = @_;
+
+    debugmsg( $scfg, "debug", "Unstaging target ${targetname}\n");
+    my @hosts = get_iscsi_addresses($scfg, $storeid, 1);
+
+    #foreach my $host (@hosts) {
+    #    my $tpath = $class->get_target_path($scfg, $target, $storeid);
+
+    #    if (defined($tpath) && -e $tpath) {
+
+    #        # Driver should not commit any write operation including sync before unmounting
+    #        # Because that myght lead to data corruption in case of active migration
+    #        # Also we do not do volume unmounting
+
+    #        eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--logout'], outfunc => sub {}); };
+    #        warn $@ if $@;
+    #        eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '-o', 'delete'], outfunc => sub {}); };
+    #        warn $@ if $@;
+    #    }
+    #}
+}
+
+sub unstage_volume_multipath {
+    my ($scfg, $scsiid) = @_;
+
+
+    # Driver should not commit any write operation including sync before unmounting
+    # Because that myght lead to data corruption in case of active migration
+    # Also we do not do any unmnounting to volume as that might cause unexpected writes
+
+    eval{ run_command([$MULTIPATH, '-f', $scsiid], outfunc => sub {}); };
+    if ($@) {
+        warn "Unable to remove the multipath mapping for scsi id ${scsiid} because of $@\n" if $@;
+        my $mapper_name = get_device_mapper_name($scfg, $scsiid);
+        if (defined($mapper_name)) {
+            eval{ run_command([$DMSETUP, "remove", "-f", $mapper_name], outfunc => sub {}); };
+            die "Unable to remove the multipath mapping for volume with scsi id ${scsiid} with dmsetup: $@\n" if $@;
+        } else {
+            warn "Unable to identify multipath mapper name for volume with scsi id ${scsiid}\n";
+        }
+    }
+
+    eval { run_command([$MULTIPATH], outfunc => sub {}); };
+    die "Unable to restart the multipath daemon $@\n" if $@;
+}
+
 1;

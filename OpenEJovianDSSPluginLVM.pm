@@ -252,90 +252,11 @@ sub iscsi_test_portal {
 #    run_command([$ISCSIADM, '--mode', 'node', '--targetname', $target, '--logout'], outfunc => sub {});
 #}
 
-sub iscsi_session {
-    my ($cache, $target) = @_;
-    $cache->{iscsi_sessions} = iscsi_session_list() if !$cache->{iscsi_sessions};
-    return $cache->{iscsi_sessions}->{$target};
-}
-
-sub get_multipath_device_name {
-    my ($device_path) = @_;
-
-    my $cmd = [
-        'lsblk',
-        '-J',
-        '-o', 'NAME,SIZE,FSTYPE,UUID,LABEL,MOUNTPOINT,SERIAL,VENDOR,ZONED,HCTL,KNAME,TYPE,TRAN',
-        $device_path
-    ];
-
-    my $json_out = '';
-    my $outfunc = sub { $json_out .= "$_[0]\n" };
-
-    run_command($cmd, errmsg => "Getting multipath device for ${device_path} failed", outfunc => $outfunc);
-
-    my $data = decode_json($json_out);
-
-    my @mpath_names;
-    for my $dev (@{ $data->{blockdevices} }) {
-        if (exists $dev->{children} && ref($dev->{children}) eq 'ARRAY') {
-            for my $child (@{ $dev->{children} }) {
-                if (defined $child->{type} && $child->{type} eq 'mpath') {
-                    push @mpath_names, $child->{name};
-                }
-            }
-        }
-    }
-
-    # Return the proper result based on the number of multipath devices found.
-    if (@mpath_names == 1) {
-        return $mpath_names[0];
-    } elsif (@mpath_names == 0) {
-        return undef;
-    } else {
-        die "More than one multipath device found: " . join(", ", @mpath_names);
-    }
-}
-
-sub block_device_path {
-    my ($class, $scfg, $volname, $storeid, $snapname, $content_volume_flag) = @_;
-
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Getting path of volume ${volname} ".OpenEJovianDSS::Common::safe_var_print("snapshot", $snapname)."\n");
-
-    my $target = $class->get_active_target_name(scfg => $scfg,
-                                                volname => $volname,
-                                                snapname => $snapname,
-                                                content=>$content_volume_flag);
-
-    if (!defined($target)){
-        return undef;
-    }
-
-    my $tpath = $class->get_target_path($scfg, $target, $storeid);
-
-    if (!defined($tpath)) {
-        OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Target path for ${volname} not found\n");
-
-        return undef;
-    }
-    my $bdpath;
-    eval {run_command(["readlink", "-f", $tpath], outfunc => sub { $bdpath = shift; }); };
-
-    $bdpath = OpenEJovianDSS::Common::clean_word($bdpath);
-    my $block_device_name = basename($bdpath);
-    unless ($block_device_name =~ /^[a-z0-9]+$/) {
-        die "Invalide block device name ${block_device_name} for iscsi target ${target}\n";
-    }
-
-    if (OpenEJovianDSS::Common::get_multipath($scfg)) {
-        $tpath = $class->get_multipath_path($storeid, $scfg, $target);
-    }
-    if (defined($tpath)) {
-        OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Block device path is ${tpath} of volume ${volname} ".OpenEJovianDSS::Common::safe_var_print("snapshot", $snapname)."\n");
-    } else {
-        OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Unable to identify path for volume ${volname} ".OpenEJovianDSS::Common::safe_var_print("snapshot", $snapname)."\n");
-    }
-    return $tpath;
-}
+#sub iscsi_session {
+#    my ($cache, $target) = @_;
+#    $cache->{iscsi_sessions} = iscsi_session_list() if !$cache->{iscsi_sessions};
+#    return $cache->{iscsi_sessions}->{$target};
+#}
 
 sub path {
     my ($class, $scfg, $volname, $storeid, $snapname) = @_;
@@ -695,7 +616,7 @@ sub vm_disk_exists {
 
     $vmdiskname = $class->vm_disk_name($vmid, $isBase);
 
-    my $pool   = get_pool($scfg);
+    my $pool   = OpenEJovianDSS::Common::get_pool($scfg);
 
     my $output;
 
@@ -715,7 +636,7 @@ sub vm_disk_exists {
 sub vm_disk_size {
     my ($class, $scfg, $vmdiskname) = @_;
 
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
     my $output = OpenEJovianDSS::Common::joviandss_cmd($scfg, ["pool", $pool, "volume", $vmdiskname, "get", "-s"]);
 
@@ -726,7 +647,7 @@ sub vm_disk_size {
 sub vm_disk_extend_to {
     my ($class,$storeid, $scfg, $vmdiskname, $device, $newsize) = @_;
 
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
     OpenEJovianDSS::Common::joviandss_cmd($scfg, ["pool", "${pool}", "volume", "${vmdiskname}", "resize", "${newsize}"]);
 
@@ -738,7 +659,7 @@ sub vm_disk_extend_to {
 sub alloc_image_routine {
     my ($class, $storeid, $scfg, $vmid, $volname, $size_bytes, $thin_provisioning, $block_size) = @_;
 
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
     my $vmdiskname = $class->vm_disk_name($vmid, 0);
     my $vmvgname = $class->vm_vg_name($vmid);
@@ -810,7 +731,7 @@ sub alloc_image_routine {
 sub alloc_image {
     my ( $class, $storeid, $scfg, $vmid, $fmt, $volname, $size ) = @_;
 
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
     unless ($size =~ m/\d$/) {
         die "Volume size should be strictly numerical, ${size} characters are not supported\n";
@@ -864,7 +785,7 @@ sub alloc_image {
 sub free_image {
     my ( $class, $storeid, $scfg, $volname, $isBase, $format) = @_;
 
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
     my ($vtype, undef, $vmid, undef, undef, undef, undef) = $class->parse_volname($volname);
 
@@ -963,28 +884,7 @@ sub stage_target {
     return $targetpath;
 }
 
-sub unstage_target {
-    my ($class, $scfg, $storeid, $target) = @_;
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Unstaging target ${target}\n");
-    my @hosts = $class->get_iscsi_addresses($scfg, $storeid, 1);
-
-    foreach my $host (@hosts) {
-        my $tpath = $class->get_target_path($scfg, $target, $storeid);
-
-        if (defined($tpath) && -e $tpath) {
-
-            # Driver should not commit any write operation including sync before unmounting
-            # Because that myght lead to data corruption in case of active migration
-            # Also we do not do volume unmounting
-
-            eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '--logout'], outfunc => sub {}); };
-            warn $@ if $@;
-            eval { run_command([$ISCSIADM, '--mode', 'node', '-p', $host, '--targetname',  $target, '-o', 'delete'], outfunc => sub {}); };
-            warn $@ if $@;
-        }
-    }
-}
 
 sub get_device_mapper_name {
     my ($class, $scfg, $wwid) = @_;
@@ -1029,65 +929,9 @@ sub remove_multipath_binding {
     die "Unable to remove the target from the binding file ${target} because of $@\n" if $@;
 }
 
-sub stage_multipath {
-    my ($class, $storeid, $scfg, $scsiid, $target) = @_;
 
-    my $targetpath = $class->get_multipath_path($storeid, $scfg, $target);
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Staging ${target}\n");
 
-    eval { run_command([$MULTIPATH, '-a', $scsiid], outfunc => sub {}); };
-    die "Unable to add the SCSI ID ${scsiid} $@\n" if $@;
-    #eval { run_command([$SYSTEMCTL, 'restart', 'multipathd']); };
-    eval { run_command([$MULTIPATH], outfunc => sub {}); };
-    die "Unable to call multipath: $@\n" if $@;
-
-    my $mpathname = $class->get_device_mapper_name($scfg, $scsiid);
-    unless (defined($mpathname)){
-        die "Unable to identify the multipath name for scsiid ${scsiid} with target ${target}\n";
-    }
-    return "/dev/mapper/${mpathname}";
-}
-
-sub unstage_multipath {
-    my ($class, $scfg, $storeid, $target) = @_;
-
-    my $scsiid;
-
-    # Multipath Block Device Link Path
-    # Link to actual block device representing multipath interface
-    my $mbdlpath = $class->get_multipath_path($storeid, $scfg, $target, 1);
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Unstage multipath for target ${target}\n");
-
-    # Driver should not commit any write operation including sync before unmounting
-    # Because that myght lead to data corruption in case of active migration
-    # Also we do not do any unmnounting to volume as that might cause unexpected writes
-
-    eval { $scsiid = $class->get_scsiid($scfg, $target, $storeid); };
-    if ($@) {
-        die "Unable to identify the SCSI ID for target ${target}";
-    }
-
-    unless (defined($scsiid)) {
-        OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Unable to identify multipath resource ${target}\n");
-        return ;
-    };
-
-    eval{ run_command([$MULTIPATH, '-f', ${scsiid}], outfunc => sub {}); };
-    if ($@) {
-        warn "Unable to remove the multipath mapping for target ${target} because of $@\n" if $@;
-        my $mapper_name = $class->get_device_mapper_name($scfg, $target);
-        if (defined($mapper_name)) {
-            eval{ run_command([$DMSETUP, "remove", "-f", $class->get_device_mapper_name($scfg, $target)], outfunc => sub {}); };
-            die "Unable to remove the multipath mapping for target ${target} with dmsetup: $@\n" if $@;
-        } else {
-            warn "Unable to identify multipath mapper name for ${target}\n";
-        }
-    }
-
-    eval { run_command([$MULTIPATH], outfunc => sub {}); };
-    die "Unable to restart the multipath daemon $@\n" if $@;
-}
 
 sub get_expected_multipath_path {
     my ($class, $scfg, $target) = @_;
@@ -1101,158 +945,66 @@ sub get_expected_multipath_path {
     return undef;
 }
 
-sub get_multipath_path {
-    my ($class, $storeid, $scfg, $target, $expected) = @_;
 
-    my $tpath = $class->get_target_path($scfg, $target, $storeid);
 
-    unless (defined($tpath)) {
-        OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Unable to identify device path for target ${target}\n");
-        return undef;
-    }
-    my $bdpath;
-    eval {run_command(["readlink", "-f", $tpath], outfunc => sub { $bdpath = shift; }); };
+#sub get_iscsi_addresses {
+#    my ($class, $scfg, $storeid, $addport) = @_;
+#
+#    my $da = OpenEJovianDSS::Common::get_data_addresses($scfg);
+#
+#    my $dp = OpenEJovianDSS::Common::get_data_port($scfg);
+#
+#    if (defined($da)){
+#        my @iplist = split(/\s*,\s*/, $da);
+#        if (defined($addport) && $addport) {
+#            foreach (@iplist) {
+#                $_ .= ":${dp}";
+#            }
+#        }
+#        return @iplist;
+#    }
+#
+#    my $getaddressescmd = ['hosts', '--iscsi'];
+#
+#    my $cmdout = OpenEJovianDSS::Common::joviandss_cmd($scfg, $getaddressescmd);
+#
+#    if (length($cmdout) > 1) {
+#        my @hosts = ();
+#
+#        foreach (split(/\n/, $cmdout)) {
+#            my ($host) = split;
+#            if (defined($addport) && $addport) {
+#                push @hosts, "${host}:${dp}";
+#            } else {
+#                push @hosts, $host;
+#            }
+#        }
+#
+#        if (@hosts > 0) {
+#            return @hosts;
+#        }
+#    }
+#
+#    my $ca = get_control_addresses($scfg);
+#
+#    my @iplist = split(/\s*,\s*/, $ca);
+#    if (defined($addport) && $addport) {
+#        foreach (@iplist) {
+#            $_ .= ":${dp}";
+#        }
+#    }
+#
+#    return @iplist;
+#}
 
-    $bdpath = OpenEJovianDSS::Common::clean_word($bdpath);
-    my $block_device_name = basename($bdpath);
-    unless ($block_device_name =~ /^[a-z0-9]+$/) {
-        die "Invalide block device name ${block_device_name} for iscsi target ${target}\n";
-    }
 
-    my $mpathname = get_multipath_device_name($bdpath);
-
-    if (!defined($mpathname)) {
-        return undef;
-    }
-
-    my $mpathpath = "/dev/mapper/${mpathname}";
-
-    if (-b $mpathpath) {
-        OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Multipath block device is ${mpathpath}\n");
-        return $mpathpath;
-    }
-    return undef;
-}
-
-sub get_iscsi_addresses {
-    my ($class, $scfg, $storeid, $addport) = @_;
-
-    my $da = get_data_addresses($scfg);
-
-    my $dp = get_data_port($scfg);
-
-    if (defined($da)){
-        my @iplist = split(/\s*,\s*/, $da);
-        if (defined($addport) && $addport) {
-            foreach (@iplist) {
-                $_ .= ":${dp}";
-            }
-        }
-        return @iplist;
-    }
-
-    my $getaddressescmd = ['hosts', '--iscsi'];
-
-    my $cmdout = OpenEJovianDSS::Common::joviandss_cmd($scfg, $getaddressescmd);
-
-    if (length($cmdout) > 1) {
-        my @hosts = ();
-
-        foreach (split(/\n/, $cmdout)) {
-            my ($host) = split;
-            if (defined($addport) && $addport) {
-                push @hosts, "${host}:${dp}";
-            } else {
-                push @hosts, $host;
-            }
-        }
-
-        if (@hosts > 0) {
-            return @hosts;
-        }
-    }
-
-    my $ca = get_control_addresses($scfg);
-
-    my @iplist = split(/\s*,\s*/, $ca);
-    if (defined($addport) && $addport) {
-        foreach (@iplist) {
-            $_ .= ":${dp}";
-        }
-    }
-
-    return @iplist;
-}
-
-sub get_scsiid {
-    my ($class, $scfg, $target, $storeid) = @_;
-
-    my @hosts = $class->get_iscsi_addresses($scfg, $storeid, 1);
-
-    foreach my $host (@hosts) {
-        my $targetpath = "/dev/disk/by-path/ip-${host}-iscsi-${target}-lun-0";
-        my $getscsiidcmd = ["/lib/udev/scsi_id", "-g", "-u", "-d", $targetpath];
-        my $scsiid;
-
-        if (-e $targetpath) {
-            eval {run_command($getscsiidcmd, outfunc => sub { $scsiid = shift; }); };
-
-            if ($@) {
-                die "Unable to get the iSCSI ID for ${targetpath} because of $@\n";
-            };
-        } else {
-            next;
-        };
-
-        if (defined($scsiid)) {
-            if ($scsiid =~ /^([\-\@\w.\/]+)$/) {
-                OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Identified scsi id ${1}\n");
-                return $1;
-            }
-        }
-    }
-    return undef;
-}
-
-sub get_active_target_name {
-
-    my ($class, %args) = @_;
-
-    my $scfg = $args{scfg};
-    my $volname = $args{volname};
-    my $snapname = $args{snapname};
-    my $content = $args{content};
-
-    my $pool = get_pool($scfg);
-
-    my $prefix = get_target_prefix($scfg);
-    my $gettargetcmd = ["pool", $pool, "targets", "get", '--target-prefix', $prefix, "-v", $volname, "--current"];
-    if ($snapname){
-        push @$gettargetcmd, "--snapshot", $snapname;
-    }
-    if ($content) {
-        push @$gettargetcmd, '-d';
-    }
-
-    my $target;
-    $target = OpenEJovianDSS::Common::joviandss_cmd($scfg, $gettargetcmd);
-
-    if (defined($target)) {
-        $target = OpenEJovianDSS::Common::clean_word($target);
-        if ($target =~ /^([\:\-\@\w.\/]+)$/) {
-            OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Active target name for volume ${volname} is $1\n");
-            return $1;
-        }
-    }
-    return undef;
-}
 
 sub get_target_name {
     my ($class, $scfg, $volname, $snapname, $content_volume_flag) = @_;
 
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
+    my $prefix = OpenEJovianDSS::Common::get_target_prefix($scfg);
 
-    my $prefix = get_target_prefix($scfg);
     my $get_target_cmd = ["pool", $pool, "targets", "get", '--target-prefix', $prefix, "-v", $volname];
     if ($snapname){
         push @$get_target_cmd, "--snapshot", $snapname;
@@ -1273,33 +1025,12 @@ sub get_target_name {
     die "Unable to identify the target name for ${volname} ".OpenEJovianDSS::Common::safe_var_print("snapshot", $snapname)."\n";
 }
 
-sub get_target_path {
-    my ($class, $scfg, $target, $storeid, $expected) = @_;
-
-    my $pool = get_pool($scfg);
-
-    my @hosts = $class->get_iscsi_addresses($scfg, $storeid, 1);
-
-    my $path;
-    foreach my $host (@hosts) {
-        $path = "/dev/disk/by-path/ip-${host}-iscsi-${target}-lun-0";
-        OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Checking path ${path}\n");
-        if (defined $expected && $expected != 0) {
-            return $path;
-        }
-        if ( -e $path ){
-            return $path;
-        }
-    }
-    return undef;
-}
-
 sub _list_images_single_vm {
     my ( $class, $storeid, $scfg, $vmid ) = @_;
 
     my $res = [];
 
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
     my $vmdiskname = $class->vm_disk_name($vmid, 0);
     my $device = $class->block_device_path($scfg, $vmdiskname, $storeid, undef, 0);
@@ -1355,7 +1086,7 @@ sub list_images {
 
     #my $nodename = PVE::INotify::nodename();
 
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
     my $res = [];
     # case for single vm
@@ -1422,7 +1153,7 @@ sub list_images {
 sub volume_snapshot {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
 
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
@@ -1450,7 +1181,7 @@ sub volume_snapshot_needs_fsfreeze {
 sub volume_snapshot_rollback {
     my ($class, $scfg, $storeid, $volname, $snap) = @_;
 
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
@@ -1477,11 +1208,12 @@ sub volume_rollback_is_possible {
 sub volume_snapshot_delete {
     my ($class, $scfg, $storeid, $volname, $snap, $running) = @_;
 
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
+    my $prefix = OpenEJovianDSS::Common::get_target_prefix($scfg);
 
-    my $starget = $class->get_active_target_name(scfg => $scfg,
-                                                 volname => $volname,
-                                                 snapname => $snap);
+    my $starget = OpenEJovianDSS::Common::get_active_target_name(scfg => $scfg,
+                                                                 volname => $volname,
+                                                                 snapname => $snap);
     unless (defined($starget)) {
         $starget = $class->get_target_name($scfg, $volname, $snap);
     }
@@ -1491,13 +1223,13 @@ sub volume_snapshot_delete {
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
-    OpenEJovianDSS::Common::joviandss_cmd($scfg, ["pool", $pool, "volume", $volname, "snapshot", $snap, "delete"]);
+    OpenEJovianDSS::Common::joviandss_cmd($scfg, ["pool", $pool, "volume", $volname, "snapshot", $snap, "delete", '--target-prefix', $prefix]);
 }
 
 sub volume_size_info {
     my ($class, $scfg, $storeid, $volname, $timeout) = @_;
 
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
     my ($vtype, $volume_name, $vmid, $basename, $basedvmid, $isBase, $format) = $class->parse_volname($volname);
 
@@ -1526,7 +1258,7 @@ sub volume_size_info {
 sub status {
     my ( $class, $storeid, $scfg, $cache ) = @_;
 
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
     my $jdssc =  OpenEJovianDSS::Common::joviandss_cmd($scfg, ["pool", $pool, "get"]);
     my $gb = 1024*1024*1024;
@@ -1557,11 +1289,12 @@ sub vm_disk_connect {
 
     OpenEJovianDSS::Common::debugmsg($scfg, "debug", "Activate vm disk ${vmdiskname}\n");
 
-    my $pool = get_pool($scfg);
+    my $pool   = OpenEJovianDSS::Common::get_pool($scfg);
+    my $prefix = OpenEJovianDSS::Common::get_target_prefix($scfg);
 
     my $target = $class->get_target_name($scfg, $vmdiskname, $snapname, 0);
 
-    my $prefix = get_target_prefix($scfg);
+
     my $create_target_cmd = ["pool", $pool, "targets", "create", '--target-prefix', $prefix, "-v", $vmdiskname];
     if ($snapname){
         push @$create_target_cmd, "--snapshot", $snapname;
@@ -1575,7 +1308,7 @@ sub vm_disk_connect {
     my $updateudevadm = ['udevadm', 'trigger', '-t', 'all'];
     run_command($updateudevadm, errmsg => "Failed to update udev devices after iscsi target attachment");
 
-    my $targetpath = $class->get_target_path($scfg, $target, $storeid);
+    my $targetpath = OpenEJovianDSS::Common::get_target_path($scfg, $target, $storeid);
 
     for (my $i = 1; $i <= 10; $i++) {
         last if (-e $targetpath);
@@ -1613,15 +1346,15 @@ sub vm_disk_iscsi_connect {
 
     OpenEJovianDSS::Common::debugmsg($scfg, "debug", "Activate vm disk ${vmdiskname}\n");
 
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
-    my $target = $class->get_active_target_name(scfg => $scfg,
+    my $target = OpenEJovianDSS::Common::get_active_target_name(scfg => $scfg,
                                                 volname => $vmdiskname,
                                                 snapname => $snapname,
                                                 content=>0);
 
     if (!defined($target)) {
-        my $prefix = get_target_prefix($scfg);
+        my $prefix = OpenEJovianDSS::Common::get_target_prefix($scfg);
         my $create_target_cmd = ["pool", $pool, "targets", "create", '--target-prefix', $prefix, "-v", $vmdiskname];
         if ($snapname){
             push @$create_target_cmd, "--snapshot", $snapname;
@@ -1635,7 +1368,7 @@ sub vm_disk_iscsi_connect {
     my $updateudevadm = ['udevadm', 'trigger', '-t', 'all'];
     run_command($updateudevadm, errmsg => "Failed to update udev devices after iscsi target attachment");
 
-    my $targetpath = $class->get_target_path($scfg, $target, $storeid);
+    my $targetpath = OpenEJovianDSS::Common::get_target_path($scfg, $target, $storeid);
 
     for (my $i = 1; $i <= 10; $i++) {
         last if (-e $targetpath);
@@ -1655,9 +1388,9 @@ sub vm_disk_disconnect {
     # virtual machine format is vm-id
     OpenEJovianDSS::Common::debugmsg($scfg, "debug", "Disconnect vm disk ${vmdiskname}".OpenEJovianDSS::Common::safe_var_print("snapshot", $snapshot)." start");
 
-    my $target = $class->get_active_target_name(scfg => $scfg,
-                                                volname => $vmdiskname,
-                                                snapname => $snapshot);
+    my $target = OpenEJovianDSS::Common::get_active_target_name(scfg => $scfg,
+                                                                volname => $vmdiskname,
+                                                                snapname => $snapshot);
     unless (defined($target)) {
         $target = $class->get_target_name($scfg, $vmdiskname, undef);
     }
@@ -1675,11 +1408,12 @@ sub vm_disk_disconnect_all {
     # virtual machine format is vm-id
     OpenEJovianDSS::Common::debugmsg($scfg, "debug", "Disconnect all resources for vm disk ${vmdiskname} start");
 
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
+    my $prefix = OpenEJovianDSS::Common::get_target_prefix($scfg);
 
-    my $target = $class->get_active_target_name(scfg => $scfg,
-                                                volname => $vmdiskname,
-                                                snapname => undef);
+    my $target = OpenEJovianDSS::Common::get_active_target_name(scfg => $scfg,
+                                                                volname => $vmdiskname,
+                                                                snapname => undef);
     unless (defined($target)) {
         $target = $class->get_target_name($scfg, $vmdiskname, undef);
     }
@@ -1689,13 +1423,11 @@ sub vm_disk_disconnect_all {
 
     # In order to remove volume with its snapshots we have to list active snapshots, the one with clones
     # and deactivate them
-    my $snaps = OpenEJovianDSS::Common::joviandss_cmd($scfg, ["pool", $pool, "volume", $vmdiskname, "delete", "-c", "-p"]);
+    my $snaps = OpenEJovianDSS::Common::joviandss_cmd($scfg, ["pool", $pool, "volume", $vmdiskname, "delete", "-c", "-p", '--target-prefix', $prefix]);
     my @dsl = split(" ", $snaps);
 
-    my $prefix = get_target_prefix($scfg);
-
     foreach my $snap (@dsl) {
-        my $starget = $class->get_active_target_name(scfg => $scfg,
+        my $starget = OpenEJovianDSS::Common::get_active_target_name(scfg => $scfg,
                                                      volname => $vmdiskname,
                                                      snapname => $snap);
         unless (defined($starget)) {
@@ -1715,13 +1447,12 @@ sub vm_disk_disconnect_all {
 sub vm_disk_remove {
     my ( $class, $storeid, $scfg, $vmdiskname, $cache ) = @_;
 
-    my $pool = get_pool($scfg);
-
-    my $prefix = get_target_prefix($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
+    my $prefix = OpenEJovianDSS::Common::get_target_prefix($scfg);
 
     OpenEJovianDSS::Common::joviandss_cmd($scfg, ["pool", $pool, "targets", "delete", '--target-prefix', $prefix, "-v", $vmdiskname]);
 
-    OpenEJovianDSS::Common::joviandss_cmd($scfg, ["pool", $pool, "volume", $vmdiskname, "delete", "-c"]);
+    OpenEJovianDSS::Common::joviandss_cmd($scfg, ["pool", $pool, "volume", $vmdiskname, "delete", "-c", '--target-prefix', $prefix]);
 
     OpenEJovianDSS::Common::debugmsg($scfg, "debug", "Remove vm disk ${vmdiskname} done.");
 }
@@ -1779,7 +1510,7 @@ sub deactivate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
 
     OpenEJovianDSS::Common::debugmsg($scfg, "debug", "Deactivate volume ${volname} ".OpenEJovianDSS::Common::safe_var_print("snapshot", $snapname)."start");
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
     my ($vtype, $name, $vmid) = $class->parse_volname($volname);
 
@@ -1828,61 +1559,7 @@ sub deactivate_volume {
     return 1;
 }
 
-sub update_block_device {
-    my ( $class, $storeid, $scfg, $vmdiskname, $expectedsize) = @_;
 
-    my @update_device_try = (1..10);
-    foreach(@update_device_try){
-
-        my $target = $class->get_target_name($scfg, $vmdiskname, undef, 0);
-
-        my $tpath = $class->get_target_path($scfg, $target, $storeid);
-
-        my $bdpath;
-        eval {run_command(["readlink", "-f", $tpath], outfunc => sub { $bdpath = shift; }); };
-
-        $bdpath = OpenEJovianDSS::Common::clean_word($bdpath);
-        my $block_device_name = basename($bdpath);
-        unless ($block_device_name =~ /^[a-z0-9]+$/) {
-            die "Invalide block device name ${block_device_name} for iscsi target ${target}\n";
-        }
-        my $rescan_file = "/sys/block/${block_device_name}/device/rescan";
-        open my $fh, '>', $rescan_file or die "Cannot open $rescan_file $!";
-        print $fh "1" or die "Cannot write to $rescan_file $!";
-        close $fh or die "Cannot close ${rescan_file} $!";
-
-        eval{ run_command([$ISCSIADM, '-m', 'node', '-R', '-T', ${target}], outfunc => sub {}); };
-
-        my $updateudevadm = ['udevadm', 'trigger', '-t', 'all'];
-        run_command($updateudevadm, errmsg => "Failed to update udev devices after iscsi target attachment");
-
-        if (OpenEJovianDSS::Common::get_multipath($scfg)) {
-            my $multipath_device_path = $class->get_multipath_path($storeid, $scfg, $target);
-            eval{ run_command([$MULTIPATH, '-r', ${multipath_device_path}], outfunc => sub {}); };
-        }
-
-        $bdpath = $class->block_device_path($scfg, $vmdiskname, $storeid, undef);
-
-        sleep(1);
-
-        my $updated_size;
-        run_command(['/sbin/blockdev', '--getsize64', $bdpath], outfunc => sub {
-            my ($line) = @_;
-            die "unexpected output from /sbin/blockdev: $line\n" if $line !~ /^(\d+)$/;
-            $updated_size = int($1);
-        });
-
-        if ($expectedsize) {
-            if ($updated_size eq $expectedsize) {
-                last;
-            }
-        } else {
-            last;
-        }
-        sleep(1);
-    }
-
-}
 
 sub update_vm_disk {
     my ( $class, $storeid, $scfg, $vmdiskname) = @_;
@@ -1894,7 +1571,7 @@ sub update_vm_disk {
 sub volume_resize {
     my ( $class, $scfg, $storeid, $volname, $size, $running ) = @_;
 
-    my $pool = get_pool($scfg);
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
     my ($vtype, $volume_name, $vmid, $basename, $basedvmid, $isBase, $format) = $class->parse_volname($volname);
 

@@ -47,7 +47,7 @@ class JovianDSSDriver(object):
 
         self.jovian_target_prefix = self.configuration.get(
             'target_prefix',
-            'iqn.%Y-%m.com.open-e.cinder:')
+            'iqn.2025-04.com.open-e.cinder:')
         self.jovian_chap_pass_len = self.configuration.get(
             'chap_password_len', 12)
         self.block_size = (
@@ -81,25 +81,6 @@ class JovianDSSDriver(object):
         """Return list of ip addresses for iSCSI connection"""
 
         return self.jovian_hosts
-
-    def get_provider_location(self,
-                              volume_name,
-                              snapshot_name=None,
-                              direct=False):
-        """Return volume iscsiadm-formatted provider location string."""
-
-        target_name = self.get_target_name(volume_name,
-                                           snapshot_name=snapshot_name)
-
-        if direct:
-            target_name = self._get_target_name(volume_name)
-            if snapshot_name:
-                target_name = self._get_target_name(snapshot_name)
-
-        return '%(host)s:%(port)s,1 %(name)s 0' % {
-            'host': self.ra.get_active_host(),
-            'port': self.jovian_iscsi_target_portal_port,
-            'name': target_name}
 
     def create_volume(self, volume_id, volume_size, sparse=None,
                       block_size=None,
@@ -367,20 +348,26 @@ class JovianDSSDriver(object):
     # it is used in many places, yet concept of 'garbage' has changed
     # since last time. So instead of deleting hidden volumes
     # we should only remove them if they have no snapshots
-    def _delete_volume(self, vname, cascade=False):
+    def _delete_volume(self, vname, cascade=False, detach_target=True):
         """_delete_volume delete routine containing delete logic
 
         :param str vname: physical volume id
         :param bool cascade: flag for cascade volume deletion
             with its snapshots
+        :param bool delete_target: indicate ifwe have to check for target
+            related to given volume
 
         :return: None
         """
         LOG.debug("Deleting %s", vname)
-        try:
-            self._remove_target_volume(self._get_target_name(vname), vname)
-        except jexc.JDSSResourceNotFoundException:
-            LOG.debug('target for volume %s does not exist', vname)
+        # TODO: consider more optimal method for identification
+        # if volume is assigned to any target
+
+        if detach_target:
+            try:
+                self._detach_volume(vname)
+            except jexc.JDSSResourceNotFoundException:
+                LOG.debug('target for volume %s does not exist', vname)
 
         try:
             # First we try to delete lun, if it has no snapshots deletion will
@@ -645,7 +632,11 @@ class JovianDSSDriver(object):
                                                        volume_name)
         self.ra.create_snapshot(vname, sname)
 
-    def create_export_snapshot(self, snapshot_name, volume_name,
+    def create_export_snapshot(self,
+                               target_prefix,
+                               target_name,
+                               snapshot_name,
+                               volume_name,
                                provider_auth):
         """Creates iscsi resources needed to start using snapshot
 
@@ -669,32 +660,53 @@ class JovianDSSDriver(object):
                        "%s is a snapshot"))
 
         try:
-            target_name = self.get_target_name(volume_name,
-                                               snapshot_name=snapshot_name)
-            self._ensure_target_volume(target_name, scname, provider_auth,
-                                       ro=True)
-        except jexc.JDSSException as jerr:
-            self._delete_volume(scname, cascade=True)
-            raise jerr
+            tvld = self._acquire_taget_volume_lun(target_prefix,
+                                                  target_name,
+                                                  scname,
+                                                  luns_per_target=8)
+            (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
 
-    def remove_export(self, volume_name, direct_mode=False):
+            if new_target_flag:
+                return self._create_target_volume_lun(tname,
+                                                      scname,
+                                                      lun_id,
+                                                      provider_auth)
+
+            return self._ensure_target_volume_lun(tname,
+                                                  scname,
+                                                  lun_id,
+                                                  provider_auth)
+
+        except Exception as err:
+            self._delete_volume(scname, cascade=True)
+            raise err
+
+    def remove_export(self, target_prefix, target_name, volume_name,
+                      direct_mode=False):
         """Remove iscsi target created to make volume attachable
 
         :param str volume_name: openstack volume id
         """
         vname = jcom.vname(volume_name)
-        target_name = self.get_target_name(volume_name)
 
         if direct_mode:
             vname = volume_name
-            target_name = self._get_target_name(volume_name)
 
-        try:
-            self._remove_target_volume(target_name, vname)
-        except jexc.JDSSException as jerr:
-            LOG.warning(jerr)
+        tvld = self._acquire_taget_volume_lun(target_prefix,
+                                              target_name,
+                                              vname,
+                                              luns_per_target=8)
+        (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
+
+        if (volume_attached_flag or (new_target_flag is True)):
+            try:
+                self._detach_target_volume(tname, vname)
+            except jexc.JDSSException as jerr:
+                LOG.warning(jerr)
 
     def remove_export_snapshot(self,
+                               target_prefix,
+                               target_name,
                                snapshot_name,
                                volume_name,
                                direct_mode=False):
@@ -710,15 +722,21 @@ class JovianDSSDriver(object):
         if direct_mode:
             scname = snapshot_name
 
-        target_name = self.get_target_name(volume_name,
-                                           snapshot_name=snapshot_name)
+        tvld = self._acquire_taget_volume_lun(target_prefix,
+                                              target_name,
+                                              scname,
+                                              luns_per_target=8)
+        (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
+
         try:
-            self._remove_target_volume(target_name, scname)
+            if (volume_attached_flag or (new_target_flag is False)):
+                self._detach_target_volume(target_name, scname)
         except jexc.JDSSException as jerr:
             self._delete_volume(scname, cascade=True)
             raise jerr
 
-        self._delete_volume(scname, cascade=True)
+        # We do not do target detachment here because it was done before
+        self._delete_volume(scname, cascade=True, detach_target=False)
 
     def _delete_snapshot(self, vname, sname):
         """Delete snapshot
@@ -800,249 +818,330 @@ class JovianDSSDriver(object):
             self._delete_snapshot(vname, jcom.sname(snapshot_name,
                                                     volume_name))
 
-    def get_volume_target(self, volume_name, snapshot_name=None, direct=False):
+    def get_volume_target(self,
+                          target_prefix,
+                          target_name,
+                          volume_name,
+                          snapshot_name=None,
+                          direct_mode=False):
         """Get volume target
-
         Find target that the volume is attached to
 
         :param str volume_name: name of volume
         :param str direct: flag that indicates that volume name
             should not be changed
 
-        :return str target_name: name of target that volume is attached to
-        :raises jexc.JDSSTargetNotFoundException: if no target is found
+        :return: dictionary containing information regarding volume
+                propagation through iscsi
+                dict will contain:
+                    target str: name of target
+                    lun int: lun id that given volume is attached to
+                    vips list(ip str: string of ip address)
+                dict might contain:
+                    username str: CHAP user name for authentication
+                    password srt: CHAP password for authentication
         """
+        vname = jcom.vname(volume_name)
 
-        LOG.debug("Getting volume target for volume %s", volume_name)
-
-        # The actual volume name that will be attched to target
-        rname = ''
         if snapshot_name:
-            rname = snapshot_name if direct else jcom.sname(snapshot_name,
-                                                            volume_name)
-        else:
-            rname = volume_name if direct else jcom.vname(volume_name)
+            vname = jcom.sname(snapshot_name, volume_name)
 
-        target_name = self._get_target_name(rname)
+        if direct_mode:
+            vname = volume_name
 
-        if self.ra.is_target(target_name):
-            luns = self.ra.get_target_luns(target_name)
-            for lun in luns:
-                if lun['name'] == rname:
-                    return target_name
+        tvld = self._acquire_taget_volume_lun(target_prefix,
+                                              target_name,
+                                              vname)
+
+        (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
+
+        if new_target_flag or (volume_attached_flag is False):
+            return None
+
+        conforming_vips = self._get_conforming_vips()
+
+        volume_info = dict()
+        volume_info['vips'] = list(conforming_vips.items())
+        volume_info['target'] = tname
+        volume_info['lun'] = lun_id
+
+    def _detach_volume(self, vname):
+        """detach volume from target it is attached to
+
+        Will go through all target, find one that volume is attached to
+        and detach it from it
+        If volume is a last one attached to particular target
+        it will remove target
+
+        :param str vname: physical volume id
+        """
+        LOG.debug("detach volume %s", vname)
 
         targets = self.ra.get_targets()
-
-        for t in targets:
-            if 'name' in t:
-                luns = self.ra.get_target_luns(t['name'])
-                for lun in luns:
-                    if 'name' in lun and lun['name'] == rname:
-                        return t['name']
-
-        raise jexc.JDSSTargetNotFoundException(target_name)
-
-    def _remove_target_if_volume_attached(self, targets, vname):
-        """Remove target if volume attached to it
-
-        Go through list of given targets and remove one that have vname
-        volume attached to it. Exists on first find
-
-        :param str targets: list of targets descriptions given by
-                .../pool/<pool name>/san/iscsi/targets
-        :param str vname: physical volume name
-
-        :return:
-        """
         for t in [target['name'] for target in targets]:
             luns = self.ra.get_target_luns(t)
             for lun in luns:
                 if 'name' in lun and lun['name'] == vname:
-                    self.ra.detach_target_vol(t, vname)
-                    self.ra.delete_target(t)
-                    return True
+                    if len(luns) == 1:
+                        self.ra.delete_target(t)
+                    else:
+                        self.ra.detach_target_vol(t, vname)
+                    return
 
-        return False
+    def _detach_target_volume(self, tname, vname):
+        """detach_target_volume
 
-    def _remove_volume_targets(self, vname):
-        """remove volume targets will clean volume associated targets
+        Will go through all target, find one that volume is attached to
+        and detach it from it
+        If target have onlyvolume is a last one attached to particular target
+        it will remove target
 
         :param str vname: physical volume id
         """
-        LOG.debug("remove targets associated with volume %s", vname)
+        LOG.debug("detach volume %s", vname)
 
-        targets = self.ra.get_targets()
+        luns = self.ra.get_target_luns(tname)
 
-        self._remove_target_if_volume_attached(targets, vname)
+        try:
+            self.ra.detach_target_vol(tname, vname)
+        except jexc.JDSSResourceNotFoundException:
+            pass
 
-    def _ensure_target_volume(self, target_id, vid, provider_auth, ro=False):
+        if len(luns) == 0:
+            try:
+                self.ra.delete_target(tname)
+            except jexc.JDSSResourceNotFoundException:
+                pass
+
+    def _ensure_target_volume_lun(self, tname, vname, lid, provider_auth,
+                                  ro=False):
         """Checks if target configured properly and volume is attached to it
+            at given lun
+
+            If volume is 'busy' and attached to a different target it will
+            detach volume from previous target and assign it to the one
+            that is provided
 
         :param str target_id: target id that would be used for target naming
         :param str vname: physical volume id
+        :param int lid: lun id
         :param str provider_auth: space-separated triple
               '<auth method> <auth username> <auth password>'
+        :return: dictionary containing information regarding volume
+                propagation through iscsi
+                dict will contain:
+                    target str: name of target
+                    lun int: lun id that given volume is attached to
+                    vips list(ip str: string of ip address)
+                dict might contain:
+                    username str: CHAP user name for authentication
+                    password srt: CHAP password for authentication
         """
-        LOG.debug("ensure volume %s assigned to target %s", vid, target_id)
+        LOG.debug("ensure volume %s assigned to target %s with lun %s",
+                  vname, tname, lid)
 
         if not provider_auth:
             LOG.debug("ensuring target %s for volume %s with no auth",
-                      target_id, vid)
+                      tname, vname)
         target_data = None
         clean_and_recrete = False
+
+        volume_publication_info = dict()
+
+        # first we check if given target exists
+        # if not we do not need to run complex checks and
+        # and can create it from ground up
         try:
-            target_data = self.ra.get_target(target_id)
+            target_data = self.ra.get_target(tname)
         except jexc.JDSSResourceNotFoundException:
             clean_and_recrete = True
 
         if clean_and_recrete:
             try:
                 # TODO: update this
-                return self._create_target_volume(target_id,
-                                                  vid,
-                                                  provider_auth)
+                return self._create_target_volume_lun(tname,
+                                                      vname,
+                                                      lid,
+                                                      provider_auth)
             except jexc.JDSSResourceIsBusyException:
-                LOG.debug("looks like volume %s belogns to other target", vid)
+                LOG.debug("looks like volume %s belogns to other target",
+                          vname)
+                # this only happens if volume is attached somewhere and it
+                # not related to target spoecified in the reques
+                # there fore we detach and try to reattach
+                self._detach_target_volume(tname, vname)
 
-            self._remove_volume_targets(vid)
-            return self._create_target_volume(target_id, vid, provider_auth)
+            return self._create_target_volume_lun(tname,
+                                                  tname,
+                                                  lid,
+                                                  provider_auth)
+        volume_publication_info['target'] = tname
 
-        expected_vips = self._get_pool_assigned_vips()
+        # Here expected vips is a set of vip by name
+        expected_vips = self._get_conforming_vips()
         if (('vip_allowed_portals' in target_data) and
                 (set(target_data['vip_allowed_portals']['assigned_vips']) ==
-                 set(expected_vips))):
+                 set(expected_vips.keys()))):
             pass
         else:
-            self.ra.set_target_assigned_vips(target_id, expected_vips)
+            self.ra.set_target_assigned_vips(tname,
+                                             list(expected_vips.keys()))
 
-        if not self.ra.is_target_lun(target_id, vid):
-            self._attach_target_volume(target_id, vid)
+        volume_publication_info['vips'] = list(expected_vips.items())
+        if not self.ra.is_target_lun(tname, vname, lid):
+            self._attach_target_volume_lun(tname, vname, lid)
+
+        volume_publication_info['lun'] = lid
 
         if provider_auth is not None:
+
             (__, auth_username, auth_secret) = provider_auth.split()
+            volume_publication_info['username'] = auth_username
+            volume_publication_info['password'] = auth_secret
+
             chap_cred = {"name": auth_username,
                          "password": auth_secret}
 
             try:
-                users = self.ra.get_target_user(target_id)
+                users = self.ra.get_target_user(tname)
                 if len(users) == 1:
                     if users[0]['name'] == chap_cred['name']:
-                        return
+                        return volume_publication_info
                     self.ra.delete_target_user(
-                        target_id,
+                        tname,
                         users[0]['name'])
                 for user in users:
                     self.ra.delete_target_user(
-                        target_id,
+                        tname,
                         user['name'])
-                self._set_target_credentials(target_id, chap_cred)
+                self._set_target_credentials(tname, chap_cred)
 
             except jexc.JDSSException as jerr:
-                self.ra.delete_target(target_id)
+                self.ra.delete_target(tname)
                 raise jerr
 
-    def _get_target_name(self, vid):
-        """Return iSCSI target name to access volume.
+        return volume_publication_info
 
-        This function is a final point target name generation.
+    def _acquire_taget_volume_lun(self, target_prefix, target_name, vname,
+                                  luns_per_target=8):
+        """Get target name and lun number for given volume
+
+        This function acts as replacement for _get_target_name function
+        because with new logic of target name generation we cannot
+        know in advance name of a target for a given volume we have
+        make requests to check existing targets
+
+        It returns tuple:
+        (<target_name>, <lun_id>, <volume attached>,<new target>)
+
+        <target_name> is a str of a target shat should be used
+        <lun id> is a int if a lun that should be used
+        <volume attached> is a bool of indicating that given volume
+            already attached and <taget name> and <lun id> depicting
+            target and lun that are used to attach volume
+            if given flag is false then volume is not attached and
+            lun number indicates where volume can be attached to
+        <new target> is a bool that is set to True if and only if
+            target <target_name> do not exists and it is recommended to create
+            one and attache volume to lun with ID specified at <lun_id>
+
+        :return: (<target_name>, <lun_id>, <volume attached>,<new target>)
         """
+        tname = target_prefix + target_name
+        tlist = self.list_targets()
+        target_re = re.compile(fr'^{tname}-(?P<id>\d+)$')
 
-        target_prefix = self.jovian_target_prefix
-        if not Allowed_ISCSI_Symbols.match(target_prefix):
-            raise jexc.JDSSException(
-                "Target prefix %s contains forbiden symbols" %
-                target_prefix)
+        related_targets = []
+        related_targets_indexes = []
+        for target in tlist:
+            m = target_re.match(target['name'])
+            if m is not None:
+                related_targets.append(target)
+                related_targets_indexes.append(m.group('id'))
 
-        Allowed_ISCSI_Symbols
-        allowed = list(string.ascii_lowercase)
-        allowed.extend(['.', '-'])
-        allowed.extend(list(string.digits))
-        vidstr = ''
-        resource_name_lower = jcom.idname(vid).lower()
-        for c in resource_name_lower:
-            if c in allowed:
-                vidstr += c
-            else:
-                vidstr += '-'
-        if len(target_prefix) > 201:
-            raise Exception("Target prefix %s is too long",
-                            target_prefix)
-        vidstr += "-" + hashlib.sha256(vid.encode()).hexdigest()
-        vidstr = vidstr[-255+len(target_prefix):]
+        candidate_lun = None
+        for target in related_targets:
+            luns = self.ra.get_target_luns(target['name'])
+            taken_luns = dict()
+            for lun in luns:
+                if lun['name'] == vname:
+                    return (target['name'], lun['lun'], True, False)
+                taken_luns[int(lun['lun'])] = True
+            if candidate_lun is None:
+                if len(taken_luns) >= luns_per_target:
+                    continue
+                for i in range(luns_per_target):
+                    if i not in taken_luns:
+                        candidate_lun = (target['name'], i)
+        if candidate_lun is not None:
+            return (candidate_lun[0], candidate_lun[1], False, False)
+        for i in range(len(related_targets_indexes)):
+            if i not in related_targets_indexes:
+                return ('-'.join([tname, str(i)]), 0, False, True)
 
-        target_id = f'{target_prefix}{vidstr}'
-        return target_id[-255:]
+    def ensure_target_volume(self,
+                             target_prefix,
+                             target_name,
+                             volume_name,
+                             provider_auth,
+                             direct_mode=False):
+        """Ensures that given volume is attached to specific target
 
-    def get_target_name(self, volume_name, snapshot_name=None):
-        """Return iSCSI target name to access volume."""
+        This function checkes if volume is attached to given target.
+        If it is not, it will attach volume to target and return its lun number
+        If it is already attached it will return lun number of the volume
 
-        if snapshot_name:
-            sname = jcom.sname(snapshot_name, volume_name)
-            return self._get_target_name(sname)
-        return self._get_target_name(jcom.vname(volume_name))
+        Target name assigned to storage is a concatination of:
+        target_prefix
+        target_name
+        suffix_number
 
-    def _remove_target_volume(self, target_name, vid):
-        """_remove_target_volume
+        suffix_number is needed to distinguish among targets with same
+        prefix+name for cases when too many volumes are assigned to
+        too many pairs of prefix+name
 
-        Ensure that volume is not attached to target and target do not exists.
+        :return: dict with keys:
+                    target str: target name
+                    lun int: lun id
+                    vips list(ip str): list of ips that should be used to
+                        attach given target
         """
-
-        # target_name = self._get_target_name(id)
-        LOG.debug("remove export")
-        LOG.debug("detach volume:%(vol)s from target:%(targ)s.", {
-            'vol': jcom.idname(vid),
-            'targ': target_name})
-
-        try:
-            self.ra.detach_target_vol(target_name, vid)
-        except jexc.JDSSResourceNotFoundException as jerrrnf:
-            LOG.debug('failed to remove resource %(t)s because of %(err)s', {
-                't': target_name,
-                'err': jerrrnf.args[0]})
-        except jexc.JDSSException as jerr:
-            LOG.warning('failed to Terminate_connection for target %(targ)s '
-                        'because of: %(err)s', {'targ': target_name,
-                                                'err': jerr.args[0]})
-            raise jerr
-
-        LOG.debug("delete target: %s", target_name)
-
-        try:
-            self.ra.delete_target(target_name)
-        except jexc.JDSSResourceNotFoundException as jerrrnf:
-            LOG.debug('failed to remove resource %(target)s because '
-                      'of %(err)s',
-                      {'target': target_name, 'err': jerrrnf.args[0]})
-
-        except jexc.JDSSException as jerr:
-            LOG.warning('Failed to Terminate_connection for target %(targ)s '
-                        'because of: %(err)s ',
-                        {'targ': target_name, 'err': jerr.args[0]})
-
-            raise jerr
-
-    def ensure_export(self, volume_name, provider_auth, direct_mode=False):
-
         vname = jcom.vname(volume_name)
-        target_name = self.get_target_name(volume_name)
 
         if direct_mode:
             vname = volume_name
-            target_name = self._get_target_name(volume_name)
 
-        self._ensure_target_volume(target_name, vname, provider_auth)
+        # target volume lune descriptor of form
+        # (<target_name>, <lun_id>, <volume attached>,<new target>)
+        tvld = self._acquire_taget_volume_lun(target_prefix,
+                                              target_name,
+                                              vname,
+                                              luns_per_target=8)
+        (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
 
-    def _get_pool_assigned_vips(self):
-        """Get pool assigned vips returns list of vip names for new target
+        if new_target_flag:
+            return self._create_target_volume_lun(tname,
+                                                  vname,
+                                                  lun_id,
+                                                  provider_auth)
+
+        return self._ensure_target_volume_lun(tname,
+                                              vname,
+                                              lun_id,
+                                              provider_auth)
+
+    def _get_conforming_vips(self):
+        """get vips that conforms configuration requirments
 
         This function calculated vip names that should be assigned to iscsi
         target associated with specific pool on the basis of given config
         restrictions
 
-        :return: list of vip names
+        Method will raise JDSSVIPNotFoundException if no fitting vip was found
+        :return: dictionary of vip name as key and ip as value
         """
 
-        assigned_vip_names = []
+        conforming_vips = dict()
         iscsi_addresses = []
 
         if len(self.jovian_iscsi_vip_addresses) == 0:
@@ -1054,47 +1153,64 @@ class JovianDSSDriver(object):
 
         for vip in vip_data:
             if vip['address'] in iscsi_addresses:
-                assigned_vip_names.append(vip['name'])
+                conforming_vips[vip['name']] = vip['address']
 
-        if len(assigned_vip_names) == 0:
+        if len(conforming_vips) == 0:
             raise jexc.JDSSVIPNotFoundException(iscsi_addresses)
 
-        return assigned_vip_names
+        return conforming_vips
 
-    def _create_target_volume(self, target_name, vid, provider_auth):
+    def _create_target_volume_lun(self, target_name, vid, lid, provider_auth):
         """Creates target and attach volume to it
 
-        :param id: uuid of particular resource
+        :param target_name: name of a target to create
         :param vid: physical volume id, might identify snapshot mount
+        :param lid: lun that vid will be assigned at target_name
         :param str provider_auth: space-separated triple
               '<auth method> <auth username> <auth password>'
-        :return:
+        :return: dictionary containing information regarding volume
+                propagation through iscsi
+                dict will contain:
+                    target str: name of target
+                    lun int: lun id that given volume is attached to
+                    vips list(ip str: string of ip address)
+                dict might contain:
+                    username str: CHAP user name for authentication
+                    password srt: CHAP password for authentication
         """
-        LOG.debug("create target %s and attach volume %s to it",
-                  target_name, vid)
+        LOG.debug("create target %s and assigne volume %s to lun %s",
+                  target_name, vid, lid)
 
-        assigned_vip_names = self._get_pool_assigned_vips()
-
+        volume_publication_info = dict()
+        conforming_vips = self._get_conforming_vips()
+        volume_publication_info['vips'] = list(conforming_vips.items())
         # Create target
         self.ra.create_target(target_name,
-                              assigned_vip_names,
+                              conforming_vips.keys(),
                               use_chap=(provider_auth is not None))
+        volume_publication_info['target'] = target_name
+        try:
+            # Attach volume
+            self._attach_target_volume_lun(target_name, vid, lid)
+        except Exception as err:
+            raise err
+            # TODO: finish this
 
-        # Attach volume
-        self._attach_target_volume(target_name, vid)
-
+        volume_publication_info['lun'] = lid
         # Set credentials
         if provider_auth is not None:
             (__, auth_username, auth_secret) = provider_auth.split()
+            volume_publication_info['username'] = auth_username
+            volume_publication_info['password'] = auth_secret
             chap_cred = {"name": auth_username,
                          "password": auth_secret}
 
             self._set_target_credentials(target_name, chap_cred)
 
-    def _list_targets(self):
-        """List volume snapshots
+        return volume_publication_info
 
-        :return: list of volume related snapshots
+    def _list_targets(self):
+        """List targets
         """
         targets = []
         i = 0
@@ -1128,23 +1244,24 @@ class JovianDSSDriver(object):
 
         return target_names
 
-    def _attach_target_volume(self, target_name, vname):
+    def _attach_target_volume_lun(self, target_name, vname, lun):
         """Attach target to volume and handles exceptions
 
         Attempts to set attach volume to specific target.
-        In case of failure will remove target.
         :param target_name: name of target
         :param vname: volume physical id
+        :param lun: lun number that given vname will be attached to target_name
         """
         try:
-            self.ra.attach_target_vol(target_name, vname)
+            self.ra.attach_target_vol(target_name, vname, lun_id=lun)
         except jexc.JDSSException as jerr:
-            msg = ('Unable to attach volume {volume} to target {target} '
+            msg = ('Unable to attach volume {volume} to '
+                   'target {target} lun {lun} '
                    'because of {error}.')
             LOG.warning(msg, {"volume": vname,
                               "target": target_name,
+                              "lun": lun,
                               "error": jerr})
-            self.ra.delete_target(target_name)
             raise jerr
 
     def _set_target_credentials(self, target_name, cred):

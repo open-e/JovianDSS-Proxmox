@@ -1,0 +1,316 @@
+#!/usr/bin/python3
+
+#    Copyright (c) 2025 Open-E, Inc.
+#    All Rights Reserved.
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+
+import os
+import shutil
+import subprocess
+import logging
+import socket
+import select
+
+import toml
+from inotify_simple import INotify, flags
+
+PVE_BASE = '/etc/pve/priv/joviandss'
+LOCAL_BASE = '/etc/joviandss'
+SOCKET_PATH = '/var/run/joviandssblockdevicemanager.sock'
+
+
+def setup_logging():
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s %(levelname)s: %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
+    )
+
+
+load = toml.load
+
+
+def iscsi_login(target, addresses, port):
+    for addr in addresses:
+        cmd = ['iscsiadm',
+               '-m', 'node',
+               '-T', target,
+               '-p', f"{addr}:{port}",
+               '--login']
+        logging.info(f"Logging in target {target} at {addr}:{port}")
+        subprocess.run(cmd, check=False)
+
+
+def iscsi_logout(target, addresses, port):
+    for addr in addresses:
+        cmd = ['iscsiadm',
+               '-m', 'node',
+               '-T', target,
+               '-p', f"{addr}:{port}",
+               '--logout']
+        logging.info(f"Logging out target {target} at {addr}:{port}")
+        subprocess.run(cmd, check=False)
+
+
+def rescan_iscsi():
+    cmd = ['iscsiadm',
+           '-m', 'node',
+           '--rescan']
+    logging.info("Rescanning iSCSI sessions")
+    subprocess.run(cmd, check=False)
+
+
+def multipath_add(iscsiid):
+    cmd = ['multipath', '-a', iscsiid]
+    logging.info(f"Adding multipath for {iscsiid}")
+    subprocess.run(cmd, check=False)
+
+
+def multipath_remove(iscsiid):
+    logging.info(f"Removing multipath for {iscsiid}")
+    # Attempt graceful multipath removal
+    result = subprocess.run(['multipath', '-f', iscsiid],
+                            capture_output=True,
+                            text=True)
+    if result.returncode != 0:
+        logging.warning(
+            f"Multipath -f failed for {iscsiid}: {result.stderr.strip()}")
+        # Fallback: remove underlying device mapper entries
+        mp_ll = subprocess.run(['multipath', '-ll', iscsiid],
+                               capture_output=True,
+                               text=True)
+        if mp_ll.returncode == 0:
+            for line in mp_ll.stdout.splitlines():
+                m = re.match(r'^(\S+)\s+\(', line)
+                if m:
+                    dm_name = m.group(1)
+                    logging.info(f"Removing dmsetup entry {dm_name}")
+                    subprocess.run(['dmsetup', 'remove', '-f', dm_name],
+                                   check=False)
+        else:
+            logging.error(f"Failed to list multipath maps for {
+                          iscsiid}: {mp_ll.stderr.strip()}")
+
+
+def load_hosts(store_dir):
+    data = load(os.path.join(store_dir, 'hosts'))
+    return data.get('addresses', []), data.get('port')
+
+
+def load_lun(lun_path):
+    data = load(lun_path)
+    return data['iscsiid'], data['name'], data['size'], data['multipath']
+
+
+def sync():
+    # Enumerate storeid directories
+    pve_storeids = {d for d in os.listdir(
+        PVE_BASE) if os.path.isdir(os.path.join(PVE_BASE, d))}
+    local_storeids = {d for d in os.listdir(
+        LOCAL_BASE) if os.path.isdir(os.path.join(LOCAL_BASE, d))}
+
+    # New storeids
+    for sid in pve_storeids - local_storeids:
+        local_dir = os.path.join(LOCAL_BASE, sid)
+        logging.info(f"New storeid detected: {sid}")
+        os.makedirs(local_dir, exist_ok=True)
+
+    # Removed storeids: cleanup all targets & luns
+    for sid in local_storeids - pve_storeids:
+        sid_dir = os.path.join(LOCAL_BASE, sid)
+        logging.info(f"Storeid removed: {
+                     sid}, cleaning up all targets and LUNs")
+        # Iterate each target under this storeid
+        for tgt in os.listdir(sid_dir):
+            tgt_dir = os.path.join(sid_dir, tgt)
+            if not os.path.isdir(tgt_dir):
+                continue
+            # Load hosts to logout
+            addresses, port = load_hosts(tgt_dir)
+            # Remove all LUN multipaths and files
+            for lun in os.listdir(tgt_dir):
+                if lun == 'hosts':
+                    continue
+                lun_path = os.path.join(tgt_dir, lun)
+                iscsiid, _, _, mp = load_lun(lun_path)
+                if mp:
+                    multipath_remove(iscsiid)
+                os.remove(lun_path)
+            # Logout target
+            iscsi_logout(tgt, addresses, port)
+            # Remove target directory
+            shutil.rmtree(tgt_dir)
+        # Finally, remove storeid directory
+        shutil.rmtree(sid_dir)
+
+    # Sync per-storeid targets & LUNs
+    for sid in pve_storeids & local_storeids:
+        pve_sid_dir = os.path.join(PVE_BASE, sid)
+        local_sid_dir = os.path.join(LOCAL_BASE, sid)
+
+        pve_targets = {d for d in os.listdir(
+            pve_sid_dir) if os.path.isdir(os.path.join(pve_sid_dir, d))}
+        local_targets = {d for d in os.listdir(
+            local_sid_dir) if os.path.isdir(os.path.join(local_sid_dir, d))}
+
+        # New targets
+        for tgt in pve_targets - local_targets:
+            pve_dir = os.path.join(pve_sid_dir, tgt)
+            local_dir = os.path.join(local_sid_dir, tgt)
+            addresses, port = load_hosts(pve_dir)
+            logging.info(f"[{sid}] New target detected: {tgt}")
+            iscsi_login(tgt, addresses, port)
+            os.makedirs(local_dir, exist_ok=True)
+            shutil.copy(os.path.join(pve_dir, 'hosts'),
+                        os.path.join(local_dir, 'hosts'))
+
+        # Existing targets: handle LUNs
+        for tgt in pve_targets & local_targets:
+            pve_dir = os.path.join(pve_sid_dir, tgt)
+            local_dir = os.path.join(local_sid_dir, tgt)
+            addresses, port = load_hosts(pve_dir)
+
+            pve_luns = {f for f in os.listdir(pve_dir) if f != 'hosts'}
+            local_luns = {f for f in os.listdir(local_dir) if f != 'hosts'}
+
+            # New LUNs
+            for lun in pve_luns - local_luns:
+                pve_lun = os.path.join(pve_dir, lun)
+                logging.info(f"[{sid}/{tgt}] New LUN {lun}")
+                iscsi_login(tgt, addresses, port)
+                rescan_iscsi()
+                iscsiid, _, _, mp = load_lun(pve_lun)
+                if mp:
+                    multipath_add(iscsiid)
+                shutil.copy(pve_lun, os.path.join(local_dir, lun))
+
+            # Removed LUNs
+            for lun in local_luns - pve_luns:
+                local_lun = os.path.join(local_dir, lun)
+                logging.info(f"[{sid}/{tgt}] Removed LUN {lun}")
+                iscsiid, _, _, mp = load_lun(local_lun)
+                if mp:
+                    multipath_remove(iscsiid)
+                os.remove(local_lun)
+
+            # If no more LUNs, logout and remove target
+            if not pve_luns:
+                logging.info(f"[{sid}/{tgt}] No more LUNs, "
+                             "logging out and removing target")
+                iscsi_logout(tgt, addresses, port)
+                shutil.rmtree(local_dir)
+
+        # Removed targets
+        for tgt in local_targets - pve_targets:
+            local_dir = os.path.join(local_sid_dir, tgt)
+            addresses, port = load_hosts(local_dir)
+            logging.info(f"[{sid}] Target {
+                         tgt} removed, logging out and cleaning up")
+            iscsi_logout(tgt, addresses, port)
+            shutil.rmtree(local_dir)
+
+
+def setup_socket():
+    if os.path.exists(SOCKET_PATH):
+        os.remove(SOCKET_PATH)
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    server.bind(SOCKET_PATH)
+    os.chmod(SOCKET_PATH, 0o660)
+    server.listen(1)
+    server.setblocking(False)
+    logging.info(f"Listening for sync commands on {SOCKET_PATH}")
+    return server
+
+
+def main():
+    setup_logging()
+    logging.info("Starting joviandss daemon")
+    os.makedirs(LOCAL_BASE, exist_ok=True)
+
+    # Inotify setup
+    inotify = INotify()
+    watch_flags = flags.CREATE | flags.DELETE | flags.MOVED_TO | flags.MOVED_FROM
+    wd_map = {}
+
+    def add_watch(path):
+        try:
+            wd = inotify.add_watch(path, watch_flags)
+            wd_map[wd] = path
+            logging.info(f"Watching {path}")
+        except Exception as e:
+            logging.error(f"Failed to watch {path}: {e}")
+
+    # Watch base and existing subdirs
+    add_watch(PVE_BASE)
+    for sid in os.listdir(PVE_BASE):
+        sid_path = os.path.join(PVE_BASE, sid)
+        if os.path.isdir(sid_path):
+            add_watch(sid_path)
+            for tgt in os.listdir(sid_path):
+                tgt_path = os.path.join(sid_path, tgt)
+                if os.path.isdir(tgt_path):
+                    add_watch(tgt_path)
+
+    # Socket
+    server = setup_socket()
+
+    # Initial sync
+    sync()
+
+    try:
+        while True:
+            fds = [inotify.fd, server.fileno()]
+            r, _, _ = select.select(fds, [], [], 5)
+            sync_needed = False
+
+            for fd in r:
+                if fd == inotify.fd:
+                    events = inotify.read(read_delay=0)
+                    sync_needed = True
+                    for event in events:
+                        path = wd_map.get(event.wd)
+                        name = event.name
+                        full = os.path.join(path, name) if name else path
+                        if path == PVE_BASE and (event.mask & flags.CREATE):
+                            if os.path.isdir(full):
+                                add_watch(full)
+                        elif (os.path.dirname(path) == PVE_BASE and
+                                (event.mask & flags.CREATE)):
+                            if os.path.isdir(full):
+                                add_watch(full)
+                elif fd == server.fileno():
+                    conn, _ = server.accept()
+                    data = conn.recv(1024)
+                    if data.strip() == b'SYNC':
+                        logging.info("Received external SYNC command")
+                        sync_needed = True
+                    conn.close()
+
+            if sync_needed:
+                try:
+                    sync()
+                except Exception as e:
+                    logging.error(f"Error during sync: {e}")
+
+    except KeyboardInterrupt:
+        logging.info("Stopping joviandss daemon")
+    finally:
+        inotify.close()
+        server.close()
+        if os.path.exists(SOCKET_PATH):
+            os.remove(SOCKET_PATH)
+
+
+if __name__ == '__main__':
+    main()
