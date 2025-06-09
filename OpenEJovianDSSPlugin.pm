@@ -153,7 +153,7 @@ sub properties {
             type        => 'string',
         },
         target_prefix => {
-            description => "Prefix of iSCSI target 'iqn.%Y-%m.iscsi:'",
+            description => "Prefix of iSCSI target 'iqn.2025-04.iscsi:'",
             type        => 'string',
             default     => OpenEJovianDSS::Common::get_default_target_prefix,
         },
@@ -481,6 +481,11 @@ sub alloc_image {
             $scfg,
             $create_vol_cmd
         );
+
+        if (OpenEJovianDSS::Common::get_shared($scfg)) {
+            my $tgname = OpenEJovianDSS::Common::get_vm_target_group_name($scfg, $vmid);
+            OpenEJovianDSS::Common::activate_volume_shared( $scfg, $storeid, $tgname, $volname );
+        }
     }
     return "$volume_name";
 }
@@ -1304,7 +1309,7 @@ sub ensure_content_volume {
         die "Unable to process current size of content volume size <${content_volume_size_current}>, please make sure that JovianDSS is accessible over network\n";
     }
 
-    $class->activate_volume_ext( $storeid, $scfg, $content_volname, "", $cache,
+    $class->_activate_volume( $storeid, $scfg, $content_volname, "", $cache,
         1, undef);
 
     eval {
@@ -1451,41 +1456,7 @@ sub deactivate_storage {
     return undef;
 }
 
-sub activate_volume_ext {
-    my ( $class, $storeid, $scfg, $volname, $snapname, $cache,
-        $content_volume_flag, $vmid)
-      = @_;
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "Activating volume ext ${volname} "
-          . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
-          . "\n" );
-
-    my $pool   = OpenEJovianDSS::Common::get_pool($scfg);
-
-    my $tgname;
-
-    if ( defined($content_volume_flag) && $content_volume_flag != 0 ) {
-        $tgname = OpenEJovianDSS::Common::get_content_target_group_name($scfg);
-    } else {
-        $tgname = OpenEJovianDSS::Common::get_vm_target_group_name($scfg, $vmid);
-    }
-
-    my ($targetname, $lunid, @iplist) OpenEJovianDSS::Common::stage_volume($tgname, $volname, $snapname, $content_volume_flag);
-
-    my @targetpaths = OpenEJovianDSS::Common::stage_target( $scfg, $storeid, $target, @iplist );
-
-    # Activate multipath device if multipath is enabled
-    if ( OpenEJovianDSS::Common::get_multipath( $scfg ) ) {
-        my $scsiid = OpenEJovianDSS::Common::get_scsiid_from_target_paths( $scfg, @targetpaths );
-        if ( defined($scsiid) ) {
-            $class->stage_multipath( $scfg, $scsiid, $target );
-        }
-        else {
-            die "Unable to get scsi id for multipath device ${target}\n";
-        }
-    }
-}
 
 sub activate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
@@ -1499,7 +1470,7 @@ sub activate_volume {
 
     return 0 if ( 'images' ne "$vtype" );
 
-    $class->activate_volume_ext( $storeid, $scfg, $volname, $snapname, $cache, undef, $vmid);
+    OpenEJovianDSS::Common::activate_volume( $storeid, $scfg, $volname, $snapname, $cache, undef, $vmid);
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "Activate volume ${volname}"
