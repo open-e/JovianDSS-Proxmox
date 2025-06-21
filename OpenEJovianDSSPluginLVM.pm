@@ -651,7 +651,7 @@ sub vm_disk_extend_to {
 
     OpenEJovianDSS::Common::joviandss_cmd($scfg, ["pool", "${pool}", "volume", "${vmdiskname}", "resize", "${newsize}"]);
 
-    $class->vm_disk_lvm_update($storeid, $scfg, $vmdiskname, $device, $newsize);
+    # $class->vm_disk_lvm_update($storeid, $scfg, $vmdiskname, $device, $newsize);
 
     return ;
 }
@@ -1578,15 +1578,19 @@ sub volume_resize {
     my $vmdiskname = $class->vm_disk_name($vmid, 0);
     my $vmvgname = $class->vm_vg_name($vmid);
 
-    my $device = $class->vm_disk_connect($storeid, $scfg, $vmdiskname, undef, undef);
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Resize volume ${volname} to ${size}\n");
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "VM disk ${vmdiskname} is connected to ${device}\n");
+    my $block_devs = OpenEJovianDSS::Common::activate_volume( $storeid, $scfg, $vmdiskname, undef, undef);
 
-    my $vginfo = vm_disk_vg_info($device, $vmvgname);
+    my $vginfo;
+    my $device;
+    if ( @$block_devs ) {
+        $device = $block_dev;
+    }
+    $vginfo = vm_disk_vg_info($block_devs->[0], $vmvgname);
 
     # get zvol size
     my $vmdisksize = $class->vm_disk_size($scfg, $vmdiskname);
-
 
     # check if zvol size is not different from LVM size
     # that should handle cases of failure during volume resizing
