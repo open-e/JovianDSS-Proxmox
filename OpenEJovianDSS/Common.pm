@@ -782,7 +782,13 @@ sub volume_stage_multipath {
     unless ( defined($mpathname) ) {
         die "Unable to identify the multipath name for scsiid ${scsiid}\n";
     }
-    return "/dev/mapper/${mpathname}";
+
+    $mpathname = "/dev/mapper/${mpathname}";
+    if ( -e $mpathname ) {
+        return $mpathname;
+    }
+
+    return undef;
 }
 
 #sub block_device_path {
@@ -1189,34 +1195,49 @@ sub volume_unpublish {
     # Volume deletion will result in deletetion of all its snapshots
     # Therefore we have to detach all volume snapshots that is expected to be
     # removed along side with volume
-    my $delitablesnaps = joviandss_cmd(
-        $scfg,
-        [
-            "pool",   $pool,
-            "volume", $volname,
-            "delete", "-c",  "-p",
-            '--target-prefix', $prefix,
-            '--target-group-name', $tgname
-        ]
-    );
-    my @dsl = split( " ", $delitablesnaps );
+    unless ( defined($snapname) ) {
+        my $delitablesnaps = joviandss_cmd(
+            $scfg,
+            [
+                "pool",   $pool,
+                "volume", $volname,
+                "delete", "-c",  "-p",
+                '--target-prefix', $prefix,
+                '--target-group-name', $tgname
+            ]
+        );
+        my @dsl = split( " ", $delitablesnaps );
 
-    unless ( $content_volume_flag ) {
-        foreach my $snap (@dsl) {
-            volume_deactivate( $scfg, $storeid, $vmid,
-                $volname, $snap, undef );
+        unless ( $content_volume_flag ) {
+            foreach my $snap (@dsl) {
+                volume_deactivate( $scfg, $storeid, $vmid,
+                    $volname, $snap, undef );
+            }
         }
+
+        joviandss_cmd(
+            $scfg,
+            [
+                "pool", $pool,
+                "targets", "delete",
+                '--target-prefix', $prefix,
+                '--target-group-name', $tgname,
+                "-v", $volname
+            ]
+        );
     }
-    joviandss_cmd(
-        $scfg,
-        [
-            "pool", $pool,
-            "targets", "delete",
-            '--target-prefix', $prefix,
-            '--target-group-name', $tgname,
-            "-v", $volname
-        ]
-    );
+
+    if ( defined( $snapname ) ) {
+        joviandss_cmd(
+            $scfg,
+            [
+                "pool", $pool,
+                "targets", "delete",
+                '--target-prefix', $prefix,
+                "-v", $volname,
+                "--snapshot", $snapname]);
+    }
+    1;
 }
 
 sub lun_record_local_create {
@@ -1699,7 +1720,7 @@ sub volume_activate {
 sub volume_deactivate {
     my ($scfg, $storeid,
         $vmid, $volname, $snapname,
-        $content_volume_flag )
+        $contentvolumeflag )
       = @_;
 
     my $published                 = 0;
@@ -1723,6 +1744,8 @@ sub volume_deactivate {
     my $lunrecpath;
     my $lunrecord = undef;
 
+    my $local_cleanup = 0;
+
     my $pool   = OpenEJovianDSS::Common::get_pool($scfg);
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
@@ -1730,7 +1753,7 @@ sub volume_deactivate {
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
           . "\n" );
 
-    if ( defined($content_volume_flag) && $content_volume_flag != 0 ) {
+    if ( defined($contentvolumeflag) && $contentvolumeflag != 0 ) {
         $tgname = OpenEJovianDSS::Common::get_content_target_group_name($scfg);
     } else {
         $tgname = OpenEJovianDSS::Common::get_vm_target_group_name($scfg, $vmid);
@@ -1739,16 +1762,17 @@ sub volume_deactivate {
     my $lunrecinfolist = lun_record_local_get_info_list( $scfg, $storeid, $volname, $snapname );
 
     if ( @$lunrecinfolist ) {
-        if ( @$lunrec == 1 ) {
-            ($targetname, $lunid, $lunrecpath, $lunrecord) = $lunrecinfolist[0];
+        if ( @$lunrecinfolist == 1 ) {
+            ($targetname, $lunid, $lunrecpath, $lunrecord) = @$lunrecinfolist[0];
         } else {
             foreach my $rec (@$lunrecinfolist) {
-                my $tinfo = target_active_info( $scfg, $tgname, $volname, $snapname, $contentvolflag );
+                my $tinfo = target_active_info( $scfg, $tgname, $volname, $snapname, $contentvolumeflag );
                 if ( defined( $tinfo ) ){
+                    my $lr;
                     ($targetname, $lunid, $lunrecpath, $lr) = $rec;
 
-                    if ( $tinfo{name} eq $targetname ) {
-                        if ( $tinfo{lun} eq $lunid ) {
+                    if ( $tinfo->{name} eq $targetname ) {
+                        if ( $tinfo->{lun} eq $lunid ) {
                             if ( $lr->{volname} eq $volname ) {
                                 if (defined($snapname) && $lr->{snapname} eq $snapname ) {
                                     $lunrecord = $lr;
@@ -1777,7 +1801,7 @@ sub volume_deactivate {
         eval {
             unstage_volume_multipath( $scfg, $lunrecord->{scsiid} );
         };
-        $cerr = $@;
+        my $cerr = $@;
         if ($cerr) {
             $local_cleanup = 1;
             warn "unstage_volume_multipath failed: $@" if $@;
@@ -1794,17 +1818,17 @@ sub volume_deactivate {
             @hostsarray
         );
     };
-    $cerr = $@;
+    my $cerr = $@;
     if ($cerr) {
         $local_cleanup = 1;
         warn "unstage_volume_iscsi failed: $@" if $@;
     }
 
-    if ( $snapname )
+    if ( $snapname ) {
     # We do not delete target on joviandss as this will lead to race condition
     # in case of migration
         eval {
-            unpublish_volume( $scfg, $target_name );
+            volume_unpublish( $scfg, $targetname );
         };
         $cerr = $@;
         if ($cerr) {
@@ -1812,7 +1836,7 @@ sub volume_deactivate {
             warn "unpublish_volume failed: $@" if $@;
         }
     }
-    lun_record_local_delete( $scfg, $storeid, $target_name, $lunid, $volname, $snapname );
+    lun_record_local_delete( $scfg, $storeid, $targetname, $lunid, $volname, $snapname );
     1;
 }
 
@@ -1820,7 +1844,7 @@ sub lun_record_update_device {
     my ( $scfg, $storeid, $targetname, $lunid, $lunrecpath, $lunrec, $expectedsize ) = @_;
 
     my @hosts = $lunrec->{hosts};
-    my $multipath = $recinfo->{multipath};
+    my $multipath = $lunrec->{multipath};
 
     my @update_device_try = ( 1 .. 10 );
     foreach (@update_device_try) {
@@ -1839,14 +1863,13 @@ sub lun_record_update_device {
             my $block_device_name = basename($block_device_path);
             unless ( $block_device_name =~ /^[a-z0-9]+$/ ) {
                 die "Invalide block device name ${block_device_name} " .
-                    " for iscsi target ${target}\n";
+                    " for iscsi target ${targetname}\n";
             }
             my $rescan_file = "/sys/block/${block_device_name}/device/rescan";
             open my $fh, '>', $rescan_file or die "Cannot open $rescan_file $!";
             print $fh "1" or die "Cannot write to $rescan_file $!";
             close $fh     or die "Cannot close ${rescan_file} $!";
-            $block_device_path = $bd ;
-
+            #$block_device_path = $bd ;
         }
 
         eval {
@@ -1870,7 +1893,7 @@ sub lun_record_update_device {
             }
             my $block_device_path = volume_stage_multipath( $scfg, $lunrec->{scsiid} );
             eval {
-                run_command( [ $MULTIPATH, '-r', ${block_dev} ],
+                run_command( [ $MULTIPATH, '-r', ${block_device_path} ],
                     outfunc => sub { } );
             };
         }
@@ -1906,14 +1929,38 @@ sub lun_record_update_device {
 }
 
 sub volume_update_size {
-    my ( $scfg, $storeid, $volname, $size ) = @_;
+    my ( $scfg, $storeid, $vmid, $volname, $size ) = @_;
 
+    my $tgname;
     my $lunrecinfolist = OpenEJovianDSS::Common::lun_record_local_get_info_list( $scfg, $storeid, $volname, undef );
 
-    foreach my $rec (@$lunrecinfolist) {
-        ($targetname, $lunid, $lunrecpath, $lunrecord) = $rec;
-        lun_record_update_device( $scfg, $storeid, $targetname, $lunid, $lunrecpath, $lunrecord, $size);
+    $tgname = OpenEJovianDSS::Common::get_vm_target_group_name($scfg, $vmid);
+
+    if ( @$lunrecinfolist ) {
+        if ( @$lunrecinfolist == 1 ) {
+            my ($targetname, $lunid, $lunrecpath, $lunrecord) = @$lunrecinfolist[0];
+            lun_record_update_device( $scfg, $storeid, $targetname, $lunid, $lunrecpath, $lunrecord, $size);
+        } else {
+            foreach my $rec (@$lunrecinfolist) {
+                my $tinfo = target_active_info( $scfg, $tgname, $volname, undef, undef );
+                if ( defined( $tinfo ) ){
+                    my ($targetname, $lunid, $lunrecpath, $lunrecord) = $rec;
+
+                    if ( $tinfo->{name} eq $targetname ) {
+                        if ( $tinfo->{lun} eq $lunid ) {
+                            if ( $lunrecord->{volname} eq $volname ) {
+                                unless(defined($lunrecord->{snapname})) {
+                                        lun_record_update_device( $scfg, $storeid, $targetname, $lunid, $lunrecpath, $lunrecord, $size);
+                                        return;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
+    1;
 }
 
 sub volume_get_size {
