@@ -509,7 +509,7 @@ class JovianDSSDriver(object):
         except jexc.JDSSVolumeExistsException as jerr:
             if jcom.is_snapshot(cvname):
                 LOG.debug(("Got Volume Exists exception, but do nothing as"
-                           "%s is a snapshot"))
+                           "%s is a snapshot"), cvname)
             else:
                 raise jerr
         except jexc.JDSSException as jerr:
@@ -861,7 +861,7 @@ class JovianDSSDriver(object):
         conforming_vips = self._get_conforming_vips()
 
         volume_info = dict()
-        volume_info['vips'] = list(conforming_vips.items())
+        volume_info['vips'] = list(conforming_vips.values())
         volume_info['target'] = tname
         volume_info['lun'] = lun_id
 
@@ -987,7 +987,7 @@ class JovianDSSDriver(object):
             self.ra.set_target_assigned_vips(tname,
                                              list(expected_vips.keys()))
 
-        volume_publication_info['vips'] = list(expected_vips.items())
+        volume_publication_info['vips'] = list(expected_vips.values())
         if not self.ra.is_target_lun(tname, vname, lid):
             self._attach_target_volume_lun(tname, vname, lid)
 
@@ -1048,36 +1048,39 @@ class JovianDSSDriver(object):
         :return: (<target_name>, <lun_id>, <volume attached>,<new target>)
         """
         tname = target_prefix + target_name
+        if target_prefix[-1] != ':':
+            tname = target_prefix + ':' + target_name
         tlist = self.list_targets()
         target_re = re.compile(fr'^{tname}-(?P<id>\d+)$')
 
         related_targets = []
         related_targets_indexes = []
         for target in tlist:
-            m = target_re.match(target['name'])
+            m = target_re.match(target)
             if m is not None:
                 related_targets.append(target)
                 related_targets_indexes.append(m.group('id'))
 
         candidate_lun = None
         for target in related_targets:
-            luns = self.ra.get_target_luns(target['name'])
+            luns = self.ra.get_target_luns(target)
             taken_luns = dict()
             for lun in luns:
                 if lun['name'] == vname:
-                    return (target['name'], lun['lun'], True, False)
+                    return (target, lun['lun'], True, False)
                 taken_luns[int(lun['lun'])] = True
             if candidate_lun is None:
                 if len(taken_luns) >= luns_per_target:
                     continue
                 for i in range(luns_per_target):
                     if i not in taken_luns:
-                        candidate_lun = (target['name'], i)
+                        candidate_lun = (target, i)
         if candidate_lun is not None:
             return (candidate_lun[0], candidate_lun[1], False, False)
         for i in range(len(related_targets_indexes)):
             if i not in related_targets_indexes:
                 return ('-'.join([tname, str(i)]), 0, False, True)
+        return ('-'.join([tname, '0']), 0, False, True)
 
     def ensure_target_volume(self,
                              target_prefix,
@@ -1183,10 +1186,10 @@ class JovianDSSDriver(object):
 
         volume_publication_info = dict()
         conforming_vips = self._get_conforming_vips()
-        volume_publication_info['vips'] = list(conforming_vips.items())
+        volume_publication_info['vips'] = list(conforming_vips.values())
         # Create target
         self.ra.create_target(target_name,
-                              conforming_vips.keys(),
+                              list(conforming_vips.keys()),
                               use_chap=(provider_auth is not None))
         volume_publication_info['target'] = target_name
         try:
@@ -1255,13 +1258,10 @@ class JovianDSSDriver(object):
         try:
             self.ra.attach_target_vol(target_name, vname, lun_id=lun)
         except jexc.JDSSException as jerr:
-            msg = ('Unable to attach volume {volume} to '
-                   'target {target} lun {lun} '
-                   'because of {error}.')
-            LOG.warning(msg, {"volume": vname,
-                              "target": target_name,
-                              "lun": lun,
-                              "error": jerr})
+            msg = (f"Unable to attach volume {vname} to "
+                   f"target {target_name} lun {lun} "
+                   f"because of {jerr}.")
+            LOG.warning(msg)
             raise jerr
 
     def _set_target_credentials(self, target_name, cred):
@@ -1543,7 +1543,8 @@ class JovianDSSDriver(object):
             try:
                 LOG.debug("physical volume %s snap volume %s snap name %s",
                           volume_name,
-                          jcom.vid_from_sname(r['name']), r['name'])
+                          jcom.vid_from_sname(r['name']),
+                          r['name'])
 
                 vid = jcom.vid_from_sname(r['name'])
                 if vid == volume_name or vid is None:
@@ -1583,7 +1584,7 @@ class JovianDSSDriver(object):
                     LOG.error(
                         "Unable to continue volume %(volume)s promotion,"
                         "because of inability to conduct garbage cleaning "
-                        "on volume %(hvolume) with error %(err)s.", {
+                        "on volume %(hvolume)s with error %(err)s.", {
                             "volume": cname,
                             "hvolume": ovname,
                             "err": jerr})

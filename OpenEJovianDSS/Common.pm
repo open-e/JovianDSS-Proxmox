@@ -23,6 +23,8 @@ use Exporter 'import';
 use Carp qw( confess );
 use Data::Dumper;
 use File::Basename;
+use File::Find qw(find);
+use File::Path qw(make_path);
 use String::Util;
 
 use JSON qw(decode_json from_json to_json);
@@ -82,17 +84,15 @@ our @EXPORT_OK = qw(
   get_vm_target_group_name
   get_content_target_group_name
 
-  scsiid_from_target
-  scsiid_from_blockdevs
+  volume_get_size
 
-  publish_volume
-  stage_volume_iscsi
-  stage_volume_multipath
+  volume_publish
+  volume_unpublish
 
-  unpublish_volume
-  unstage_volume_iscsi
-  unstage_volume_multipath
+  volume_activate
+  volume_deactivate
 
+  store_settup
 );
 
 our %EXPORT_TAGS = ( all => [@EXPORT_OK], );
@@ -236,9 +236,11 @@ sub get_block_size {
 sub get_thin_provisioning {
     my ($scfg) = @_;
     if ( defined( $scfg->{thin_provisioning} ) ) {
-        return $scfg->{thin_provisioning};
+        if ( $scfg->{thin_provisioning} ) {
+            return 'y';
+        }
     }
-    return undef;
+    return 'n';
 }
 
 sub get_log_file {
@@ -598,19 +600,20 @@ sub get_iscsi_addresses {
     return @iplist;
 }
 
-sub get_iscsi_device_paths {
-    my ( $scfg, $target, $lunid, @hosts ) = @_;
+sub get_iscsi_devices_paths {
+    my ( $scfg, $target, $lunid, $hosts ) = @_;
 
     my @targets_block_devices = ();
     my $path;
-    foreach my $host (@hosts) {
-        $path = "/dev/disk/by-path/ip-${host}-iscsi-${target}-lun-${lunid}";
+    my $port = get_data_port( $scfg );
+    foreach my $host (@$hosts) {
+        $path = "/dev/disk/by-path/ip-${host}:${port}-iscsi-${target}-lun-${lunid}";
         if ( -e $path ) {
             debugmsg( $scfg, "debug", "Target ${target} mapped to ${path}\n" );
             push( @targets_block_devices, $path );
         }
     }
-    return @targets_block_devices;
+    return \@targets_block_devices;
 }
 
 sub target_active_info {
@@ -693,22 +696,29 @@ sub volume_publish {
         lunid  => $lunid,
         iplist => \@iplist
     );
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+            "Publish volume ${volname} "
+          . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+          . 'acquired '
+          . "target ${targetname} "
+          . "lun ${lunid} "
+          . "hosts @{iplist}");
 
     return \%tinfo;
 }
 
 sub volume_stage_iscsi {
-    my ( $scfg, $storeid, $targetname, $lunid, @hosts ) = @_;
+    my ( $scfg, $storeid, $targetname, $lunid, $hosts ) = @_;
 
-    debugmsg( $scfg, "debug", "Stage target ${targetname}\n" );
-    my @targets_block_devices =
-      get_iscsi_device_paths( $scfg, $targetname, $lunid, @hosts );
+    debugmsg( $scfg, "debug", "Stage target ${targetname} lun ${lunid} over addresses @$hosts\n" );
+    my $targets_block_devices =
+      get_iscsi_devices_paths( $scfg, $targetname, $lunid, $hosts );
 
-    if ( @targets_block_devices == @hosts ) {
-        return @targets_block_devices;
+    if ( @$targets_block_devices == @$hosts ) {
+        return $targets_block_devices;
     }
 
-    foreach my $host (@hosts) {
+    foreach my $host (@$hosts) {
 
         eval {
             run_command(
@@ -751,16 +761,18 @@ sub volume_stage_iscsi {
             );
         };
         warn $@ if $@;
+        debugmsg( $scfg, "debug", "Staging target ${targetname} of host ${host} done\n" );
     }
 
     for ( my $i = 1 ; $i <= 5 ; $i++ ) {
         sleep(1);
 
-        @targets_block_devices =
-          get_iscsi_device_paths( $scfg, $targetname, $lunid, @hosts );
+        $targets_block_devices =
+          get_iscsi_devices_paths( $scfg, $targetname, $lunid, $hosts );
 
-        if (@targets_block_devices) {
-            return \@targets_block_devices;
+        if (@$targets_block_devices) {
+            debugmsg( $scfg, "debug", "Stage iSCSI block devices @{ $targets_block_devices }\n" );
+            return $targets_block_devices;
         }
     }
     die "Unable to locate target ${targetname} block device location.\n";
@@ -884,11 +896,16 @@ sub block_device_path_from_lun_rec {
 
     }
     my @hosts = @{ $lunrec->{hosts} };
+
+
     my @iscsi_block_devices = block_device_iscsi_paths ( $scfg, $targetname, $lunid, @hosts );
 
     if (@iscsi_block_devices) {
+        print("Block device path from lun rec $iscsi_block_devices[0]\n");
+
         return $iscsi_block_devices[0];
     }
+    return undef;
 }
 
 sub get_device_mapper_name {
@@ -966,54 +983,54 @@ sub get_multipath_device_name {
     }
 }
 
-sub block_device_multipath_path {
-    my ( $scfg, $storeid, $targetname, $lunid, @hosts ) = @_;
-
-    my @tpaths = get_iscsi_device_paths( $scfg, $targetname, $lunid, @hosts );
-
-    unless ( @tpaths ) {
-        debugmsg( $scfg, "debug",
-            "Unable to identify device path for target ${targetname}\n" );
-        return undef;
-    }
-    my $bdpath = undef;
-    foreach my $tpath (@tpaths) {
-        eval {
-            run_command(
-                [ "readlink", "-f", $tpath ],
-                outfunc => sub { $bdpath = shift; }
-            );
-        };
-        if ( defined($bdpath) ) {
-            last;
-        }
-    }
-    unless ( defined($bdpath) ) {
-        die "Unable to identify block device related to target " .
-        "${targetname} lun ${lunid}\n";
-    }
-
-    $bdpath = clean_word($bdpath);
-    my $block_device_name = File::Basename::basename($bdpath);
-    unless ( $block_device_name =~ /^[a-z0-9]+$/ ) {
-        die "Invalide block device name ${block_device_name} " .
-                "for iscsi target ${targetname}\n";
-    }
-
-    my $mpathname = get_multipath_device_name($bdpath);
-
-    if ( !defined($mpathname) ) {
-        return undef;
-    }
-
-    my $mpathpath = "/dev/mapper/${mpathname}";
-
-    if ( -b $mpathpath ) {
-        debugmsg( $scfg, "debug", "Multipath block device is ${mpathpath}\n" );
-        return $mpathpath;
-    }
-    return undef;
-}
+#sub block_device_multipath_path {
+#    my ( $scfg, $storeid, $targetname, $lunid, @hosts ) = @_;
+#
+#    my $tpaths = get_iscsi_device_paths( $scfg, $targetname, $lunid, $hosts );
+#
+#    unless ( @$tpaths ) {
+#        debugmsg( $scfg, "debug",
+#            "Unable to identify device path for target ${targetname}\n" );
+#        return undef;
+#    }
+#    my $bdpath = undef;
+#    foreach my $tpath (@$tpaths) {
+#        eval {
+#            run_command(
+#                [ "readlink", "-f", $tpath ],
+#                outfunc => sub { $bdpath = shift; }
+#            );
+#        };
+#        if ( defined($bdpath) ) {
+#            last;
+#        }
+#    }
+#    unless ( defined($bdpath) ) {
+#        die "Unable to identify block device related to target " .
+#        "${targetname} lun ${lunid}\n";
+#    }
+#
+#    $bdpath = clean_word($bdpath);
+#    my $block_device_name = File::Basename::basename($bdpath);
+#    unless ( $block_device_name =~ /^[a-z0-9]+$/ ) {
+#        die "Invalide block device name ${block_device_name} " .
+#                "for iscsi target ${targetname}\n";
+#    }
+#
+#    my $mpathname = get_multipath_device_name($bdpath);
+#
+#    if ( !defined($mpathname) ) {
+#        return undef;
+#    }
+#
+#    my $mpathpath = "/dev/mapper/${mpathname}";
+#
+#    if ( -b $mpathpath ) {
+#        debugmsg( $scfg, "debug", "Multipath block device is ${mpathpath}\n" );
+#        return $mpathpath;
+#    }
+#    return undef;
+#}
 
 sub block_device_iscsi_paths {
     my ( $scfg, $target, $lunid, @hosts ) = @_;
@@ -1022,7 +1039,9 @@ sub block_device_iscsi_paths {
     my $path;
     foreach my $host (@hosts) {
         $path = "/dev/disk/by-path/ip-${host}-iscsi-${target}-lun-${lunid}";
+        print("Cheking block device path ${path}\n");
         if ( -e $path ) {
+            print("Found block device path ${path}\n");
             debugmsg( $scfg, "debug", "Target ${target} mapped to ${path}\n" );
             push( @targets_block_devices, $path );
         }
@@ -1069,9 +1088,9 @@ sub block_device_iscsi_paths {
 #}
 
 sub scsiid_from_blockdevs {
-    my ( $scfg, @targetpaths ) = @_;
+    my ( $scfg, $targetpaths ) = @_;
 
-    foreach my $targetpath (@targetpaths) {
+    foreach my $targetpath (@$targetpaths) {
         my $getscsiidcmd =
           [ "/lib/udev/scsi_id", "-g", "-u", "-d", $targetpath ];
         my $scsiid;
@@ -1103,7 +1122,7 @@ sub scsiid_from_blockdevs {
 }
 
 sub volume_unstage_iscsi {
-    my ( $scfg, $storeid, $targetname, $lunid, @hosts ) = @_;
+    my ( $scfg, $storeid, $targetname, $lunid, $hosts ) = @_;
 
     debugmsg( $scfg, "debug", "Unstaging target ${targetname}\n" );
 
@@ -1122,23 +1141,21 @@ sub volume_unstage_iscsi {
     };
     warn $@ if $@;
 
-    foreach my $host (@hosts) {
-        my $tpath = get_target_path($scfg, $targetname, $storeid);
+    foreach my $host (@$hosts) {
+        #my $tpath = get_iscsi_device_paths( $scfg, $targetname, $lunid, ($host) );
 
-        if (defined($tpath) && -e $tpath) {
+        #if (defined($tpath) && -e $tpath) {
 
-
-
-            eval {
-                run_command(
-                    [   $ISCSIADM,
-                        '--mode', 'node',
-                        '-p', $host,
-                        '--targetname',  $targetname,
-                        '-o', 'delete'
-                    ], outfunc => sub {}); };
-            warn $@ if $@;
-        }
+        eval {
+            run_command(
+                [   $ISCSIADM,
+                    '--mode', 'node',
+                    '-p', $host,
+                    '--targetname',  $targetname,
+                    '-o', 'delete'
+                ], outfunc => sub {}); };
+        warn $@ if $@;
+            #}
     }
 }
 
@@ -1252,8 +1269,22 @@ sub lun_record_local_create {
     my $ltldir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR,
                                      $storeid, $targetname, $lunid );
 
-    make_path( $ltldir, { mode => 0755 } )
-      or die "Cannot create $ltldir: $!";
+    my @errmsg = ();
+
+    make_path( $ltldir,
+                {
+                    verbose => 1,
+                    mode => 0644,
+                }
+            );
+
+            #if (@errmsg) {
+            #    for my $diag (@errmsg) {
+            #        my ($path, $message) = %{$diag};
+            #        print "Couldn’t create $path: $message\n";
+            #    }
+            #}
+    # or die "Cannot create $ltldir: $!";
 
     my $ltlfile = File::Spec->catfile( $ltldir, $volname );
 
@@ -1297,8 +1328,12 @@ sub lun_record_local_update {
     my $ltldir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR,
                                      $storeid, $targetname, $lunid );
 
-    make_path( $ltldir, { mode => 0755 } )
-      or die "Cannot create $ltldir: $!";
+    make_path( $ltldir,
+                {
+                    verbose => 1,
+                    chmode => '0644'
+                }
+            ) or die "Cannot create $ltldir: $!";
 
     my $ltlfile = File::Spec->catfile( $ltldir, $volname );
 
@@ -1352,7 +1387,7 @@ sub lun_record_local_get_info_list {
 
     # Provides
     # ( target name, lun number, path to lun record file, lun record data )
-    my @matches;
+    my @matches = ();
 
     my $name = $volname;
 
@@ -1361,17 +1396,23 @@ sub lun_record_local_get_info_list {
     }
     my $ldir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR, $storeid );
 
-    find(
+    unless( -d $ldir ){
+        die "Unable to locate folder containing ${ ldir } plugin state\n";
+    }
+
+    File::Find::find(
         {
             no_chdir => 1,
             wanted   => sub {
-                return unless $_ eq "$name";
+                #return unless $_ eq "$name";
                 my $full = $File::Find::name;
+                print("Lun record found ${full} Addition: $_\n");
 
                 # Expect path .../<storeid>/<target>/<lun_id>/$name
                 unless ($full =~ m!^\Q$ldir\E/([^/]+)/(\d+)/\Q$name\E$!) {
                     return;
                 }
+                print("Lun record passed check ${full}\n");
                 my ($targetname, $lunid) = ($1, $2);
 
                 if (defined $tgname) {
@@ -1388,11 +1429,11 @@ sub lun_record_local_get_info_list {
                         if ( defined($snapname) ) {
                             if ( defined($lunrec->{snapname}) &&
                                 ( $lunrec->{snapname} eq $snapname ) ) {
-                                push @matches, ( $targetname, $lunid, $full, $lunrec );
+                                push @matches, [ $targetname, $lunid, $full, $lunrec ];
                             }
                         } else {
                             unless( defined($lunrec->{snapname}) ) {
-                                push @matches, ( $targetname, $lunid, $full, $lunrec );
+                                push @matches, [ $targetname, $lunid, $full, $lunrec ];
                             }
                         }
                     }
@@ -1402,7 +1443,7 @@ sub lun_record_local_get_info_list {
         },
         $ldir);
 
-    return @matches;
+    return \@matches;
 }
 
 sub lun_record_local_get_by_target {
@@ -1446,7 +1487,7 @@ sub lun_record_local_get_by_path {
         die "Unexpected content in $path";
     }
 
-    for my $key (qw(iscsiid name size multipath hosts multipath shared)) {
+    for my $key (qw(iscsiid volname snapname size multipath hosts multipath shared)) {
         die "Local lun record ${path} is missing '$key'"
             unless exists $jdata->{$key};
     }
@@ -1568,7 +1609,7 @@ sub volume_activate {
     my $multipath_staged          = 0;
     my $local_record_created      = 0;
 
-    my @block_devs;
+    my $block_devs;
     my $tinfo; # Target information when it is published
 
     my $tgname;
@@ -1598,11 +1639,12 @@ sub volume_activate {
                                 $snapname,
                                 $content_volume_flag
         );
+        my $dumpdata = Data::Dumper->new([$tinfo]);
+
         if ($tinfo) {
             $targetname = $tinfo->{target};
             $lunid = $tinfo->{lunid};
-            my $iplist = $tinfo->{iplist};
-            $hosts =$tinfo->{hosts};
+            $hosts = $tinfo->{iplist};
         } else {
             die "Publishing volume ${volname} " . safe_var_print( "snapshot", $snapname ) .
                 " failed to provide target info\n";
@@ -1614,17 +1656,18 @@ sub volume_activate {
             $storeid,
             $targetname,
             $lunid,
-            @{ $hosts }
+            $hosts
         );
-        @block_devs = @$tbdlist;
+        $block_devs = $tbdlist;
 
-        unless (@block_devs == @$hosts) {
+        unless (scalar(@$block_devs) == scalar(@$hosts)) {
             die "Unable to connect all storage addresses\n";
         }
-        $scsiid = scsiid_from_blockdevs( $scfg, @block_devs );
+        $scsiid = scsiid_from_blockdevs( $scfg, $block_devs );
 
         if (defined( $scsiid ) ) {
             $scsiid_acquired = 1;
+        } else {
             die "Unable to identify scsi id for ${volname}" .
                 safe_var_print( "snapshot", $snapname ) . "\n";
         }
@@ -1632,21 +1675,21 @@ sub volume_activate {
         if ($multipath) {
             $multipath_staged = 1;
             my $multipath_path = volume_stage_multipath( $scfg, $scsiid );
-            @block_devs = ( $multipath_path );
+            my $mpdl = ( $multipath_path );
+            $block_devs = $mpdl;
         }
 
-        unless ( $snapname ) {
-            my $size = volume_get_size( $scfg, $storeid, $volname);
+        #unless ( $snapname ) {
+        my $size = volume_get_size( $scfg, $storeid, $volname);
 
-            $local_record_created      = 1;
-            lun_record_local_create(
+        $local_record_created      = 1;
+        lun_record_local_create(
                 $scfg, $storeid,
                 $targetname, $lunid, $volname, $snapname,
                 $scsiid, $size,
                 $multipath, $shared,
                 @{ $hosts } );
-        }
-        return \@block_devs;
+            #}
     };
     my $err = $@;
 
@@ -1683,7 +1726,7 @@ sub volume_activate {
                     $storeid,
                     $targetname,
                     $lunid,
-                    @{ $hosts }
+                    $hosts
                 );
             };
             my $cerr = $@;
@@ -1712,9 +1755,13 @@ sub volume_activate {
         }
         die $err;
     }
-    die "Unable to provide block device for volume ${volname}" .
-          OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname ) .
-          " after activation\n";
+    unless ( defined( $block_devs ) ) {
+        die "Unable to provide block device for volume ${volname}"
+                . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+                . " after activation\n";
+    } else {
+        return $block_devs;
+    }
 }
 
 sub volume_deactivate {
@@ -1761,11 +1808,19 @@ sub volume_deactivate {
 
     my $lunrecinfolist = lun_record_local_get_info_list( $scfg, $storeid, $volname, $snapname );
 
+    print("Lun record info @$lunrecinfolist");
+    print(Dumper(@$lunrecinfolist));
+
     if ( @$lunrecinfolist ) {
         if ( @$lunrecinfolist == 1 ) {
-            ($targetname, $lunid, $lunrecpath, $lunrecord) = @$lunrecinfolist[0];
+            print("Single Lun record found\n");
+            print(Dumper(@{ $lunrecinfolist->[0] }));
+            ($targetname, $lunid, $lunrecpath, $lunrecord) = @{ $lunrecinfolist->[0] };
         } else {
+            print("Multiple Lun record found\n");
+
             foreach my $rec (@$lunrecinfolist) {
+                print(Dumper($rec));
                 my $tinfo = target_active_info( $scfg, $tgname, $volname, $snapname, $contentvolumeflag );
                 if ( defined( $tinfo ) ){
                     my $lr;
@@ -1843,7 +1898,7 @@ sub volume_deactivate {
 sub lun_record_update_device {
     my ( $scfg, $storeid, $targetname, $lunid, $lunrecpath, $lunrec, $expectedsize ) = @_;
 
-    my @hosts = $lunrec->{hosts};
+    my @hosts = @{ $lunrec->{hosts} };
     my $multipath = $lunrec->{multipath};
 
     my @update_device_try = ( 1 .. 10 );
@@ -1938,7 +1993,7 @@ sub volume_update_size {
 
     if ( @$lunrecinfolist ) {
         if ( @$lunrecinfolist == 1 ) {
-            my ($targetname, $lunid, $lunrecpath, $lunrecord) = @$lunrecinfolist[0];
+            my ($targetname, $lunid, $lunrecpath, $lunrecord) = @{ $lunrecinfolist->[0] };
             lun_record_update_device( $scfg, $storeid, $targetname, $lunid, $lunrecpath, $lunrecord, $size);
         } else {
             foreach my $rec (@$lunrecinfolist) {
@@ -1974,4 +2029,16 @@ sub volume_get_size {
     return $size;
 }
 
+sub store_settup {
+    my ( $scfg, $storeid ) = @_;
+
+    my $path = OpenEJovianDSS::Common::get_content_path($scfg);
+
+    my $lldir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR, $storeid );
+
+    unless ( -d $lldir ) {
+        make_path( $lldir, { mode => 0755 } )
+                or die "Unable to create local lun record dirrectory $lldir: $!";
+    }
+}
 1;

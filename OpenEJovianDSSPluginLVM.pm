@@ -1585,7 +1585,7 @@ sub volume_resize {
     my $vginfo;
     my $device;
     if ( @$block_devs ) {
-        $device = $block_dev;
+        $device = ${ $block_devs }[0];
     }
     $vginfo = vm_disk_vg_info($block_devs->[0], $vmvgname);
 

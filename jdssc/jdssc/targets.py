@@ -208,7 +208,7 @@ class Targets():
         out = ('%(target)s %(lun)d %(hosts)s' % {
             'target': tinfo['target'],
             'lun': tinfo['lun'],
-            'hosts': tinfo['hosts']})
+            'hosts': ','.join(tinfo['vips'])})
         print(out)
 
     def delete(self):
