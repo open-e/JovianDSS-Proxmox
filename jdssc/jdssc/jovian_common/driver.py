@@ -900,12 +900,12 @@ class JovianDSSDriver(object):
         """
         LOG.debug("detach volume %s", vname)
 
-        luns = self.ra.get_target_luns(tname)
-
         try:
             self.ra.detach_target_vol(tname, vname)
         except jexc.JDSSResourceNotFoundException:
             pass
+
+        luns = self.ra.get_target_luns(tname)
 
         if len(luns) == 0:
             try:
@@ -1050,36 +1050,59 @@ class JovianDSSDriver(object):
         tname = target_prefix + target_name
         if target_prefix[-1] != ':':
             tname = target_prefix + ':' + target_name
+
         tlist = self.list_targets()
         target_re = re.compile(fr'^{tname}-(?P<id>\d+)$')
 
         related_targets = []
         related_targets_indexes = []
+
         for target in tlist:
             m = target_re.match(target)
             if m is not None:
                 related_targets.append(target)
                 related_targets_indexes.append(m.group('id'))
+                LOG.debug("Related target %s with index %s",
+                          target,
+                          m.group('id'))
 
+        # We found list of targets that might be related to
+        # same volume group that volume of interest
         candidate_lun = None
+        if related_targets is not None:
+            related_targets.sort()
         for target in related_targets:
             luns = self.ra.get_target_luns(target)
-            taken_luns = dict()
+            taken_luns = []
+            # For each target we check if it has volume of interest
+            # already attached
             for lun in luns:
                 if lun['name'] == vname:
                     return (target, lun['lun'], True, False)
-                taken_luns[int(lun['lun'])] = True
+                taken_luns.append(int(lun['lun']))
             if candidate_lun is None:
+                LOG.debug("Target %s has %d luns occupied: %s",
+                          target, len(taken_luns), str(taken_luns))
                 if len(taken_luns) >= luns_per_target:
                     continue
                 for i in range(luns_per_target):
                     if i not in taken_luns:
+                        LOG.debug("Found empty lun at target %s lun %d",
+                                  target, i)
                         candidate_lun = (target, i)
+                        break
+        # TODO: search over all targets, as target prefix might change
+
         if candidate_lun is not None:
             return (candidate_lun[0], candidate_lun[1], False, False)
-        for i in range(len(related_targets_indexes)):
+
+        for i in range(len(related_targets_indexes) + 1):
             if i not in related_targets_indexes:
-                return ('-'.join([tname, str(i)]), 0, False, True)
+                tcandidate = '-'.join([tname, str(i)])
+                try:
+                    self.ra.get_target(tcandidate)
+                except jexc.JDSSResourceNotFoundException:
+                    return (tcandidate, 0, False, True)
         return ('-'.join([tname, '0']), 0, False, True)
 
     def ensure_target_volume(self,
@@ -1144,19 +1167,19 @@ class JovianDSSDriver(object):
         :return: dictionary of vip name as key and ip as value
         """
 
-        conforming_vips = dict()
-        iscsi_addresses = []
+        conforming_vips=dict()
+        iscsi_addresses=[]
 
         if len(self.jovian_iscsi_vip_addresses) == 0:
             iscsi_addresses.extend(self.jovian_hosts)
         else:
             iscsi_addresses.extend(self.jovian_iscsi_vip_addresses)
 
-        vip_data = self.ra.get_pool_vips()
+        vip_data=self.ra.get_pool_vips()
 
         for vip in vip_data:
             if vip['address'] in iscsi_addresses:
-                conforming_vips[vip['name']] = vip['address']
+                conforming_vips[vip['name']]=vip['address']
 
         if len(conforming_vips) == 0:
             raise jexc.JDSSVIPNotFoundException(iscsi_addresses)
@@ -1184,14 +1207,14 @@ class JovianDSSDriver(object):
         LOG.debug("create target %s and assigne volume %s to lun %s",
                   target_name, vid, lid)
 
-        volume_publication_info = dict()
-        conforming_vips = self._get_conforming_vips()
-        volume_publication_info['vips'] = list(conforming_vips.values())
+        volume_publication_info=dict()
+        conforming_vips=self._get_conforming_vips()
+        volume_publication_info['vips']=list(conforming_vips.values())
         # Create target
         self.ra.create_target(target_name,
                               list(conforming_vips.keys()),
                               use_chap=(provider_auth is not None))
-        volume_publication_info['target'] = target_name
+        volume_publication_info['target']=target_name
         try:
             # Attach volume
             self._attach_target_volume_lun(target_name, vid, lid)
@@ -1199,13 +1222,13 @@ class JovianDSSDriver(object):
             raise err
             # TODO: finish this
 
-        volume_publication_info['lun'] = lid
+        volume_publication_info['lun']=lid
         # Set credentials
         if provider_auth is not None:
-            (__, auth_username, auth_secret) = provider_auth.split()
-            volume_publication_info['username'] = auth_username
-            volume_publication_info['password'] = auth_secret
-            chap_cred = {"name": auth_username,
+            (__, auth_username, auth_secret)=provider_auth.split()
+            volume_publication_info['username']=auth_username
+            volume_publication_info['password']=auth_secret
+            chap_cred={"name": auth_username,
                          "password": auth_secret}
 
             self._set_target_credentials(target_name, chap_cred)
@@ -1215,12 +1238,12 @@ class JovianDSSDriver(object):
     def _list_targets(self):
         """List targets
         """
-        targets = []
-        i = 0
+        targets=[]
+        i=0
         # First we list all volume snapshots page by page
         try:
             while True:
-                tpage = self.ra.get_targets_page(i)
+                tpage=self.ra.get_targets_page(i)
 
                 if len(tpage) > 0:
                     LOG.debug("Page: %s", str(tpage))
@@ -1237,11 +1260,11 @@ class JovianDSSDriver(object):
         return targets
 
     def list_targets(self):
-        targets_data = self.ra.get_targets()
+        targets_data=self.ra.get_targets()
         # TODO: switch to target listing with pages once
         # it is supported with jovian
         # self._list_targets()
-        target_names = []
+        target_names=[]
         for t in targets_data:
             target_names.append(t['name'])
 
@@ -1258,7 +1281,7 @@ class JovianDSSDriver(object):
         try:
             self.ra.attach_target_vol(target_name, vname, lun_id=lun)
         except jexc.JDSSException as jerr:
-            msg = (f"Unable to attach volume {vname} to "
+            msg=(f"Unable to attach volume {vname} to "
                    f"target {target_name} lun {lun} "
                    f"because of {jerr}.")
             LOG.warning(msg)
@@ -1281,7 +1304,7 @@ class JovianDSSDriver(object):
             except jexc.JDSSException:
                 pass
 
-            err_msg = (('Unable to create user %(user)s '
+            err_msg=(('Unable to create user %(user)s '
                         'for target %(target)s '
                         'because of %(error)s.') % {
                             'target': target_name,
@@ -1297,10 +1320,10 @@ class JovianDSSDriver(object):
         :return: list of volumes
         """
 
-        ret = []
-        data = []
+        ret=[]
+        data=[]
         try:
-            data = self._list_all_pages(self.ra.get_volumes_page)
+            data=self._list_all_pages(self.ra.get_volumes_page)
         except jexc.JDSSCommunicationFailure as jerr:
             raise jerr
 
@@ -1316,11 +1339,11 @@ class JovianDSSDriver(object):
                 if not jcom.is_volume(r['name']):
                     continue
 
-                vdata = {'name': jcom.idname(r['name']),
+                vdata={'name': jcom.idname(r['name']),
                          'size': r['volsize']}
 
                 if 'san:volume_id' in r:
-                    vdata['id'] = r['san:volume_id']
+                    vdata['id']=r['san:volume_id']
 
                 ret.append(vdata)
 
@@ -1333,22 +1356,22 @@ class JovianDSSDriver(object):
 
         :return: volume id, san id, size
         """
-        name = None
+        name=None
 
         if direct_mode:
-            name = volume['id']
+            name=volume['id']
         else:
-            name = jcom.vname(volume['id'])
-        data = self.ra.get_lun(name)
+            name=jcom.vname(volume['id'])
+        data=self.ra.get_lun(name)
 
         if (not direct_mode) and (not jcom.is_volume(name)):
             return dict()
 
-        ret = {'name': name,
+        ret={'name': name,
                'size': data['volsize']}
 
         if 'san:volume_id' in data:
-            ret['id'] = data['san:volume_id'],
+            ret['id']=data['san:volume_id'],
 
         return ret
 
@@ -1357,32 +1380,32 @@ class JovianDSSDriver(object):
 
         :return: volume id, size
         """
-        name = None
+        name=None
 
         if direct_mode:
-            name = nas_volume_name
+            name=nas_volume_name
         else:
-            name = jcom.vname(nas_volume_name)
-        data = self.ra.get_nas_volume(name)
+            name=jcom.vname(nas_volume_name)
+        data=self.ra.get_nas_volume(name)
 
-        ret = {'name': name,
+        ret={'name': name,
                'quota': data['quota']}
 
         return ret
 
     def _set_provisioning_thin(self, vname, thinp):
 
-        provisioning = 'thin' if thinp else 'thick'
+        provisioning='thin' if thinp else 'thick'
 
         LOG.info("Setting volume %s provisioning %s",
                  jcom.idname(vname),
                  provisioning)
 
-        prop = {'provisioning': provisioning}
+        prop={'provisioning': provisioning}
         try:
             self.ra.modify_lun(vname, prop=prop)
         except jexc.JDSSException as err:
-            emsg = (("Failed to set volume %(vol)s provisioning "
+            emsg=(("Failed to set volume %(vol)s provisioning "
                      "%(ptype)s") % {
                 'vol': jcom.idname(vname),
                 'ptype': provisioning})
@@ -1393,22 +1416,22 @@ class JovianDSSDriver(object):
                   volume_name,
                   new_volume_name)
 
-        vname = jcom.vname(volume_name)
-        nvname = jcom.vname(new_volume_name)
-        prop = {'name': nvname}
+        vname=jcom.vname(volume_name)
+        nvname=jcom.vname(new_volume_name)
+        prop={'name': nvname}
         try:
             self.ra.modify_lun(vname, prop)
         except jexc.JDSSException as err:
-            emsg = "Failed to rename volume %(vol)s to %(new_name)s" % {
+            emsg="Failed to rename volume %(vol)s to %(new_name)s" % {
                 'vol': vname,
                 'new_name': nvname}
             raise Exception(emsg) from err
 
     def _list_all_snapshots(self, f=None):
-        resp = []
-        i = 0
+        resp=[]
+        i=0
         while True:
-            spage = self.ra.get_snapshots_page(i)
+            spage=self.ra.get_snapshots_page(i)
 
             if len(spage) > 0:
                 LOG.debug("Page: %s", str(spage))
@@ -1424,10 +1447,10 @@ class JovianDSSDriver(object):
         return resp
 
     def _list_all_pages(self, resource_getter, f=None):
-        resp = []
-        i = 0
+        resp=[]
+        i=0
         while True:
-            spage = resource_getter(i)
+            spage=resource_getter(i)
 
             if len(spage) > 0:
                 LOG.debug("Page: %s", str(spage))
@@ -1446,13 +1469,13 @@ class JovianDSSDriver(object):
     # have not snapshots
     def _list_all_volume_snapshots(self, vname, f=None):
 
-        snaps = []
+        snaps=[]
 
-        i = 0
+        i=0
         LOG.debug("Listing all volume snapshots: %s", vname)
 
         while True:
-            spage = self.ra.get_volume_snapshots_page(vname, i)
+            spage=self.ra.get_volume_snapshots_page(vname, i)
             LOG.debug("spage %s", str(spage))
             if len(spage) > 0:
 
@@ -1471,13 +1494,13 @@ class JovianDSSDriver(object):
 
         :return: list of volume related snapshots
         """
-        out = []
-        snapshots = []
-        i = 0
+        out=[]
+        snapshots=[]
+        i=0
         # First we list all volume snapshots page by page
         try:
             while True:
-                spage = self.ra.get_volume_snapshots_page(vname, i)
+                spage=self.ra.get_volume_snapshots_page(vname, i)
 
                 if len(spage) > 0:
                     LOG.debug("Page: %s", str(spage))
@@ -1497,17 +1520,17 @@ class JovianDSSDriver(object):
             # want to list it for specific volume
             if jcom.is_volume(snap['name']):
                 if all:
-                    snap['volume_name'] = vname
+                    snap['volume_name']=vname
                     out.append(snap)
                 else:
                     LOG.warning("Linked clone present among volumes")
                 continue
 
-            vid = jcom.vid_from_sname(snap['name'])
+            vid=jcom.vid_from_sname(snap['name'])
             if vid is None or vid == ovolume_name:
                 # That is used in create_snapshot function to provide detailed
                 # info in case volume already have snapshot
-                snap['volume_name'] = vname
+                snap['volume_name']=vname
 
                 out.append(snap)
                 for clone in jcom.snapshot_clones(snap):
@@ -1517,7 +1540,7 @@ class JovianDSSDriver(object):
                                                            clone))
                 continue
             if all:
-                snap['volume_name'] = vname
+                snap['volume_name']=vname
                 out.append(snap)
 
         return out
@@ -1528,10 +1551,10 @@ class JovianDSSDriver(object):
         :return: list of volumes
         """
 
-        ret = []
-        vname = jcom.vname(volume_name)
+        ret=[]
+        vname=jcom.vname(volume_name)
         try:
-            data = self._list_volume_snapshots(volume_name, vname)
+            data=self._list_volume_snapshots(volume_name, vname)
             # data = self.ra.get_snapshots(vname)
 
         except jexc.JDSSException as ex:
@@ -1546,7 +1569,7 @@ class JovianDSSDriver(object):
                           jcom.vid_from_sname(r['name']),
                           r['name'])
 
-                vid = jcom.vid_from_sname(r['name'])
+                vid=jcom.vid_from_sname(r['name'])
                 if vid == volume_name or vid is None:
                     ret.append({'name': jcom.sid_from_sname(r['name'])})
 
@@ -1560,9 +1583,9 @@ class JovianDSSDriver(object):
         Takes clone_name and promotes it until it hits not hidden volume
         """
 
-        cvolume = self.ra.get_lun(cname)
+        cvolume=self.ra.get_lun(cname)
 
-        ovname = jcom.origin_volume(cvolume)
+        ovname=jcom.origin_volume(cvolume)
 
         if ovname is not None and len(ovname) > 0:
 
@@ -1594,12 +1617,12 @@ class JovianDSSDriver(object):
 
     def _find_snapshot_parent(self, vname, sname):
 
-        out = []
-        snapshots = []
-        i = 0
+        out=[]
+        snapshots=[]
+        i=0
         try:
             while True:
-                spage = self.ra.get_volume_snapshots_page(vname, i)
+                spage=self.ra.get_volume_snapshots_page(vname, i)
 
                 if len(spage) > 0:
                     LOG.debug("Page: %s", str(spage))
@@ -1621,7 +1644,7 @@ class JovianDSSDriver(object):
                 continue
 
             for clone in jcom.snapshot_clones(snap):
-                out = self._find_snapshot_parent(clone, sname)
+                out=self._find_snapshot_parent(clone, sname)
                 if out is not None:
                     return out
         return None
@@ -1630,25 +1653,25 @@ class JovianDSSDriver(object):
         """Retrieve stats info."""
         LOG.debug('Updating volume stats')
 
-        pool_stats = self.ra.get_pool_stats()
-        total_capacity = math.floor(int(pool_stats["size"]) / o_units.Gi)
-        free_capacity = math.floor(int(pool_stats["available"]) / o_units.Gi)
+        pool_stats=self.ra.get_pool_stats()
+        total_capacity=math.floor(int(pool_stats["size"]) / o_units.Gi)
+        free_capacity=math.floor(int(pool_stats["available"]) / o_units.Gi)
 
-        reserved_percentage = (
+        reserved_percentage=(
             self.configuration.get('reserved_percentage', 0))
 
         if total_capacity is None:
-            total_capacity = 'unknown'
+            total_capacity='unknown'
         if free_capacity is None:
-            free_capacity = 'unknown'
+            free_capacity='unknown'
 
-        location_info = '%(driver)s:%(host)s:%(volume)s' % {
+        location_info='%(driver)s:%(host)s:%(volume)s' % {
             'driver': self.__class__.__name__,
             'host': self.ra.get_active_host()[0],
             'volume': self._pool
         }
 
-        self._stats = {
+        self._stats={
             'vendor_name': 'Open-E',
             'driver_version': self.VERSION,
             'storage_protocol': 'iSCSI',
@@ -1689,10 +1712,10 @@ class JovianDSSDriver(object):
         :return: { 'snapshots': [<list of snapshots preventing rollback>],
                    'clones':    [<list of clones preventing rollback>]}
         """
-        rsnap = {}
+        rsnap={}
 
         try:
-            rsnap = self.ra.get_snapshot(vname, sname)
+            rsnap=self.ra.get_snapshot(vname, sname)
         except jexc.JDSSResourceNotFoundException as nferr:
             LOG.debug('Volume %s snapshot %s not found',
                       jcom.idname(vname), jcom.idname(sname))
@@ -1706,12 +1729,12 @@ class JovianDSSDriver(object):
                     "err": jerr})
             raise jerr
 
-        dformat = "%Y-%m-%d %H:%M:%S"
-        rdate = None
+        dformat="%Y-%m-%d %H:%M:%S"
+        rdate=None
         if (('creation' in rsnap) and
             (type(rsnap['creation']) is str) and
                 (len(rsnap['creation']) > 0)):
-            rdate = datetime.datetime.strptime(rsnap['creation'], dformat)
+            rdate=datetime.datetime.strptime(rsnap['creation'], dformat)
             LOG.debug('Rollback date of snapshot %s is %s',
                       sname, str(rdate))
 
@@ -1724,7 +1747,7 @@ class JovianDSSDriver(object):
                 (type(snap['creation']) is str) and
                     (len(snap['creation']) > 0)):
 
-                date = datetime.datetime.strptime(snap['creation'], dformat)
+                date=datetime.datetime.strptime(snap['creation'], dformat)
                 if date >= rdate:
                     return True
                 else:
@@ -1732,16 +1755,16 @@ class JovianDSSDriver(object):
             else:
                 return True
 
-        snapshots = self._list_all_volume_snapshots(
+        snapshots=self._list_all_volume_snapshots(
             vname, filter_older_snapshots)
 
-        snapshot_names = [jcom.idname(s['name']) for s in snapshots]
-        clone_names = []
+        snapshot_names=[jcom.idname(s['name']) for s in snapshots]
+        clone_names=[]
         for s in snapshots:
             clone_names.extend([jcom.idname(c)
                                 for c in jcom.snapshot_clones(s)])
 
-        out = {'snapshots': snapshot_names,
+        out={'snapshots': snapshot_names,
                'clones': clone_names}
         return out
 
@@ -1758,11 +1781,11 @@ class JovianDSSDriver(object):
         :return: { 'snapshots': [<list of snapshots preventing rollback>],
                    'clones':    [<list of clones preventing rollback>]}
         """
-        vname = jcom.vname(volume_name)
-        sname = jcom.sname(snapshot_name, None)
-        dependency = {}
+        vname=jcom.vname(volume_name)
+        sname=jcom.sname(snapshot_name, None)
+        dependency={}
         try:
-            dependency = self.ra.get_snapshot_rollback(vname, sname)
+            dependency=self.ra.get_snapshot_rollback(vname, sname)
         except jexc.JDSSResourceNotFoundException as nferr:
             LOG.debug('Volumes %s snapshot %s not found', vname, sname)
             raise nferr
@@ -1785,13 +1808,13 @@ class JovianDSSDriver(object):
             else:
                 LOG.debug("rolling back is blocked by resources %s",
                           str(dependency))
-        out = self._list_snapshot_rollback_dependency(vname, sname)
+        out=self._list_snapshot_rollback_dependency(vname, sname)
 
         if len(out['snapshots']) == 0 and dependency['snapshots'] > 0:
-            out['snapshots'] = ["Unknown"]
+            out['snapshots']=["Unknown"]
 
         if len(out['clones']) == 0 and dependency['clones'] > 0:
-            out['clones'] = ["Unknown"]
+            out['clones']=["Unknown"]
 
         return out
 
@@ -1809,12 +1832,12 @@ class JovianDSSDriver(object):
         :return: None
         """
 
-        vname = jcom.vname(volume_name)
-        sname = jcom.sname(snapshot_name, None)
+        vname=jcom.vname(volume_name)
+        sname=jcom.sname(snapshot_name, None)
 
-        dependency = {}
+        dependency={}
         try:
-            dependency = self.ra.get_snapshot_rollback(vname, sname)
+            dependency=self.ra.get_snapshot_rollback(vname, sname)
         except jexc.JDSSResourceNotFoundException as nferr:
             LOG.debug('Volumes %s snapshot %s not found', vname, sname)
             raise nferr
@@ -1847,7 +1870,7 @@ class JovianDSSDriver(object):
                 LOG.debug("rolling back is blocked by resources %s",
                           dependency)
 
-        deplist = self._list_snapshot_rollback_dependency(vname, sname)
+        deplist=self._list_snapshot_rollback_dependency(vname, sname)
 
         raise jexc.JDSSRollbackIsBlocked(volume_name,
                                          snapshot_name,
@@ -1856,22 +1879,22 @@ class JovianDSSDriver(object):
                                          dependency['snapshots'],
                                          dependency['clones'])
 
-    @property
+    @ property
     def backend_name(self):
         """Return backend name."""
-        backend_name = None
+        backend_name=None
         if self.configuration:
-            backend_name = self.configuration.get('volume_backend_name',
+            backend_name=self.configuration.get('volume_backend_name',
                                                   'Open-EJovianDSS')
         if not backend_name:
-            backend_name = self.__class__.__name__
+            backend_name=self.__class__.__name__
         return backend_name
 
     def create_share(self, share_name, quota_size,
                      reservation=None,
                      direct_mode=False):
 
-        sharename = share_name if direct_mode else jcom.vname(share_name)
+        sharename=share_name if direct_mode else jcom.vname(share_name)
         # create nas / ensure nas volume is present
         # TODO: rework it so that there will be only one place of
         # sharename generation
@@ -1882,7 +1905,7 @@ class JovianDSSDriver(object):
         except jexc.JDSSDatasetExistsException:
             LOG.debug("Looks like nas volume %s already exists", share_name)
 
-        path = "{}/{}".format(self._pool, sharename)
+        path="{}/{}".format(self._pool, sharename)
 
         self.ra.create_share(sharename, path,
                              active=True,
@@ -1891,7 +1914,7 @@ class JovianDSSDriver(object):
                              synchronous_data_record=True)
 
     def delete_share(self, share_name, direct_mode=False):
-        sharename = share_name if direct_mode else jcom.vname(share_name)
+        sharename=share_name if direct_mode else jcom.vname(share_name)
 
         self.ra.delete_share(sharename)
 
@@ -1903,9 +1926,9 @@ class JovianDSSDriver(object):
         :return: list of volumes
         """
 
-        ret = []
+        ret=[]
         try:
-            data = self._list_all_pages(self.ra.get_shares_page)
+            data=self._list_all_pages(self.ra.get_shares_page)
 
         except jexc.JDSSException as ex:
             LOG.error("List shares error. Because %(err)s",
@@ -1919,12 +1942,12 @@ class JovianDSSDriver(object):
                 if not jcom.is_volume(r['name']):
                     continue
 
-                sdata = {'name': jcom.idname(r['name']),
+                sdata={'name': jcom.idname(r['name']),
                          'path': r['path']}
 
                 if 'nfs' in r:
-                    sdata['proto'] = 'nfs'
-                    sdata['proto_data'] = r['nfs']
+                    sdata['proto']='nfs'
+                    sdata['proto_data']=r['nfs']
 
                 ret.append(sdata)
 
@@ -1941,8 +1964,8 @@ class JovianDSSDriver(object):
         LOG.debug("Extend share: %(name)s to size:%(size)s",
                   {'name': share_name, 'size': new_size})
 
-        shname = jcom.vname(share_name)
+        shname=jcom.vname(share_name)
 
         if direct_mode:
-            shname = share_name
+            shname=share_name
         self.ra.extend_nas_volume(shname, new_size)

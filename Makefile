@@ -27,6 +27,8 @@ install:
 	install -D -m 0644 ./OpenEJovianDSSPlugin.pm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
 	install -D -m 0644 ./OpenEJovianDSSPluginLVM.pm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPluginLVM.pm
 	install -D -m 0644 ./OpenEJovianDSS/Common.pm $(DESTDIR)/usr/share/perl5/OpenEJovianDSS/Common.pm
+	install -D -m 0645 ./blockdevicemanager/joviandssblockdevicemanager $(DESTDIR)/usr/local/bin/joviandssblockdevicemanager
+	install -D -m 0645 ./blockdevicemanager/joviandss-block-device-manager.service $(DESTDIR)/etc/systemd/system/joviandss-block-device-manager.service
 
 	$(MAKE) -C jdssc install DESTDIR=$(DESTDIR)
 
