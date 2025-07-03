@@ -81,6 +81,14 @@ class Targets():
                             dest='snapshot_name', default=None,
                             help='Create target based on snapshot')
 
+        create.add_argument('--luns-per-target',
+                            dest='luns_per_target',
+                            type=int,
+                            default=8,
+                            help='''Maximal number of luns that can be
+                            assigned to single target
+                            ''')
+
         create.add_argument('-d',
                             dest='direct_mode',
                             action='store_true',
@@ -90,12 +98,20 @@ class Targets():
         delete = parsers.add_parser('delete')
         delete.add_argument('--target-prefix',
                             dest='target_prefix',
-                            default=None,
+                            required=True,
                             help='''
                             Pattern for target name prefix.
                             User can specify plain text or template
                             in python strftime format.
                             Default is "iqn.2025-04.iscsi:"
+                            ''')
+        delete.add_argument('--target-group-name',
+                            dest='target_group_name',
+                            required=True,
+                            default=None,
+                            help='''
+                            Target name.
+                            It will be added to target prefix"
                             ''')
         delete.add_argument('-v',
                             required=True,
@@ -181,16 +197,20 @@ class Targets():
             if self.args['snapshot_name']:
 
                 tinfo = self.jdss.create_export_snapshot(
+                    target_prefix,
+                    target_group_name,
                     self.args['snapshot_name'],
                     self.args['volume_name'],
-                    None)
+                    None,
+                    luns_per_target=self.args['luns_per_target'])
             else:
                 tinfo = self.jdss.ensure_target_volume(
                     target_prefix,
                     target_group_name,
                     self.args['volume_name'],
                     None,
-                    direct_mode=self.args['direct_mode'])
+                    direct_mode=self.args['direct_mode'],
+                    luns_per_target=self.args['luns_per_target'])
         except jexc.JDSSVIPNotFoundException as jerr:
             LOG.error(
                 "%s. Please make sure that VIP are assigned to the Pool",
@@ -213,16 +233,21 @@ class Targets():
 
     def delete(self):
 
-        if self.args['target_prefix']:
-            self.jdss.set_target_prefix(self.args['target_prefix'])
+        self.jdss.set_target_prefix(self.args['target_prefix'])
 
         try:
             if self.args['snapshot_name']:
-                self.jdss.remove_export_snapshot(self.args['snapshot_name'],
-                                                 self.args['volume_name'])
+                self.jdss.remove_export_snapshot(
+                    self.args['target_prefix'],
+                    self.args['target_group_name'],
+                    self.args['snapshot_name'],
+                    self.args['volume_name'])
             else:
-                self.jdss.remove_export(self.args['volume_name'],
-                                        direct_mode=self.args['direct_mode'])
+                self.jdss.remove_export(
+                    self.args['target_prefix'],
+                    self.args['target_group_name'],
+                    self.args['volume_name'],
+                    direct_mode=self.args['direct_mode'])
         except jexc.JDSSException as jgerr:
             LOG.error(jgerr.message)
             exit(1)

@@ -637,15 +637,19 @@ class JovianDSSDriver(object):
                                target_name,
                                snapshot_name,
                                volume_name,
-                               provider_auth):
+                               provider_auth,
+                               luns_per_target=8):
         """Creates iscsi resources needed to start using snapshot
 
         :param str snapshot_name: openstack snapshot id
         :param str volume_name: openstack volume id
         :param str provider_auth: space-separated triple
               '<auth method> <auth username> <auth password>'
+        :param int luns_per_target: maximum number of luns that should be
+                assigned to single iscsi taregt
         """
 
+        luns_per_target = int(luns_per_target)
         sname = jcom.sname(snapshot_name, None)
         ovname = jcom.vname(volume_name)
         scname = jcom.sname(snapshot_name, volume_name)
@@ -660,13 +664,17 @@ class JovianDSSDriver(object):
                        "%s is a snapshot"))
 
         try:
-            tvld = self._acquire_taget_volume_lun(target_prefix,
-                                                  target_name,
-                                                  scname,
-                                                  luns_per_target=8)
+            tvld = self._acquire_taget_volume_lun(
+                    target_prefix,
+                    target_name,
+                    scname,
+                    luns_per_target=luns_per_target)
             (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
 
             if new_target_flag:
+                # TODO: hendle case when volume is already assigned to target
+                # we have to conduct search over all targets and then
+                # ensure target volume
                 return self._create_target_volume_lun(tname,
                                                       scname,
                                                       lun_id,
@@ -694,8 +702,7 @@ class JovianDSSDriver(object):
 
         tvld = self._acquire_taget_volume_lun(target_prefix,
                                               target_name,
-                                              vname,
-                                              luns_per_target=8)
+                                              vname)
         (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
 
         if (volume_attached_flag or (new_target_flag is True)):
@@ -724,8 +731,7 @@ class JovianDSSDriver(object):
 
         tvld = self._acquire_taget_volume_lun(target_prefix,
                                               target_name,
-                                              scname,
-                                              luns_per_target=8)
+                                              scname)
         (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
 
         try:
@@ -1110,7 +1116,8 @@ class JovianDSSDriver(object):
                              target_name,
                              volume_name,
                              provider_auth,
-                             direct_mode=False):
+                             direct_mode=False,
+                             luns_per_target=8):
         """Ensures that given volume is attached to specific target
 
         This function checkes if volume is attached to given target.
@@ -1132,7 +1139,16 @@ class JovianDSSDriver(object):
                     vips list(ip str): list of ips that should be used to
                         attach given target
         """
+        LOG.debug(("ensure volume %(volume)s is assigned to target "
+                   "with prefix %(prefix)s "
+                   "group name %(group)s "
+                   "luns per target %(lpt)s"), {
+                        'prefix': target_prefix,
+                        'group': target_name,
+                        'volume': volume_name,
+                        'lpt': luns_per_target})
         vname = jcom.vname(volume_name)
+        luns_per_target = int(luns_per_target)
 
         if direct_mode:
             vname = volume_name
@@ -1142,7 +1158,7 @@ class JovianDSSDriver(object):
         tvld = self._acquire_taget_volume_lun(target_prefix,
                                               target_name,
                                               vname,
-                                              luns_per_target=8)
+                                              luns_per_target=luns_per_target)
         (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
 
         if new_target_flag:
@@ -1304,7 +1320,7 @@ class JovianDSSDriver(object):
             except jexc.JDSSException:
                 pass
 
-            err_msg=(('Unable to create user %(user)s '
+            err_msg = (('Unable to create user %(user)s '
                         'for target %(target)s '
                         'because of %(error)s.') % {
                             'target': target_name,
@@ -1320,10 +1336,10 @@ class JovianDSSDriver(object):
         :return: list of volumes
         """
 
-        ret=[]
-        data=[]
+        ret = []
+        data = []
         try:
-            data=self._list_all_pages(self.ra.get_volumes_page)
+            data = self._list_all_pages(self.ra.get_volumes_page)
         except jexc.JDSSCommunicationFailure as jerr:
             raise jerr
 
@@ -1339,11 +1355,13 @@ class JovianDSSDriver(object):
                 if not jcom.is_volume(r['name']):
                     continue
 
-                vdata={'name': jcom.idname(r['name']),
-                         'size': r['volsize']}
+                vdata = {'name': jcom.idname(r['name']),
+                         'size': r['volsize'],
+                         'creation': r['creation'],
+                         'scsi_id': r['default_scsi_id']}
 
                 if 'san:volume_id' in r:
-                    vdata['id']=r['san:volume_id']
+                    vdata['id'] = r['san:volume_id']
 
                 ret.append(vdata)
 
@@ -1356,13 +1374,13 @@ class JovianDSSDriver(object):
 
         :return: volume id, san id, size
         """
-        name=None
+        name = None
 
         if direct_mode:
-            name=volume['id']
+            name = volume['id']
         else:
-            name=jcom.vname(volume['id'])
-        data=self.ra.get_lun(name)
+            name = jcom.vname(volume['id'])
+        data = self.ra.get_lun(name)
 
         if (not direct_mode) and (not jcom.is_volume(name)):
             return dict()
@@ -1914,7 +1932,7 @@ class JovianDSSDriver(object):
                              synchronous_data_record=True)
 
     def delete_share(self, share_name, direct_mode=False):
-        sharename=share_name if direct_mode else jcom.vname(share_name)
+        sharename = share_name if direct_mode else jcom.vname(share_name)
 
         self.ra.delete_share(sharename)
 
@@ -1926,9 +1944,9 @@ class JovianDSSDriver(object):
         :return: list of volumes
         """
 
-        ret=[]
+        ret = []
         try:
-            data=self._list_all_pages(self.ra.get_shares_page)
+            data = self._list_all_pages(self.ra.get_shares_page)
 
         except jexc.JDSSException as ex:
             LOG.error("List shares error. Because %(err)s",
@@ -1942,7 +1960,7 @@ class JovianDSSDriver(object):
                 if not jcom.is_volume(r['name']):
                     continue
 
-                sdata={'name': jcom.idname(r['name']),
+                sdata = {'name': jcom.idname(r['name']),
                          'path': r['path']}
 
                 if 'nfs' in r:

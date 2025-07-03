@@ -75,7 +75,7 @@ our @EXPORT_OK = qw(
   safe_var_print
   debugmsg
   joviandss_cmd
-  joviandss_volume_snapshot_info
+  volume_snapshots_info
   volume_rollback_check
 
   get_iscsi_addresses
@@ -119,6 +119,7 @@ my $default_shared          = 0;
 my $default_content_size    = 100;
 my $default_path            = "/mnt/joviandss";
 my $default_target_prefix   = "iqn.2025-04.proxmox.joviandss.iscsi:";
+my $default_luns_per_target = 8;
 my $default_ssl_cert_verify = 1;
 my $default_control_port    = '82';
 my $default_data_port       = '3260';
@@ -132,6 +133,7 @@ sub get_default_multipath       { return $default_multipath }
 sub get_default_content_size    { return $default_content_size }
 sub get_default_path            { return $default_path }
 sub get_default_target_prefix   { return $default_target_prefix }
+sub get_default_luns_per_target { return $default_luns_per_target }
 sub get_default_ssl_cert_verify { return $default_ssl_cert_verify }
 sub get_default_control_port    { return $default_control_port }
 sub get_default_data_port       { return $default_data_port }
@@ -177,6 +179,13 @@ sub get_target_prefix {
 
     $prefix =~ s/:$//;
     return clean_word($prefix);
+}
+
+sub get_luns_per_target {
+    my ($scfg) = @_;
+    my $luns_per_target = $scfg->{luns_per_target} || $default_luns_per_target;
+
+    return int($luns_per_target);
 }
 
 sub get_ssl_cert_verify {
@@ -493,7 +502,7 @@ sub joviandss_cmd {
 # id        - Unique id to distinguish different snapshots even if the have the same name.
 # timestamp - Creation time of the snapshot (seconds since epoch).
 # Returns an empty hash if the volume does not exist.
-sub volume_snapshot_info {
+sub volume_snapshots_info {
     my ( $scfg, $storeid, $volname ) = @_;
 
     my $pool = get_pool($scfg);
@@ -700,11 +709,12 @@ sub volume_publish {
 
     my $pool   = get_pool($scfg);
     my $prefix = get_target_prefix($scfg);
+    my $luns_per_target = get_luns_per_target($scfg);
 
     my $create_target_cmd = [
         'pool',            $pool,   'targets',             'create',
         '--target-prefix', $prefix, '--target-group-name', $tgname,
-        "-v",              $volname
+        '-v',              $volname, '--luns-per-target', $luns_per_target
     ];
     if ($snapname) {
         push( @$create_target_cmd, "--snapshot", $snapname );
@@ -1265,11 +1275,11 @@ sub volume_unpublish {
         joviandss_cmd(
             $scfg,
             [
-                "pool", $pool,
-                "targets", "delete",
+                'pool', $pool,
+                'targets', 'delete',
                 '--target-prefix', $prefix,
                 '--target-group-name', $tgname,
-                "-v", $volname
+                '-v', $volname
             ]
         );
     }
@@ -1278,12 +1288,12 @@ sub volume_unpublish {
         joviandss_cmd(
             $scfg,
             [
-                "pool", $pool,
-                "targets", "delete",
+                'pool', $pool,
+                'targets', 'delete',
                 '--target-prefix', $prefix,
                 '--target-group-name', $tgname,
-                "-v", $volname,
-                "--snapshot", $snapname]);
+                '-v', $volname,
+                '--snapshot', $snapname]);
     }
     1;
 }
