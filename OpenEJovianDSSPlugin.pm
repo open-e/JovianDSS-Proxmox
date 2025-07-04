@@ -262,7 +262,7 @@ sub path {
             print("Block device path after activation $pathval\n");
             $pathval =~ m{^([\:\w\-/\.]+)$}
               or die "Invalid source path '$pathval'";
-            return $pathval;
+            return wantarray ? ( $pathval, $vmid, $vtype ) : $pathval;
         }
 
         if ( @$til == 1 ) {
@@ -273,7 +273,7 @@ sub path {
             print("Block device path $pathval\n");
             $pathval =~ m{^([\:\w\-/\.]+)$}
               or die "Invalid source path '$pathval'";
-            return $pathval;
+            return wantarray ? ( $pathval, $vmid, $vtype ) : $pathval;
         }
 
         die "Resource ${volname}"
@@ -1010,9 +1010,9 @@ sub volume_resize {
       OpenEJovianDSS::Common::lun_record_local_get_info_list( $scfg, $storeid,
         $volname, undef );
     if ( @$til == 1 ) {
-        my ( $targetname, $lunid, $lunrecpath, $lunrecord ) = $til->[0];
-        lun_record_update_device( $scfg, $storeid, $targetname, $lunid,
-            $lunrecpath, $lunrecord, $size );
+        my ( $targetname, $lunid, $lunrecpath, $lunrecord ) = @{ $til->[0] };
+        OpenEJovianDSS::Common::lun_record_update_device( $scfg, $storeid,
+            $targetname, $lunid, $lunrecpath, $lunrecord, $size );
     }
 
     return 1;

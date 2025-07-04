@@ -105,7 +105,7 @@ my $ISCSIADM = '/usr/bin/iscsiadm';
 $ISCSIADM = undef if !-X $ISCSIADM;
 
 my $MULTIPATH = '/usr/sbin/multipath';
-$MULTIPATH = undef if !-X $MULTIPATH;
+#$MULTIPATH = undef if !-X $MULTIPATH;
 
 my $DMSETUP = '/usr/sbin/dmsetup';
 $DMSETUP = undef if !-X $DMSETUP;
@@ -818,24 +818,39 @@ sub volume_stage_iscsi {
 
 sub volume_stage_multipath {
     my ( $scfg, $scsiid ) = @_;
+    $scsiid = clean_word($scsiid);
 
-    eval {
-        run_command( [ $MULTIPATH, '-a', $scsiid ], outfunc => sub { } );
-    };
-    die "Unable to add the SCSI ID ${scsiid} $@\n" if $@;
-    eval {
-        run_command( [$MULTIPATH], outfunc => sub { } );
-    };
-    die "Unable to call multipath: $@\n" if $@;
+    if ( $scsiid =~ /^([\:\-\@\w.\/]+)$/ ) {
+        my $id = $1;
 
-    my $mpathname = get_device_mapper_name( $scfg, $scsiid );
-    unless ( defined($mpathname) ) {
-        die "Unable to identify the multipath name for scsiid ${scsiid}\n";
-    }
+        eval {
+            run_command( [ $MULTIPATH, '-a', $id ], outfunc => sub { } );
+        };
+        die "Unable to add the SCSI ID ${id} $@\n" if $@;
+        eval {
+            run_command( [$MULTIPATH], outfunc => sub { } );
+        };
+        die "Unable to call multipath: $@\n" if $@;
 
-    $mpathname = "/dev/mapper/${mpathname}";
-    if ( -e $mpathname ) {
-        return clean_word($mpathname);
+        my $mpathname;
+        my @update_device_try = ( 1 .. 5 );
+        foreach (@update_device_try) {
+            $mpathname = get_device_mapper_name( $scfg, $id );
+            if ( defined($mpathname) ) {
+                last;
+            }
+            sleep(1);
+        }
+        unless ( defined($mpathname) ) {
+            die "Unable to identify the multipath name for scsiid ${id}\n";
+        }
+
+        $mpathname = "/dev/mapper/${mpathname}";
+        if ( -e $mpathname ) {
+            return clean_word($mpathname);
+        }
+    } else {
+        die "Invalid characters in scsiid: ${scsiid}";
     }
 
     return undef;
@@ -929,6 +944,8 @@ sub block_device_path_from_lun_rec {
                                      $lunrec->{volname}, $lunrec->{snapname},
                                      $lunrec );
         }
+        #print(Dumper($lunrec));
+
         $block_dev = volume_stage_multipath( $scfg, $lunrec->{scsiid} );
         return $block_dev;
 
@@ -963,6 +980,34 @@ sub block_device_path_from_lun_rec {
 
 sub get_device_mapper_name {
     my ( $scfg, $wwid ) = @_;
+
+    find(
+        {
+            no_chdir => 1,
+            wanted => sub {
+                # $_ is the filename in the current dir; $File::Find::name is full path
+                debugmsg( $scfg,
+                         "debug",
+                         "Mapper device found ${File::Find::name}");
+                print "$File::Find::name\n";
+            },
+        },
+        '/dev/mapper'
+    );
+
+    #Find::Find::find(
+    #    {
+    #        no_chdir => 1,
+    #        wanted => sub {
+    #            # $_ is the filename in the current dir; $File::Find::name is full path
+    #            debugmsg( $scfg,
+    #                     "debug",
+    #                     "Mapper device found ${$File::Find::name}");
+    #            print("Mapper device ${$File::Find::name}\n");
+    #        }
+    #    },
+    #    '/dev/mapper'
+    #);
 
     open( my $multipath_topology, '-|', "multipath -ll $wwid" )
       or die "Unable to list multipath topology: $!\n";
@@ -1302,7 +1347,7 @@ sub lun_record_local_create {
     my (
         $scfg,    $storeid,
         $targetname, $lunid, $volname, $snapname,
-        $iscsiid, $size,
+        $scsiid, $size,
         $multipath, $shared,
         @hosts
     ) = @_;
@@ -1321,7 +1366,7 @@ sub lun_record_local_create {
         $snapname = clean_word($snapname)
     }
     my $record = {
-        iscsiid   => clean_word($iscsiid),
+        scsiid   => clean_word($scsiid),
         volname   => clean_word($volname),
         snapname  => $snapname,
         size      => $size,
@@ -1338,11 +1383,14 @@ sub lun_record_local_create {
 
     my $json_text = JSON::encode_json($record) . "\n";
 
-    open my $fh, '>', $ltlfile
-      or die "Failed to create local lun record at '$ltlfile': $!\n";
-    print {$fh} $json_text;
-    close $fh or die "Failed to finish writing to local lun file '$ltlfile': $!\n";
-
+    if ( $ltlfile =~ /^([\:\-\@\w.\/]+)$/ ) {
+        open my $fh, '>', $ltlfile
+          or die "Failed to create local lun record at '$ltlfile': $!\n";
+        print {$fh} $json_text;
+        close $fh or die "Failed to finish writing to local lun file '$ltlfile': $!\n";
+    } else {
+        die "Incorrect local lun file path $ltlfile\n";
+    }
     return $ltlfile;
 }
 
@@ -1368,11 +1416,15 @@ sub lun_record_local_update {
 
     my $json_text = JSON::encode_json($lunrec) . "\n";
 
-    open my $fh, '>', $ltlfile
-      or die "Failed to create local lun record at '$ltlfile': $!\n";
-    print {$fh} $json_text;
-    close $fh or die "Failed to finish writing to local lun file '$ltlfile': $!\n";
-
+    if ( $ltlfile =~ /^([\:\-\@\w.\/]+)$/ ) {
+        my $filename = $1;
+        open my $fh, '>', $filename
+          or die "Failed to create local lun record at '$filename': $!\n";
+        print {$fh} $json_text;
+        close $fh or die "Failed to finish writing to local lun file '$filename': $!\n";
+    } else {
+        die "Invalid character in lun file path: ${ltlfile}\n";
+    }
     return $ltlfile;
 }
 
@@ -1522,7 +1574,7 @@ sub lun_record_local_get_by_path {
         die "Unexpected content in $path";
     }
 
-    for my $key (qw(iscsiid volname snapname size multipath hosts multipath shared)) {
+    for my $key (qw(scsiid volname snapname size multipath hosts multipath shared)) {
         die "Local lun record ${path} is missing '$key'"
             unless exists $jdata->{$key};
     }
@@ -1879,6 +1931,17 @@ sub volume_deactivate {
     }
     my $lunrecinfolist = lun_record_local_get_info_list( $scfg, $storeid, $volname, $snapname );
 
+    if (scalar(@$lunrecinfolist) == 0) {
+        debugmsg(
+            $scfg,
+            "warning",
+            "Unable to identify lun record for "
+                . "volume ${volname} "
+                . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+                . "\n"
+            );
+        return 1;
+    }
     if ( @$lunrecinfolist ) {
         if ( @$lunrecinfolist == 1 ) {
             ($targetname, $lunid, $lunrecpath, $lunrecord) = @{ $lunrecinfolist->[0] };
@@ -1967,6 +2030,10 @@ sub volume_deactivate {
 
 sub lun_record_update_device {
     my ( $scfg, $storeid, $targetname, $lunid, $lunrecpath, $lunrec, $expectedsize ) = @_;
+
+    unless(defined($lunrec)) {
+        confess "Undefined lun record for updating\n";
+    }
 
     my @hosts = @{ $lunrec->{hosts} };
     my $multipath = $lunrec->{multipath};
