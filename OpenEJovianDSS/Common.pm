@@ -105,7 +105,7 @@ my $ISCSIADM = '/usr/bin/iscsiadm';
 $ISCSIADM = undef if !-X $ISCSIADM;
 
 my $MULTIPATH = '/usr/sbin/multipath';
-#$MULTIPATH = undef if !-X $MULTIPATH;
+$MULTIPATH = undef if !-X $MULTIPATH;
 
 my $DMSETUP = '/usr/sbin/dmsetup';
 $DMSETUP = undef if !-X $DMSETUP;
@@ -498,6 +498,15 @@ sub joviandss_cmd {
     die "Unhadled state during running JovianDSS command\n";
 }
 
+
+sub cmd_log_output {
+    my ( $scfg, $level , $cmd, $data ) = @_;
+    my $cmd_str = join ' ', map {
+        (my $a = $_) =~ s/'/'\\''/g; "'$a'"
+    } @$cmd;
+    debugmsg( $scfg, $level, "CMD ${cmd_str} output ${data}");
+}
+
 # Returns a hash with the snapshot names as keys and the following data:
 # id        - Unique id to distinguish different snapshots even if the have the same name.
 # timestamp - Creation time of the snapshot (seconds since epoch).
@@ -824,11 +833,21 @@ sub volume_stage_multipath {
         my $id = $1;
 
         eval {
-            run_command( [ $MULTIPATH, '-a', $id ], outfunc => sub { } );
+            my $cmd = [ $MULTIPATH, '-a', $id ];
+            run_command(
+                $cmd ,
+                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+            );
         };
         die "Unable to add the SCSI ID ${id} $@\n" if $@;
         eval {
-            run_command( [$MULTIPATH], outfunc => sub { } );
+            my $cmd = [ $MULTIPATH ];
+            run_command(
+                $cmd,
+                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+            );
         };
         die "Unable to call multipath: $@\n" if $@;
 
@@ -856,80 +875,6 @@ sub volume_stage_multipath {
     return undef;
 }
 
-#sub block_device_path {
-#    my ( $scfg, $tgname, $volname, $snapname, $content_volume_flag ) = @_;
-#
-#    debugmsg( $scfg, "debug",
-#            "Getting path of volume ${volname} "
-#          . safe_var_print( "snapshot", $snapname )
-#          . "\n" );
-#
-#    my $target = get_active_target_name(
-#        scfg     => $scfg,
-#        volname  => $volname,
-#        snapname => $snapname,
-#        content  => $content_volume_flag
-#    );
-#
-#    if ( !defined($target) ) {
-#        return undef;
-#    }
-#
-#    my ( $tname, $lunid, @hosts ) =
-#      get_active_target_info( $scfg, $tgname, $volname, $snapname,
-#        $content_volume_flag );
-#
-#    my @iscsi_block_devices =
-#      get_iscsi_device_paths( $scfg, $tname, $lunid, @hosts );
-#
-#    my @bdpaths = ();
-#
-#    if (@iscsi_block_devices) {
-#        for my $bd (@iscsi_block_devices) {
-#            eval {
-#                run_command( [ "readlink", "-f", $bd ],
-#                    outfunc => sub { push( @bdpaths, OpenEJovianDSS::Common::clean_word( shift ) ); } );
-#            };
-#        }
-#    }
-#    else {
-#        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-#            "Target path for ${volname} not found\n" );
-#
-#        return undef;
-#    }
-#
-#    for my $bdp (@bdpaths) {
-#        my $block_device_name = File::Basename::basename($bdp);
-#        unless ( $block_device_name =~ /^[a-z0-9]+$/ ) {
-#            debugmsg( $scfg, "debug",
-#                "Invalide block device name ${block_device_name} for iscsi target ${target}\n");
-#              next;
-#        }
-#
-#    }
-#
-#    # $bdpath = $bdpath);
-#
-#
-#    if ( get_multipath($scfg) ) {
-#        $tpath = bget_multipath_path( $storeid, $scfg, $target );
-#    }
-#    if ( defined($tpath) ) {
-#        debugmsg( $scfg, "debug",
-#                "Block device path is ${tpath} of volume ${volname} "
-#              . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
-#              . "\n" );
-#    }
-#    else {
-#        debugmsg( $scfg, "debug",
-#                "Unable to identify path for volume ${volname} "
-#              . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
-#              . "\n" );
-#    }
-#    return $tpath;
-#}
-
 sub block_device_path_from_lun_rec {
     my ( $scfg, $storeid, $targetname, $lunid, $lunrec ) = @_;
 
@@ -944,7 +889,6 @@ sub block_device_path_from_lun_rec {
                                      $lunrec->{volname}, $lunrec->{snapname},
                                      $lunrec );
         }
-        #print(Dumper($lunrec));
 
         $block_dev = volume_stage_multipath( $scfg, $lunrec->{scsiid} );
         return $block_dev;
@@ -981,51 +925,40 @@ sub block_device_path_from_lun_rec {
 sub get_device_mapper_name {
     my ( $scfg, $wwid ) = @_;
 
-    find(
-        {
-            no_chdir => 1,
-            wanted => sub {
-                # $_ is the filename in the current dir; $File::Find::name is full path
-                debugmsg( $scfg,
-                         "debug",
-                         "Mapper device found ${File::Find::name}");
-                print "$File::Find::name\n";
-            },
-        },
-        '/dev/mapper'
-    );
-
-    #Find::Find::find(
-    #    {
-    #        no_chdir => 1,
-    #        wanted => sub {
-    #            # $_ is the filename in the current dir; $File::Find::name is full path
-    #            debugmsg( $scfg,
-    #                     "debug",
-    #                     "Mapper device found ${$File::Find::name}");
-    #            print("Mapper device ${$File::Find::name}\n");
-    #        }
-    #    },
-    #    '/dev/mapper'
-    #);
-
-    open( my $multipath_topology, '-|', "multipath -ll $wwid" )
-      or die "Unable to list multipath topology: $!\n";
-
     my $device_mapper_name;
 
-    while ( my $line = <$multipath_topology> ) {
-        chomp $line;
-        if ( $line =~ /\b$wwid\b/ ) {
-            my @parts = split( /\s+/, $line );
-            $device_mapper_name = $parts[0];
-        }
-    }
-    unless ($device_mapper_name) {
-        return undef;
-    }
+    my $cmd = [ $MULTIPATH, '-ll', $wwid ];
+    run_command(
+        $cmd ,
+        outfunc => sub {
+                my $line = shift;
+                chomp $line;
+                cmd_log_output($scfg, 'debug', $cmd, $line);
+                if ( $line =~ /\b$wwid\b/ ) {
+                    my @parts = split( /\s+/, $line );
+                    $device_mapper_name = $parts[0];
+                }
+            },
+        errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+    );
 
-    close $multipath_topology;
+    #open( my $multipath_topology, '-|', "multipath -ll $wwid" )
+    #  or die "Unable to list multipath topology: $!\n";
+
+
+
+    #while ( my $line = <$multipath_topology> ) {
+    #    chomp $line;
+    #    if ( $line =~ /\b$wwid\b/ ) {
+    #        my @parts = split( /\s+/, $line );
+    #        $device_mapper_name = $parts[0];
+    #    }
+    #}
+    #unless ($device_mapper_name) {
+    #    return undef;
+    #}
+
+    #close $multipath_topology;
 
     if ( $device_mapper_name =~ /^([\:\-\@\w.\/]+)$/ ) {
 
@@ -1247,7 +1180,12 @@ sub volume_multipath_unstage {
 # Also we do not do any unmnounting to volume as that might cause unexpected writes
 
     eval {
-        run_command( [ $MULTIPATH, '-f', $scsiid ], outfunc => sub { } );
+        my $cmd = [ $MULTIPATH, '-f', $scsiid ];
+        run_command(
+            $cmd ,
+            outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+        );
     };
     if ($@) {
         warn
@@ -1270,7 +1208,12 @@ sub volume_multipath_unstage {
     }
 
     eval {
-        run_command( [$MULTIPATH], outfunc => sub { } );
+        my $cmd = [ $MULTIPATH ];
+        run_command(
+            $cmd ,
+            outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+        );
     };
     die "Unable to restart the multipath daemon $@\n" if $@;
 }
@@ -1428,37 +1371,6 @@ sub lun_record_local_update {
     return $ltlfile;
 }
 
-#sub lun_record_local_copy_update {
-#    my (
-#        $scfg,    $storeid,
-#        $targetname, $lunid, $volname, $snapname,
-#        $lunrec
-#    ) = @_;
-#
-#    my $shared = get_shared( $scfg );
-#
-#    my $ltldir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR,
-#                                     $storeid, $targetname, $lunid );
-#
-#    make_path( $ltldir, { mode => 0755 } )
-#      or die "Cannot create $ltldir: $!";
-#
-#    my $ltlfile = File::Spec->catfile( $ltldir, $volname );
-#
-#    if ($snapname) {
-#        $ltlfile = File::Spec->catfile( $ltldir, $snapname );
-#    }
-#
-#    my $json_text = JSON::encode_json($record) . "\n";
-#
-#    open my $fh, '>', $ltlfile
-#      or die "Failed to create local lun record at '$ltlfile': $!\n";
-#    print {$fh} $json_text;
-#    close $fh or die "Failed to finish writing to local lun file '$ltlfile': $!\n";
-#
-#    return $ltlfile;
-#}
-
 sub lun_record_local_get_info_list {
     my ($scfg, $storeid, $volname, $snapname, $tgname ) = @_;
 
@@ -1474,9 +1386,6 @@ sub lun_record_local_get_info_list {
 
     my $name = $volname;
 
-    #if ( $snapname ) {
-    #    $name = $snapname;
-    #}
     my $ldir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR, $storeid );
 
     unless( -d $ldir ){
@@ -1487,7 +1396,6 @@ sub lun_record_local_get_info_list {
         {
             no_chdir => 1,
             wanted   => sub {
-                #return unless $_ eq "$name";
                 my $full = $File::Find::name;
 
                 # Expect path .../<storeid>/<target>/<lun_id>/$name
@@ -1498,6 +1406,8 @@ sub lun_record_local_get_info_list {
                 $targetname = clean_word($targetname);
                 $lunid = clean_word($lunid);
 
+                # TODO: consider using target group name
+                #
                 #if (defined $tgname) {
                 #    # escape any special chars in the pattern
                 #    my $tp = quotemeta($tgname);
@@ -1517,6 +1427,11 @@ sub lun_record_local_get_info_list {
                         } else {
                             unless( defined($lunrec->{snapname}) ) {
                                 push @matches, [ $targetname, $lunid, $full, $lunrec ];
+                                debugmsg( $scfg, "debug", "Found lun record of volume ${volname} "
+                                    . safe_var_print( "snapshot", $snapname )
+                                    . safe_var_print( "target group", $tgname )
+                                    . " targetname ${targetname}"
+                                    . " lunid ${lunid}\n");
                             }
                         }
                     }
@@ -1525,10 +1440,6 @@ sub lun_record_local_get_info_list {
             },
         },
         $ldir);
-    debugmsg( $scfg, "debug", "Searching for lun record of volume ${volname} "
-        . safe_var_print( "snapshot", $snapname )
-        . safe_var_print( "target group", $tgname )
-        . " found @{matches}\n");
 
     return \@matches;
 }
@@ -1948,7 +1859,6 @@ sub volume_deactivate {
         } else {
 
             foreach my $rec (@$lunrecinfolist) {
-                #print(Dumper($rec));
                 my $tinfo = target_active_info( $scfg, $tgname, $volname, $snapname, $contentvolumeflag );
                 if ( defined( $tinfo ) ){
                     my $lr;
@@ -2061,7 +1971,6 @@ sub lun_record_update_device {
             open my $fh, '>', $rescan_file or die "Cannot open $rescan_file $!";
             print $fh "1" or die "Cannot write to $rescan_file $!";
             close $fh     or die "Cannot close ${rescan_file} $!";
-            #$block_device_path = $bd ;
         }
 
         eval {
@@ -2085,8 +1994,12 @@ sub lun_record_update_device {
             }
             my $block_device_path = volume_stage_multipath( $scfg, $lunrec->{scsiid} );
             eval {
-                run_command( [ $MULTIPATH, '-r', ${block_device_path} ],
-                    outfunc => sub { } );
+                my $cmd = [ $MULTIPATH, '-r', ${block_device_path} ];
+                run_command(
+                    $cmd ,
+                    outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                );
             };
         }
 

@@ -226,9 +226,6 @@ sub options {
 my $ISCSIADM = '/usr/bin/iscsiadm';
 $ISCSIADM = undef if !-X $ISCSIADM;
 
-my $MULTIPATH = '/usr/sbin/multipath';
-$MULTIPATH = undef if !-X $MULTIPATH;
-
 my $SYSTEMCTL = '/usr/bin/systemctl';
 $SYSTEMCTL = undef if !-X $SYSTEMCTL;
 
@@ -245,8 +242,6 @@ sub path {
         my $til = OpenEJovianDSS::Common::lun_record_local_get_info_list( $scfg,
             $storeid, $volname, $snapname );
 
-        #print( Dumper($til) );
-
         unless (@$til) {
             my $bdpl =
               OpenEJovianDSS::Common::volume_activate( $scfg, $storeid, $vmid,
@@ -259,7 +254,6 @@ sub path {
                   . "\n";
             }
             my $pathval = ${$bdpl}[0];
-            print("Block device path after activation $pathval\n");
             $pathval =~ m{^([\:\w\-/\.]+)$}
               or die "Invalid source path '$pathval'";
             return wantarray ? ( $pathval, $vmid, $vtype ) : $pathval;
@@ -270,7 +264,6 @@ sub path {
             my $pathval =
               OpenEJovianDSS::Common::block_device_path_from_lun_rec( $scfg,
                 $storeid, $targetname, $lunid, $lr );
-            print("Block device path $pathval\n");
             $pathval =~ m{^([\:\w\-/\.]+)$}
               or die "Invalid source path '$pathval'";
             return wantarray ? ( $pathval, $vmid, $vtype ) : $pathval;
