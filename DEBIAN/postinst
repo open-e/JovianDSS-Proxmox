@@ -2,4 +2,5 @@
 
 chmod +x /usr/local/bin/jdssc
 mkdir -p /var/log/joviandss
+mkdir -p /etc/joviandss
 exit 0

@@ -1,5 +1,5 @@
 Package: open-e-joviandss-proxmox-plugin
-Version: 0.9.10-8
+Version: 0.10.0-0
 Section: admin
 Priority: optional
 Architecture: all

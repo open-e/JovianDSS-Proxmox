@@ -77,9 +77,12 @@ my $PLUGIN_VERSION = '0.10.0-0';
 #    0.9.10-8 - 2025.04.02
 #               Make plugin configurable solely by from storage.cfg
 #               Provide code style improvement
+#
 #    0.10.0-0 - 2025.06.17
 #               Storing information about activated volumes and snapshots
 #               localy
+#               Support proxmox API v11
+#               Major code rework
 
 # Configuration
 

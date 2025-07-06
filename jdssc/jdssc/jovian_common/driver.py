@@ -1286,6 +1286,11 @@ class JovianDSSDriver(object):
 
         return target_names
 
+    def list_target_luns(self, target):
+        luns = self.ra.get_target_luns(target)
+
+        return luns
+
     def _attach_target_volume_lun(self, target_name, vname, lun):
         """Attach target to volume and handles exceptions
 
