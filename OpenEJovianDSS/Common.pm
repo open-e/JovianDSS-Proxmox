@@ -632,16 +632,6 @@ sub get_iscsi_addresses {
 sub block_device_iscsi_paths {
     my ( $scfg, $target, $lunid, $hosts ) = @_;
 
-    #find(
-    #    {
-    #        no_chdir => 1,
-    #        wanted => sub {
-    #            # $_ is the filename in the current dir; $File::Find::name is full path
-    #            print "$File::Find::name\n";
-    #        },
-    #    },
-    #    '/dev/disk/by-path'
-    #);
     my @targets_block_devices = ();
     my $path;
     my $port = get_data_port( $scfg );
@@ -841,23 +831,30 @@ sub volume_stage_multipath {
             );
         };
         die "Unable to add the SCSI ID ${id} $@\n" if $@;
-        eval {
-            my $cmd = [ $MULTIPATH ];
-            run_command(
-                $cmd,
-                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
-            );
-        };
-        die "Unable to call multipath: $@\n" if $@;
+
 
         my $mpathname;
-        my @update_device_try = ( 1 .. 5 );
-        foreach (@update_device_try) {
+        for my $attempt ( 1 .. 5) {
+            eval {
+                my $cmd = [ $MULTIPATH ];
+                run_command(
+                    $cmd,
+                    outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                );
+            };
+            die "Unable to call multipath: $@\n" if $@;
+
             $mpathname = get_device_mapper_name( $scfg, $id );
             if ( defined($mpathname) ) {
                 last;
             }
+            debugmsg( $scfg,
+                    "debug",
+                    "Unable to identigy block device maper name for "
+                    . "scsiid ${id} "
+                    . "attempt ${attempt}"
+                );
             sleep(1);
         }
         unless ( defined($mpathname) ) {
@@ -927,38 +924,29 @@ sub get_device_mapper_name {
 
     my $device_mapper_name;
 
-    my $cmd = [ $MULTIPATH, '-ll', $wwid ];
-    run_command(
-        $cmd ,
-        outfunc => sub {
-                my $line = shift;
-                chomp $line;
-                cmd_log_output($scfg, 'debug', $cmd, $line);
-                if ( $line =~ /\b$wwid\b/ ) {
-                    my @parts = split( /\s+/, $line );
-                    $device_mapper_name = $parts[0];
-                }
-            },
-        errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
-    );
+    if ( $wwid =~ /^([\:\-\@\w.\/]+)$/ ) {
+        my $id = $1;
 
-    #open( my $multipath_topology, '-|', "multipath -ll $wwid" )
-    #  or die "Unable to list multipath topology: $!\n";
-
-
-
-    #while ( my $line = <$multipath_topology> ) {
-    #    chomp $line;
-    #    if ( $line =~ /\b$wwid\b/ ) {
-    #        my @parts = split( /\s+/, $line );
-    #        $device_mapper_name = $parts[0];
-    #    }
-    #}
-    #unless ($device_mapper_name) {
-    #    return undef;
-    #}
-
-    #close $multipath_topology;
+        my $cmd = [ $MULTIPATH, '-ll', $id ];
+        run_command(
+            $cmd ,
+            outfunc => sub {
+                    my $line = shift;
+                    chomp $line;
+                    cmd_log_output($scfg, 'debug', $cmd, $line);
+                    if ( $line =~ /\b$wwid\b/ ) {
+                        my @parts = split( /\s+/, $line );
+                        $device_mapper_name = $parts[0];
+                    }
+                },
+            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+        );
+    } else {
+        die "Invalid characters in wwid: ${wwid}\n";
+    }
+    unless ( $device_mapper_name ) {
+        return undef;
+    }
 
     if ( $device_mapper_name =~ /^([\:\-\@\w.\/]+)$/ ) {
 
@@ -1136,85 +1124,215 @@ sub scsiid_from_blockdevs {
     return undef;
 }
 
+
+
+sub volume_unstage_iscsi_device {
+    my ( $scfg, $storeid, $targetname, $lunid, $hosts ) = @_;
+
+    debugmsg( $scfg, "debug", "Volume unstage iscsi device ${targetname} with lun ${lunid}\n" );
+    my $block_devs = block_device_iscsi_paths ( $scfg, $targetname, $lunid, $hosts );
+
+    foreach my $idp (@$block_devs) {
+        if ( -e $idp ) {
+
+            my $bdp; # Block Device Path
+            if ( $idp =~ /^([\:\-\@\w.\/]+)$/ ) {
+                my $cmd = [ "readlink", "-f", $1 ];
+                run_command(
+                    $cmd,
+                    outfunc => sub {
+                        my $path = shift;
+                        if ( $path =~ /^([\:\-\@\w.\/]+)$/ ) {
+                            $bdp = $1;
+                        }
+                        cmd_log_output($scfg, 'debug', $cmd, $path);
+                    },
+                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                );
+            }
+            my $block_device_name = File::Basename::basename($bdp);
+            unless ( $block_device_name =~ /^[a-z0-9]+$/ ) {
+                die "Invalide block device name ${block_device_name} " .
+                        "for iscsi target ${targetname}\n";
+            }
+            my $delete_file = "/sys/block/${block_device_name}/device/delete";
+            open my $fh, '>', $delete_file or die "Cannot open $delete_file $!";
+
+            print $fh "1" or die "Cannot write to $delete_file $!";
+
+            close $fh     or die "Cannot close ${delete_file} $!";
+            debugmsg( $scfg, "debug", "Sending delete request to ${delete_file} done\n" );
+        }
+    }
+    debugmsg( $scfg, "debug", "Volume unstage iscsi device ${targetname} done\n" );
+}
+
+
 sub volume_unstage_iscsi {
     my ( $scfg, $storeid, $targetname ) = @_;
 
-    debugmsg( $scfg, "debug", "Unstaging target ${targetname}\n" );
+    debugmsg( $scfg, "debug", "Volume unstage iscsi target ${targetname}\n" );
 
     # Driver should not commit any write operation including sync before unmounting
     # Because that myght lead to data corruption in case of active migration
     # Also we do not do volume unmounting
 
     eval {
+        my $cmd = [ $ISCSIADM,
+                    '--mode', 'node',
+                    '--targetname',  $targetname,
+                    '--logout' ];
+
         run_command(
-            [   $ISCSIADM,
-                '--mode', 'node',
-                '--targetname',  $targetname,
-                '--logout'
-            ],
-            outfunc => sub {}); 
+            $cmd,
+            outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+        );
     };
     warn $@ if $@;
-
-    #foreach my $host (@$hosts) {
-        #my $tpath = get_iscsi_device_paths( $scfg, $targetname, $lunid, ($host) );
-
-        #if (defined($tpath) && -e $tpath) {
 
     eval {
+        my $cmd =[ $ISCSIADM,
+                   '--mode', 'node',
+                   '--targetname',  $targetname,
+                   '-o', 'delete' ];
+
         run_command(
-            [   $ISCSIADM,
-                '--mode', 'node',
-                '--targetname',  $targetname,
-                '-o', 'delete'
-            ], outfunc => sub {});
+            $cmd,
+            outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+        );
     };
     warn $@ if $@;
+    debugmsg( $scfg, "debug", "Volume unstage iscsi target ${targetname} done\n" );
 }
 
-sub volume_multipath_unstage {
+sub volume_unstage_multipath {
     my ( $scfg, $scsiid ) = @_;
 
 # Driver should not commit any write operation including sync before unmounting
 # Because that myght lead to data corruption in case of active migration
 # Also we do not do any unmnounting to volume as that might cause unexpected writes
 
-    eval {
-        my $cmd = [ $MULTIPATH, '-f', $scsiid ];
-        run_command(
-            $cmd ,
-            outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
-        );
-    };
-    if ($@) {
-        warn
-"Unable to remove the multipath mapping for scsi id ${scsiid} because of $@\n"
-          if $@;
+    debugmsg( $scfg, "debug", "Volume unstage multipath scsiid ${scsiid}" );
+
+    for my $attempt ( 1 .. 5) {
+        if ( $scsiid =~ /^([\:\-\@\w.\/]+)$/ ) {
+            my $id = $1;
+            debugmsg( $scfg, "debug", "Flag scsiid ${id} complience" );
+
+            eval {
+                my $cmd = [ $MULTIPATH, '-w', $id ];
+                run_command(
+                    $cmd,
+                    outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                );
+            };
+            warn "Unable to remove scsi id ${id} from wwid file because of $@" if $@;
+
+            eval {
+                my $cmd = [ $MULTIPATH, '-r' ];
+                run_command(
+                    $cmd,
+                    outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                );
+            };
+            warn "Unable to reload multipath maps because of $@" if $@;
+
+            eval {
+                my $cmd = [ $MULTIPATH, '-f', $id ];
+                Dumper($cmd);
+                run_command(
+                    $cmd,
+                    outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                );
+            };
+            warn "Unable to remove multipath mapping for scsi id ${scsiid} because of $@" if $@;
+        } else {
+            die "SCSI ID contain forbiden symbols ${scsiid}\n";
+        }
+
+        eval {
+            my $cmd = [ $MULTIPATH ];
+            run_command(
+                $cmd ,
+                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+            );
+        };
+
         my $mapper_name = get_device_mapper_name( $scfg, $scsiid );
         if ( defined($mapper_name) ) {
-            eval {
-                run_command( [ $DMSETUP, "remove", "-f", $mapper_name ],
-                    outfunc => sub { } );
-            };
-            die
-"Unable to remove the multipath mapping for volume with scsi id ${scsiid} with dmsetup: $@\n"
-              if $@;
+            if ( $mapper_name =~ /^([\:\-\@\w.\/]+)$/ ) {
+                my $mn = $1;
+                eval {
+                    run_command( [ $DMSETUP, "remove", "-f", $mn ],
+                        outfunc => sub { } );
+                };
+                warn "Unable to remove the multipath mapping for volume with scsi id ${scsiid} with dmsetup: $@\n" if $@;
+            } else {
+                die "Maper name containe forbidden symbols ${mapper_name}\n";
+            }
+        } else {
+            debugmsg( $scfg, "debug", "Volume unstage multipath scsiid ${scsiid} done" );
+            return;
         }
-        else {
-            warn
-"Unable to identify multipath mapper name for volume with scsi id ${scsiid}\n";
-        }
-    }
 
-    eval {
-        my $cmd = [ $MULTIPATH ];
-        run_command(
-            $cmd ,
-            outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
-        );
-    };
+        eval {
+            my $cmd = [ $MULTIPATH ];
+            run_command(
+                $cmd ,
+                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+            );
+        };
+        sleep(1);
+        $mapper_name = get_device_mapper_name( $scfg, $scsiid );
+        unless ( defined($mapper_name) ) {
+            debugmsg( $scfg, "debug", "Volume unstage multipath scsiid ${scsiid} done" );
+            return ;
+        }
+        my $mapper_path = "/dev/mapper/${mapper_name}";
+        if ( -e $mapper_path) {
+            my $pid;
+            my $blocker_name;
+            eval {
+                my $cmd = [ 'lsof', '-t', $mapper_path ];
+                run_command(
+                    $cmd ,
+                    outfunc => sub {
+                        $pid = clean_word(shift);
+                        cmd_log_output($scfg, 'debug', $cmd, $pid);
+                    },
+                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                );
+                if ( $pid =~ /^([\:\-\@\w.\/]+)$/ ) {
+                    $cmd = [ 'ps', '-o', 'comm=', '-p', $1 ];
+                    run_command(
+                        $cmd ,
+                        outfunc => sub {
+                            $blocker_name = clean_word(shift);
+                            cmd_log_output($scfg, 'debug', $cmd, $pid);
+                        },
+                        errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                    );
+                    my $warningmsg = "Unable to deactivate multipath device "
+                        . "with scsi id ${scsiid}, "
+                        . "device is used by ${blocker_name} with pid ${pid}";
+                    debugmsg( $scfg, "warning", $warningmsg );
+                    warn "${warningmsg}\n";
+                }
+
+            };
+            warn "Unable to identify multipath blocker: $@\n" if $@;
+        } else {
+            warn "Unable to identify multipath device\n";
+        }
+        debugmsg( $scfg, "debug", "Unbale to remove multipath mapping for scsiid ${scsiid} in attempt ${attempt}\n" );
+    }
     die "Unable to restart the multipath daemon $@\n" if $@;
 }
 
@@ -1568,7 +1686,7 @@ sub lun_record_local_delete {
         };
         my $cerr = $@;
         if ($cerr) {
-            warn "unstage_volume_iscsi failed: $@" if $@;
+            warn "volume_unstage_iscsi failed: $@" if $@;
         }
         return undef;
     }
@@ -1728,18 +1846,20 @@ sub volume_activate {
 
         if ($multipath_staged) {
             eval {
-                volume_multipath_unstage( $scfg, $scsiid );
+                volume_unstage_multipath( $scfg, $scsiid );
             };
             my $cerr = $@;
             if ($cerr) {
                 $local_cleanup = 1;
-                warn "unstage_volume_multipath failed: $@" if $@;
+                warn "volume_unstage_multipath failed: $@" if $@;
             }
         }
 
+        if ( $iscsi_staged ) {
+            volume_unstage_iscsi_device( $scfg, $storeid, $targetname, $lunid, $hosts );
+        }
         # TODO: that is incorrect because if we fail to add volume/snapshot
         # to a running vm that might lead to disconnect for other volumes
-        #if ($iscsi_staged) {
         #    eval {
         #        volume_unstage_iscsi(
         #            $scfg,
@@ -1749,9 +1869,9 @@ sub volume_activate {
         #    my $cerr = $@;
         #    if ($cerr) {
         #        $local_cleanup = 1;
-        #        warn "unstage_volume_iscsi failed: $@" if $@;
+        #        warn "volume_unstage_iscsi failed: $@" if $@;
         #    }
-        #}
+
 
         if ( $snapname ) {
             # We do not delete target on joviandss as this will lead to race condition
@@ -1812,7 +1932,7 @@ sub volume_deactivate {
     my $prefix = get_target_prefix($scfg);
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "Deactivate volume ${volname} "
+            "Volume ${volname} deactivate "
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
           . "\n" );
 
@@ -1890,22 +2010,24 @@ sub volume_deactivate {
             "warning",
             "Unable to identify lun record for "
                 . "volume ${volname} "
-                . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+                . safe_var_print( "snapshot", $snapname )
                 . "\n"
             );
         return 1;
     }
 
-    if ( $multipath ) {
+    if ( $lunrecord->{multipath} ) {
         eval {
-            unstage_volume_multipath( $scfg, $lunrecord->{scsiid} );
+            volume_unstage_multipath( $scfg, $lunrecord->{scsiid} );
         };
         my $cerr = $@;
         if ($cerr) {
             $local_cleanup = 1;
-            warn "unstage_volume_multipath failed: $@" if $@;
+            warn "volume_unstage_multipath failed: $@" if $@;
         }
     }
+
+    volume_unstage_iscsi_device ( $scfg, $storeid, $targetname, $lunid, $lunrecord->{hosts} );
 
     #eval {
     #    volume_unstage_iscsi(
@@ -1916,12 +2038,13 @@ sub volume_deactivate {
     #        $lunrecord->{hosts}
     #    );
     #};
-    my $cerr = $@;
-    if ($cerr) {
-        $local_cleanup = 1;
-        warn "unstage_volume_iscsi failed: $@" if $@;
-    }
 
+    #if ($cerr) {
+    #    $local_cleanup = 1;
+    #    warn "unstage_volume_iscsi failed: $@" if $@;
+    #}
+
+    my $cerr;
     if ( $snapname ) {
     # We do not delete target on joviandss as this will lead to race condition
     # in case of migration
@@ -1935,6 +2058,10 @@ sub volume_deactivate {
         }
     }
     lun_record_local_delete( $scfg, $storeid, $targetname, $lunid, $volname, $snapname );
+    debugmsg( $scfg, "debug",
+            "Volume ${volname} deactivate done "
+          . safe_var_print( "snapshot", $snapname )
+          . "\n" );
     1;
 }
 
