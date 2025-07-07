@@ -37,7 +37,9 @@ def JBase32FromStr(name):
 def is_volume(name):
     """Return True if volume"""
 
-    return name.startswith("v_") or name.startswith("vb_")
+    return (name.startswith("v_")
+            or name.startswith("vb_")
+            or name.startswith("vh_"))
 
 
 def is_snapshot(name):
@@ -68,8 +70,8 @@ def idname(name):
     if name.startswith('s'):
         return sname_to_id(name)[0]
 
-    if name.startswith('vb_'):
-        return JBase32ToStr(name[3:])
+    if name.startswith('v'):
+        return vname_to_id(name)
 
     # LOG.warn("Unable to identify name type %s", name)
     return name
@@ -81,7 +83,29 @@ def vname(name):
     if allowedPattern.match(name):
         return "v_" + name
 
-    return "vb_" + JBase32FromStr(name)
+    sanitized_name = re.sub(r'[^A-Za-z0-9_-]', '_', name)
+    return "{prefix}_{sanitized}_{based}".format(
+        prefix="vh",
+        sanitized=sanitized_name,
+        based=JBase32FromStr(name))
+
+
+def vname_to_id(vname):
+
+    vpl = vname.split('_')
+
+    if vpl[0] == 'v':
+        return ('_'.join(vpl[1:]), None)
+
+    if vpl[0] == 'vh':
+        vid = JBase32ToStr(vpl[-1])
+        return vid
+
+    if vname.startswith('vb_'):
+        return JBase32ToStr(vname[3:])
+
+    msg = "Incorrect volume name %s" % vname
+    raise Exception(msg)
 
 
 def sname_to_id(sname):
@@ -194,6 +218,8 @@ def hidden(name):
         return 't_' + name[2:] + '_' + uuid.uuid4().hex
     if name[:3] == 'se_' or name[:3] == 'sb_' or name[:3] == 'vb_':
         return 't_' + name[:3] + '_' + uuid.uuid4().hex
+    if name[:3] == 'vh_':
+        return 't' + '_'.joint(name.split('_')[1:-1]) + uuid.uuid4().hex
     return 't_' + name + '_' + uuid.uuid4().hex
 
 

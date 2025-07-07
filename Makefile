@@ -34,6 +34,4 @@ uninstall:
 	@echo "Cleaning up proxmox plugin"
 	rm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
 	rm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPluginLVM.pm
-	patch -R /usr/share/perl5/PVE/Storage/Plugin.pm ./mark-open-e-plugin-as-dynamic.patch
-	rm /usr/share/open-e/mark-open-e-plugin-as-dynamic.patch
 	$(MAKE) -C jdssc uninstall DESTDIR=$(DESTDIR)

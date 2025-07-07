@@ -504,8 +504,8 @@ class JovianRESTAPI(object):
         :param chap_cred:
         :param allow_ip:
         "allow_ip": [
-                "192.168.2.30/0",
-                "192.168.3.45"
+                "vip-name-1",
+                "vip-name-2"
             ],
 
         :return:
@@ -625,7 +625,7 @@ class JovianRESTAPI(object):
 
         This function also enables vip allowed portal property
 
-        GET
+        PUT
         /san/iscsi/targets/<target_name>
 
         :return list of all iscsi targets related to pool
@@ -738,13 +738,13 @@ class JovianRESTAPI(object):
 
         self._general_error(req, resp)
 
-    def is_target_lun(self, target_name, lun_name):
+    def is_target_lun(self, target_name, lun_name, lid):
         """is_target_lun.
 
         GET /san/iscsi/targets/<target_name>/luns/<lun_name>
-        :param pool_name:
-        :param target_name:
-        :param lun_name:
+        :param target_name: target name to check
+        :param lun_name: zvol name that will be used to attach to target
+        :param lid: lun id of the volume assigned to target_name
         :return: Bool
         """
         req = '/san/iscsi/targets/%(tar)s/luns/%(lun)s' % {
@@ -756,11 +756,18 @@ class JovianRESTAPI(object):
                    'tar': target_name})
         resp = self.rproxy.pool_request('GET', req)
 
-        if not resp["error"] and resp["code"] == 200:
-            LOG.debug("volume %(vol)s is associated with %(tar)s",
+        if (not resp["error"] and
+            resp["code"] == 200 and
+                'data' in resp):
+            LOG.debug(("volume %(vol)s is associated to "
+                       "target %(tar)s lun %(lun)d"),
                       {'vol': lun_name,
-                       'tar': target_name})
-            return True
+                       'tar': target_name,
+                       'lun': int(resp['data']['lun'])})
+            if int(resp['data']['lun']) == lid:
+                return True
+            else:
+                return False
 
         if resp['code'] == 404:
             LOG.debug("volume %(vol)s is not associated with %(tar)s",

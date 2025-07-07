@@ -1,0 +1,12 @@
+# /etc/systemd/system/joviandssblockdevicemanager.service
+[Unit]
+Description=JovianDSS iSCSI Sync Daemon
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/joviandssblockdevicemanager
+Restart=on-failure
+
+[Install]
+WantedBy=multi-user.target

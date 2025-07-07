@@ -254,13 +254,18 @@ class Volumes():
                     continue
 
                 vmid = v['name'][0:match.end()].split('-')[1]
-                line = ("%(name)s %(vmid)s %(size)s\n" % {
+                line = ("%(name)s %(vmid)s %(size)s %(creation)s\n" % {
                     'name': v['name'],
                     'vmid': vmid,
-                    'size': int(v['size'])})
+                    'size': int(v['size']),
+                    'creation': v['creation']
+                })
+
                 sys.stdout.write(line)
             else:
-                line = ("%(name)s %(size)s\n" % {
+                line = ("%(name)s %(size)s %(creation)s\n" % {
                     'name': v['name'],
-                    'size': int(v['size'])})
+                    'size': int(v['size']),
+                    'creation': v['creation']
+                })
                 sys.stdout.write(line)

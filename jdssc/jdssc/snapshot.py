@@ -58,7 +58,16 @@ class Snapshot():
 
         parser.add_argument('snapshot_name', help='Snapshot name')
         parsers = parser.add_subparsers(dest='snapshot_action')
-        parsers.add_parser('delete')
+        delete = parsers.add_parser('delete')
+        delete.add_argument('--target-prefix',
+                            dest='target_prefix',
+                            default=None,
+                            help='''
+                            Pattern for target name prefix.
+                            User can specify plain text or template
+                            in python strftime format.
+                            Default is "iqn.2025-04.iscsi:"
+                            ''')
         parsers.add_parser('rollback')
 
         kargs, ukargs = parser.parse_known_args(args)
@@ -72,6 +81,8 @@ class Snapshot():
     def delete(self):
 
         try:
+            if self.args['target_prefix']:
+                self.jdss.set_target_prefix(self.args['target_prefix'])
             self.jdss.delete_snapshot(self.args['volume_name'],
                                       self.args['snapshot_name'])
         except jexc.JDSSSnapshotIsBusyException:

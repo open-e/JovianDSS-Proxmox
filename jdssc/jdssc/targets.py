@@ -63,15 +63,31 @@ class Targets():
         create.add_argument('--target-prefix',
                             dest='target_prefix',
                             default=None,
+                            required=True,
                             help='''
                             Pattern for target name prefix.
                             User can specify plain text or template
                             in python strftime format.
-                            Default is "iqn.%%Y-%%m.iscsi:"
+                            ''')
+        create.add_argument('--target-group-name',
+                            dest='target_group_name',
+                            required=True,
+                            default=None,
+                            help='''
+                            Target name.
+                            It will be added to target prefix"
                             ''')
         create.add_argument('--snapshot',
                             dest='snapshot_name', default=None,
                             help='Create target based on snapshot')
+
+        create.add_argument('--luns-per-target',
+                            dest='luns_per_target',
+                            type=int,
+                            default=8,
+                            help='''Maximal number of luns that can be
+                            assigned to single target
+                            ''')
 
         create.add_argument('-d',
                             dest='direct_mode',
@@ -82,12 +98,20 @@ class Targets():
         delete = parsers.add_parser('delete')
         delete.add_argument('--target-prefix',
                             dest='target_prefix',
-                            default=None,
+                            required=True,
                             help='''
                             Pattern for target name prefix.
                             User can specify plain text or template
                             in python strftime format.
-                            Default is "iqn.%%Y-%%m.iscsi:"
+                            Default is "iqn.2025-04.iscsi:"
+                            ''')
+        delete.add_argument('--target-group-name',
+                            dest='target_group_name',
+                            required=True,
+                            default=None,
+                            help='''
+                            Target name.
+                            It will be added to target prefix"
                             ''')
         delete.add_argument('-v',
                             required=True,
@@ -111,17 +135,22 @@ class Targets():
                          Pattern for target name prefix.
                          User can specify plain text or template
                          in python strftime format.
-                         Default is "iqn.%%Y-%%m.iscsi:"
+                         Default is "iqn.2025-04.iscsi:"
                          ''')
-        get.add_argument('--path', dest='path_format', action='store_true',
-                         default=False,
-                         help='Print in path format')
-        get.add_argument('--host', action='store_true',
-                         default=False,
-                         help='Print host address')
-        get.add_argument('--lun', action='store_true',
-                         default=False,
-                         help='Print lun')
+        get.add_argument('--target-group-name',
+                         dest='target_group_name',
+                         required=True,
+                         default=None,
+                         help='''
+                            Target name.
+                            It will be added to target prefix"
+                            ''')
+        get.add_argument('-v',
+                         required=True,
+                         dest='volume_name',
+                         default=None,
+                         type=str,
+                         help='New volume name')
         get.add_argument('--snapshot', dest='snapshot_name',
                          # It is important to make default snapshot None
                          # as it is used later to acquire target name
@@ -144,12 +173,6 @@ class Targets():
                          action='store_true',
                          default=False,
                          help='Use real volume name')
-        get.add_argument('-v',
-                         required=True,
-                         dest='volume_name',
-                         default=None,
-                         type=str,
-                         help='New volume name')
 
         parsers.add_parser('list')
 
@@ -162,29 +185,32 @@ class Targets():
         return kargs, ukargs
 
     def create(self):
-        provider_location = None
+        tinfo = None
 
-        if self.args['target_prefix']:
-            self.jdss.set_target_prefix(self.args['target_prefix'])
+        self.jdss.set_target_prefix(self.args['target_prefix'])
+
+        target_prefix = self.args['target_prefix']
+
+        target_group_name = self.args['target_group_name']
 
         try:
             if self.args['snapshot_name']:
 
-                self.jdss.create_export_snapshot(
+                tinfo = self.jdss.create_export_snapshot(
+                    target_prefix,
+                    target_group_name,
                     self.args['snapshot_name'],
                     self.args['volume_name'],
-                    None)
-                provider_location = self.jdss.get_provider_location(
-                    self.args['volume_name'],
-                    snapshot_name=self.args['snapshot_name'])
-
+                    None,
+                    luns_per_target=self.args['luns_per_target'])
             else:
-                self.jdss.ensure_export(
+                tinfo = self.jdss.ensure_target_volume(
+                    target_prefix,
+                    target_group_name,
                     self.args['volume_name'],
                     None,
-                    direct_mode=self.args['direct_mode'])
-                provider_location = self.jdss.get_provider_location(
-                    self.args['volume_name'])
+                    direct_mode=self.args['direct_mode'],
+                    luns_per_target=self.args['luns_per_target'])
         except jexc.JDSSVIPNotFoundException as jerr:
             LOG.error(
                 "%s. Please make sure that VIP are assigned to the Pool",
@@ -198,26 +224,30 @@ class Targets():
         except jexc.JDSSException as jgerr:
             LOG.error(jgerr.message)
             exit(1)
-        out = ''
-        if self.args['host']:
-            out += ' ' + ':'.join(provider_location.split()[0].split(':')[:-1])
-        if self.args['lun']:
-            out += ' ' + provider_location.split()[2]
-        out = provider_location.split()[1] + out
+
+        out = ('%(target)s %(lun)d %(hosts)s' % {
+            'target': tinfo['target'],
+            'lun': tinfo['lun'],
+            'hosts': ','.join(tinfo['vips'])})
         print(out)
 
     def delete(self):
 
-        if self.args['target_prefix']:
-            self.jdss.set_target_prefix(self.args['target_prefix'])
+        self.jdss.set_target_prefix(self.args['target_prefix'])
 
         try:
             if self.args['snapshot_name']:
-                self.jdss.remove_export_snapshot(self.args['snapshot_name'],
-                                                 self.args['volume_name'])
+                self.jdss.remove_export_snapshot(
+                    self.args['target_prefix'],
+                    self.args['target_group_name'],
+                    self.args['snapshot_name'],
+                    self.args['volume_name'])
             else:
-                self.jdss.remove_export(self.args['volume_name'],
-                                        direct_mode=self.args['direct_mode'])
+                self.jdss.remove_export(
+                    self.args['target_prefix'],
+                    self.args['target_group_name'],
+                    self.args['volume_name'],
+                    direct_mode=self.args['direct_mode'])
         except jexc.JDSSException as jgerr:
             LOG.error(jgerr.message)
             exit(1)
@@ -228,13 +258,15 @@ class Targets():
 
         LOG.debug("Getting target for volume %s", self.args['volume_name'])
 
-        target = None
+        tinfo = None
 
         if self.args['current']:
             LOG.debug("Getting current target")
 
             try:
-                target = self.jdss.get_volume_target(
+                tinfo = self.jdss.get_volume_target(
+                    self.args['target_prefix'],
+                    self.args['target_group_name'],
                     self.args['volume_name'],
                     snapshot_name=self.args['snapshot_name'],
                     direct=self.args['direct_mode'])
@@ -243,54 +275,16 @@ class Targets():
             except jexc.JDSSException as jgerr:
                 LOG.error(jgerr.message)
                 exit(1)
-        LOG.debug("target is %s", target)
+        if tinfo is None:
+            LOG.debug("volume %s is not attached to any target",
+                      self.args['volume_name'])
+        LOG.debug("volumes %s target info %s",
+                  self.args['volume_name'],
+                  tinfo)
 
-        provider_location = None
-        if self.args['snapshot_name']:
-            try:
-                provider_location = self.jdss.get_provider_location(
-                    self.args['volume_name'],
-                    snapshot_name=self.args['snapshot_name'])
-            except jexc.JDSSException as jgerr:
-                LOG.error(jgerr.message)
-                exit(1)
-
-        elif self.args['volume_name']:
-            try:
-                provider_location = self.jdss.get_provider_location(
-                    self.args['volume_name'],
-                    direct=self.args['direct_mode'])
-            except jexc.JDSSException as jgerr:
-                LOG.error(jgerr.message)
-                exit(1)
-        else:
-            sys.exit(1)
-
-        pvs = provider_location.split()
-        ip = ''.join(pvs[0].split(':')[:-1])
-        target_port = pvs[0].split(':')[-1].split(',')[0]
-
-        if target is None:
-            target = pvs[1]
-
-        lun = pvs[2]
-        if self.args['path_format']:
-            out = "ip-{ip}:{port}-iscsi-{target}-lun-{lun}".format(
-                ip=ip,
-                port=target_port,
-                target=target,
-                lun=lun)
-            out = [chr(ord(c)) for c in out]
-            print(''.join(out))
-            return
-
-        out = ''
-        if self.args['host']:
-            out += ' ' + ':'.join(provider_location.split()[0].split(':')[:-1])
-        if self.args['lun']:
-            out += ' ' + lun
-        out = target + out
-
+        out = "{tname} {lun} {hosts}\n".format(tname=tinfo['target'],
+                                               lun=tinfo['lun'],
+                                               hosts=tinfo['vips'])
         print(out)
 
     def list(self):
