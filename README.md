@@ -10,7 +10,7 @@ Once completed, the plugins are natively integrated into Proxmox VE and its user
 
 | Feature                                                                              | JovianDSS Plugin                                                         |
 |--------------------------------------------------------------------------------------|--------------------------------------------------------------------------|
-| Storage of `iso`, `vztmpl`, `backup` files                                           | :white_check_mark:                                                       | 
+| Storage of `iso`, `vztmpl`, `backup` files                                           | :x:                                                                      | 
 | Storage of `images`(QEMU/KVM VM images), `rootdir`(container data)                   | :white_check_mark:                                                       |
 | `images`(QEMU/KVM VM images)/`rootdir`(container data) to JovianDSS volume relation  | :white_check_mark: Each VM/CT virtual disk is stored on dedicated volume |
 | Snapshots                                                                            | :white_check_mark: Each volume maintains its own independent set of snapshots. Snapshotting is done individualy for each volume |
