@@ -27,7 +27,7 @@ Once completed, the plugins are natively integrated into Proxmox VE and its user
 
 Please visit [wiki](https://github.com/open-e/JovianDSS-Proxmox/wiki) for more information.
 1. [Quick Start](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start)
-2. [Configuration](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-installation-and-configuration)
+2. [Configuration](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
 3. [Updating](https://github.com/open-e/JovianDSS-Proxmox/wiki/Updating)
 
 
