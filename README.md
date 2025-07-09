@@ -10,7 +10,7 @@ Once completed, the plugins are natively integrated into Proxmox VE and its user
 
 | Feature                                                                              | JovianDSS Plugin                                                         |
 |--------------------------------------------------------------------------------------|--------------------------------------------------------------------------|
-| Storage of `iso`, `vztmpl`, `backup` files                                           | :x:                                                                      | 
+| Storage of `iso`, `vztmpl`, `backup` files                                           | :x: Storing iso, backup, and vztmpl content is no longer supported by this plugin. Please use the native Proxmox VE NFS plugin as described in [Open-E JovianDSS with NFS for Proxmox VE: Best Practices Guide](https://www.open-e.com/site_media/download/documents/howtoresource/Open-E_Jovian_DSS_with_NFS_for_Proxmox_VE_Best_Practices_Guide_1.00.pdf) | 
 | Storage of `images`(QEMU/KVM VM images), `rootdir`(container data)                   | :white_check_mark:                                                       |
 | `images`(QEMU/KVM VM images)/`rootdir`(container data) to JovianDSS volume relation  | :white_check_mark: Each VM/CT virtual disk is stored on dedicated volume |
 | Snapshots                                                                            | :white_check_mark: Each volume maintains its own independent set of snapshots. Snapshotting is done individualy for each volume |
@@ -27,7 +27,7 @@ Once completed, the plugins are natively integrated into Proxmox VE and its user
 
 Please visit [wiki](https://github.com/open-e/JovianDSS-Proxmox/wiki) for more information.
 1. [Quick Start](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start)
-2. [Configuration](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-installation-and-configuration)
+2. [Configuration](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
 3. [Updating](https://github.com/open-e/JovianDSS-Proxmox/wiki/Updating)
 
 
