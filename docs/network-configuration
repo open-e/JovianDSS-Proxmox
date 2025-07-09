@@ -1,0 +1,49 @@
+# Virtual IPs and Proxmox
+
+In case user have multiple JovianDSS storage's configured in *Failover* mode (
+[wiki](https://kb.open-e.com/jdss-joviandss-failover-mechanism-technologies-explained_3161.html)
+[setup example](https://www.open-e.com/site_media/download/documents/Open-E-JovianDSS-Advanced-Metro-High-Avability-Cluster-Step-by-Step.pdf) ) and would like to utilize Virtual IPs in his Proxmox.
+User have to make sure that thous Virtual IP are accessible by Proxmox server.
+
+Regarding network configuration of JovianDSS user can check [cluster setup guide](https://www.open-e.com/site_media/download/documents/Open-E-JovianDSS-Advanced-Metro-High-Avability-Cluster-Step-by-Step-2rings.pdf) and [Open-E Knowledgebase](https://kb.open-e.com/joviandss-121/)
+
+## Example
+
+Lets imagine that user have 2 physical networks:
+
+1. *Net1* 10.0.0.0/24
+2. *Net2* 192.168.0.0/24
+
+There are 2 JovianDSS storage's with *Failover* enabled and virtual IP's:
+
+- VIP 192.168.21.100 associated with physical interfaces connected to *Net1* 10.0.0.0/24
+- VIP 192.168.31.100 associated with physical interfaces connected to *Net2* 192.168.0.0/24
+
+![failover1](https://github.com/open-e/JovianDSS-Proxmox/assets/21205679/834e1dec-8fc8-400b-bf4e-c3422eccf070)
+
+And user have a Proxmox server with 2 network interfaces connected to physical networks.
+
+- *ens160* connected to *Net1* associated with virtual bridge vmbr0 with ip 10.0.0.21/24 
+- *ens190* connected to *Net2* associated with virtual bridge vmbr1 with ip 192.168.0.31/24 
+
+In this configuration JovianDSS Plugin will not be able to communicate with JovianDSS over floating IP out of the box.
+To check it user can use `ping` command from Proxmox side to any virtual IP that user is planing to use.
+If `ping` response is not coming back use have to provide additional network configuration.
+In that case user have to configure routes(on the side of Proxmox) to virtual IP's of JovianDSS.
+
+User can add this lines to `/etc/network/interfaces` file
+
+```
+iface vmbr0 inet static
+        up /sbin/ip route add 192.168.21.100 dev vmbr0
+        down /sbin/ip route add 192.168.21.100 dev vmbr0
+
+iface vmbr1 inet static
+        up /sbin/ip route add 192.168.31.100 dev vmbr1
+        down /sbin/ip route add 192.168.31.100 dev vmbr1
+```
+Or add them ass separate file to `/etc/network/interfaces.d/` folder, in that case user have to make sure that this file get `sourced` from within `/etc/network/interface` file.
+That can be achieve by making sure that following line is present in `/etc/network/interface` file.
+```
+source /etc/network/interfaces.d/*
+```
