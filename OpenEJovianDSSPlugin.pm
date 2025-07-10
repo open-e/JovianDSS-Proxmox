@@ -116,7 +116,7 @@ sub properties {
         pool_name => {
             description => "Pool name",
             type        => 'string',
-            default     => OpenEJovianDSS::Common::get_default_path(),
+            default     => OpenEJovianDSS::Common::get_default_pool(),
         },
         config => {
             description => "JovianDSS config address",
