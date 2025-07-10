@@ -771,21 +771,7 @@ sub volume_stage_iscsi {
             );
         };
         warn $@ if $@;
-        eval {
-            run_command(
-                [
-                    $ISCSIADM,
-                    '--mode',       'node',
-                    '-p',           $host,
-                    '--targetname', $targetname,
-                    '--op',         'update',
-                    '-n',           'node.startup',
-                    '-v',           'automatic'
-                ],
-                outfunc => sub { }
-            );
-        };
-        warn $@ if $@;
+        # TODO: we probably do not need automatic login
         eval {
             run_command(
                 [
