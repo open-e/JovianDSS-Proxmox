@@ -1,10 +1,47 @@
 # JovianDSS-Proxmox
 
-The JovianDSS Proxmox package provides a set of plugins that extend Proxmox VE with the capability to use JovianDSS as a storage system.
-Plugin installation requires manual editing of the Proxmox VE storage configuration file.
-Once completed, the plugins are natively integrated into Proxmox VE and its user interface.
+## Overview
 
-## The plugin is currently under active development. You may experience occasional malfunctions, and some features might change in future updates.
+The JovianDSS Proxmox Plugin enables Proxmox VE clusters to use JovianDSS storage pools as backend storage via iSCSI.
+
+It provides:
+
+- Automated Volume Management: Dynamically attach/detach iSCSI targets and manage multipath devices.
+- High Availability: Support for JovianDSS failover and multipathing across multiple network interfaces.
+- Thin Provisioning: On-demand volume allocation to optimize storage usage.
+- Cluster-wide Integration: Treat storage as shared, enabling live migration and HA features in Proxmox VE.
+
+## Work in Progress
+
+The JovianDSS Proxmox plugin is under active development.
+Version 0.10 represents a major rewrite of the `joviandss` plugin and no longer includes the `joviandss-lvm` component.
+
+**Upcoming Features:**
+
+- LVM plugin integration
+
+- Additional volume configuration options
+
+- CHAP authentication for iSCSI targets
+
+- Optional backup-plugin extension
+
+## Getting Started
+
+Start using the plugin by going through the [Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start).
+
+## Documentation
+
+Comprehensive documentation is maintained on GitHub:
+
+* Plugin Configuration: [Plugin-configuration](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
+
+* Networking: [Plugin Networking](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking)
+
+* Multipathing: [Multipathing Guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Multipathing)
+
+For a full list of topics, visit the [JovianDSS Proxmox Wiki](https://github.com/open-e/JovianDSS-Proxmox/wiki).
+
 
 ## Plugin features
 
@@ -23,11 +60,6 @@ Once completed, the plugins are natively integrated into Proxmox VE and its user
 | Thin provisioning                                                                    | :white_check_mark:                                                       |
 
 
-## Docs
+## Support & Contribution
 
-Please visit [wiki](https://github.com/open-e/JovianDSS-Proxmox/wiki) for more information.
-1. [Quick Start](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start)
-2. [Configuration](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
-3. [Updating](https://github.com/open-e/JovianDSS-Proxmox/wiki/Updating)
-
-
+Report issues and feature requests via the repository Issues.
