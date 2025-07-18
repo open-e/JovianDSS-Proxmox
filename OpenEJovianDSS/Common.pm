@@ -121,8 +121,8 @@ my $default_path            = "/mnt/joviandss";
 my $default_target_prefix   = "iqn.2025-04.proxmox.joviandss.iscsi:";
 my $default_luns_per_target = 8;
 my $default_ssl_cert_verify = 1;
-my $default_control_port    = '82';
-my $default_data_port       = '3260';
+my $default_control_port    = 82;
+my $default_data_port       = 3260;
 my $default_user_name       = 'admin';
 
 sub get_default_prefix          { return $default_prefix }
@@ -207,7 +207,8 @@ sub get_control_addresses {
 sub get_control_port {
     my ($scfg) = @_;
     my $port = $scfg->{control_port} || $default_control_port;
-    return clean_word($port);
+
+    return int( clean_word($port) + 0);
 }
 
 sub get_data_addresses {
@@ -223,9 +224,9 @@ sub get_data_port {
     my ($scfg) = @_;
 
     if ( defined( $scfg->{data_port} ) ) {
-        return clean_word($scfg->{data_port});
+        return  int( clean_word($scfg->{data_port}) + 0);
     }
-    return '3260';
+    return get_default_data_port();
 }
 
 sub get_user_name {
@@ -400,7 +401,7 @@ sub safe_var_print {
 }
 
 sub joviandss_cmd {
-    my ( $scfg, $cmd, $timeout, $retries ) = @_;
+    my ( $scfg, $cmd, $timeout, $retries, $force_debub_level ) = @_;
 
     my $msg = '';
     my $err = undef;
@@ -413,11 +414,14 @@ sub joviandss_cmd {
 
     my $debug_level = map_log_level_to_number('debug');
 
-    my $config_level = get_log_level($scfg);
-    if ( $config_level >= $debug_level ) {
-        push @$connection_options, '--loglvl', 'debug';
+    if ( defined($force_debub_level) ) {
+        push @$connection_options, '--loglvl', $force_debub_level;
+    } else {
+        my $config_level = get_log_level($scfg);
+        if ( $config_level >= $debug_level ) {
+            push @$connection_options, '--loglvl', 'debug';
+        }
     }
-
     my $ssl_cert_verify = get_ssl_cert_verify($scfg);
     if ( defined($ssl_cert_verify) ) {
         push @$connection_options, '--ssl-cert-verify', $ssl_cert_verify;
@@ -485,7 +489,7 @@ sub joviandss_cmd {
 
         if ( $rerr =~ /got timeout/ ) {
             $retry_count++;
-            sleep int( rand( $timeout + 1 ) );
+            sleep( int( rand( $timeout + 1 ) ) );
             next;
         }
 
@@ -1202,6 +1206,81 @@ sub volume_unstage_multipath {
 
     debugmsg( $scfg, "debug", "Volume unstage multipath scsiid ${scsiid}" );
 
+    # Before we try to remove multipath device
+    # Lets check if no process is using it
+    # There are strong suspition that proxmox does not terminate qemu during migration
+    # before before calling volume deactivation.
+    # The problem with such approcach is that there might be some data syscalls to multipath
+    # block device that remain unfinished while we conduct multipath deactivation
+    # That might probably affect volume migration under heavy load when part of that data get bufferized
+    CHECKUSED: for my $tick ( 1 .. 60) {
+        # lets give it 1 minute to finish its business
+        eval {
+            my $pid;
+            my $blocker_name;
+
+            my $mapper_name = get_device_mapper_name( $scfg, $scsiid );
+            if ( defined($mapper_name) ) {
+                if ( $mapper_name =~ /^([\:\-\@\w.\/]+)$/ ) {
+                    my $mapper_path = "/dev/mapper/${mapper_name}";
+                    if ( -e $mapper_path ) {
+                        debugmsg( $scfg, "debug", "Check usage of multipath mapping ${mapper_path}" );
+                        my $cmd = [ 'lsof', '-t', $mapper_path ];
+                        eval {
+                            run_command(
+                                $cmd ,
+                                outfunc => sub {
+                                    $pid = clean_word(shift);
+                                    cmd_log_output($scfg, 'debug', $cmd, $pid);
+                                },
+                                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                            );
+                        };
+                        if ($@) {
+                            my $err = $@;
+                            debugmsg( $scfg, "warn", "Unable to identify mapper user for ${mapper_path} ${err}");
+                            last CHECKUSED;
+                        }
+                        debugmsg( $scfg, "debug", "Multipath device mapping ${mapper_path} is used by ${pid}");
+                    } else {
+                        debugmsg( $scfg, "debug", "Multipath device mapping ${mapper_path} does not exist");
+                    }
+                } else {
+                    debugmsg( $scfg, "debug", "Multipath device mapper name is incorrect ${mapper_name}");
+                    last CHECKUSED;
+                }
+            } else {
+                debugmsg( $scfg, "debug", "Multipath device mapper name is not defined");
+                last CHECKUSED;
+            }
+
+            if ($pid) {
+                $pid = clean_word($pid);
+                print("Block device with SCSI ${scsiid} is used by ${pid}\n")
+            } else {
+                print("Block device with SCSI ${scsiid} is not used\n");
+                last CHECKUSED;
+            }
+            if ( $pid =~ /^([\:\-\@\w.\/]+)$/ ) {
+                my $cmd = [ 'ps', '-o', 'comm=', '-p', $1 ];
+                run_command(
+                    $cmd ,
+                    outfunc => sub {
+                        $blocker_name = clean_word(shift);
+                        cmd_log_output($scfg, 'debug', $cmd, $pid);
+                    },
+                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                );
+                my $warningmsg = "Multipath device "
+                    . "with scsi id ${scsiid}, "
+                    . "is used by ${blocker_name} with pid ${pid}";
+                debugmsg( $scfg, "warning", $warningmsg );
+                warn "${warningmsg}\n";
+            }
+            sleep(1);
+        };
+    }
+
     for my $attempt ( 1 .. 5) {
         if ( $scsiid =~ /^([\:\-\@\w.\/]+)$/ ) {
             my $id = $1;
@@ -1805,13 +1884,21 @@ sub volume_activate {
         my $size = volume_get_size( $scfg, $storeid, $volname);
 
         $local_record_created      = 1;
-        lun_record_local_create(
+        my $ltlfile;
+
+        $ltlfile = lun_record_local_create(
                 $scfg, $storeid,
                 $targetname, $lunid, $volname, $snapname,
                 $scsiid, $size,
                 $multipath, $shared,
                 @{ $hosts } );
-            #}
+        # We do it to recheck device size and properties
+        # That is needed to ensure that proxmox recognize device as present
+        # after volume migrates back
+        my $lunrec = lun_record_local_get_by_path( $scfg, $storeid, $ltlfile );
+        lun_record_update_device( $scfg, $storeid, $targetname, $lunid, $ltlfile, $lunrec, $size );
+
+        #}
     };
     my $err = $@;
 
@@ -1819,16 +1906,7 @@ sub volume_activate {
         warn "Volume ${volname} " . safe_var_print( "snapshot", $snapname ) . " activation failed: $err";
 
         my $local_cleanup = 0;
-        if ($local_record_created) {
-            eval {
-                lun_record_local_delete( $scfg, $storeid, $targetname, $lunid, $volname, $snapname );
-            };
-            my $cerr = $@;
-            if ($cerr) {
-                $local_cleanup = 1;
-                warn "delete_lun_record failed: $@" if $@;
-            }
-        }
+
 
         if ($multipath_staged) {
             eval {
@@ -1873,7 +1951,17 @@ sub volume_activate {
                 }
             }
         }
-        lun_record_local_delete( $scfg, $storeid, $targetname, $lunid, $volname, $snapname );
+        if ($local_record_created) {
+            eval {
+                lun_record_local_delete( $scfg, $storeid, $targetname, $lunid, $volname, $snapname );
+            };
+            my $cerr = $@;
+            if ($cerr) {
+                $local_cleanup = 1;
+                warn "delete_lun_record failed: $@" if $@;
+            }
+        }
+        #lun_record_local_delete( $scfg, $storeid, $targetname, $lunid, $volname, $snapname );
         die $err;
     }
     unless ( defined( $block_devs ) ) {
@@ -2064,6 +2152,18 @@ sub lun_record_update_device {
     my @update_device_try = ( 1 .. 10 );
     foreach (@update_device_try) {
 
+        for my $iscsihost (glob '/sys/class/scsi_host/host*') {
+            my $scan_file = "$iscsihost/scan";
+            if ( $scan_file =~ /^([\:\-\@\w.\/]+)$/ ) {
+                open my $fh, '>', $1
+                  or warn "Cannot open $scan_file for writing: $!";
+                print $fh "- - -\n"
+                  or warn "Failed to write to $scan_file: $!";
+                close $fh
+                  or warn "Failed to close $scan_file: $!";
+            }
+        }
+
         my $iscsi_block_devices = block_device_iscsi_paths ( $scfg, $targetname, $lunid, $lunrec->{hosts} );
         my $block_device_path;
         foreach my $iscsi_block_device ( @{ $iscsi_block_devices } ) {
@@ -2085,6 +2185,12 @@ sub lun_record_update_device {
             print $fh "1" or die "Cannot write to $rescan_file $!";
             close $fh     or die "Cannot close ${rescan_file} $!";
         }
+
+
+        eval {
+            run_command( [ $ISCSIADM, '-m', 'session', '--rescan' ],
+                outfunc => sub { } );
+        };
 
         eval {
             run_command( [ $ISCSIADM, '-m', 'node', '-R', '-T', ${targetname} ],
@@ -2108,6 +2214,12 @@ sub lun_record_update_device {
             my $block_device_path = volume_stage_multipath( $scfg, $lunrec->{scsiid} );
             eval {
                 my $cmd = [ $MULTIPATH, '-r', ${block_device_path} ];
+                run_command(
+                    $cmd ,
+                    outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                );
+                $cmd = [ $MULTIPATH, 'reconfigure'];
                 run_command(
                     $cmd ,
                     outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
