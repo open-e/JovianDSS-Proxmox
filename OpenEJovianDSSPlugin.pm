@@ -122,11 +122,6 @@ sub properties {
             description => "JovianDSS config address",
             type        => 'string',
         },
-        debug => {
-            description => "Allow debug prints",
-            type        => 'boolean',
-            default     => OpenEJovianDSS::Common::get_default_debug(),
-        },
         multipath => {
             description => "Enable multipath support",
             type        => 'boolean',
@@ -166,7 +161,7 @@ sub properties {
         control_port => {
             description =>
 "Port number that will be used to send REST request, single for all addresses",
-            type    => 'string',
+            type    => 'int',
             default => OpenEJovianDSS::Common::get_default_control_port(),
         },
         data_addresses => {
@@ -177,18 +172,24 @@ sub properties {
         data_port => {
             description =>
 "Port number that will be used to transfer storage data(iSCSI data)",
-            type    => 'string',
+            type    => 'int',
             default => OpenEJovianDSS::Common::get_default_data_port(),
         },
         block_size => {
             description =>
               'Block size for newly created volumes, allowed values are: '
               . '4K 8K 16K 32K 64K 128K 256K 512K 1M',
-            type => 'string',
+            type    => 'string',
+            default => '16K'
         },
         thin_provisioning => {
             description => 'Create new volumes as thin',
             type        => 'boolean',
+        },
+        debug => {
+            description => "Allow debug prints",
+            type        => 'boolean',
+            default     => OpenEJovianDSS::Common::get_default_debug(),
         },
         log_file => {
             description => "Log file path",
@@ -211,9 +212,9 @@ sub options {
         target_prefix      => { optional => 1 },
         luns_per_target    => { optional => 1 },
         ssl_cert_verify    => { optional => 1 },
-        user_name          => { optional => 1 },
-        user_password      => { optional => 1 },
-        control_addresses  => { optional => 1 },
+        user_name          => { fixed    => 1 },
+        user_password      => { fixed    => 1 },
+        control_addresses  => { fixed    => 1 },
         control_port       => { optional => 1 },
         data_addresses     => { optional => 1 },
         data_port          => { optional => 1 },
@@ -667,7 +668,8 @@ sub status {
     my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
     my $jdssc =
-      OpenEJovianDSS::Common::joviandss_cmd( $scfg, [ "pool", $pool, "get" ] );
+      OpenEJovianDSS::Common::joviandss_cmd( $scfg, [ "pool", $pool, "get" ],
+        10, 0, 'info' );
     my $gb = 1024 * 1024 * 1024;
     my ( $total, $avail, $used ) = split( " ", $jdssc );
 
