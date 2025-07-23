@@ -126,7 +126,7 @@ class Volumes():
         else:
             block_size = '16K'
 
-        thin_provisioning = self.args['block_size']
+        thin_provisioning = self.args['thin_provisioning']
 
         sparse = False
         if thin_provisioning:

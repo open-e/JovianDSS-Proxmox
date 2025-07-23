@@ -105,11 +105,11 @@ class JovianDSSDriver(object):
                    "sparse is %(sparse)s"),
                   {'name': volume_id,
                    'size': volume_size,
-                   'sparse': self.jovian_sparse})
+                   'sparse': sparse})
 
         self.ra.create_lun(vname,
                            volume_size,
-                           sparse=self.jovian_sparse,
+                           sparse=sparse,
                            block_size=block_size)
         return
 
