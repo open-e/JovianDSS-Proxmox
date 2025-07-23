@@ -469,12 +469,22 @@ sub joviandss_cmd {
     }
 
     while ( $retry_count <= $retries ) {
-        my $output   = sub { $msg .= "$_[0]\n" };
-        my $errfunc  = sub { $err .= "$_[0]\n" };
+
         my $exitcode = 0;
         eval {
-            $exitcode = run_command(
-                [ '/usr/local/bin/jdssc', @$connection_options, @$cmd ],
+            my $jcmd = [ '/usr/local/bin/jdssc', @$connection_options, @$cmd ];
+            #cmd_log_output($scfg, 'debug', $jcmd, '');
+
+            my $output   = sub {
+                                    $msg .= "$_[0]\n";
+                                    #cmd_log_output($scfg, 'debug', $jcmd, $msg);
+                               };
+            my $errfunc  = sub {
+                                    $err .= "$_[0]\n";
+                                    #cmd_log_output($scfg, 'error', $jcmd, $err);
+                               };
+
+            $exitcode = run_command( $jcmd,
                 outfunc => $output,
                 errfunc => $errfunc,
                 timeout => $timeout,

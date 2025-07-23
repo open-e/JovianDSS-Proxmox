@@ -265,11 +265,37 @@ sub path {
 
         if ( @$til == 1 ) {
             my ( $targetname, $lunid, $lunrecpath, $lr ) = @{ $til->[0] };
-            my $pathval =
-              OpenEJovianDSS::Common::block_device_path_from_lun_rec( $scfg,
-                $storeid, $targetname, $lunid, $lr );
-            $pathval =~ m{^([\:\w\-/\.]+)$}
-              or die "Invalid source path '$pathval'";
+            my $pathval;
+            eval {
+                $pathval =
+                  OpenEJovianDSS::Common::block_device_path_from_lun_rec( $scfg,
+                    $storeid, $targetname, $lunid, $lr );
+                $pathval =~ m{^([\:\w\-/\.]+)$}
+                  or die "Invalid source path '$pathval'";
+            };
+
+# TODO: reevaluate this section
+# If we are not able to identify block device for existing lun record
+# something is off, there fore we deactivate volume and activate it again
+# We have to check that activate/deactivate transaction will not lead to unexpected
+# side effect, like deactivation of volume snapshot should not lead to volume deactivation
+            if ($@) {
+                OpenEJovianDSS::Common::volume_deactivate( $scfg, $storeid,
+                    $vmid, $volname, $snapname, undef );
+                my $bdpl =
+                  OpenEJovianDSS::Common::volume_activate( $scfg, $storeid,
+                    $vmid, $volname, $snapname, undef );
+
+                unless ( defined($bdpl) ) {
+                    die "Unable to identify block device related to ${volname}"
+                      . OpenEJovianDSS::Common::safe_var_print( "snapshot",
+                        $snapname )
+                      . "\n";
+                }
+                $pathval = ${$bdpl}[0];
+                $pathval =~ m{^([\:\w\-/\.]+)$}
+                  or die "Invalid source path '$pathval'";
+            }
             return wantarray ? ( $pathval, $vmid, $vtype ) : $pathval;
         }
 
@@ -309,6 +335,9 @@ sub rename_volume {
     OpenEJovianDSS::Common::joviandss_cmd( $scfg,
         [ "pool", $pool, "volume", $original_volname, "rename", $new_volname ]
     );
+
+    my $newname = "${storeid}:${new_volname}";
+    return $newname;
 }
 
 sub create_base {
@@ -331,8 +360,7 @@ sub create_base {
     chomp($newname);
     $newname =~ s/[^[:ascii:]]//;
 
-    $class->rename_volume( $scfg, $storeid, $volname, $volname, $vmid,
-        $newname );
+    $class->rename_volume( $scfg, $storeid, $volname, $vmid, $newname );
 
     return $newname;
 }
