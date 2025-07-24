@@ -1961,17 +1961,20 @@ sub volume_activate {
                 }
             }
         }
-        if ($local_record_created) {
-            eval {
-                lun_record_local_delete( $scfg, $storeid, $targetname, $lunid, $volname, $snapname );
-            };
-            my $cerr = $@;
-            if ($cerr) {
-                $local_cleanup = 1;
+
+        # This is a last step of volume activation error handling
+        # We alsways do lun record delete as this function checks for volumes provided by given iscsi target
+        # and conducts iscsi logout if none is present
+        eval {
+            lun_record_local_delete( $scfg, $storeid, $targetname, $lunid, $volname, $snapname );
+        };
+        my $cerr = $@;
+        if ($cerr) {
+            $local_cleanup = 1;
+            if ($local_record_created) {
                 warn "delete_lun_record failed: $@" if $@;
             }
         }
-        #lun_record_local_delete( $scfg, $storeid, $targetname, $lunid, $volname, $snapname );
         die $err;
     }
     unless ( defined( $block_devs ) ) {
