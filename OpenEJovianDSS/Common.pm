@@ -811,7 +811,22 @@ sub volume_stage_iscsi {
             debugmsg( $scfg, "debug", "Stage iSCSI block devices @{ $targets_block_devices }\n" );
             return $targets_block_devices;
         }
+
+        if ( $lunid =~ /^\A\d+\z$/ ) {
+            my $cmd = [ '/usr/bin/rescan-scsi-bus.sh', '--sparselun', '--reportlun2', '--largelun', "--luns=${lunid}", '-a'];
+            run_command(
+                $cmd ,
+                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+            );
+        } else {
+            debugmsg( $scfg, "warn", "Lun id ${lunid} contains non digit symbols" );
+        }
     }
+
+    log_dir_content($scfg, $storeid, '/dev/disk/by-path');
+    debugmsg( $scfg, "warn", "Unable to locate iscsi block device locati @{ $targets_block_devices }\n" );
+
     die "Unable to locate target ${targetname} block device location.\n";
 }
 
@@ -1684,6 +1699,24 @@ sub lun_record_local_get_by_path {
     }
 
     return $jdata;
+}
+
+
+sub log_dir_content {
+    my ( $scfg, $storeid, $dir ) = @_;
+
+    if (opendir my $dh, $dir) {
+        my @files = grep { $_ ne '.' && $_ ne '..' } readdir $dh;
+
+        closedir $dh;
+
+        foreach my $file ( @files ) {
+            debugmsg( $scfg, "debug", "Folder ${dir} contains ${file}");
+        }
+    } else {
+        warn "Cannot open directory '$dir': $!";
+    }
+
 }
 
 #sub delete_global_lun_record {
