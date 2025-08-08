@@ -46,7 +46,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.10.0-0';
+my $PLUGIN_VERSION = '0.10.2-0';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -83,6 +83,9 @@ my $PLUGIN_VERSION = '0.10.0-0';
 #               localy
 #               Support proxmox API v11
 #               Major code rework
+#
+#    0.10.2-0 - 2025.08.08
+#               Fix sparce lun numbering for iscsi
 
 # Configuration
 
