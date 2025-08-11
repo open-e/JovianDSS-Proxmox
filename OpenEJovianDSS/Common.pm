@@ -20,7 +20,7 @@ use strict;
 
 use warnings;
 use Exporter 'import';
-use Carp qw( confess );
+use Carp qw( confess longmess );
 use Data::Dumper;
 use File::Basename;
 use File::Find qw(find);
@@ -353,6 +353,12 @@ sub map_log_level_to_number {
     );
 
     return exists $levels{$upper} ? $levels{$upper} : $levels{TRACE};
+}
+
+sub debugmsg_trace {
+    my ( $scfg, $dlevel, $msg ) = @_;
+    my $stack = longmess($msg || "Stack trace:");
+    debugmsg( $scfg, $dlevel, $stack );
 }
 
 sub debugmsg {
@@ -1225,205 +1231,274 @@ sub volume_unstage_iscsi {
 sub volume_unstage_multipath {
     my ( $scfg, $scsiid ) = @_;
 
-# Driver should not commit any write operation including sync before unmounting
-# Because that myght lead to data corruption in case of active migration
-# Also we do not do any unmnounting to volume as that might cause unexpected writes
+    # Driver should not commit any write operation including sync before unmounting
+    # Because that might lead to data corruption in case of active migration
+    # Also we do not do any unmounting to volume as that might cause unexpected writes
 
-    debugmsg( $scfg, "debug", "Volume unstage multipath scsiid ${scsiid}" );
+    # Validate SCSI ID early to prevent injection attacks
+    unless ( $scsiid =~ /^([\:\-\@\w.\/]+)$/ ) {
+        die "SCSI ID contains forbidden symbols: ${scsiid}\n";
+    }
+    my $clean_scsiid = $1;
+
+    debugmsg( $scfg, "debug", "Volume unstage multipath scsiid ${clean_scsiid}" );
+
+    # Phase 1: Wait for device to become unused
+    # There are strong suspicions that proxmox does not terminate qemu during migration
+    # before calling volume deactivation. This prevents data corruption.
+    my $device_ready = _volume_unstage_multipath_wait_unused($scfg, $clean_scsiid);
+    unless ($device_ready) {
+        debugmsg( $scfg, "warning", "Device ${clean_scsiid} may still be in use, proceeding with cleanup" );
+    }
+
+    # Phase 2: Remove multipath device with retries
+    my $cleanup_successful = _volume_unstage_multipath_remove_device($scfg, $clean_scsiid);
+
+    if ($cleanup_successful) {
+        debugmsg( $scfg, "debug", "Volume unstage multipath scsiid ${clean_scsiid} completed successfully" );
+        return;
+    } else {
+        die "Failed to remove multipath device for SCSI ID ${clean_scsiid} after multiple attempts\n";
+    }
+}
+
+sub _volume_unstage_multipath_wait_unused {
+    my ( $scfg, $scsiid ) = @_;
 
     # Before we try to remove multipath device
-    # Lets check if no process is using it
-    # There are strong suspition that proxmox does not terminate qemu during migration
-    # before before calling volume deactivation.
-    # The problem with such approcach is that there might be some data syscalls to multipath
+    # Let's check if no process is using it
+    # The problem with such approach is that there might be some data syscalls to multipath
     # block device that remain unfinished while we conduct multipath deactivation
-    # That might probably affect volume migration under heavy load when part of that data get bufferized
-    CHECKUSED: for my $tick ( 1 .. 60) {
+    # That might probably affect volume migration under heavy load when part of that data gets buffered
+
+    for my $tick ( 1 .. 60) {
         # lets give it 1 minute to finish its business
+        my $should_continue = 1;
+
         eval {
             my $pid;
             my $blocker_name;
 
             my $mapper_name = get_device_mapper_name( $scfg, $scsiid );
-            if ( defined($mapper_name) ) {
-                if ( $mapper_name =~ /^([\:\-\@\w.\/]+)$/ ) {
-                    my $mapper_path = "/dev/mapper/${mapper_name}";
-                    if ( -e $mapper_path ) {
-                        debugmsg( $scfg, "debug", "Check usage of multipath mapping ${mapper_path}" );
-                        my $cmd = [ 'lsof', '-t', $mapper_path ];
-                        eval {
-                            run_command(
-                                $cmd ,
-                                outfunc => sub {
-                                    $pid = clean_word(shift);
-                                    cmd_log_output($scfg, 'debug', $cmd, $pid);
-                                },
-                                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
-                            );
-                        };
-                        if ($@) {
-                            my $err = $@;
-                            debugmsg( $scfg, "warn", "Unable to identify mapper user for ${mapper_path} ${err}");
-                            last CHECKUSED;
-                        }
-                        debugmsg( $scfg, "debug", "Multipath device mapping ${mapper_path} is used by ${pid}");
-                    } else {
-                        debugmsg( $scfg, "debug", "Multipath device mapping ${mapper_path} does not exist");
-                    }
-                } else {
-                    debugmsg( $scfg, "debug", "Multipath device mapper name is incorrect ${mapper_name}");
-                    last CHECKUSED;
-                }
-            } else {
+
+            # Check if mapper exists and is valid
+            if ( !defined($mapper_name) ) {
                 debugmsg( $scfg, "debug", "Multipath device mapper name is not defined");
-                last CHECKUSED;
+                $should_continue = 0;
+                return;
             }
 
-            if ($pid) {
-                $pid = clean_word($pid);
-                print("Block device with SCSI ${scsiid} is used by ${pid}\n")
-            } else {
-                print("Block device with SCSI ${scsiid} is not used\n");
-                last CHECKUSED;
+            if ( $mapper_name !~ /^([\:\-\@\w.\/]+)$/ ) {
+                debugmsg( $scfg, "debug", "Multipath device mapper name is incorrect: ${mapper_name}");
+                $should_continue = 0;
+                return;
             }
-            if ( $pid =~ /^([\:\-\@\w.\/]+)$/ ) {
-                my $cmd = [ 'ps', '-o', 'comm=', '-p', $1 ];
-                run_command(
-                    $cmd ,
-                    outfunc => sub {
-                        $blocker_name = clean_word(shift);
-                        cmd_log_output($scfg, 'debug', $cmd, $pid);
-                    },
-                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
-                );
-                my $warningmsg = "Multipath device "
-                    . "with scsi id ${scsiid}, "
-                    . "is used by ${blocker_name} with pid ${pid}";
-                debugmsg( $scfg, "warning", $warningmsg );
-                warn "${warningmsg}\n";
+
+            my $clean_mapper_name = $1;
+            my $mapper_path = "/dev/mapper/${clean_mapper_name}";
+
+            # Check if mapper device file exists
+            if ( !-e $mapper_path ) {
+                debugmsg( $scfg, "debug", "Multipath device mapping ${mapper_path} does not exist");
+                return;
             }
-            sleep(1);
-        };
-    }
 
-    for my $attempt ( 1 .. 5) {
-        if ( $scsiid =~ /^([\:\-\@\w.\/]+)$/ ) {
-            my $id = $1;
-            debugmsg( $scfg, "debug", "Flag scsiid ${id} complience" );
-
+            # Check device usage
+            debugmsg( $scfg, "debug", "Check usage of multipath mapping ${mapper_path}" );
+            my $cmd = [ 'lsof', '-t', $mapper_path ];
             eval {
-                my $cmd = [ $MULTIPATH, '-w', $id ];
                 run_command(
                     $cmd,
-                    outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
-                );
-            };
-            warn "Unable to remove scsi id ${id} from wwid file because of $@" if $@;
-
-            eval {
-                my $cmd = [ $MULTIPATH, '-r' ];
-                run_command(
-                    $cmd,
-                    outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
-                );
-            };
-            warn "Unable to reload multipath maps because of $@" if $@;
-
-            eval {
-                my $cmd = [ $MULTIPATH, '-f', $id ];
-                Dumper($cmd);
-                run_command(
-                    $cmd,
-                    outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
-                );
-            };
-            warn "Unable to remove multipath mapping for scsi id ${scsiid} because of $@" if $@;
-        } else {
-            die "SCSI ID contain forbiden symbols ${scsiid}\n";
-        }
-
-        eval {
-            my $cmd = [ $MULTIPATH ];
-            run_command(
-                $cmd ,
-                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
-            );
-        };
-
-        my $mapper_name = get_device_mapper_name( $scfg, $scsiid );
-        if ( defined($mapper_name) ) {
-            if ( $mapper_name =~ /^([\:\-\@\w.\/]+)$/ ) {
-                my $mn = $1;
-                eval {
-                    run_command( [ $DMSETUP, "remove", "-f", $mn ],
-                        outfunc => sub { } );
-                };
-                warn "Unable to remove the multipath mapping for volume with scsi id ${scsiid} with dmsetup: $@\n" if $@;
-            } else {
-                die "Maper name containe forbidden symbols ${mapper_name}\n";
-            }
-        } else {
-            debugmsg( $scfg, "debug", "Volume unstage multipath scsiid ${scsiid} done" );
-            return;
-        }
-
-        eval {
-            my $cmd = [ $MULTIPATH ];
-            run_command(
-                $cmd ,
-                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
-            );
-        };
-        sleep(1);
-        $mapper_name = get_device_mapper_name( $scfg, $scsiid );
-        unless ( defined($mapper_name) ) {
-            debugmsg( $scfg, "debug", "Volume unstage multipath scsiid ${scsiid} done" );
-            return ;
-        }
-        my $mapper_path = "/dev/mapper/${mapper_name}";
-        if ( -e $mapper_path) {
-            my $pid;
-            my $blocker_name;
-            eval {
-                my $cmd = [ 'lsof', '-t', $mapper_path ];
-                run_command(
-                    $cmd ,
                     outfunc => sub {
                         $pid = clean_word(shift);
                         cmd_log_output($scfg, 'debug', $cmd, $pid);
                     },
                     errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
                 );
+            };
+            if ($@) {
+                my $err = $@;
+                debugmsg( $scfg, "warn", "Unable to identify mapper user for ${mapper_path}: ${err}");
+                $should_continue = 0;
+                return;
+            }
+
+            debugmsg( $scfg, "debug", "Multipath device mapping ${mapper_path} is used by ${pid}");
+
+            if ($pid) {
+                $pid = clean_word($pid);
+                print("Block device with SCSI ${scsiid} is used by ${pid}\n");
+
+                # Get process name for diagnostics
                 if ( $pid =~ /^([\:\-\@\w.\/]+)$/ ) {
-                    $cmd = [ 'ps', '-o', 'comm=', '-p', $1 ];
+                    my $clean_pid = $1;
+                    my $cmd = [ 'ps', '-o', 'comm=', '-p', $clean_pid ];
                     run_command(
-                        $cmd ,
+                        $cmd,
                         outfunc => sub {
                             $blocker_name = clean_word(shift);
-                            cmd_log_output($scfg, 'debug', $cmd, $pid);
+                            cmd_log_output($scfg, 'debug', $cmd, $blocker_name);
                         },
                         errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
                     );
-                    my $warningmsg = "Unable to deactivate multipath device "
+                    my $warningmsg = "Multipath device "
                         . "with scsi id ${scsiid}, "
-                        . "device is used by ${blocker_name} with pid ${pid}";
+                        . "is used by ${blocker_name} with pid ${pid}";
                     debugmsg( $scfg, "warning", $warningmsg );
                     warn "${warningmsg}\n";
                 }
+            } else {
+                print("Block device with SCSI ${scsiid} is not used\n");
+                $should_continue = 0;
+            }
+        };
 
-            };
-            warn "Unable to identify multipath blocker: $@\n" if $@;
-        } else {
-            warn "Unable to identify multipath device\n";
+        if ($@) {
+            debugmsg( $scfg, "warning", "Error during device usage check: $@" );
         }
-        debugmsg( $scfg, "debug", "Unbale to remove multipath mapping for scsiid ${scsiid} in attempt ${attempt}\n" );
+
+        # Exit loop if device is unused or we encountered an exit condition
+        unless ($should_continue) {
+            return 1;
+        }
+
+        sleep(1);
     }
-    die "Unable to restart the multipath daemon $@\n" if $@;
+
+    return 1; # Always return success after timeout
+}
+
+sub _volume_unstage_multipath_remove_device {
+    my ( $scfg, $scsiid ) = @_;
+
+    for my $attempt ( 1 .. 5) {
+        debugmsg( $scfg, "debug", "Multipath removal attempt ${attempt} for SCSI ID ${scsiid}" );
+
+        # Step 1: Remove SCSI ID from WWID file
+        eval {
+            my $cmd = [ $MULTIPATH, '-w', $scsiid ];
+            run_command(
+                $cmd,
+                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+            );
+        };
+        if ($@) {
+            debugmsg( $scfg, "warning", "Unable to remove scsi id ${scsiid} from wwid file: $@" );
+        }
+
+        # Step 2: Reload multipath maps
+        eval {
+            my $cmd = [ $MULTIPATH, '-r' ];
+            run_command(
+                $cmd,
+                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+            );
+        };
+        if ($@) {
+            debugmsg( $scfg, "warning", "Unable to reload multipath maps: $@" );
+        }
+
+        # Step 3: Refresh multipath state
+        eval {
+            my $cmd = [ $MULTIPATH ];
+            run_command(
+                $cmd,
+                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+            );
+        };
+        if ($@) {
+            debugmsg( $scfg, "warning", "Unable to refresh multipath state: $@" );
+        }
+
+        # Step 4: Force remove via dmsetup if mapper still exists
+        my $mapper_name = get_device_mapper_name( $scfg, $scsiid );
+        if ( defined($mapper_name) ) {
+            if ( $mapper_name =~ /^([\:\-\@\w.\/]+)$/ ) {
+                my $clean_mapper_name = $1;
+                eval {
+                    run_command( [ $DMSETUP, "remove", "-f", $clean_mapper_name ],
+                        outfunc => sub { } );
+                };
+                if ($@) {
+                    debugmsg( $scfg, "warning", "Unable to remove the multipath mapping for volume with scsi id ${scsiid} with dmsetup: $@" );
+                }
+            } else {
+                debugmsg( $scfg, "warning", "Mapper name contains forbidden symbols: ${mapper_name}" );
+            }
+        } else {
+            debugmsg( $scfg, "debug", "Volume unstage multipath scsiid ${scsiid} done" );
+            return 1;
+        }
+
+        # Step 5: Final multipath refresh and check
+        eval {
+            my $cmd = [ $MULTIPATH ];
+            run_command(
+                $cmd,
+                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+            );
+        };
+
+        sleep(1);
+        $mapper_name = get_device_mapper_name( $scfg, $scsiid );
+        unless ( defined($mapper_name) ) {
+            debugmsg( $scfg, "debug", "Volume unstage multipath scsiid ${scsiid} done" );
+            return 1;
+        }
+
+        # Log remaining device usage for diagnostics
+        _volume_unstage_multipath_log_blockers($scfg, $scsiid, $mapper_name);
+        debugmsg( $scfg, "debug", "Unable to remove multipath mapping for scsiid ${scsiid} in attempt ${attempt}" );
+    }
+
+    return 0; # All attempts failed
+}
+
+sub _volume_unstage_multipath_log_blockers {
+    my ( $scfg, $scsiid, $mapper_name ) = @_;
+
+    my $mapper_path = "/dev/mapper/${mapper_name}";
+    if ( -e $mapper_path) {
+        my $pid;
+        my $blocker_name;
+        eval {
+            my $cmd = [ 'lsof', '-t', $mapper_path ];
+            run_command(
+                $cmd,
+                outfunc => sub {
+                    $pid = clean_word(shift);
+                    cmd_log_output($scfg, 'debug', $cmd, $pid);
+                },
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+            );
+            if ( $pid =~ /^([\:\-\@\w.\/]+)$/ ) {
+                my $clean_pid = $1;
+                $cmd = [ 'ps', '-o', 'comm=', '-p', $clean_pid ];
+                run_command(
+                    $cmd,
+                    outfunc => sub {
+                        $blocker_name = clean_word(shift);
+                        cmd_log_output($scfg, 'debug', $cmd, $blocker_name);
+                    },
+                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                );
+                my $warningmsg = "Unable to deactivate multipath device "
+                    . "with scsi id ${scsiid}, "
+                    . "device is used by ${blocker_name} with pid ${pid}";
+                debugmsg( $scfg, "warning", $warningmsg );
+                warn "${warningmsg}\n";
+            }
+        };
+        if ($@) {
+            debugmsg( $scfg, "warning", "Unable to identify multipath blocker: $@" );
+        }
+    } else {
+        debugmsg( $scfg, "debug", "Multipath device file ${mapper_path} removed" );
+    }
 }
 
 sub volume_unpublish {
@@ -1782,6 +1857,7 @@ sub lun_record_local_delete {
         . safe_var_print( "snapshot", $snapname )
         . "\n");
 
+    debugmsg_trace($scfg, 'debug', "delete lun record check\n");
     my $ltdir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR,
                                     $storeid, $targetname );
     unless ( -d $ltdir ) {
@@ -1872,7 +1948,7 @@ sub volume_activate {
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "Activating volume ${volname} "
-          . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+          . safe_var_print( "snapshot", $snapname )
           . "\n" );
 
     eval {
@@ -1923,7 +1999,6 @@ sub volume_activate {
             $block_devs = $mpdl;
         }
 
-        #unless ( $snapname ) {
         my $size = volume_get_size( $scfg, $storeid, $volname);
 
         $local_record_created      = 1;
@@ -1941,7 +2016,6 @@ sub volume_activate {
         my $lunrec = lun_record_local_get_by_path( $scfg, $storeid, $ltlfile );
         lun_record_update_device( $scfg, $storeid, $targetname, $lunid, $ltlfile, $lunrec, $size );
 
-        #}
     };
     my $err = $@;
 
@@ -1965,20 +2039,8 @@ sub volume_activate {
         if ( $iscsi_staged ) {
             volume_unstage_iscsi_device( $scfg, $storeid, $targetname, $lunid, $hosts );
         }
-        # TODO: that is incorrect because if we fail to add volume/snapshot
-        # to a running vm that might lead to disconnect for other volumes
-        #    eval {
-        #        volume_unstage_iscsi(
-        #            $scfg,
-        #            $storeid,
-        #            $targetname);
-        #    };
-        #    my $cerr = $@;
-        #    if ($cerr) {
-        #        $local_cleanup = 1;
-        #        warn "volume_unstage_iscsi failed: $@" if $@;
-        #    }
 
+        # volume_unstage_iscsi call is moved to lun_record_local_delete
 
         if ( $snapname ) {
             # We do not delete target on joviandss as this will lead to race condition
