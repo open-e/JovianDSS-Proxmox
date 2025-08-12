@@ -243,32 +243,56 @@ sub path {
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
-    my $path;
+    my $path = undef;
 
     if ( $vtype eq "images" ) {
         my $til = OpenEJovianDSS::Common::lun_record_local_get_info_list( $scfg,
             $storeid, $volname, $snapname );
 
         unless (@$til) {
-            my $bdpl =
-              OpenEJovianDSS::Common::volume_activate( $scfg, $storeid, $vmid,
-                $volname, $snapname, undef );
+            eval {
+                OpenEJovianDSS::Common::debugmsg($scfg, 'debug', "None lun records found for volume ${volname}, "
+                      . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+                      . "\n");
 
-            unless ( defined($bdpl) ) {
-                die "Unable to identify block device related to ${volname}"
-                  . OpenEJovianDSS::Common::safe_var_print( "snapshot",
-                    $snapname )
-                  . "\n";
+                my $bdpl = OpenEJovianDSS::Common::volume_activate($scfg, $storeid,
+                    $vmid, $volname, $snapname, undef );
+
+                unless ( defined($bdpl) ) {
+                    die "Unable to identify block device related to ${volname}"
+                      . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+                      . "\n";
+                }
+                my $pathval = ${$bdpl}[0];
+                $pathval =~ m{^([\:\w\-/\.]+)$}
+                  or die "Invalid source path '$pathval'";
+                $path = $pathval;
+            };
+
+	    if ($@) {
+                my $error = $@;
+                # Handle specific "volume does not exist" error
+                my $clean_error = $error;
+                $clean_error =~ s/\s+$//;
+                if ($clean_error =~ /^JDSS resource volume .+ DNE\.$/) {
+                    debugmsg($scfg, "debug", "Volume $volname does not exist: ${clean_error}");
+                    return wantarray ? ( undef, $vmid, $vtype ) : undef;
+                }
+                debugmsg($scfg, "error", "Volume activation error: ${error}");
+                die $error;  # Re-throw other errors
             }
-            my $pathval = ${$bdpl}[0];
-            $pathval =~ m{^([\:\w\-/\.]+)$}
-              or die "Invalid source path '$pathval'";
-            return wantarray ? ( $pathval, $vmid, $vtype ) : $pathval;
+
+            if (defined($path)) {
+                return wantarray ? ( $path, $vmid, $vtype ) : $path;
+            }
         }
 
         if ( @$til == 1 ) {
             my ( $targetname, $lunid, $lunrecpath, $lr ) = @{ $til->[0] };
             my $pathval;
+            OpenEJovianDSS::Common::debugmsg($scfg, 'debug', "One lun record found for volume ${volname}, "
+                  . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+                  . "\n");
             eval {
                 $pathval =
                   OpenEJovianDSS::Common::block_device_path_from_lun_rec( $scfg,
@@ -283,6 +307,9 @@ sub path {
 # We have to check that activate/deactivate transaction will not lead to unexpected
 # side effect, like deactivation of volume snapshot should not lead to volume deactivation
             if ($@) {
+                OpenEJovianDSS::Common::debugmsg($scfg, 'debug', "Path unable to identify device for volume ${volname}, "
+                  . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+                  . " $@\n");
                 OpenEJovianDSS::Common::volume_deactivate( $scfg, $storeid,
                     $vmid, $volname, $snapname, undef );
                 my $bdpl =
@@ -302,9 +329,35 @@ sub path {
             return wantarray ? ( $pathval, $vmid, $vtype ) : $pathval;
         }
 
-        die "Resource ${volname}"
-          . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
-          . " have multiple records \n";
+        # Check if we actually have multiple records or if this is a different error
+        if (@$til == 0) {
+            # This means volume activation must have failed in the unless block
+            die "Resource ${volname}"
+              . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+              . " activation failed - no LUN records found and unable to create new record\n";
+        } elsif (@$til > 1) {
+            # Actually multiple records found
+            my $records_info = "";
+            for my $i (0 .. $#{$til}) {
+                my ($targetname, $lunid, $lunrecpath, $lr) = @{$til->[$i]};
+                my $vol = $lr->{volname} // 'undef';
+                my $snap = defined($lr->{snapname}) ? $lr->{snapname} : 'undef';
+                $records_info .= "Record $i: volume=$vol snapshot=$snap target=$targetname lun=$lunid\n";
+            }
+            OpenEJovianDSS::Common::debugmsg($scfg, 'warning', "Failed to identify correct record for ${volname}"
+              . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+              . "\nFound records:\n${records_info}"
+            );
+            sleep(3);
+            die "Resource ${volname}"
+              . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+              . " have multiple records:\n${records_info}";
+        } else {
+            # This should never happen (we already handled @$til == 1 case above)
+            die "Unexpected error in LUN record handling for ${volname}"
+              . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+              . "\n";
+        }
 
     }
     else {
