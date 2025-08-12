@@ -112,6 +112,9 @@ class JDSSVolumeNotFoundException(JDSSResourceNotFoundException):
     """Volume does not exist"""
 
     def __init__(self, volume):
+        # ! Important ! this format is captured by perl base part of Proxmmox
+        # plugin to identify if path can be returned
+        # DO NOT CHANGE
         self.message = "volume %(volume)s" % {'volume': volume}
         super().__init__(self.message)
 
