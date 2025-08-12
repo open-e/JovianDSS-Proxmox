@@ -661,7 +661,8 @@ class JovianDSSDriver(object):
 
         except jexc.JDSSVolumeExistsException:
             LOG.debug(("Got Volume Exists exception, but do nothing as"
-                       "%s is a snapshot"))
+                       "%(snap)s is a snapshot"),
+                      {'snap': scname})
 
         try:
             tvld = self._acquire_taget_volume_lun(
@@ -700,6 +701,12 @@ class JovianDSSDriver(object):
         if direct_mode:
             vname = volume_name
 
+        if not self.ra.is_lun(vname):
+            LOG.warning(("Abandon detaching as volume %(volume)s does not "
+                        "exist"),
+                        {'volume': volume_name})
+            return
+
         tvld = self._acquire_taget_volume_lun(target_prefix,
                                               target_name,
                                               vname)
@@ -728,6 +735,13 @@ class JovianDSSDriver(object):
 
         if direct_mode:
             scname = snapshot_name
+
+        if not self.ra.is_lun(scname):
+            LOG.warning(("Abandon detaching of volume %(volume)s "
+                        "snapshot %(snapshot)s as it does not exist"),
+                        {'volume': volume_name,
+                         'snapshot': snapshot_name})
+            return
 
         tvld = self._acquire_taget_volume_lun(target_prefix,
                                               target_name,
@@ -854,6 +868,9 @@ class JovianDSSDriver(object):
 
         if direct_mode:
             vname = volume_name
+
+        if not self.ra.is_lun(vname):
+            raise jexc.JDSSVolumeNotFoundException(vname)
 
         tvld = self._acquire_taget_volume_lun(target_prefix,
                                               target_name,
@@ -1152,6 +1169,9 @@ class JovianDSSDriver(object):
 
         if direct_mode:
             vname = volume_name
+
+        if not self.ra.is_lun(vname):
+            raise jexc.JDSSVolumeNotFoundException(vname)
 
         # target volume lune descriptor of form
         # (<target_name>, <lun_id>, <volume attached>,<new target>)
@@ -1492,13 +1512,18 @@ class JovianDSSDriver(object):
     # have not snapshots
     def _list_all_volume_snapshots(self, vname, f=None):
 
-        snaps=[]
+        snaps = []
 
-        i=0
+        i = 0
         LOG.debug("Listing all volume snapshots: %s", vname)
 
         while True:
-            spage=self.ra.get_volume_snapshots_page(vname, i)
+            spage = []
+            try:
+                spage = self.ra.get_volume_snapshots_page(vname, i)
+            except jexc.JDSSResourceNotFoundException:
+                return snaps
+
             LOG.debug("spage %s", str(spage))
             if len(spage) > 0:
 
@@ -1517,9 +1542,9 @@ class JovianDSSDriver(object):
 
         :return: list of volume related snapshots
         """
-        out=[]
-        snapshots=[]
-        i=0
+        out = []
+        snapshots = []
+        i = 0
         # First we list all volume snapshots page by page
         try:
             while True:

@@ -1150,6 +1150,11 @@ class JovianRESTAPI(object):
         if not resp["error"] and resp["code"] == 200:
             return resp["data"]["entries"]
 
+        if resp['error']:
+            if 'message' in resp['error']:
+                if self.resource_dne_msg.match(resp['error']['message']):
+                    raise jexc.JDSSResourceNotFoundException(res=vname)
+
         self._general_error(req, resp)
 
     def get_pool_stats(self):
