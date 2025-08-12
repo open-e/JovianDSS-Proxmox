@@ -25,7 +25,6 @@ deb:
 install:
 	@echo "Installing proxmox plugin"
 	install -D -m 0644 ./OpenEJovianDSSPlugin.pm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
-	install -D -m 0644 ./OpenEJovianDSSPluginLVM.pm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPluginLVM.pm
 	install -D -m 0644 ./OpenEJovianDSS/Common.pm $(DESTDIR)/usr/share/perl5/OpenEJovianDSS/Common.pm
 
 	$(MAKE) -C jdssc install DESTDIR=$(DESTDIR)
@@ -33,5 +32,5 @@ install:
 uninstall:
 	@echo "Cleaning up proxmox plugin"
 	rm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
-	rm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPluginLVM.pm
+	rm $(DESTDIR)/usr/share/perl5/OpenEJovianDSS/Common.pm
 	$(MAKE) -C jdssc uninstall DESTDIR=$(DESTDIR)

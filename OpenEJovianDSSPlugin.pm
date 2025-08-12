@@ -46,7 +46,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.10.2-0';
+my $PLUGIN_VERSION = '0.10.3-1';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -86,6 +86,11 @@ my $PLUGIN_VERSION = '0.10.2-0';
 #
 #    0.10.2-0 - 2025.08.08
 #               Fix sparce lun numbering for iscsi
+#
+#    0.10.3-0 - 2025.08.12
+#               Fix misleading "multiple records" error during VM snapshot creation
+#               Fix deletion of non-existing volumes
+#               Improve error message formatting for LUN record conflicts
 
 # Configuration
 
