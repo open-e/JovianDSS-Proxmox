@@ -1,0 +1,54 @@
+name: Multipath device cleanup on volume deactivation
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have pool Pool-2
+    - Plugin and jdssc configured according to installation guide
+    - Multipath is enabled
+    - Logging level for jdssc DEBUG
+setup:
+id: multipath-device-cleanup-001
+scenario: |
+    User starts and stops VMs to verify proper multipath device
+    cleanup during volume deactivation.
+description: |
+    Test that multipath devices are properly removed when volumes
+    are deactivated, preventing device mapper buildup.
+objective: |
+    Ensure clean multipath device management without orphaned
+    device mapper entries after VM shutdown.
+steps:
+    - desc: Record initial multipath device count
+      cmd: multipath -ll | grep -c "dm-" || echo "0"
+    - desc: Create and start test VM
+      cmd: |
+        qm create 107 --memory 512 --name test-multipath-cleanup --scsi0 jdss-Pool-2:16
+        qm start 107
+    - desc: Verify multipath device was created
+      cmd: multipath -ll | grep vm-107 | wc -l
+    - desc: Stop VM to trigger volume deactivation
+      cmd: qm stop 107
+    - desc: Wait for cleanup completion
+      cmd: sleep 10
+    - desc: Verify multipath device was removed
+      cmd: multipath -ll | grep vm-107 | wc -l || echo "0"
+    - desc: Check for orphaned device mapper entries
+      cmd: dmsetup ls | grep -E "vm-107|[0-9a-f]{16}" | wc -l
+    - desc: Record final multipath device count
+      cmd: multipath -ll | grep -c "dm-" || echo "0"
+    - desc: Clean up test VM
+      cmd: qm destroy 107
+data:
+    - description: Pool name
+      value: Pool-2
+      name: Pool-2
+    - description: Test VM ID
+      value: 107
+      name: vm-107
+parameters:
+references:
+    - OpenEJovianDSS/Common.pm:1239-1510 - Multipath cleanup functions
+expected_results: |
+    After VM shutdown:
+    1. Multipath device for vm-107 should be removed
+    2. No orphaned device mapper entries should remain
+    3. Final device count should equal initial count

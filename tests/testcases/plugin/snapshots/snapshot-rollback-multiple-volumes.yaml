@@ -1,0 +1,62 @@
+name: Snapshot rollback with multiple volumes
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have pool Pool-2
+    - Plugin and jdssc configured according to installation guide
+    - Multipath is enabled
+    - Logging level for jdssc DEBUG
+    - VM with multiple volumes exists
+setup:
+id: snapshot-rollback-multiple-volumes-001
+scenario: |
+    User creates snapshots of VM with multiple volumes and tests
+    rollback functionality to ensure data consistency.
+description: |
+    Test snapshot rollback functionality for VMs with multiple volumes
+    to ensure all volumes are rolled back consistently.
+objective: |
+    Verify that snapshot rollback works correctly across multiple
+    volumes without data inconsistency or partial rollbacks.
+steps:
+    - desc: Create test VM with multiple volumes
+      cmd: |
+        qm create 108 --memory 1024 --name test-snapshot-rollback
+        qm set 108 --scsi0 jdss-Pool-2:16 --scsi1 jdss-Pool-2:8
+    - desc: Start VM and write test data
+      cmd: |
+        qm start 108
+        sleep 30  # Allow VM to boot
+    - desc: Create VM snapshot
+      cmd: qm snapshot 108 test-rollback --description "Test rollback point"
+    - desc: Stop VM to simulate additional changes
+      cmd: qm stop 108
+    - desc: Verify snapshot exists
+      cmd: qm listsnapshot 108 | grep test-rollback
+    - desc: Perform rollback
+      cmd: qm rollback 108 test-rollback
+    - desc: Start VM after rollback
+      cmd: qm start 108
+    - desc: Verify VM starts successfully after rollback
+      cmd: sleep 30 && qm status 108 | grep running
+    - desc: Stop and clean up test VM
+      cmd: |
+        qm stop 108
+        qm destroy 108
+data:
+    - description: Pool name
+      value: Pool-2
+      name: Pool-2
+    - description: Test VM ID
+      value: 108
+      name: vm-108
+    - description: Snapshot name
+      value: test-rollback
+      name: snapshot-name
+parameters:
+references:
+    - OpenEJovianDSSPlugin.pm:409-427 - Snapshot rollback functions
+expected_results: |
+    Snapshot rollback should:
+    1. Successfully rollback all volumes consistently
+    2. Allow VM to start normally after rollback
+    3. Maintain data consistency across multiple volumes

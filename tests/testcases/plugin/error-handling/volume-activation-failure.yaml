@@ -1,0 +1,45 @@
+name: Volume activation failure error messages
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have pool Pool-2
+    - Plugin and jdssc configured according to installation guide
+    - Multipath is enabled
+    - Logging level for jdssc DEBUG
+setup:
+id: volume-activation-failure-001
+scenario: |
+    User attempts to access a volume that cannot be activated due to
+    various reasons (network issues, storage problems, etc.)
+description: |
+    Test that proper error messages are displayed when volume activation
+    fails, rather than misleading "multiple records" errors.
+objective: |
+    Ensure accurate error reporting when volume activation fails with
+    no existing LUN records.
+steps:
+    - desc: Temporarily disable JovianDSS connectivity (simulate network issue)
+      cmd: iptables -A OUTPUT -d 192.168.28.102 -j DROP
+    - desc: Attempt to start a VM that requires volume activation
+      cmd: qm start 104
+      expected_exit_code: 1
+    - desc: Restore connectivity
+      cmd: iptables -D OUTPUT -d 192.168.28.102 -j DROP
+    - desc: Verify VM can start normally after connectivity restore
+      cmd: qm start 104
+data:
+    - description: Pool name
+      value: Pool-2
+      name: Pool-2
+    - description: VM ID for testing
+      value: 104
+      name: vm-104
+    - description: JovianDSS IP address
+      value: 192.168.28.102
+      name: jdss_ip
+parameters:
+references:
+    - OpenEJovianDSSPlugin.pm:336 - Fixed misleading error messages
+expected_results: |
+    When volume activation fails, error message should be:
+    "Resource vm-104-disk-X activation failed - no LUN records found and unable to create new record"
+    NOT "Resource vm-104-disk-X have multiple records"

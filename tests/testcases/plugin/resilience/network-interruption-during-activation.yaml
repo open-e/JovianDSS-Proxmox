@@ -1,0 +1,49 @@
+name: Network interruption during volume activation
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have pool Pool-2
+    - Plugin and jdssc configured according to installation guide
+    - Multipath is enabled
+    - Logging level for jdssc DEBUG
+setup:
+id: network-interruption-activation-001
+scenario: |
+    User starts VM but network connection to JovianDSS is interrupted
+    during volume activation process.
+description: |
+    Test plugin resilience when network connectivity is lost during
+    volume activation, ensuring proper cleanup and error handling.
+objective: |
+    Ensure plugin handles network interruptions gracefully during
+    volume activation without leaving orphaned resources.
+steps:
+    - desc: Create test VM with volume on JovianDSS
+      cmd: qm create 106 --memory 512 --name test-network-interruption --scsi0 jdss-Pool-2:16
+    - desc: Start background VM start process
+      cmd: qm start 106 &
+    - desc: Immediately block JovianDSS connectivity (simulate network failure)
+      cmd: sleep 2 && iptables -A OUTPUT -d 192.168.28.102 -j DROP
+    - desc: Wait for activation timeout and failure
+      cmd: sleep 60
+    - desc: Check that no orphaned LUN records exist
+      cmd: find /etc/joviandss/state/jdss-Pool-2 -name "*vm-106*" | wc -l
+    - desc: Restore network connectivity
+      cmd: iptables -D OUTPUT -d 192.168.28.102 -j DROP
+    - desc: Verify VM can start normally after network restoration
+      cmd: qm start 106
+    - desc: Clean up test VM
+      cmd: qm destroy 106
+data:
+    - description: Pool name
+      value: Pool-2
+      name: Pool-2
+    - description: Test VM ID
+      value: 106
+      name: vm-106
+parameters:
+references:
+expected_results: |
+    Network interruption during activation should:
+    1. Fail gracefully with timeout error
+    2. Clean up any partial LUN records
+    3. Allow successful activation after network restoration

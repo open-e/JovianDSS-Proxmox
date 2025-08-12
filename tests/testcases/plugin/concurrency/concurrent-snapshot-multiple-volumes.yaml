@@ -1,0 +1,46 @@
+name: Concurrent VM snapshot with multiple volumes
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have pool Pool-2
+    - Plugin and jdssc configured according to installation guide
+    - Multipath is enabled
+    - Logging level for jdssc DEBUG
+    - VM 103 exists with multiple volumes (vm-103-disk-0, vm-103-disk-1, vm-103-disk-2)
+setup:
+id: concurrent-snapshot-multiple-volumes-001
+scenario: |
+    User attempts to create a VM snapshot of a VM with multiple volumes.
+    This tests the concurrency handling during VM state file creation.
+description: |
+    Test for the bug where creating snapshots of VMs with multiple volumes
+    resulted in "Resource vm-103-state-snap2.raw have multiple records" error
+    due to incorrect error handling in the path() function.
+objective: |
+    Ensure that VM snapshots work correctly for VMs with multiple volumes
+    and proper error messages are shown if activation fails.
+steps:
+    - desc: Verify VM 103 has multiple volumes attached
+      cmd: qm config 103 | grep -E "(scsi|virtio)[0-9]:"
+    - desc: Create snapshot of VM 103 with multiple volumes
+      cmd: qm snapshot 103 snap2 --description "Test snapshot with multiple volumes"
+    - desc: Verify snapshot was created successfully
+      cmd: qm listsnapshot 103
+    - desc: Test cleanup - remove snapshot
+      cmd: qm delsnapshot 103 snap2
+data:
+    - description: Pool name
+      value: Pool-2
+      name: Pool-2
+    - description: VM ID
+      value: 103
+      name: vm-103
+    - description: Snapshot name
+      value: snap2
+      name: snap2
+parameters:
+references:
+    - OpenEJovianDSSPlugin.pm:342 - Fixed "multiple records" error for zero records
+expected_results: |
+    VM snapshot creation succeeds without "multiple records" error.
+    If snapshot creation fails, error message should accurately describe
+    the actual problem (e.g., "activation failed" instead of "multiple records").

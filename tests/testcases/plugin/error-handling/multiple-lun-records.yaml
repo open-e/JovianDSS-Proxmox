@@ -1,0 +1,54 @@
+name: Actual multiple LUN records handling
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have pool Pool-2
+    - Plugin and jdssc configured according to installation guide
+    - Multipath is enabled
+    - Logging level for jdssc DEBUG
+setup:
+id: multiple-lun-records-001
+scenario: |
+    User manually creates conflicting LUN records to test the actual
+    multiple records detection and error formatting.
+description: |
+    Test that when genuine multiple LUN records exist, the error message
+    clearly shows volume and snapshot names for each record.
+objective: |
+    Ensure clear error reporting when actual multiple LUN records exist
+    with improved formatting instead of raw data dump.
+steps:
+    - desc: Create a test VM with a volume
+      cmd: qm create 105 --memory 512 --name test-multiple-records
+    - desc: Add a volume to the VM
+      cmd: qm set 105 --scsi0 jdss-Pool-2:32
+    - desc: Start VM to create initial LUN record
+      cmd: qm start 105
+    - desc: Stop VM
+      cmd: qm stop 105
+    - desc: Manually create duplicate LUN record (simulate race condition)
+      cmd: |
+        cp /etc/joviandss/state/jdss-Pool-2/*/*/vm-105-disk-0 \
+           /etc/joviandss/state/jdss-Pool-2/*/*/vm-105-disk-0-duplicate
+    - desc: Attempt to start VM which should detect multiple records
+      cmd: qm start 105
+      expected_exit_code: 1
+    - desc: Clean up duplicate record
+      cmd: rm -f /etc/joviandss/state/jdss-Pool-2/*/*/vm-105-disk-0-duplicate
+    - desc: Clean up test VM
+      cmd: qm destroy 105
+data:
+    - description: Pool name
+      value: Pool-2
+      name: Pool-2
+    - description: Test VM ID
+      value: 105
+      name: vm-105
+parameters:
+references:
+    - OpenEJovianDSSPlugin.pm:342-355 - Improved multiple records error formatting
+expected_results: |
+    When multiple records are found, error message should show clear format:
+    "Resource vm-105-disk-0 have multiple records:
+    Record 0: volume=vm-105-disk-0 snapshot=undef target=iqn.xxx lun=0
+    Record 1: volume=vm-105-disk-0 snapshot=undef target=iqn.xxx lun=1"
+    NOT raw Data::Dumper output.

@@ -1,0 +1,80 @@
+name: VM deletion with manually removed volume
+prerequisites: 
+    - Plugin installed on Proxmox
+    - JovianDSS have pool Pool-2
+    - Plugin and jdssc configured according to installation guide
+    - Multipath is enabled
+    - Logging level for jdssc DEBUG
+    - Direct access to JovianDSS for manual volume deletion
+setup:
+id: vm-delete-missing-volume-001
+scenario: |
+    User creates VM with 3 disks, creates a snapshot, then manually removes
+    one volume directly on storage side, and attempts to delete the VM.
+description: |
+    Test plugin resilience when storage volumes are manually removed outside
+    of Proxmox control, ensuring VM deletion still completes without errors
+    or hanging operations.
+objective: |
+    Verify that VM deletion handles missing volumes gracefully without
+    failing the entire operation or leaving orphaned resources.
+steps:
+    - desc: Create test VM with 3 volumes
+      cmd: |
+        qm create 109 --memory 1024 --name test-missing-volume
+        qm set 109 --scsi0 jdss-Pool-2:16 --scsi1 jdss-Pool-2:8 --scsi2 jdss-Pool-2:4
+    - desc: Start VM to ensure all volumes are activated
+      cmd: qm start 109
+    - desc: Stop VM after successful start
+      cmd: qm stop 109
+    - desc: Create VM snapshot to test snapshot handling with missing volume
+      cmd: qm snapshot 109 before-deletion --description "Snapshot before volume removal"
+    - desc: List volumes to identify volume names
+      cmd: jdssc -c /etc/pve/jdss-Pool-2.yaml pool Pool-2 volumes list | grep vm-109
+    - desc: Manually delete middle volume (vm-109-disk-1) on storage side
+      cmd: jdssc -c /etc/pve/jdss-Pool-2.yaml pool Pool-2 volume vm-109-disk-1 delete -f
+    - desc: Verify volume is deleted on storage
+      cmd: |
+        ! jdssc -c /etc/pve/jdss-Pool-2.yaml pool Pool-2 volume vm-109-disk-1 get -s
+    - desc: Check LUN records before VM deletion
+      cmd: find /etc/joviandss/state/jdss-Pool-2 -name "*vm-109*" -ls
+    - desc: Attempt to delete VM (should handle missing volume gracefully)
+      cmd: qm destroy 109
+    - desc: Verify VM was deleted from Proxmox
+      cmd: ! qm config 109
+    - desc: Check that LUN records were cleaned up
+      cmd: find /etc/joviandss/state/jdss-Pool-2 -name "*vm-109*" | wc -l
+    - desc: Verify remaining volumes were deleted on storage
+      cmd: |
+        ! jdssc -c /etc/pve/jdss-Pool-2.yaml pool Pool-2 volume vm-109-disk-0 get -s &&
+        ! jdssc -c /etc/pve/jdss-Pool-2.yaml pool Pool-2 volume vm-109-disk-2 get -s
+    - desc: Check for orphaned targets on storage
+      cmd: jdssc -c /etc/pve/jdss-Pool-2.yaml pool Pool-2 targets list | grep vm-109 || echo "No orphaned targets"
+data:
+    - description: Pool name
+      value: Pool-2
+      name: Pool-2
+    - description: Test VM ID
+      value: 109
+      name: vm-109
+    - description: Volume names
+      value: 
+        - vm-109-disk-0
+        - vm-109-disk-1  
+        - vm-109-disk-2
+      name: vm-volumes
+    - description: Snapshot name
+      value: before-deletion
+      name: test-snapshot
+parameters:
+references:
+    - OpenEJovianDSSPlugin.pm:251-288 - Volume deletion and error handling
+    - OpenEJovianDSS/Common.pm:1512-1577 - Volume unpublish functions
+expected_results: |
+    VM deletion should complete successfully even with missing volume:
+    1. VM should be removed from Proxmox configuration
+    2. Remaining volumes (vm-109-disk-0, vm-109-disk-2) should be deleted
+    3. All local LUN records should be cleaned up
+    4. No orphaned iSCSI targets should remain
+    5. Operation should not hang or produce critical errors
+    6. Missing volume should be handled with appropriate warning messages
