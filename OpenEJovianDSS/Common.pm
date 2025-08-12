@@ -27,6 +27,9 @@ use File::Find qw(find);
 use File::Path qw(make_path);
 use String::Util;
 
+use Fcntl qw(:DEFAULT O_WRONLY O_APPEND O_CREAT O_SYNC);
+use IO::Handle;
+
 use JSON qw(decode_json from_json to_json);
 #use PVE::SafeSyslog;
 
@@ -391,13 +394,18 @@ sub debugmsg {
             $year, $month,        $day,        $hour, $min,
             $sec,  $milliseconds, uc($dlevel), $msg );
 
-        open( my $fh, '>>', $log_file_path )
-          or die "Could not open file '$log_file_path' $!";
+        my $fh;
 
-        # TODO: do not remove this line
-        print $fh "$line\n";
-
-        close($fh);
+        if ( !sysopen( $fh, $log_file_path, O_WRONLY|O_APPEND|O_CREAT|O_SYNC, 0644 ) ) {
+            warn "log file '$log_file_path' opening failed: $!";
+            return;
+        }
+        if ( !print {$fh} "$line\n" ) {
+            warn "log file '$log_file_path' writing failed: $!";
+            close $fh;
+            return;
+        }
+        close($fh) or warn "log file '$log_file_path' closing failed: $!";
     }
 }
 
@@ -1320,7 +1328,7 @@ sub _volume_unstage_multipath_wait_unused {
                 my $err = $@;
                 debugmsg( $scfg, "warn", "Unable to identify mapper user for ${mapper_path}: ${err}");
                 $should_continue = 0;
-                return;
+                return 1;
             }
 
             debugmsg( $scfg, "debug", "Multipath device mapping ${mapper_path} is used by ${pid}");
@@ -1584,28 +1592,15 @@ sub lun_record_local_create {
 
     my $ltlfile = File::Spec->catfile( $ltldir, $volname );
 
-    if ($snapname) {
-        my $ltlfile = File::Spec->catfile( $ltldir, $snapname );
-    }
-
-    if (defined($snapname)) {
-        $snapname = clean_word($snapname)
-    }
     my $record = {
         scsiid   => clean_word($scsiid),
         volname   => clean_word($volname),
-        snapname  => $snapname,
+        snapname  => defined($snapname) ? clean_word($snapname) : undef,
         size      => $size,
         hosts     => \@hosts,
         multipath => $multipath ? \1 : \0,
         shared    => $shared ? \1 : \0,
     };
-
-    if ( $snapname ) {
-        $record->{snapname} = $snapname;
-    } else {
-        $record->{snapname} = undef;
-    }
 
     my $json_text = JSON::encode_json($record) . "\n";
 
@@ -1635,10 +1630,6 @@ sub lun_record_local_update {
     }
 
     my $ltlfile = File::Spec->catfile( $ltldir, $volname );
-
-    if ($snapname) {
-        $ltlfile = File::Spec->catfile( $ltldir, $snapname );
-    }
 
     my $json_text = JSON::encode_json($lunrec) . "\n";
 
@@ -1690,15 +1681,6 @@ sub lun_record_local_get_info_list {
                 $lunid = clean_word($lunid);
 
                 # TODO: consider using target group name
-                #
-                #if (defined $tgname) {
-                #    # escape any special chars in the pattern
-                #    my $tp = quotemeta($tgname);
-
-                #    unless ($targetname =~ /$tp-\d+\z/) {
-                #        next;
-                #    }
-                #}
                 my $lunrec = lun_record_local_get_by_path( $scfg, $storeid, $full);
                 if ($lunrec) {
                     if ( $lunrec->{volname} eq $volname ) {
@@ -1857,7 +1839,7 @@ sub lun_record_local_delete {
         . safe_var_print( "snapshot", $snapname )
         . "\n");
 
-    debugmsg_trace($scfg, 'debug', "delete lun record check\n");
+    debugmsg($scfg, 'debug', "delete lun record check\n");
     my $ltdir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR,
                                     $storeid, $targetname );
     unless ( -d $ltdir ) {
@@ -2060,9 +2042,18 @@ sub volume_activate {
         # This is a last step of volume activation error handling
         # We alsways do lun record delete as this function checks for volumes provided by given iscsi target
         # and conducts iscsi logout if none is present
-        eval {
-            lun_record_local_delete( $scfg, $storeid, $targetname, $lunid, $volname, $snapname );
-        };
+
+        if (defined($targetname) && defined($lunid) && $targetname ne "" && $lunid ne "") {
+            eval {
+                lun_record_local_delete( $scfg, $storeid, $targetname, $lunid, $volname, $snapname );
+            };
+        } else {
+            debugmsg($scfg, 'debug', "Skipping volume ${volname} "
+                     . safe_var_print( "snapshot", $snapname ) . ' '
+                     .  'local LUN record delete - invalid target name or LUN ID'
+                     . "\n" );
+        }
+
         my $cerr = $@;
         if ($cerr) {
             $local_cleanup = 1;
