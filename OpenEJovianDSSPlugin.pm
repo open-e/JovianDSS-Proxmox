@@ -46,7 +46,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.10.3-1';
+my $PLUGIN_VERSION = '0.10.4-0';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -91,12 +91,16 @@ my $PLUGIN_VERSION = '0.10.3-1';
 #               Fix misleading "multiple records" error during VM snapshot creation
 #               Fix deletion of non-existing volumes
 #               Improve error message formatting for LUN record conflicts
+#
+#    0.10.4-0 - 2025.08.13
+#               Add sensitive-properties support for user_password
+#               Update API version to 12 for Proxmox VE 9.x support
 
 # Configuration
 
 sub api {
 
-    my $apiver = 11;
+    my $apiver = 12;
 
     return $apiver;
 }
@@ -116,6 +120,9 @@ sub plugindata {
             { images => 1, rootdir => 1 }
         ],
         format => [ { raw => 1, subvol => 0 }, 'raw' ],
+        'sensitive-properties' => {
+            'user_password' => 1,
+        },
     };
 }
 
@@ -221,7 +228,7 @@ sub options {
         luns_per_target    => { optional => 1 },
         ssl_cert_verify    => { optional => 1 },
         user_name          => { fixed    => 1 },
-        user_password      => { fixed    => 1 },
+        user_password      => { optional => 1 },
         control_addresses  => { fixed    => 1 },
         control_port       => { optional => 1 },
         data_addresses     => { optional => 1 },
@@ -274,7 +281,7 @@ sub path {
                 $path = $pathval;
             };
 
-	    if ($@) {
+            if ($@) {
                 my $error = $@;
                 # Handle specific "volume does not exist" error
                 my $clean_error = $error;
@@ -1227,6 +1234,84 @@ sub get_volume_attribute {
 sub update_volume_attribute {
     my ( $class, $scfg, $storeid, $volname, $attribute, $value ) = @_;
     return undef;
+}
+
+sub qemu_blockdev_options {
+    my ($class, $scfg, $storeid, $volname, $machine_version, $options) = @_;
+
+    my ($path) = $class->path($scfg, $volname, $storeid, $options->{'snapshot-name'});
+    my $blockdev = { driver => 'host_device', filename => $path };
+    return $blockdev;
+}
+
+sub volume_qemu_snapshot_method {
+    my ($class, $storeid, $scfg, $volname) = @_;
+
+    return 'storage';
+}
+
+# Password file management
+sub joviandss_password_file_name {
+    my ($scfg, $storeid) = @_;
+    return "/etc/pve/priv/storage/joviandss/${storeid}.pw";
+}
+
+sub joviandss_set_password {
+    my ($password, $storeid) = @_;
+    my $pwfile = joviandss_password_file_name(undef, $storeid);
+
+    # Create directory with full path
+    my $dir = "/etc/pve/priv/storage/joviandss";
+    if (! -d $dir) {
+        File::Path::make_path($dir, { mode => 0700 });
+    }
+
+    PVE::Tools::file_set_contents($pwfile, "user_password $password\n", 0600, 1);
+}
+
+sub joviandss_get_password {
+    my ($scfg, $storeid) = @_;
+    my $pwfile = joviandss_password_file_name($scfg, $storeid);
+
+    return undef if ! -f $pwfile;
+
+    # Read entire file and parse key-value pairs
+    my $content = PVE::Tools::file_get_contents($pwfile);
+    my $config = {};
+
+    foreach my $line (split /\n/, $content) {
+        $line =~ s/^\s+|\s+$//g;  # trim whitespace
+        next if $line =~ /^#/ || $line eq '';  # skip comments and empty lines
+
+        if ($line =~ /^(\S+)\s+(.+)$/) {
+            $config->{$1} = $2;
+        }
+    }
+
+    return $config->{user_password};
+}
+
+sub joviandss_delete_password {
+    my ($storeid) = @_;
+    my $pwfile = joviandss_password_file_name(undef, $storeid);
+    unlink $pwfile;
+}
+
+# Storage hooks for sensitive properties
+sub on_add_hook {
+    my ($class, $storeid, $scfg, %sensitive) = @_;
+    return if !exists($sensitive{user_password});
+    joviandss_set_password($sensitive{user_password}, $storeid);
+}
+
+sub on_update_hook {
+    my ($class, $storeid, $scfg, %sensitive) = @_;
+    return if !exists($sensitive{user_password});
+    if (defined($sensitive{user_password})) {
+        joviandss_set_password($sensitive{user_password}, $storeid);
+    } else {
+        joviandss_delete_password($storeid);
+    }
 }
 
 1;

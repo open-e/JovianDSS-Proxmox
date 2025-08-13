@@ -1,0 +1,74 @@
+open-e-joviandss-proxmox-plugin (0.10.4-0) stable; urgency=medium
+
+  *  Add sensitive-properties support for user_password
+  *  Update API version to 12 for Proxmox VE 9.x support
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Tue, 13 Aug 2025 14:00:00 +0200
+
+open-e-joviandss-proxmox-plugin (0.10.3-0) stable; urgency=medium
+
+  * Fix misleading "multiple records" error during VM snapshot creation
+  * Fix deletion of non-existing volumes
+  * Improve error message formatting for LUN record conflicts
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Mon, 12 Aug 2025 10:00:00 +0200
+
+open-e-joviandss-proxmox-plugin (0.10.2-0) stable; urgency=medium
+
+  * Fix sparse LUN numbering for iSCSI
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Thu, 08 Aug 2025 12:00:00 +0200
+
+open-e-joviandss-proxmox-plugin (0.10.0-0) stable; urgency=medium
+
+  * Store information about activated volumes and snapshots locally
+  * Support Proxmox API v11
+  * Major code rework for improved reliability
+  * Enhanced volume state management
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Tue, 17 Jun 2025 15:00:00 +0200
+
+open-e-joviandss-proxmox-plugin (0.9.10-8) stable; urgency=medium
+
+  * Make plugin configurable solely from storage.cfg
+  * Provide code style improvements
+  * Remove dependency on YAML configuration files
+  * Full integration with Proxmox storage configuration
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Wed, 02 Apr 2025 10:00:00 +0200
+
+open-e-joviandss-proxmox-plugin (0.9.9.2) stable; urgency=medium
+
+  * Add logging to jdssc debug file
+  * Fix data corruption during migration
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Tue, 17 Dec 2024 14:00:00 +0100
+
+open-e-joviandss-proxmox-plugin (0.9.9.1) stable; urgency=medium
+
+  * Provide dynamic target name prefix generation
+  * Enforce VIP addresses for iSCSI targets
+  * Fix volume resize for running machine
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Fri, 13 Dec 2024 12:00:00 +0100
+
+open-e-joviandss-proxmox-plugin (0.9.9.0) stable; urgency=medium
+
+  * Add NFS base context volume support
+  * Fix volume resize problem
+  * Fix incorrect volume allocation size
+  * Fix volume migration problem
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Fri, 15 Nov 2024 16:00:00 +0100
+
+open-e-joviandss-proxmox-plugin (0.9.8-5) stable; urgency=medium
+
+  * Add rollback to the latest volume snapshot
+  * Introduce share option that substitutes Proxmox code modification
+  * Fix migration failure
+  * Extend REST API error handling
+  * Fix volume provisioning bug
+  * Fix pool selection bug
+  * Prevent possible iSCSI target name collision
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Mon, 30 Sep 2024 10:00:00 +0200

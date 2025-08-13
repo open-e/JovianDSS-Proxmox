@@ -1,0 +1,24 @@
+Package: open-e-joviandss-proxmox-plugin
+Version: 0.10.4-0
+Section: admin
+Priority: optional
+Architecture: all
+Depends: python3-oslo.utils (>= 3.36), python3-yaml (>= 3.13), multipath-tools, sg3-utils, patch, python3-retry, libstring-util-perl
+Maintainer: andrei.perepiolkin@open-e.com
+Homepage: https://github.com/open-e/JovianDSS-Proxmox
+Description: Open-E JovianDSS storage plugin for Proxmox VE
+ This package provides seamless integration between Proxmox VE and Open-E
+ JovianDSS storage systems via iSCSI protocol. The plugin enables automatic
+ volume provisioning, snapshot management, and high-availability features.
+ .
+ Key features:
+  * Thin provisioning with on-demand volume allocation
+  * Storage-level snapshots with instant rollback capability
+  * Multipath support for high availability and load balancing
+  * Automated iSCSI target and LUN management
+  * Support for VM live migration between Proxmox nodes
+  * Integration with Proxmox backup and restore workflows
+ .
+ The plugin consists of a Perl storage plugin that integrates with Proxmox VE's
+ storage framework and a Python CLI tool (jdssc) that communicates with the
+ JovianDSS REST API for storage operations.

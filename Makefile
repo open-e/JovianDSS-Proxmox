@@ -13,9 +13,10 @@ deb:
 	@echo "Using tmp dir $(debdir)"
 	make install DESTDIR=$(debdir) DEB_FLAG=1
 
-	install -D -m 0555 ./DEBIAN/control $(debdir)/DEBIAN/control
-	install -D -m 0555 ./DEBIAN/postinst $(debdir)/DEBIAN/postinst
-	install -D -m 0555 ./DEBIAN/prerm $(debdir)/DEBIAN/postrm
+	install -D -m 0555 ./debian/control $(debdir)/DEBIAN/control
+	install -D -m 0555 ./debian/postinst $(debdir)/DEBIAN/postinst
+	install -D -m 0555 ./debian/prerm $(debdir)/DEBIAN/postrm
+	install -D -m 0555 ./debian/prerm $(debdir)/DEBIAN/changelog
 
 	dpkg-deb --build $(debdir)
 	@mv $(debdir).deb ./open-e-joviandss-proxmox-plugin-$(IMAGE_VERSION).deb
