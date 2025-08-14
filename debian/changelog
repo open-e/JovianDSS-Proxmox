@@ -1,3 +1,13 @@
+open-e-joviandss-proxmox-plugin (0.10.5-0) stable; urgency=medium
+
+  * Enable thin provisioning by default
+  * Improve iSCSI session management and error handling
+  * Add comprehensive thin/thick provisioning test scenarios
+  * Update documentation with Proxmox backup limitations
+  * Fix redundant iSCSI login attempts and error messages
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Wed, 14 Aug 2025 14:00:00 +0200
+
 open-e-joviandss-proxmox-plugin (0.10.4-0) stable; urgency=medium
 
   *  Add sensitive-properties support for user_password

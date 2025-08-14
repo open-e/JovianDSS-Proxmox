@@ -46,7 +46,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.10.4-0';
+my $PLUGIN_VERSION = '0.10.5-0';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -95,6 +95,13 @@ my $PLUGIN_VERSION = '0.10.4-0';
 #    0.10.4-0 - 2025.08.13
 #               Add sensitive-properties support for user_password
 #               Update API version to 12 for Proxmox VE 9.x support
+#
+#    0.10.5-0 - 2025.08.14
+#               Enable thin provisioning by default
+#               Improve iSCSI session management and error handling
+#               Add comprehensive thin/thick provisioning test scenarios
+#               Update documentation with Proxmox backup limitations
+#               Fix redundant iSCSI login attempts and error messages
 
 # Configuration
 
