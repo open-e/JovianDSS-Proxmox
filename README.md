@@ -14,7 +14,7 @@ It provides:
 ## Work in Progress
 
 The JovianDSS Proxmox plugin is under active development.
-Version 0.10 represents a rewrite of the `joviandss` plugin and is shipped without the `joviandss-lvm` component.
+Version 0.10.5 represents a rewrite of the `joviandss` plugin.
 
 **Upcoming Features:**
 
