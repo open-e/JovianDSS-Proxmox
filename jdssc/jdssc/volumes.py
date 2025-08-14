@@ -78,7 +78,7 @@ class Volumes():
                             default=None,
                             choices=['y', 'n', 'Y', 'N'],
                             help=('Create new volume as thin. '
-                                  'Default is False.'))
+                                  'Default is True.'))
         create.add_argument('-d',
                             dest='direct_mode',
                             action='store_true',

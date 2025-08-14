@@ -53,7 +53,7 @@ class JovianDSSDriver(object):
         self.block_size = (
             self.configuration.get('jovian_block_size', '16K'))
         self.jovian_sparse = (
-            self.configuration.get('san_thin_provision', False))
+            self.configuration.get('san_thin_provision', True))
         self.jovian_ignore_tpath = self.configuration.get(
             'jovian_ignore_tpath', None)
         self.jovian_hosts = self.configuration.get(

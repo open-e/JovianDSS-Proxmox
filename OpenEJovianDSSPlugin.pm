@@ -200,6 +200,7 @@ sub properties {
         thin_provisioning => {
             description => 'Create new volumes as thin',
             type        => 'boolean',
+            default     => 1,
         },
         debug => {
             description => "Allow debug prints",

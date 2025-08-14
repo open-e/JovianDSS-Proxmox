@@ -78,7 +78,7 @@ joviandss: jdss-Pool-0
 | `control_port `            | 82                                | Rest port according to the settings in \[2\]                        |
 | `data_addresses`           | None                              | Coma separated list of VIP\[3] addresses that will be used to send storage data over iscsi protocol. If none is given controll_addresses will be used. Only VIP addresses are alowed for iSCSI data transfer. Make sure that given addresses are being specified on specific JovianDSS Pool. |
 | `data_port`                | 3260                              | iSCSI target port, 3260 is dafault for JovianDSS |
-| `thin_provisioning`        | 0                                 | Create VM disk as thin. Default is False. |
+| `thin_provisioning`        | 1                                 | Create VM disk as thin. Default is True. |
 | luns_per_target            | 8                                 | Maximum number of volumes that should be attached to a single iSCSI target. |
 | `block_size`               | 16K                               | Block size for newly created volumes           |  
 | `log_file`                 | /var/log/joviandss/joviandss.log  | Path to log file                   | 

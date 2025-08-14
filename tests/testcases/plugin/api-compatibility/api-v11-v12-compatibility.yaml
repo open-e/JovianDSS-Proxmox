@@ -1,0 +1,113 @@
+name: API v11/v12 Compatibility Verification
+prerequisites: 
+    - Plugin installed on Proxmox VE 9.x
+    - JovianDSS accessible at test IP addresses
+    - Root access to Proxmox node
+    - Plugin version 0.10.4-0 or later
+setup:
+id: api-v11-v12-compatibility-001
+scenario: |
+    Test the API v11/v12 compatibility features to ensure the plugin works
+    with Proxmox VE 9.x without "older storage API" warnings and that
+    sensitive properties are handled securely.
+description: |
+    Verify that the plugin properly implements API v11 sensitive-properties
+    and API v12 qemu_blockdev_options/volume_qemu_snapshot_method to eliminate
+    compatibility warnings and enable modern QEMU integration.
+objective: |
+    Ensure complete API v11/v12 compatibility and secure sensitive data handling
+    while addressing all pitfalls encountered during implementation.
+steps:
+    - desc: Create JovianDSS storage without obsolete config option
+      cmd: |
+        pvesm add joviandss test-api \
+          --pool_name Test-Pool \
+          --user_name admin \
+          --user_password testpass123 \
+          --control_addresses 192.168.1.100 \
+          --data_addresses 192.168.1.100 \
+          --content images
+    - desc: Verify storage appears in storage.cfg
+      cmd: grep "joviandss: test-api" /etc/pve/storage.cfg
+    - desc: Verify password NOT in storage.cfg (sensitive property handling)
+      cmd: "! grep testpass123 /etc/pve/storage.cfg"
+    - desc: Verify password file exists in secure location
+      cmd: test -f /etc/pve/priv/storage/joviandss/test-api.pw
+    - desc: Verify password file permissions (600)
+      cmd: stat -c %a /etc/pve/priv/storage/joviandss/test-api.pw | grep "^600$"
+    - desc: Verify password file format (storage.cfg-style key-value)
+      cmd: grep "^user_password testpass123$" /etc/pve/priv/storage/joviandss/test-api.pw
+    - desc: Verify directory permissions (700)
+      cmd: stat -c %a /etc/pve/priv/storage/joviandss | grep "^700$"
+    - desc: Check system logs for API compatibility warnings
+      cmd: "! journalctl -u pveproxy -u pvedaemon --since '1 minute ago' | grep 'older storage API'"
+    - desc: Test basic storage operations
+      cmd: pvesm status test-api
+    - desc: Test password update functionality
+      cmd: pvesm set test-api --user_password newpass456
+    - desc: Verify old password replaced
+      cmd: "! grep testpass123 /etc/pve/priv/storage/joviandss/test-api.pw"
+    - desc: Verify new password stored in correct format
+      cmd: grep "^user_password newpass456$" /etc/pve/priv/storage/joviandss/test-api.pw
+    - desc: Test storage listing
+      cmd: pvesm list test-api
+    - desc: Create test VM to trigger qemu_blockdev_options method
+      cmd: |
+        qm create 999 --memory 1024 --name test-api-compatibility
+        qm set 999 --scsi0 test-api:8
+    - desc: Verify VM configuration created successfully
+      cmd: qm config 999 | grep "scsi0.*test-api"
+    - desc: Start VM to test blockdev integration
+      cmd: qm start 999
+    - desc: Verify VM started successfully (tests blockdev options)
+      cmd: sleep 10 && qm status 999 | grep running
+    - desc: Stop and destroy test VM
+      cmd: |
+        qm stop 999
+        qm destroy 999
+    - desc: Remove storage and verify cleanup
+      cmd: pvesm remove test-api
+    - desc: Verify password file removed during cleanup
+      cmd: "! test -f /etc/pve/priv/storage/joviandss/test-api.pw"
+    - desc: Verify no storage remnants in storage.cfg
+      cmd: "! grep test-api /etc/pve/storage.cfg"
+data:
+    - description: Test storage name
+      value: test-api
+      name: storage-id
+    - description: Test VM ID
+      value: 999
+      name: test-vm-id
+    - description: Test passwords
+      value: 
+        - testpass123
+        - newpass456
+      name: test-passwords
+parameters:
+references:
+    - OpenEJovianDSSPlugin.pm:102-104 - API version 12 declaration
+    - OpenEJovianDSSPlugin.pm:119-121 - sensitive-properties declaration
+    - OpenEJovianDSSPlugin.pm:1238-1244 - qemu_blockdev_options method
+    - OpenEJovianDSSPlugin.pm:1246-1251 - volume_qemu_snapshot_method
+    - OpenEJovianDSSPlugin.pm:1254-1295 - Password file management functions
+    - OpenEJovianDSSPlugin.pm:1280-1284 - Storage hooks implementation
+expected_results: |
+    API v11/v12 compatibility should provide:
+    1. No "Plugin is implementing an older storage API" warnings in logs
+    2. Secure password storage in /etc/pve/priv/storage/joviandss/ directory
+    3. Proper file permissions (600 for files, 700 for directory)
+    4. Storage.cfg-style key-value format for password files
+    5. Successful VM creation and startup with qemu_blockdev_options
+    6. Password updates work through pvesm set command
+    7. Complete cleanup when storage is removed
+    8. Full integration with Proxmox VE 9.x storage framework
+pitfalls_addressed:
+    - Obsolete config parameter: Removed --config option from commands
+    - Required option error: Changed user_password from 'fixed' to 'optional'
+    - Directory creation failure: Added File::Path::make_path for recursive directory creation
+    - Security concerns: Implemented proper 600/700 file permissions
+    - Format compatibility: Used storage.cfg-style key-value format instead of raw passwords
+    - Parsing limitations: Full-file parsing instead of first-line-only reading
+    - API warnings: Updated from API v11 to v12 with required methods
+    - Missing blockdev support: Added qemu_blockdev_options with host_device driver
+    - Snapshot method: Added volume_qemu_snapshot_method returning 'storage'

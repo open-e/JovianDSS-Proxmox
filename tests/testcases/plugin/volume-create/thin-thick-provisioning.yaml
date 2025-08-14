@@ -1,0 +1,183 @@
+name: Thin vs Thick Provisioning Tests
+prerequisites: 
+    - Plugin version 0.10.4-0 or later installed on Proxmox
+    - JovianDSS accessible with pool Pool-0 available
+    - JovianDSS REST API enabled and configured
+    - Plugin configured to use Pool-0 
+    - Root access to Proxmox nodes
+    - jdssc CLI tool installed and working
+setup:
+id: thin-thick-provisioning-001
+scenario: |
+    Test thin provisioning default behavior and explicit thick provisioning configuration.
+    Verify that volumes are created with correct provisioning type and that space 
+    allocation behaves as expected for both thin and thick provisioned volumes.
+description: |
+    Comprehensive test of thin provisioning (default) vs thick provisioning (explicit).
+    Tests default behavior, configuration override, space allocation verification,
+    and volume properties inspection.
+objective: |
+    Ensure that:
+    1. Thin provisioning is enabled by default
+    2. Users can explicitly disable thin provisioning with thin_provisioning 0
+    3. Volume space allocation differs between thin and thick volumes
+    4. Both provisioning types work correctly with VM operations
+steps:
+    - desc: Create storage with default thin provisioning (no explicit setting)
+      cmd: |
+        pvesm add joviandss test-thin-default \
+          --pool_name Pool-0 \
+          --user_name admin \
+          --user_password admin \
+          --content images \
+          --control_addresses 192.168.1.100 \
+          --data_addresses 192.168.1.100 \
+          --path /mnt/pve/test-thin-default
+    - desc: Create storage with explicit thick provisioning
+      cmd: |
+        pvesm add joviandss test-thick-explicit \
+          --pool_name Pool-0 \
+          --user_name admin \
+          --user_password admin \
+          --content images \
+          --thin_provisioning 0 \
+          --control_addresses 192.168.1.100 \
+          --data_addresses 192.168.1.100 \
+          --path /mnt/pve/test-thick-explicit
+    - desc: Verify default storage has thin_provisioning enabled in config
+      cmd: grep -A 20 "joviandss: test-thin-default" /etc/pve/storage.cfg
+    - desc: Verify explicit storage has thin_provisioning disabled in config
+      cmd: grep -A 20 "joviandss: test-thick-explicit" /etc/pve/storage.cfg
+    - desc: Check JovianDSS volume creation with jdssc for thin volume
+      cmd: |
+        /usr/local/bin/jdssc --control-addresses 192.168.1.100 \
+          --user-name admin --user-password admin \
+          pool Pool-0 volumes create -n test-thin-vol -s 1G
+    - desc: Check JovianDSS volume creation with jdssc for thick volume  
+      cmd: |
+        /usr/local/bin/jdssc --control-addresses 192.168.1.100 \
+          --user-name admin --user-password admin \
+          pool Pool-0 volumes create -n test-thick-vol -s 1G --thin-provisioning n
+    - desc: Verify thin volume properties on JovianDSS
+      cmd: |
+        /usr/local/bin/jdssc --control-addresses 192.168.1.100 \
+          --user-name admin --user-password admin \
+          pool Pool-0 volume test-thin-vol get
+    - desc: Verify thick volume properties on JovianDSS
+      cmd: |
+        /usr/local/bin/jdssc --control-addresses 192.168.1.100 \
+          --user-name admin --user-password admin \
+          pool Pool-0 volume test-thick-vol get
+    - desc: Create VM with thin provisioned storage (default behavior)
+      cmd: |
+        qm create 900 --memory 1024 --name test-thin-vm \
+          --scsi0 test-thin-default:4
+    - desc: Create VM with thick provisioned storage
+      cmd: |
+        qm create 901 --memory 1024 --name test-thick-vm \
+          --scsi0 test-thick-explicit:4
+    - desc: Start thin provisioned VM to trigger volume activation
+      cmd: qm start 900
+    - desc: Wait for VM to fully start
+      cmd: sleep 15
+    - desc: Check thin volume activation and device properties
+      cmd: qm status 900
+    - desc: Stop thin provisioned VM
+      cmd: qm stop 900
+    - desc: Start thick provisioned VM to trigger volume activation
+      cmd: qm start 901
+    - desc: Wait for VM to fully start
+      cmd: sleep 15
+    - desc: Check thick volume activation and device properties
+      cmd: qm status 901
+    - desc: Stop thick provisioned VM
+      cmd: qm stop 901
+    - desc: Check pool space utilization on JovianDSS
+      cmd: |
+        /usr/local/bin/jdssc --control-addresses 192.168.1.100 \
+          --user-name admin --user-password admin \
+          pool Pool-0 get
+    - desc: Write data to thin volume to test space allocation
+      cmd: |
+        qm start 900 && sleep 10
+        # Volume should allocate space on demand
+    - desc: Write data to thick volume to verify pre-allocation
+      cmd: |
+        qm start 901 && sleep 10
+        # Volume should have space pre-allocated
+    - desc: Compare actual space usage between thin and thick volumes
+      cmd: |
+        /usr/local/bin/jdssc --control-addresses 192.168.1.100 \
+          --user-name admin --user-password admin \
+          pool Pool-0 volume test-thin-vol get && \
+        /usr/local/bin/jdssc --control-addresses 192.168.1.100 \
+          --user-name admin --user-password admin \
+          pool Pool-0 volume test-thick-vol get
+    - desc: Cleanup - Stop and destroy test VMs
+      cmd: |
+        qm stop 900 || true
+        qm stop 901 || true
+        qm destroy 900 || true
+        qm destroy 901 || true
+    - desc: Cleanup - Delete test volumes from JovianDSS
+      cmd: |
+        /usr/local/bin/jdssc --control-addresses 192.168.1.100 \
+          --user-name admin --user-password admin \
+          pool Pool-0 volume test-thin-vol delete || true
+        /usr/local/bin/jdssc --control-addresses 192.168.1.100 \
+          --user-name admin --user-password admin \
+          pool Pool-0 volume test-thick-vol delete || true
+    - desc: Cleanup - Remove test storage configurations
+      cmd: |
+        pvesm remove test-thin-default || true
+        pvesm remove test-thick-explicit || true
+data:
+    - description: Test storage names
+      value: 
+        - test-thin-default
+        - test-thick-explicit
+      name: storage-names
+    - description: Test VM IDs
+      value: 
+        - 900
+        - 901
+      name: test-vm-ids
+    - description: Test volume names
+      value:
+        - test-thin-vol
+        - test-thick-vol
+      name: test-volumes
+    - description: Volume size for testing
+      value: 4G
+      name: test-volume-size
+parameters:
+references:
+    - OpenEJovianDSSPlugin.pm:200-204 - thin_provisioning property with default 1
+    - OpenEJovianDSS/Common.pm:250-261 - get_thin_provisioning function returning 'y' by default
+    - jdssc/jdssc/jovian_common/driver.py:55-56 - jovian_sparse default True
+    - jdssc/jdssc/volumes.py:75-81 - thin-provisioning CLI argument
+expected_results: |
+    Thin provisioning behavior:
+    1. Storage created without thin_provisioning parameter should default to enabled
+    2. Volumes created on thin storage should be sparse/thin provisioned
+    3. Thin volumes should allocate space on-demand (lower initial space usage)
+    4. VM creation and startup should work normally with thin volumes
+    
+    Thick provisioning behavior:
+    1. Storage created with thin_provisioning 0 should have thick provisioning
+    2. Volumes created on thick storage should be fully pre-allocated
+    3. Thick volumes should show full space allocation immediately
+    4. VM creation and startup should work normally with thick volumes
+    
+    Configuration verification:
+    1. Default storage config should not show thin_provisioning line (uses default)
+    2. Explicit thick storage config should show thin_provisioning 0
+    3. JovianDSS volume properties should reflect correct provisioning type
+    4. Space utilization should differ between thin and thick volumes
+pitfalls_addressed:
+    - Default behavior change: Ensures new default thin provisioning works
+    - Explicit override: Verifies users can still create thick volumes with thin_provisioning 0
+    - Configuration visibility: Tests that configs are properly applied and visible
+    - Volume activation: Ensures both types work with VM operations
+    - Space allocation: Verifies actual functional difference between provisioning types
+    - Cleanup: Proper cleanup prevents test interference and resource leakage

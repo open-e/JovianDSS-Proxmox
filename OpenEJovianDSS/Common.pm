@@ -252,9 +252,12 @@ sub get_thin_provisioning {
     if ( defined( $scfg->{thin_provisioning} ) ) {
         if ( $scfg->{thin_provisioning} ) {
             return 'y';
+        } else {
+            return 'n';
         }
     }
-    return 'n';
+    # Default to enabled (thin provisioning)
+    return 'y';
 }
 
 sub get_log_file {
