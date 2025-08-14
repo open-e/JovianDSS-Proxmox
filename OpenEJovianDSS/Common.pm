@@ -789,35 +789,70 @@ sub volume_stage_iscsi {
 
     foreach my $host (@$hosts) {
 
+        # Check if session already exists
+        my $session_exists = 0;
         eval {
+            my $cmd = [
+                $ISCSIADM,
+                '--mode', 'session'
+            ];
             run_command(
-                [
-                    $ISCSIADM,
-                    '--mode',       'node',
-                    '-p',            $host,
-                    '--targetname',  $targetname,
-                    '-o', 'new'
-                ],
-                outfunc => sub { }
+                $cmd,
+                outfunc => sub {
+                    my $line = shift;
+                    if ($line =~ /\Q$targetname\E/ && $line =~ /\Q$host\E/) {
+                        $session_exists = 1;
+                    }
+                },
+                errfunc => sub {
+                    cmd_log_output($scfg, 'error', $cmd, shift);
+                }
             );
         };
-        warn $@ if $@;
-        # TODO: we probably do not need automatic login
-        eval {
-            run_command(
-                [
-                    $ISCSIADM,
-                    '--mode',       'node',
-                    '-p',           $host,
-                    '--targetname', $targetname,
-                    '--login'
-                ],
-                outfunc => sub { }
-            );
-        };
-        warn $@ if $@;
+
+        if ($session_exists) {
+            debugmsg($scfg, "debug", "iSCSI session already exists for target ${targetname} on host ${host}");
+        } else {
+            eval {
+                my $cmd = [
+                        $ISCSIADM,
+                        '--mode',       'node',
+                        '-p',            $host,
+                        '--targetname',  $targetname,
+                        '-o', 'new'
+                    ];
+
+                run_command(
+                    $cmd,
+                    outfunc => sub { },
+                    errfunc => sub {
+                        cmd_log_output($scfg, 'warn', $cmd, shift);
+                    }
+                );
+            };
+            # Don't warn on node creation errors - already existing is normal
+
+            # Attempt login
+            eval {
+                my $cmd = [
+                        $ISCSIADM,
+                        '--mode',       'node',
+                        '-p',           $host,
+                        '--targetname', $targetname,
+                        '--login'
+                    ];
+
+                run_command(
+                    $cmd,
+                    outfunc => sub { },
+                    errfunc => sub {
+                        cmd_log_output($scfg, 'warn', $cmd, shift);
+                    }
+                );
+            };
+        } # End of iscsi session creation for given address
         debugmsg( $scfg, "debug", "Staging target ${targetname} of host ${host} done\n" );
-    }
+    } # end of for loop over all addresses
 
     for ( my $i = 1 ; $i <= 5 ; $i++ ) {
         sleep(1);
@@ -1259,7 +1294,7 @@ sub volume_unstage_multipath {
     # before calling volume deactivation. This prevents data corruption.
     my $device_ready = _volume_unstage_multipath_wait_unused($scfg, $clean_scsiid);
     unless ($device_ready) {
-        debugmsg( $scfg, "warning", "Device ${clean_scsiid} may still be in use, proceeding with cleanup" );
+        debugmsg( $scfg, "warn", "Device ${clean_scsiid} may still be in use, proceeding with cleanup" );
     }
 
     # Phase 2: Remove multipath device with retries
@@ -1355,7 +1390,7 @@ sub _volume_unstage_multipath_wait_unused {
                     my $warningmsg = "Multipath device "
                         . "with scsi id ${scsiid}, "
                         . "is used by ${blocker_name} with pid ${pid}";
-                    debugmsg( $scfg, "warning", $warningmsg );
+                    debugmsg( $scfg, "warn", $warningmsg );
                     warn "${warningmsg}\n";
                 }
             } else {
