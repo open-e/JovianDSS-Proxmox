@@ -18,8 +18,6 @@ Version 0.10.5 represents a rewrite of the `joviandss` plugin.
 
 **Upcoming Features:**
 
-- LVM plugin integration
-
 - Additional volume configuration options
 
 - CHAP authentication for iSCSI targets
