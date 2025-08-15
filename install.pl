@@ -61,7 +61,6 @@ my $install_all_nodes = 0;
 my $node_list = "";
 my $ssh_user = "root";
 my $remove_plugin = 0;
-my $interactive = 0;
 my $help = 0;
 
 # Variables for install operations
@@ -80,7 +79,6 @@ GetOptions(
     "user=s"        => \$ssh_user,
     "ssh-flags=s"   => \$SSH_FLAGS,
     "remove"        => \$remove_plugin,
-    "interactive|i" => \$interactive,
     "help|h"        => \$help,
 ) or die "Error parsing options\n";
 
@@ -89,29 +87,6 @@ if ($help) {
     exit 0;
 }
 
-sub check_readline_support {
-    my $has_gnu = 0;
-    my $has_basic = 0;
-
-    eval {
-        require Term::ReadLine::Gnu;
-        $has_gnu = 1;
-    };
-
-    eval {
-        require Term::ReadLine;
-        $has_basic = 1;
-    };
-
-    if (!$has_basic) {
-        warn "Warning: Term::ReadLine not available. Interactive features will be limited.\n";
-        warn "For better experience, install: apt-get install libterm-readline-perl-perl\n";
-    } elsif (!$has_gnu) {
-        warn "Note: For better arrow key support in interactive mode, install: apt-get install libterm-readline-gnu-perl\n";
-    }
-
-    return ($has_gnu, $has_basic);
-}
 
 # Custom readline function with arrow key support
 sub simple_readline {
@@ -318,11 +293,9 @@ General:
   --sudo                     Use sudo for commands (default: run without sudo)
   --no-restart               Do not restart pvedaemon after install/remove
   --dry-run                  Show what would be done without doing it
-  --interactive, -i          Interactively select nodes to install to
   -h, --help                 Show this help
 
 Cluster:
-  --interactive, -i          Interactively select nodes with tab completion
   --all-nodes                Install/remove on all nodes (uses IPs from cluster membership)
   --nodes "n1,n2,..."        Install/remove on specific nodes (use IPs or hostnames)
   --user <name>              SSH user for remote operations (default: root)
@@ -332,8 +305,6 @@ Examples:
   # Install latest stable on this node only
   $prog
 
-  # Interactive node selection with tab completion
-  $prog --interactive
 
   # Install pre-release on all nodes (automatically uses cluster IPs)
   $prog --pre --all-nodes
@@ -346,9 +317,6 @@ Examples:
 
   # Remove plugin from local node only
   $prog --remove
-
-  # Interactive removal from selected nodes
-  $prog --remove --interactive
 
   # Remove plugin from all cluster nodes
   $prog --remove --all-nodes
@@ -496,7 +464,7 @@ if (defined &PVE::INotify::nodename) {
 # Get cluster name
 if (need_cmd("pvecm", 1)) {
     my $status_output = `pvecm status 2>/dev/null`;
-    if ($status_output && $status_output =~ /Cluster name:\s*(\S+)/) {
+    if ($status_output && $status_output =~ /Name:\s*(\S+)/) {
         $cluster_name = $1;
     }
 }
@@ -671,7 +639,7 @@ sub remove_local {
         $local_display_name = "local node";
     }
 
-    say "Removing the plugin from node $local_display_name";
+    say "Removing plugin from node $local_display_name";
     my $sudo = maybe_sudo();
     my @cmd;
     if ($sudo) {
@@ -720,7 +688,7 @@ sub install_local {
         $local_display_name = "local node";
     }
 
-    say "Installing the plugin on node $local_display_name";
+    say "Installing plugin on node $local_display_name";
     my $sudo = maybe_sudo();
     my @cmd;
     if ($sudo) {
@@ -746,7 +714,7 @@ sub install_local {
         }
     }
 
-    say "✓ Installation completed successfully on node $local_display_name ($tag)\n";
+    say "✓ Installation completed successfully on node $local_display_name\n";
 }
 
 # Discover cluster nodes with their IP addresses
@@ -841,123 +809,6 @@ sub discover_remote_nodes {
     return @remote_nodes;
 }
 
-sub interactive_node_selection {
-    my @all_nodes = discover_all_nodes_with_info();
-
-    unless (@all_nodes) {
-        say "No cluster nodes found for interactive selection.";
-        return ();
-    }
-
-    # Separate local and remote nodes for display
-    my @local_nodes;
-    my @remote_nodes;
-
-    for my $node (@all_nodes) {
-        if (is_local_node($node->{name}) || is_local_node($node->{ip})) {
-            push @local_nodes, $node;
-        } else {
-            push @remote_nodes, $node;
-        }
-    }
-
-    say "Available cluster nodes:";
-    say "";
-
-    # Show local node(s)
-    if (@local_nodes) {
-        say "Local node(s):";
-        for my $node (@local_nodes) {
-            my $display = $node->{name} eq $node->{ip} ? $node->{name} : "$node->{name} ($node->{ip})";
-            say "  $display [LOCAL]";
-        }
-        say "";
-    }
-
-    # Show remote nodes
-    if (@remote_nodes) {
-        say "Remote node(s):";
-        for my $node (@remote_nodes) {
-            my $display = $node->{name} eq $node->{ip} ? $node->{name} : "$node->{name} ($node->{ip})";
-            say "  $display";
-        }
-        say "";
-    }
-
-    # Prepare completion options (both hostnames and IPs)
-    my @completion_options;
-    for my $node (@all_nodes) {
-        push @completion_options, $node->{name};
-        push @completion_options, $node->{ip} unless $node->{name} eq $node->{ip};
-    }
-
-    # Set up readline with tab completion if available
-    my $term;
-    if (defined &Term::ReadLine::new) {
-        $term = Term::ReadLine->new('node-selection');
-
-        # Set up completion function
-        if ($term->can('Attribs')) {
-            my $attribs = $term->Attribs;
-            if ($attribs) {
-                my @cached_matches;
-                my $last_text = '';
-                $attribs->{completion_entry_function} = sub {
-                    my ($text, $state) = @_;
-                    if ($state == 0 || $text ne $last_text) {
-                        @cached_matches = grep { index($_, $text) == 0 } @completion_options;
-                        $last_text = $text;
-                    }
-                    return $state < @cached_matches ? $cached_matches[$state] : undef;
-                };
-            }
-        }
-    }
-
-    say "Enter node names or IPs to install to (space or comma separated):";
-    say "Press Enter when done.";
-    print "> ";
-
-    my $input;
-    if ($term) {
-        $input = $term->readline("");
-    } else {
-        $input = <STDIN>;
-        chomp($input) if defined $input;
-    }
-
-    return () unless defined $input && $input =~ /\S/;
-
-
-    # Parse input (space or comma separated)
-    my @selected = split /[\s,]+/, $input;
-    @selected = grep { $_ && $_ !~ /^\s*$/ } @selected;
-
-    # Convert hostnames to IPs and validate
-    my @target_ips;
-    my %node_lookup;
-
-    # Build lookup table
-    for my $node (@all_nodes) {
-        $node_lookup{$node->{name}} = $node->{ip};
-        $node_lookup{$node->{ip}} = $node->{ip};
-    }
-
-    for my $selection (@selected) {
-        if (exists $node_lookup{$selection}) {
-            my $ip = $node_lookup{$selection};
-            unless (is_local_node($selection)) {
-                push @target_ips, $ip unless grep { $_ eq $ip } @target_ips;  # Avoid duplicates
-            } else {
-                say "Skipping local node: $selection";
-            }
-        } else {
-            warn "Warning: Unknown node '$selection' - skipping\n";
-        }
-    }
-
-    return @target_ips;
-}
 
 sub get_node_display_name {
     my $ip = shift;
@@ -974,193 +825,6 @@ sub get_node_display_name {
     return $ip;
 }
 
-sub interactive_full_selection {
-    # Note: TTY handling removed - using custom readline with raw terminal mode instead
-
-    my @all_nodes = discover_all_nodes_with_info();
-
-    unless (@all_nodes) {
-        say "No cluster nodes found for interactive selection.";
-        return ();
-    }
-
-    # Build a lookup for getting node names from IPs
-    my %ip_to_name;
-    for my $node (@all_nodes) {
-        $ip_to_name{$node->{ip}} = $node->{name};
-    }
-
-    say "Available cluster nodes:";
-    say "";
-
-    # Sort nodes alphabetically by name
-    @all_nodes = sort { $a->{name} cmp $b->{name} } @all_nodes;
-
-    # Show all nodes with numbers for easy selection
-    my $i = 1;
-    for my $node (@all_nodes) {
-        my $is_local = is_local_node($node->{name}) || is_local_node($node->{ip});
-        my $display = $node->{name} eq $node->{ip} ? $node->{name} : "$node->{name} ($node->{ip})";
-        my $local_tag = $is_local ? " [LOCAL]" : "";
-        say sprintf("  %2d. %s%s", $i++, $display, $local_tag);
-    }
-    say "";
-
-    # Prepare completion options (both hostnames and IPs)
-    my @completion_options;
-    for my $node (@all_nodes) {
-        push @completion_options, $node->{name};
-        push @completion_options, $node->{ip} unless $node->{name} eq $node->{ip};
-    }
-
-    # Set up readline with tab completion if available
-    my $term;
-    if (defined &Term::ReadLine::new) {
-        $term = Term::ReadLine->new('node-selection');
-
-        # Enable better readline features if available
-        eval {
-            if ($term->can('Attribs')) {
-                my $attribs = $term->Attribs;
-                if ($attribs) {
-                    # Enable history and better editing
-                    $attribs->{completion_append_character} = ' ';
-                    $attribs->{completion_suppress_append} = 0;
-
-                    # Set up tab completion
-                    if (exists $attribs->{completion_entry_function}) {
-                        my @cached_matches;
-                        my $last_text = '';
-                        $attribs->{completion_entry_function} = sub {
-                            my ($text, $state) = @_;
-                            if ($state == 0 || $text ne $last_text) {
-                                @cached_matches = grep { index($_, $text) == 0 } @completion_options;
-                                $last_text = $text;
-                            }
-                            return $state < @cached_matches ? $cached_matches[$state] : undef;
-                        };
-                    }
-                }
-            }
-        };
-
-        # Try to enable GNU readline specific features for better arrow key support
-        eval {
-            if ($term->ReadLine eq 'Term::ReadLine::Gnu') {
-                # Enable vi or emacs editing mode
-                $term->parse_and_bind('set editing-mode emacs');
-                $term->parse_and_bind('set enable-keypad on');
-            }
-        };
-    }
-
-    # Show available options for easy reference
-    say "Available options for quick reference:";
-    my @hostnames = grep { $_ !~ /^\d+\.\d+\.\d+\.\d+$/ } @completion_options;
-    my @ips = grep { /^\d+\.\d+\.\d+\.\d+$/ } @completion_options;
-    say "  Hostnames: " . join(", ", @hostnames) if @hostnames;
-    say "  IPs: " . join(", ", @ips) if @ips;
-    say "";
-
-    # Input loop with validation
-    while (1) {
-        say "Enter node names, IPs, or numbers (space or comma separated):";
-        say "Examples: 'node2 node3', '2 3', or mix: 'node2 172.28.143.16'";
-
-        my $input;
-        if ($term && $term->ReadLine eq 'Term::ReadLine::Gnu') {
-            # Use full readline if GNU version is available
-            $input = $term->readline("> ");
-        } else {
-            # Use our custom readline with arrow key support
-            $input = simple_readline("> ", \@completion_options);
-        }
-
-        # Handle empty input or exit
-        unless (defined $input && $input =~ /\S/) {
-            return ();
-        }
-
-
-        # Parse input (space or comma separated, including numbers)
-        my @selected = split /[\s,]+/, $input;
-        @selected = grep { $_ && $_ !~ /^\s*$/ } @selected;
-
-        # Convert input to IPs and validate
-        my @target_ips;
-        my @invalid_nodes;
-        my %node_lookup;
-
-        # Build lookup table
-        for my $i (0..$#all_nodes) {
-            my $node = $all_nodes[$i];
-            my $num = $i + 1;
-            $node_lookup{$num} = $node->{ip};           # Number -> IP
-            $node_lookup{$node->{name}} = $node->{ip}; # Name -> IP
-            $node_lookup{$node->{ip}} = $node->{ip};   # IP -> IP
-        }
-
-        # Validate all selections first
-        for my $selection (@selected) {
-            if (exists $node_lookup{$selection}) {
-                my $ip = $node_lookup{$selection};
-                push @target_ips, $ip unless grep { $_ eq $ip } @target_ips;  # Avoid duplicates
-            } else {
-                push @invalid_nodes, $selection;
-            }
-        }
-
-        # If there are invalid nodes, show error and ask again
-        if (@invalid_nodes) {
-            say "";
-            say "⚠ Error: The following nodes are not recognized:";
-            for my $invalid (@invalid_nodes) {
-                say "  '$invalid'";
-            }
-            say "";
-            say "Valid options are:";
-            say "  Numbers: 1-" . scalar(@all_nodes);
-            say "  Hostnames: " . join(", ", map { $_->{name} } @all_nodes);
-            say "  IPs: " . join(", ", map { $_->{ip} } @all_nodes);
-            say "";
-            say "Please try again.";
-            say "";
-            next;  # Ask for input again
-        }
-
-        # All selections are valid - show confirmation
-        if (@target_ips) {
-            say "";
-            my $operation = $remove_plugin ? "removed from" : "installed on";
-            say "Plugin will be $operation the following nodes:";
-
-            for my $ip (@target_ips) {
-                my $display_name = get_node_display_name($ip);
-                say "  $display_name";
-            }
-
-            say "";
-            my $confirm;
-            if ($term && $term->ReadLine eq 'Term::ReadLine::Gnu') {
-                # Use full readline if GNU version is available
-                $confirm = $term->readline("Continue? (y/n): ");
-            } else {
-                # Use our custom readline with arrow key support
-                $confirm = simple_readline("Continue? (y/n): ");
-            }
-
-            if ($confirm && $confirm =~ /^y$/i) {
-                return @target_ips;
-            } else {
-                say "Operation cancelled.";
-                return ();  # Exit instead of asking again
-            }
-        }
-
-        # Empty selection
-        return @target_ips;
-    }
-}
 
 sub parse_node_list {
     my $raw = shift;
@@ -1175,7 +839,7 @@ sub remove_remote_node {
     my $r_sudo = remote_sudo_prefix();
 
     my $display_name = get_node_display_name($node);
-    say "Removing the plugin from node $display_name";
+    say "Removing plugin from node $display_name";
 
     # Remove package
     unless (run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}DEBIAN_FRONTEND=noninteractive apt-get -y -q remove open-e-joviandss-proxmox-plugin", { outfunc => sub { } })) {
@@ -1202,7 +866,7 @@ sub install_remote_node {
     my $r_sudo = remote_sudo_prefix();
 
     my $display_name = get_node_display_name($node);
-    say "Installing the plugin on node $display_name";
+    say "Installing plugin on node $display_name";
 
     # Copy package
     unless (run_cmd("scp", split(/\s+/, $SSH_FLAGS), $deb_path, "$ssh_tgt:$REMOTE_TMP", { outfunc => sub { } })) {
@@ -1263,52 +927,56 @@ sub perform_remote_operations {
     } else {
         say "\n✓ Remote $operation completed: $success_count successful";
     }
+
+    return $success_count;
 }
 
-my @all_targets;  # All nodes to process (may include local)
-
-# Handle node selection based on mode
-if ($interactive) {
-    say "Interactive node selection mode";
-    say "";
-
-    # Check and inform about readline support
-    my ($has_gnu, $has_basic) = check_readline_support();
-    if ($has_gnu) {
-        say "✓ Full readline support available (arrow keys, history)";
-    } elsif ($has_basic) {
-        say "✓ Basic readline support available";
-    }
-    say "";
-
-    my @selected = interactive_full_selection();
-    if (@selected) {
-        @all_targets = @selected;
-        # Node selection and confirmation already shown in interactive_full_selection
-        say "";
-    } else {
-        say "No nodes selected - exiting.";
-        exit 0;
-    }
-} else {
-    # Non-interactive mode: always process local node first
-    if ($remove_plugin) {
-        remove_local();
-    } else {
-        install_local();
-    }
-}
 
 my @remote_targets;
+my $process_local = 1;  # Always process local node unless using --nodes without local
+my $total_successful = 0;  # Track total successful operations
 
-# Continue with existing logic for non-interactive modes
-unless ($interactive) {
-    if ($install_all_nodes) {
-    say "Identifying other nodes belonging to cluster $cluster_name";
+# Determine what operations will be performed
+if ($install_all_nodes) {
+    say "Identifying nodes belonging to cluster $cluster_name";
     my @nodes = discover_remote_nodes();
     if (@nodes) {
         push @remote_targets, @nodes;
-        say "Identified nodes: " . join(", ", @nodes);
+
+        # Show confirmation for ALL operations (local + remote)
+        my $operation = $remove_plugin ? "removed from" : "installed on";
+        if ($remove_plugin) {
+            say "Plugin will be $operation the following nodes:";
+        } else {
+            say "Plugin $tag will be $operation the following nodes:";
+        }
+
+        # Get local node display name with IP
+        my $local_display = get_node_display_name($local_node_short || "local node");
+        # If local display doesn't include IP, try to add one
+        if ($local_display eq ($local_node_short || "local node") && @local_ips) {
+            my $local_ip = "";
+            for my $ip (@local_ips) {
+                next if $ip eq '127.0.0.1' || $ip eq 'localhost';
+                $local_ip = $ip;
+                last;
+            }
+            if ($local_ip) {
+                $local_display = "$local_node_short ($local_ip)";
+            }
+        }
+        say "  $local_display [LOCAL]";
+        for my $node (@nodes) {
+            my $display_name = get_node_display_name($node);
+            say "  $display_name";
+        }
+        say "";
+
+        my $confirm = simple_readline("Continue? (y/n): ");
+        unless ($confirm && $confirm =~ /^y$/i) {
+            say "Operation cancelled.";
+            exit 0;
+        }
         say "";
     } else {
         say "No remote nodes found - single node cluster or all nodes are local";
@@ -1328,39 +996,29 @@ unless ($interactive) {
         say "";
     }
 }
+
+# Now perform the operations after confirmation
+if ($process_local) {
+    if ($remove_plugin) {
+        remove_local();
+        $total_successful++;
+    } else {
+        install_local();
+        $total_successful++;
+    }
 }
 
-# Handle operations based on mode
-if ($interactive && @all_targets) {
-    # Interactive mode: process all selected nodes (including local if selected)
-    my @local_targets = grep { is_local_node($_) } @all_targets;
-    my @remote_targets_interactive = grep { !is_local_node($_) } @all_targets;
-
-    # Process local node if selected
-    if (@local_targets) {
-        if ($remove_plugin) {
-            remove_local();
-        } else {
-            install_local();
-        }
-    }
-
-    # Process remote nodes if any
-    if (@remote_targets_interactive) {
-        my %seen;
-        @remote_targets_interactive = grep { !$seen{$_}++ } @remote_targets_interactive;
-        perform_remote_operations(@remote_targets_interactive);
-    }
-} elsif (@remote_targets) {
-    # Non-interactive mode: process remote targets
+# Handle remote operations
+if (@remote_targets) {
     my %seen;
     @remote_targets = grep { !$seen{$_}++ } @remote_targets;
-    perform_remote_operations(@remote_targets);
+    my $remote_successful = perform_remote_operations(@remote_targets);
+    $total_successful += $remote_successful;
 }
 
 if ($remove_plugin) {
-    say "\n✓ All operations complete: Plugin removed";
+    say "\n✓ All operations complete: Plugin removed from $total_successful node(s)";
 } else {
-    say "\n✓ All operations complete: Plugin $tag installed";
+    say "\n✓ All operations complete: Plugin installed on $total_successful node(s)";
     print "\nCheck introduction to configuration guide at https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start#configuration\n";
 }
