@@ -12,9 +12,18 @@ use LWP::UserAgent;
 # Try to load Term::ReadLine for interactive input with tab completion
 BEGIN {
     eval {
+        # Try Term::ReadLine::Gnu first for better arrow key support
+        require Term::ReadLine::Gnu;
         require Term::ReadLine;
         Term::ReadLine->import();
     };
+    if ($@) {
+        # Fallback to basic Term::ReadLine
+        eval {
+            require Term::ReadLine;
+            Term::ReadLine->import();
+        };
+    }
 }
 
 # Try to use PVE modules if available
@@ -78,6 +87,221 @@ GetOptions(
 if ($help) {
     print_usage();
     exit 0;
+}
+
+sub check_readline_support {
+    my $has_gnu = 0;
+    my $has_basic = 0;
+    
+    eval {
+        require Term::ReadLine::Gnu;
+        $has_gnu = 1;
+    };
+    
+    eval {
+        require Term::ReadLine;
+        $has_basic = 1;
+    };
+    
+    if (!$has_basic) {
+        warn "Warning: Term::ReadLine not available. Interactive features will be limited.\n";
+        warn "For better experience, install: apt-get install libterm-readline-perl-perl\n";
+    } elsif (!$has_gnu) {
+        warn "Note: For better arrow key support in interactive mode, install: apt-get install libterm-readline-gnu-perl\n";
+    }
+    
+    return ($has_gnu, $has_basic);
+}
+
+# Custom readline function with arrow key support
+sub simple_readline {
+    my ($prompt, $completion_options) = @_;
+    
+    # For piped input, open TTY directly
+    if (!-t STDIN) {
+        # Try to open /dev/tty for direct terminal access
+        if (open(my $tty_in, '<', '/dev/tty') && open(my $tty_out, '>', '/dev/tty')) {
+            print $tty_out $prompt;
+            $tty_out->flush();
+            
+            # Set raw mode on TTY
+            system('stty -F /dev/tty raw -echo 2>/dev/null');
+            
+            my $input = "";
+            my $cursor_pos = 0;
+            
+            while (1) {
+                my $key;
+                my $bytes_read = sysread($tty_in, $key, 1);
+                next unless $bytes_read && defined $key;
+                my $ord = ord($key);
+                
+                if ($ord == 27) {  # ESC sequence
+                    my $seq1, my $seq2;
+                    sysread($tty_in, $seq1, 1);
+                    sysread($tty_in, $seq2, 1);
+                    next unless defined $seq1 && defined $seq2;
+                    
+                    if ($seq1 eq '[') {
+                        if ($seq2 eq 'D' && $cursor_pos > 0) {      # Left arrow
+                            $cursor_pos--;
+                            print $tty_out "\b";
+                            $tty_out->flush();
+                        } elsif ($seq2 eq 'C' && $cursor_pos < length($input)) { # Right arrow
+                            print $tty_out substr($input, $cursor_pos, 1);
+                            $cursor_pos++;
+                            $tty_out->flush();
+                        }
+                    }
+                } elsif ($ord == 127 || $ord == 8) {  # Backspace
+                    if ($cursor_pos > 0) {
+                        substr($input, $cursor_pos-1, 1) = '';
+                        $cursor_pos--;
+                        print $tty_out "\r" . $prompt . $input . " \r" . $prompt . substr($input, 0, $cursor_pos);
+                        $tty_out->flush();
+                    }
+                } elsif ($ord == 13 || $ord == 10) {  # Enter
+                    print $tty_out "\n";
+                    $tty_out->flush();
+                    last;
+                } elsif ($ord >= 32 && $ord <= 126) {  # Printable characters
+                    substr($input, $cursor_pos, 0) = $key;
+                    $cursor_pos++;
+                    print $tty_out substr($input, $cursor_pos-1);
+                    if ($cursor_pos < length($input)) {
+                        my $remaining = length($input) - $cursor_pos;
+                        print $tty_out "\b" x $remaining;
+                    }
+                    $tty_out->flush();
+                }
+            }
+            
+            # Restore TTY mode
+            system('stty -F /dev/tty cooked echo 2>/dev/null');
+            close($tty_in);
+            close($tty_out);
+            return $input;
+        } else {
+            # Fallback to simple input if TTY not available
+            print $prompt;
+            STDOUT->flush();
+            my $input = <STDIN>;
+            chomp($input) if defined $input;
+            return $input;
+        }
+    }
+    
+    # For normal terminal input, use POSIX approach
+    print $prompt;
+    STDOUT->flush();
+    
+    # Try to set terminal to raw mode for better key handling
+    my $old_termios;
+    my $raw_mode_enabled = 0;
+    
+    eval {
+        require POSIX;
+        my $termios = POSIX::Termios->new();
+        $termios->getattr(0);
+        $old_termios = $termios->getlflag();
+        
+        # Disable canonical mode and echo for raw input
+        $termios->setlflag($old_termios & ~(POSIX::ECHO | POSIX::ICANON));
+        $termios->setcc(POSIX::VMIN, 1);
+        $termios->setcc(POSIX::VTIME, 0);
+        $termios->setattr(0, POSIX::TCSANOW);
+        $raw_mode_enabled = 1;
+    };
+    
+    my $input = "";
+    my $cursor_pos = 0;
+    my @history = ();
+    my $history_pos = -1;
+    
+    if ($raw_mode_enabled) {
+        # Raw mode - handle each key individually
+        while (1) {
+            my $key;
+            sysread(STDIN, $key, 1);
+            my $ord = ord($key);
+            
+            if ($ord == 27) {  # ESC sequence (arrow keys)
+                my $seq1, my $seq2;
+                sysread(STDIN, $seq1, 1);
+                sysread(STDIN, $seq2, 1);
+                
+                if ($seq1 eq '[') {
+                    if ($seq2 eq 'D') {      # Left arrow
+                        if ($cursor_pos > 0) {
+                            $cursor_pos--;
+                            print "\b";  # Move cursor left
+                            STDOUT->flush();
+                        }
+                    } elsif ($seq2 eq 'C') { # Right arrow
+                        if ($cursor_pos < length($input)) {
+                            print substr($input, $cursor_pos, 1);
+                            $cursor_pos++;
+                            STDOUT->flush();
+                        }
+                    }
+                }
+            } elsif ($ord == 127 || $ord == 8) {  # Backspace/Delete
+                if ($cursor_pos > 0) {
+                    substr($input, $cursor_pos-1, 1) = '';
+                    $cursor_pos--;
+                    # Redraw line
+                    print "\r" . $prompt . $input . " \r" . $prompt . substr($input, 0, $cursor_pos);
+                    STDOUT->flush();
+                }
+            } elsif ($ord == 13 || $ord == 10) {  # Enter
+                print "\n";
+                last;
+            } elsif ($ord == 9) {   # Tab (completion)
+                if ($completion_options && @$completion_options) {
+                    my $partial = substr($input, 0, $cursor_pos);
+                    my @matches = grep { index($_, $partial) == 0 } @$completion_options;
+                    if (@matches == 1) {
+                        # Complete the word
+                        my $completion = $matches[0];
+                        substr($input, 0, $cursor_pos) = $completion;
+                        $cursor_pos = length($completion);
+                        # Redraw line
+                        print "\r" . $prompt . $input;
+                        STDOUT->flush();
+                    } elsif (@matches > 1) {
+                        print "\n";
+                        print "  " . join("  ", @matches) . "\n";
+                        print $prompt . $input;
+                        STDOUT->flush();
+                    }
+                }
+            } elsif ($ord >= 32 && $ord <= 126) {  # Printable characters
+                substr($input, $cursor_pos, 0) = $key;
+                $cursor_pos++;
+                # Redraw from cursor position
+                print substr($input, $cursor_pos-1);
+                if ($cursor_pos < length($input)) {
+                    my $remaining = length($input) - $cursor_pos;
+                    print "\b" x $remaining;
+                }
+                STDOUT->flush();
+            }
+        }
+        
+        # Restore terminal mode
+        eval {
+            my $termios = POSIX::Termios->new();
+            $termios->getattr(0);
+            $termios->setlflag($old_termios);
+            $termios->setattr(0, POSIX::TCSANOW);
+        };
+    } else {
+        # Fallback to simple line input
+        $input = <STDIN>;
+        chomp($input) if defined $input;
+    }
+    
+    return $input;
 }
 
 sub print_usage {
@@ -428,7 +652,26 @@ if (!$remove_plugin) {
 
 # Remove plugin locally
 sub remove_local {
-    say "Removing the plugin from the local node";
+    # Get local node display name similar to remote nodes
+    my $local_display_name;
+    if ($local_node_short) {
+        # Try to get first non-loopback IP for display
+        my $display_ip = "";
+        for my $ip (@local_ips) {
+            next if $ip eq '127.0.0.1' || $ip eq 'localhost';
+            $display_ip = $ip;
+            last;
+        }
+        if ($display_ip && $display_ip ne $local_node_short) {
+            $local_display_name = "$local_node_short ($display_ip)";
+        } else {
+            $local_display_name = $local_node_short;
+        }
+    } else {
+        $local_display_name = "local node";
+    }
+    
+    say "Removing the plugin from node $local_display_name";
     my $sudo = maybe_sudo();
     my @cmd;
     if ($sudo) {
@@ -453,12 +696,31 @@ sub remove_local {
         }
     }
 
-    say "✓ Local removal completed successfully\n";
+    say "✓ Removal completed successfully on node $local_display_name\n";
 }
 
 # Install locally
 sub install_local {
-    say "Installing the plugin on the local node";
+    # Get local node display name similar to remote nodes
+    my $local_display_name;
+    if ($local_node_short) {
+        # Try to get first non-loopback IP for display
+        my $display_ip = "";
+        for my $ip (@local_ips) {
+            next if $ip eq '127.0.0.1' || $ip eq 'localhost';
+            $display_ip = $ip;
+            last;
+        }
+        if ($display_ip && $display_ip ne $local_node_short) {
+            $local_display_name = "$local_node_short ($display_ip)";
+        } else {
+            $local_display_name = $local_node_short;
+        }
+    } else {
+        $local_display_name = "local node";
+    }
+    
+    say "Installing the plugin on node $local_display_name";
     my $sudo = maybe_sudo();
     my @cmd;
     if ($sudo) {
@@ -484,7 +746,7 @@ sub install_local {
         }
     }
 
-    say "✓ Local installation completed successfully ($tag)\n";
+    say "✓ Installation completed successfully on node $local_display_name ($tag)\n";
 }
 
 # Discover cluster nodes with their IP addresses
@@ -717,30 +979,7 @@ sub get_node_display_name {
 }
 
 sub interactive_full_selection {
-    # If STDIN isn't a terminal (e.g., we're being piped), try to use /dev/tty
-    if ( ! -t *STDIN ) {
-        my $tty = "/dev/tty";
-        if ( -r $tty ) {
-            open my $tty_in, "<", $tty
-              or die "Cannot open $tty for reading: $!";
-            # Repoint STDIN to the TTY so interactive prompts work
-            open *STDIN, "<&", $tty_in
-              or die "Cannot dup STDIN to $tty: $!";
-            # Optional: also redirect STDOUT to TTY for proper prompt display
-            open my $tty_out, ">", $tty;  # ignore failure; STDOUT usually fine
-            if (defined $tty_out) {
-                open *STDOUT, ">&", $tty_out or warn "Cannot dup STDOUT to $tty: $!";
-                open *STDERR, ">&", $tty_out or warn "Cannot dup STDERR to $tty: $!";
-            }
-        } else {
-            die <<"MSG";
-This script requires interactive input but STDIN is not a TTY.
-Run it like:
-  curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --interactive </dev/tty
-or download it first and run: perl install.pl --interactive
-MSG
-        }
-    }
+    # Note: TTY handling removed - using custom readline with raw terminal mode instead
 
     my @all_nodes = discover_all_nodes_with_info();
 
@@ -782,23 +1021,39 @@ MSG
     my $term;
     if (defined &Term::ReadLine::new) {
         $term = Term::ReadLine->new('node-selection');
-
-        # Try different completion methods for better compatibility
+        
+        # Enable better readline features if available
         eval {
             if ($term->can('Attribs')) {
                 my $attribs = $term->Attribs;
-                if ($attribs && exists $attribs->{completion_entry_function}) {
-                    my @cached_matches;
-                    my $last_text = '';
-                    $attribs->{completion_entry_function} = sub {
-                        my ($text, $state) = @_;
-                        if ($state == 0 || $text ne $last_text) {
-                            @cached_matches = grep { index($_, $text) == 0 } @completion_options;
-                            $last_text = $text;
-                        }
-                        return $state < @cached_matches ? $cached_matches[$state] : undef;
-                    };
+                if ($attribs) {
+                    # Enable history and better editing
+                    $attribs->{completion_append_character} = ' ';
+                    $attribs->{completion_suppress_append} = 0;
+                    
+                    # Set up tab completion
+                    if (exists $attribs->{completion_entry_function}) {
+                        my @cached_matches;
+                        my $last_text = '';
+                        $attribs->{completion_entry_function} = sub {
+                            my ($text, $state) = @_;
+                            if ($state == 0 || $text ne $last_text) {
+                                @cached_matches = grep { index($_, $text) == 0 } @completion_options;
+                                $last_text = $text;
+                            }
+                            return $state < @cached_matches ? $cached_matches[$state] : undef;
+                        };
+                    }
                 }
+            }
+        };
+        
+        # Try to enable GNU readline specific features for better arrow key support
+        eval {
+            if ($term->ReadLine eq 'Term::ReadLine::Gnu') {
+                # Enable vi or emacs editing mode
+                $term->parse_and_bind('set editing-mode emacs');
+                $term->parse_and_bind('set enable-keypad on');
             }
         };
     }
@@ -815,12 +1070,15 @@ MSG
     while (1) {
         say "Enter node names, IPs, or numbers (space or comma separated):";
         say "Examples: 'node2 node3', '2 3', or mix: 'node2 172.28.143.16'";
-        print "> ";
-        # Flush output before reading input
-        STDOUT->flush();
-
-        my $input = <STDIN>;
-        chomp($input) if defined $input;
+        
+        my $input;
+        if ($term && $term->ReadLine eq 'Term::ReadLine::Gnu') {
+            # Use full readline if GNU version is available
+            $input = $term->readline("> ");
+        } else {
+            # Use our custom readline with arrow key support
+            $input = simple_readline("> ", \@completion_options);
+        }
 
         # Handle empty input or exit
         unless (defined $input && $input =~ /\S/) {
@@ -891,11 +1149,14 @@ MSG
             }
 
             say "";
-            print "Continue? (y/n): ";
-            # Flush output before reading input
-            STDOUT->flush();
-            my $confirm = <STDIN>;
-            chomp($confirm) if defined $confirm;
+            my $confirm;
+            if ($term && $term->ReadLine eq 'Term::ReadLine::Gnu') {
+                # Use full readline if GNU version is available
+                $confirm = $term->readline("Continue? (y/n): ");
+            } else {
+                # Use our custom readline with arrow key support
+                $confirm = simple_readline("Continue? (y/n): ");
+            }
 
             if ($confirm && $confirm =~ /^y$/i) {
                 return @target_ips;
@@ -1019,6 +1280,16 @@ my @all_targets;  # All nodes to process (may include local)
 if ($interactive) {
     say "Interactive node selection mode";
     say "";
+    
+    # Check and inform about readline support
+    my ($has_gnu, $has_basic) = check_readline_support();
+    if ($has_gnu) {
+        say "✓ Full readline support available (arrow keys, history, tab completion)";
+    } elsif ($has_basic) {
+        say "✓ Basic readline support available (tab completion)";
+    }
+    say "";
+    
     my @selected = interactive_full_selection();
     if (@selected) {
         @all_targets = @selected;
