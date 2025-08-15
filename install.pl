@@ -9,6 +9,14 @@ use File::Basename;
 use JSON;
 use LWP::UserAgent;
 
+# Try to load Term::ReadLine for interactive input with tab completion
+BEGIN {
+    eval {
+        require Term::ReadLine;
+        Term::ReadLine->import();
+    };
+}
+
 # Try to use PVE modules if available
 BEGIN {
     eval {
@@ -44,6 +52,7 @@ my $install_all_nodes = 0;
 my $node_list = "";
 my $ssh_user = "root";
 my $remove_plugin = 0;
+my $interactive = 0;
 my $help = 0;
 
 # Variables for install operations
@@ -62,6 +71,7 @@ GetOptions(
     "user=s"        => \$ssh_user,
     "ssh-flags=s"   => \$SSH_FLAGS,
     "remove"        => \$remove_plugin,
+    "interactive|i" => \$interactive,
     "help|h"        => \$help,
 ) or die "Error parsing options\n";
 
@@ -84,9 +94,11 @@ General:
   --sudo                     Use sudo for commands (default: run without sudo)
   --no-restart               Do not restart pvedaemon after install/remove
   --dry-run                  Show what would be done without doing it
+  --interactive, -i          Interactively select nodes to install to
   -h, --help                 Show this help
 
 Cluster:
+  --interactive, -i          Interactively select nodes with tab completion
   --all-nodes                Install/remove on all nodes (uses IPs from cluster membership)
   --nodes "n1,n2,..."        Install/remove on specific nodes (use IPs or hostnames)
   --user <name>              SSH user for remote operations (default: root)
@@ -96,10 +108,13 @@ Examples:
   # Install latest stable on this node only
   $prog
 
+  # Interactive node selection with tab completion
+  $prog --interactive
+
   # Install pre-release on all nodes (automatically uses cluster IPs)
   $prog --pre --all-nodes
 
-  # Install specific tag on two nodes using IP addresses (recommended)
+  # Install specific tag on two nodes using IP addresses
   $prog --version v0.9.9-3 --nodes "192.168.1.10,192.168.1.11"
 
   # Install using sudo (when not running as root)
@@ -108,11 +123,11 @@ Examples:
   # Remove plugin from local node only
   $prog --remove
 
+  # Interactive removal from selected nodes
+  $prog --remove --interactive
+
   # Remove plugin from all cluster nodes
   $prog --remove --all-nodes
-
-  # Remove plugin from specific nodes using sudo
-  $prog --remove --nodes "192.168.1.10,192.168.1.11" --sudo
 
 Note: For --nodes option, use IP addresses unless you have proper DNS records
 or /etc/hosts entries configured for the node hostnames.
@@ -130,7 +145,7 @@ sub run_cmd {
     my $output_ref;
     my $outfunc;
     my $errfunc;
-    
+
     # Check if last argument is a reference for output capture (backward compatibility)
     if (ref($args[-1]) eq 'SCALAR') {
         $output_ref = pop @args;
@@ -142,24 +157,29 @@ sub run_cmd {
         $outfunc = $opts->{outfunc};
         $errfunc = $opts->{errfunc};
     }
-    
+
     my @cmd = @args;
-    
+
     if ($dry_run) {
         print "[dry-run] " . join(" ", @cmd) . "\n";
         if ($capture_output) {
-            $$output_ref = "[dry-run output]";
+            # For sha256sum in dry-run, provide a fake hash
+            if ($cmd[0] eq 'sha256sum') {
+                $$output_ref = "09a5d9de16e9356342613dfd588fb3f30db181ee01dac845fbd4f65764b4c210  $cmd[1]\n";
+            } else {
+                $$output_ref = "[dry-run output]";
+            }
         }
         return 1;
     }
-    
+
     # Use PVE::Tools::run_command if available (only for non-output commands)
     if (defined &PVE::Tools::run_command && !$capture_output) {
         eval {
             # Set DEBIAN_FRONTEND for apt operations
             local $ENV{DEBIAN_FRONTEND} = 'noninteractive';
             if (defined $outfunc || defined $errfunc) {
-                PVE::Tools::run_command(\@cmd, 
+                PVE::Tools::run_command(\@cmd,
                     outfunc => $outfunc || sub { },
                     errfunc => $errfunc || sub { }
                 );
@@ -289,7 +309,7 @@ if (!$remove_plugin) {
     }
 
     my $response = $ua->get($url);
-    die "Error: Could not fetch release metadata from GitHub: " . $response->status_line . "\n" 
+    die "Error: Could not fetch release metadata from GitHub: " . $response->status_line . "\n"
         unless $response->is_success;
 
     my $rel_json;
@@ -332,12 +352,12 @@ if (!$remove_plugin) {
         my $url = $asset->{browser_download_url};
         if ($url =~ /\.deb$/) {
             $deb_url = $url;
-            
+
             # Check for sha256 field
             if ($asset->{sha256}) {
                 $expected_sha256 = $asset->{sha256};
             }
-            
+
             # Check for digest field (format: "sha256:hash")
             if ($asset->{digest} && $asset->{digest} =~ /^sha256:([a-f0-9]{64})$/) {
                 $expected_sha256 = $1;
@@ -367,9 +387,9 @@ if (!$remove_plugin) {
             run_cmd("sha256sum", $deb_path, \$file_sum);
             $file_sum =~ /^([a-f0-9]{64})/;
             $file_sum = $1;
-            
+
             my $ref_sum;
-            
+
             if ($expected_sha256) {
                 # Use SHA256 from GitHub API response
                 $ref_sum = $expected_sha256;
@@ -377,14 +397,14 @@ if (!$remove_plugin) {
                 # Fallback: download and parse separate checksum file
                 my $checksum_file = "$tmpdir/checksums.txt";
                 my $sha_response = $ua->get($sha_url, ':content_file' => $checksum_file);
-                
+
                 if ($sha_response->is_success) {
                     my $deb_basename = basename($deb_url);
                     run_cmd("sh", "-c", "grep -E '$deb_basename' '$checksum_file' 2>/dev/null | grep -Eo '^[a-f0-9]{64}' | head -n1", \$ref_sum);
                     chomp $ref_sum if $ref_sum;
                 }
             }
-            
+
             if ($ref_sum) {
                 if ($file_sum ne $ref_sum) {
                     say "✗ Checksum verification failed!";
@@ -470,21 +490,20 @@ sub install_local {
 # Discover cluster nodes with their IP addresses
 sub is_local_node {
     my $node = shift;
-    
+
     # Check if it's the local hostname
     return 1 if ($local_node_short && $node eq $local_node_short);
-    
+
     # Check against local IP addresses
     return 1 if (grep { $_ eq $node } @local_ips);
-    
+
     return 0;
 }
 
-sub discover_remote_nodes {
-    my @all_nodes;
-    my @remote_nodes;
+sub discover_all_nodes_with_info {
+    my @node_info;  # Array of {name => 'hostname', ip => 'ip'} hashes
 
-    # Try .members file first to get IP addresses
+    # Try .members file first to get both hostname and IP
     if (-r "/etc/pve/.members") {
         open my $fh, '<', "/etc/pve/.members" or return ();
         my $content = do { local $/; <$fh> };
@@ -498,51 +517,369 @@ sub discover_remote_nodes {
                 $data = decode_json($content);
             }
             if ($data->{nodelist}) {
-                # Return IP addresses instead of node names for better connectivity
                 for my $node_name (keys %{$data->{nodelist}}) {
-                    my $node_info = $data->{nodelist}->{$node_name};
-                    if ($node_info->{ip}) {
-                        push @all_nodes, $node_info->{ip};
-                    } else {
-                        # Fallback to node name if no IP
-                        push @all_nodes, $node_name;
+                    my $node_data = $data->{nodelist}->{$node_name};
+                    push @node_info, {
+                        name => $node_name,
+                        ip => $node_data->{ip} || $node_name
+                    };
+                }
+            }
+        };
+        return @node_info if @node_info;
+    }
+
+    # Use PVE::Cluster if available (fallback)
+    if (defined &PVE::Cluster::get_members) {
+        eval {
+            my $members = PVE::Cluster::get_members();
+            if ($members && ref($members) eq 'HASH') {
+                for my $node_name (keys %$members) {
+                    push @node_info, {
+                        name => $node_name,
+                        ip => $node_name  # No separate IP available
+                    };
+                }
+            }
+        };
+        return @node_info if @node_info;
+    }
+
+    # Fallback to pvecm
+    if (need_cmd("pvecm", 1)) {
+        my $output = `pvecm nodes 2>/dev/null`;
+        for my $line (split /\n/, $output) {
+            if ($line =~ /^\s*\d+\s+\d+\s+(\S+)/) {
+                my $name = $1;
+                $name =~ s/\s*\(local\)\s*$//;
+                $name =~ s/^\s+|\s+$//g;
+                if ($name) {
+                    push @node_info, {
+                        name => $name,
+                        ip => $name
+                    };
+                }
+            }
+        }
+    }
+
+    return @node_info;
+}
+
+sub discover_remote_nodes {
+    my @all_node_info = discover_all_nodes_with_info();
+    my @remote_nodes;
+
+    for my $node (@all_node_info) {
+        unless (is_local_node($node->{name}) || is_local_node($node->{ip})) {
+            push @remote_nodes, $node->{ip};  # Return IP for compatibility
+        }
+    }
+
+    return @remote_nodes;
+}
+
+sub interactive_node_selection {
+    my @all_nodes = discover_all_nodes_with_info();
+
+    unless (@all_nodes) {
+        say "No cluster nodes found for interactive selection.";
+        return ();
+    }
+
+    # Separate local and remote nodes for display
+    my @local_nodes;
+    my @remote_nodes;
+
+    for my $node (@all_nodes) {
+        if (is_local_node($node->{name}) || is_local_node($node->{ip})) {
+            push @local_nodes, $node;
+        } else {
+            push @remote_nodes, $node;
+        }
+    }
+
+    say "Available cluster nodes:";
+    say "";
+
+    # Show local node(s)
+    if (@local_nodes) {
+        say "Local node(s):";
+        for my $node (@local_nodes) {
+            my $display = $node->{name} eq $node->{ip} ? $node->{name} : "$node->{name} ($node->{ip})";
+            say "  $display [LOCAL]";
+        }
+        say "";
+    }
+
+    # Show remote nodes
+    if (@remote_nodes) {
+        say "Remote node(s):";
+        for my $node (@remote_nodes) {
+            my $display = $node->{name} eq $node->{ip} ? $node->{name} : "$node->{name} ($node->{ip})";
+            say "  $display";
+        }
+        say "";
+    }
+
+    # Prepare completion options (both hostnames and IPs)
+    my @completion_options;
+    for my $node (@all_nodes) {
+        push @completion_options, $node->{name};
+        push @completion_options, $node->{ip} unless $node->{name} eq $node->{ip};
+    }
+
+    # Set up readline with tab completion if available
+    my $term;
+    if (defined &Term::ReadLine::new) {
+        $term = Term::ReadLine->new('node-selection');
+
+        # Set up completion function
+        if ($term->can('Attribs')) {
+            my $attribs = $term->Attribs;
+            if ($attribs) {
+                my @cached_matches;
+                my $last_text = '';
+                $attribs->{completion_entry_function} = sub {
+                    my ($text, $state) = @_;
+                    if ($state == 0 || $text ne $last_text) {
+                        @cached_matches = grep { index($_, $text) == 0 } @completion_options;
+                        $last_text = $text;
                     }
+                    return $state < @cached_matches ? $cached_matches[$state] : undef;
+                };
+            }
+        }
+    }
+
+    say "Enter node names or IPs to install to (space or comma separated):";
+    say "You can use tab completion. Press Enter when done, or 'all' for all remote nodes.";
+    print "> ";
+
+    my $input;
+    if ($term) {
+        $input = $term->readline("");
+    } else {
+        $input = <STDIN>;
+        chomp($input) if defined $input;
+    }
+
+    return () unless defined $input && $input =~ /\S/;
+
+    # Handle 'all' keyword
+    if ($input =~ /^\s*all\s*$/i) {
+        return map { $_->{ip} } @remote_nodes;
+    }
+
+    # Parse input (space or comma separated)
+    my @selected = split /[\s,]+/, $input;
+    @selected = grep { $_ && $_ !~ /^\s*$/ } @selected;
+
+    # Convert hostnames to IPs and validate
+    my @target_ips;
+    my %node_lookup;
+
+    # Build lookup table
+    for my $node (@all_nodes) {
+        $node_lookup{$node->{name}} = $node->{ip};
+        $node_lookup{$node->{ip}} = $node->{ip};
+    }
+
+    for my $selection (@selected) {
+        if (exists $node_lookup{$selection}) {
+            my $ip = $node_lookup{$selection};
+            unless (is_local_node($selection)) {
+                push @target_ips, $ip unless grep { $_ eq $ip } @target_ips;  # Avoid duplicates
+            } else {
+                say "Skipping local node: $selection";
+            }
+        } else {
+            warn "Warning: Unknown node '$selection' - skipping\n";
+        }
+    }
+
+    return @target_ips;
+}
+
+sub get_node_display_name {
+    my $ip = shift;
+
+    # Try to get hostname from discovered nodes
+    my @all_nodes = discover_all_nodes_with_info();
+    for my $node (@all_nodes) {
+        if ($node->{ip} eq $ip) {
+            return $node->{name} eq $ip ? $ip : "$node->{name} ($ip)";
+        }
+    }
+
+    # Fallback to just IP
+    return $ip;
+}
+
+sub interactive_full_selection {
+    my @all_nodes = discover_all_nodes_with_info();
+
+    unless (@all_nodes) {
+        say "No cluster nodes found for interactive selection.";
+        return ();
+    }
+
+    # Build a lookup for getting node names from IPs
+    my %ip_to_name;
+    for my $node (@all_nodes) {
+        $ip_to_name{$node->{ip}} = $node->{name};
+    }
+
+    say "Available cluster nodes:";
+    say "";
+
+    # Sort nodes alphabetically by name
+    @all_nodes = sort { $a->{name} cmp $b->{name} } @all_nodes;
+
+    # Show all nodes with numbers for easy selection
+    my $i = 1;
+    for my $node (@all_nodes) {
+        my $is_local = is_local_node($node->{name}) || is_local_node($node->{ip});
+        my $display = $node->{name} eq $node->{ip} ? $node->{name} : "$node->{name} ($node->{ip})";
+        my $local_tag = $is_local ? " [LOCAL]" : "";
+        say sprintf("  %2d. %s%s", $i++, $display, $local_tag);
+    }
+    say "";
+
+    # Prepare completion options (both hostnames and IPs)
+    my @completion_options;
+    for my $node (@all_nodes) {
+        push @completion_options, $node->{name};
+        push @completion_options, $node->{ip} unless $node->{name} eq $node->{ip};
+    }
+
+    # Set up readline with tab completion if available
+    my $term;
+    if (defined &Term::ReadLine::new) {
+        $term = Term::ReadLine->new('node-selection');
+
+        # Try different completion methods for better compatibility
+        eval {
+            if ($term->can('Attribs')) {
+                my $attribs = $term->Attribs;
+                if ($attribs && exists $attribs->{completion_entry_function}) {
+                    my @cached_matches;
+                    my $last_text = '';
+                    $attribs->{completion_entry_function} = sub {
+                        my ($text, $state) = @_;
+                        if ($state == 0 || $text ne $last_text) {
+                            @cached_matches = grep { index($_, $text) == 0 } @completion_options;
+                            $last_text = $text;
+                        }
+                        return $state < @cached_matches ? $cached_matches[$state] : undef;
+                    };
                 }
             }
         };
     }
 
-    # Use PVE::Cluster if available (fallback)
-    unless (@all_nodes) {
-        if (defined &PVE::Cluster::get_members) {
-            eval {
-                my $members = PVE::Cluster::get_members();
-                if ($members && ref($members) eq 'HASH') {
-                    @all_nodes = keys %$members;
-                }
-            };
-        }
-    }
+    # Show available options for easy reference
+    say "Available options for quick reference:";
+    my @hostnames = grep { $_ !~ /^\d+\.\d+\.\d+\.\d+$/ } @completion_options;
+    my @ips = grep { /^\d+\.\d+\.\d+\.\d+$/ } @completion_options;
+    say "  Hostnames: " . join(", ", @hostnames) if @hostnames;
+    say "  IPs: " . join(", ", @ips) if @ips;
+    say "";
 
-    # Fallback to pvecm
-    unless (@all_nodes) {
-        if (need_cmd("pvecm", 1)) {
-            my $output = `pvecm nodes 2>/dev/null`;
-            for my $line (split /\n/, $output) {
-                if ($line =~ /^\s*\d+\s+\d+\s+(\S+)/) {
-                    my $name = $1;
-                    $name =~ s/\s*\(local\)\s*$//;
-                    $name =~ s/^\s+|\s+$//g;
-                    push @all_nodes, $name if $name;
-                }
+    # Input loop with validation
+    while (1) {
+        say "Enter node names, IPs, or numbers (space or comma separated):";
+        say "Examples: 'node2 node3', '2 3', or mix: 'node2 172.28.143.16'";
+        print "> ";
+
+        my $input = <STDIN>;
+        chomp($input) if defined $input;
+
+        # Handle empty input or exit
+        unless (defined $input && $input =~ /\S/) {
+            return ();
+        }
+
+        # Handle special keyword
+        if ($input =~ /^\s*none\s*$/i) {
+            return ();
+        }
+
+        # Parse input (space or comma separated, including numbers)
+        my @selected = split /[\s,]+/, $input;
+        @selected = grep { $_ && $_ !~ /^\s*$/ } @selected;
+
+        # Convert input to IPs and validate
+        my @target_ips;
+        my @invalid_nodes;
+        my %node_lookup;
+
+        # Build lookup table
+        for my $i (0..$#all_nodes) {
+            my $node = $all_nodes[$i];
+            my $num = $i + 1;
+            $node_lookup{$num} = $node->{ip};           # Number -> IP
+            $node_lookup{$node->{name}} = $node->{ip}; # Name -> IP
+            $node_lookup{$node->{ip}} = $node->{ip};   # IP -> IP
+        }
+
+        # Validate all selections first
+        for my $selection (@selected) {
+            if (exists $node_lookup{$selection}) {
+                my $ip = $node_lookup{$selection};
+                push @target_ips, $ip unless grep { $_ eq $ip } @target_ips;  # Avoid duplicates
+            } else {
+                push @invalid_nodes, $selection;
             }
         }
-    }
 
-    # Filter out local nodes
-    @remote_nodes = grep { !is_local_node($_) } @all_nodes;
-    
-    return @remote_nodes;
+        # If there are invalid nodes, show error and ask again
+        if (@invalid_nodes) {
+            say "";
+            say "⚠ Error: The following nodes are not recognized:";
+            for my $invalid (@invalid_nodes) {
+                say "  '$invalid'";
+            }
+            say "";
+            say "Valid options are:";
+            say "  Numbers: 1-" . scalar(@all_nodes);
+            say "  Hostnames: " . join(", ", map { $_->{name} } @all_nodes);
+            say "  IPs: " . join(", ", map { $_->{ip} } @all_nodes);
+            say "  Keyword: none (to exit)";
+            say "";
+            say "Please try again.";
+            say "";
+            next;  # Ask for input again
+        }
+
+        # All selections are valid - show confirmation
+        if (@target_ips) {
+            say "";
+            my $operation = $remove_plugin ? "removed from" : "installed on";
+            say "Plugin will be $operation the following nodes:";
+
+            for my $ip (@target_ips) {
+                my $display_name = get_node_display_name($ip);
+                say "  $display_name";
+            }
+
+            say "";
+            print "Continue? (y/n): ";
+            my $confirm = <STDIN>;
+            chomp($confirm) if defined $confirm;
+
+            if ($confirm && $confirm =~ /^y$/i) {
+                return @target_ips;
+            } else {
+                say "Operation cancelled.";
+                say "";
+                next;  # Ask for input again
+            }
+        }
+
+        # Empty selection
+        return @target_ips;
+    }
 }
 
 sub parse_node_list {
@@ -557,7 +894,8 @@ sub remove_remote_node {
     my $ssh_tgt = "$ssh_user\@$node";
     my $r_sudo = remote_sudo_prefix();
 
-    say "Removing the plugin from node $node";
+    my $display_name = get_node_display_name($node);
+    say "Removing the plugin from node $display_name";
 
     # Remove package
     unless (run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}DEBIAN_FRONTEND=noninteractive apt-get -y -q remove open-e-joviandss-proxmox-plugin", { outfunc => sub { } })) {
@@ -573,7 +911,8 @@ sub remove_remote_node {
         }
     }
 
-    say "✓ Removal completed successfully on node $node\n";
+    $display_name = get_node_display_name($node);
+    say "✓ Removal completed successfully on node $display_name\n";
     return 1;
 }
 
@@ -582,7 +921,8 @@ sub install_remote_node {
     my $ssh_tgt = "$ssh_user\@$node";
     my $r_sudo = remote_sudo_prefix();
 
-    say "Installing the plugin on node $node";
+    my $display_name = get_node_display_name($node);
+    say "Installing the plugin on node $display_name";
 
     # Copy package
     unless (run_cmd("scp", split(/\s+/, $SSH_FLAGS), $deb_path, "$ssh_tgt:$REMOTE_TMP", { outfunc => sub { } })) {
@@ -604,7 +944,8 @@ sub install_remote_node {
         }
     }
 
-    say "✓ Installation completed successfully on node $node\n";
+    $display_name = get_node_display_name($node);
+    say "✓ Installation completed successfully on node $display_name\n";
     return 1;
 }
 
@@ -614,7 +955,7 @@ sub perform_remote_operations {
     return unless @targets;
 
     my $operation = $remove_plugin ? "removal" : "installation";
-    
+
     # Don't print the remote operation header since we already showed the nodes above
     my @failed_nodes;
     my $success_count = 0;
@@ -644,51 +985,84 @@ sub perform_remote_operations {
     }
 }
 
-# Main execution
-if ($remove_plugin) {
-    remove_local();
+my @all_targets;  # All nodes to process (may include local)
+
+# Handle node selection based on mode
+if ($interactive) {
+    say "Interactive node selection mode";
+    say "";
+    my @selected = interactive_full_selection();
+    if (@selected) {
+        @all_targets = @selected;
+        # Node selection and confirmation already shown in interactive_full_selection
+        say "";
+    } else {
+        say "No nodes selected - exiting.";
+        exit 0;
+    }
 } else {
-    # Only proceed with download and install if not removing
-    # (The download/install logic above should only run for install operations)
-    install_local();
+    # Non-interactive mode: always process local node first
+    if ($remove_plugin) {
+        remove_local();
+    } else {
+        install_local();
+    }
 }
 
 my @remote_targets;
 
-# Discover nodes for --all-nodes
-if ($install_all_nodes) {
+# Continue with existing logic for non-interactive modes
+unless ($interactive) {
+    if ($install_all_nodes) {
     say "Identifying other nodes belonging to cluster $cluster_name";
     my @nodes = discover_remote_nodes();
     if (@nodes) {
         push @remote_targets, @nodes;
         say "Identified nodes: " . join(", ", @nodes);
-        say "";  # Empty line
+        say "";
     } else {
         say "No remote nodes found - single node cluster or all nodes are local";
-        say "";  # Empty line
+        say "";
     }
-}
-
-# Add manual node list (filter out local nodes)
-if ($node_list) {
-    if (!$install_all_nodes) {
-        say "Installing on specified nodes";
-    }
+} elsif ($node_list) {
+    say "Installing on specified nodes";
     my @manual = parse_node_list($node_list);
     my @remote_manual = grep { !is_local_node($_) } @manual;
     if (@remote_manual < @manual) {
         my $filtered_count = @manual - @remote_manual;
         say "Filtered out $filtered_count local node(s) from specified list";
     }
-    if (@remote_manual && !$install_all_nodes) {
+    if (@remote_manual) {
+        push @remote_targets, @remote_manual;
         say "Target nodes: " . join(", ", @remote_manual);
-        say "";  # Empty line
+        say "";
     }
-    push @remote_targets, @remote_manual;
+}
 }
 
-# Remove duplicates and perform remote operations
-if (@remote_targets) {
+# Handle operations based on mode
+if ($interactive && @all_targets) {
+    # Interactive mode: process all selected nodes (including local if selected)
+    my @local_targets = grep { is_local_node($_) } @all_targets;
+    my @remote_targets_interactive = grep { !is_local_node($_) } @all_targets;
+
+    # Process local node if selected
+    if (@local_targets) {
+        if ($remove_plugin) {
+            remove_local();
+        } else {
+            install_local();
+        }
+    }
+
+    # Process remote nodes if any
+    if (@remote_targets_interactive) {
+        my %seen;
+        @remote_targets_interactive = grep { !$seen{$_}++ } @remote_targets_interactive;
+        perform_remote_operations(@remote_targets_interactive);
+    }
+} elsif (@remote_targets) {
+    # Non-interactive mode: process remote targets
     my %seen;
     @remote_targets = grep { !$seen{$_}++ } @remote_targets;
     perform_remote_operations(@remote_targets);
