@@ -92,56 +92,56 @@ if ($help) {
 sub check_readline_support {
     my $has_gnu = 0;
     my $has_basic = 0;
-    
+
     eval {
         require Term::ReadLine::Gnu;
         $has_gnu = 1;
     };
-    
+
     eval {
         require Term::ReadLine;
         $has_basic = 1;
     };
-    
+
     if (!$has_basic) {
         warn "Warning: Term::ReadLine not available. Interactive features will be limited.\n";
         warn "For better experience, install: apt-get install libterm-readline-perl-perl\n";
     } elsif (!$has_gnu) {
         warn "Note: For better arrow key support in interactive mode, install: apt-get install libterm-readline-gnu-perl\n";
     }
-    
+
     return ($has_gnu, $has_basic);
 }
 
 # Custom readline function with arrow key support
 sub simple_readline {
     my ($prompt, $completion_options) = @_;
-    
+
     # For piped input, open TTY directly
     if (!-t STDIN) {
         # Try to open /dev/tty for direct terminal access
         if (open(my $tty_in, '<', '/dev/tty') && open(my $tty_out, '>', '/dev/tty')) {
             print $tty_out $prompt;
             $tty_out->flush();
-            
+
             # Set raw mode on TTY
             system('stty -F /dev/tty raw -echo 2>/dev/null');
-            
+
             my $input = "";
             my $cursor_pos = 0;
-            
+
             while (1) {
                 my $key;
                 my $bytes_read = sysread($tty_in, $key, 1);
                 next unless $bytes_read && defined $key;
                 my $ord = ord($key);
-                
+
                 if ($ord == 27) {  # ESC sequence
                     my $seq1, my $seq2;
                     sysread($tty_in, $seq1, 1);
                     sysread($tty_in, $seq2, 1);
                     next unless defined $seq1 && defined $seq2;
-                    
+
                     if ($seq1 eq '[') {
                         if ($seq2 eq 'D' && $cursor_pos > 0) {      # Left arrow
                             $cursor_pos--;
@@ -175,7 +175,7 @@ sub simple_readline {
                     $tty_out->flush();
                 }
             }
-            
+
             # Restore TTY mode
             system('stty -F /dev/tty cooked echo 2>/dev/null');
             close($tty_in);
@@ -190,21 +190,21 @@ sub simple_readline {
             return $input;
         }
     }
-    
+
     # For normal terminal input, use POSIX approach
     print $prompt;
     STDOUT->flush();
-    
+
     # Try to set terminal to raw mode for better key handling
     my $old_termios;
     my $raw_mode_enabled = 0;
-    
+
     eval {
         require POSIX;
         my $termios = POSIX::Termios->new();
         $termios->getattr(0);
         $old_termios = $termios->getlflag();
-        
+
         # Disable canonical mode and echo for raw input
         $termios->setlflag($old_termios & ~(POSIX::ECHO | POSIX::ICANON));
         $termios->setcc(POSIX::VMIN, 1);
@@ -212,24 +212,24 @@ sub simple_readline {
         $termios->setattr(0, POSIX::TCSANOW);
         $raw_mode_enabled = 1;
     };
-    
+
     my $input = "";
     my $cursor_pos = 0;
     my @history = ();
     my $history_pos = -1;
-    
+
     if ($raw_mode_enabled) {
         # Raw mode - handle each key individually
         while (1) {
             my $key;
             sysread(STDIN, $key, 1);
             my $ord = ord($key);
-            
+
             if ($ord == 27) {  # ESC sequence (arrow keys)
                 my $seq1, my $seq2;
                 sysread(STDIN, $seq1, 1);
                 sysread(STDIN, $seq2, 1);
-                
+
                 if ($seq1 eq '[') {
                     if ($seq2 eq 'D') {      # Left arrow
                         if ($cursor_pos > 0) {
@@ -287,7 +287,7 @@ sub simple_readline {
                 STDOUT->flush();
             }
         }
-        
+
         # Restore terminal mode
         eval {
             my $termios = POSIX::Termios->new();
@@ -300,7 +300,7 @@ sub simple_readline {
         $input = <STDIN>;
         chomp($input) if defined $input;
     }
-    
+
     return $input;
 }
 
@@ -670,7 +670,7 @@ sub remove_local {
     } else {
         $local_display_name = "local node";
     }
-    
+
     say "Removing the plugin from node $local_display_name";
     my $sudo = maybe_sudo();
     my @cmd;
@@ -719,7 +719,7 @@ sub install_local {
     } else {
         $local_display_name = "local node";
     }
-    
+
     say "Installing the plugin on node $local_display_name";
     my $sudo = maybe_sudo();
     my @cmd;
@@ -915,7 +915,7 @@ sub interactive_node_selection {
     }
 
     say "Enter node names or IPs to install to (space or comma separated):";
-    say "You can use tab completion. Press Enter when done, or 'all' for all remote nodes.";
+    say "Press Enter when done.";
     print "> ";
 
     my $input;
@@ -928,10 +928,6 @@ sub interactive_node_selection {
 
     return () unless defined $input && $input =~ /\S/;
 
-    # Handle 'all' keyword
-    if ($input =~ /^\s*all\s*$/i) {
-        return map { $_->{ip} } @remote_nodes;
-    }
 
     # Parse input (space or comma separated)
     my @selected = split /[\s,]+/, $input;
@@ -1021,7 +1017,7 @@ sub interactive_full_selection {
     my $term;
     if (defined &Term::ReadLine::new) {
         $term = Term::ReadLine->new('node-selection');
-        
+
         # Enable better readline features if available
         eval {
             if ($term->can('Attribs')) {
@@ -1030,7 +1026,7 @@ sub interactive_full_selection {
                     # Enable history and better editing
                     $attribs->{completion_append_character} = ' ';
                     $attribs->{completion_suppress_append} = 0;
-                    
+
                     # Set up tab completion
                     if (exists $attribs->{completion_entry_function}) {
                         my @cached_matches;
@@ -1047,7 +1043,7 @@ sub interactive_full_selection {
                 }
             }
         };
-        
+
         # Try to enable GNU readline specific features for better arrow key support
         eval {
             if ($term->ReadLine eq 'Term::ReadLine::Gnu') {
@@ -1070,7 +1066,7 @@ sub interactive_full_selection {
     while (1) {
         say "Enter node names, IPs, or numbers (space or comma separated):";
         say "Examples: 'node2 node3', '2 3', or mix: 'node2 172.28.143.16'";
-        
+
         my $input;
         if ($term && $term->ReadLine eq 'Term::ReadLine::Gnu') {
             # Use full readline if GNU version is available
@@ -1085,10 +1081,6 @@ sub interactive_full_selection {
             return ();
         }
 
-        # Handle special keyword
-        if ($input =~ /^\s*none\s*$/i) {
-            return ();
-        }
 
         # Parse input (space or comma separated, including numbers)
         my @selected = split /[\s,]+/, $input;
@@ -1130,7 +1122,6 @@ sub interactive_full_selection {
             say "  Numbers: 1-" . scalar(@all_nodes);
             say "  Hostnames: " . join(", ", map { $_->{name} } @all_nodes);
             say "  IPs: " . join(", ", map { $_->{ip} } @all_nodes);
-            say "  Keyword: none (to exit)";
             say "";
             say "Please try again.";
             say "";
@@ -1280,16 +1271,16 @@ my @all_targets;  # All nodes to process (may include local)
 if ($interactive) {
     say "Interactive node selection mode";
     say "";
-    
+
     # Check and inform about readline support
     my ($has_gnu, $has_basic) = check_readline_support();
     if ($has_gnu) {
-        say "✓ Full readline support available (arrow keys, history, tab completion)";
+        say "✓ Full readline support available (arrow keys, history)";
     } elsif ($has_basic) {
-        say "✓ Basic readline support available (tab completion)";
+        say "✓ Basic readline support available";
     }
     say "";
-    
+
     my @selected = interactive_full_selection();
     if (@selected) {
         @all_targets = @selected;
