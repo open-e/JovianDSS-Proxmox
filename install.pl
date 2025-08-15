@@ -717,6 +717,31 @@ sub get_node_display_name {
 }
 
 sub interactive_full_selection {
+    # If STDIN isn't a terminal (e.g., we're being piped), try to use /dev/tty
+    if ( ! -t *STDIN ) {
+        my $tty = "/dev/tty";
+        if ( -r $tty ) {
+            open my $tty_in, "<", $tty
+              or die "Cannot open $tty for reading: $!";
+            # Repoint STDIN to the TTY so interactive prompts work
+            open *STDIN, "<&", $tty_in
+              or die "Cannot dup STDIN to $tty: $!";
+            # Optional: also redirect STDOUT to TTY for proper prompt display
+            open my $tty_out, ">", $tty;  # ignore failure; STDOUT usually fine
+            if (defined $tty_out) {
+                open *STDOUT, ">&", $tty_out or warn "Cannot dup STDOUT to $tty: $!";
+                open *STDERR, ">&", $tty_out or warn "Cannot dup STDERR to $tty: $!";
+            }
+        } else {
+            die <<"MSG";
+This script requires interactive input but STDIN is not a TTY.
+Run it like:
+  curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --interactive </dev/tty
+or download it first and run: perl install.pl --interactive
+MSG
+        }
+    }
+
     my @all_nodes = discover_all_nodes_with_info();
 
     unless (@all_nodes) {
@@ -791,6 +816,8 @@ sub interactive_full_selection {
         say "Enter node names, IPs, or numbers (space or comma separated):";
         say "Examples: 'node2 node3', '2 3', or mix: 'node2 172.28.143.16'";
         print "> ";
+        # Flush output before reading input
+        STDOUT->flush();
 
         my $input = <STDIN>;
         chomp($input) if defined $input;
@@ -865,6 +892,8 @@ sub interactive_full_selection {
 
             say "";
             print "Continue? (y/n): ";
+            # Flush output before reading input
+            STDOUT->flush();
             my $confirm = <STDIN>;
             chomp($confirm) if defined $confirm;
 
@@ -872,8 +901,7 @@ sub interactive_full_selection {
                 return @target_ips;
             } else {
                 say "Operation cancelled.";
-                say "";
-                next;  # Ask for input again
+                return ();  # Exit instead of asking again
             }
         }
 
@@ -1072,5 +1100,5 @@ if ($remove_plugin) {
     say "\n✓ All operations complete: Plugin removed";
 } else {
     say "\n✓ All operations complete: Plugin $tag installed";
-    print "\nPlease check introduction to configuration at https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start#configuration\n";
+    print "\nCheck introduction to configuration guide at https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start#configuration\n";
 }
