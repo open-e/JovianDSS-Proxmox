@@ -18,7 +18,7 @@ from setuptools import setup
 
 setup(
     name='OpenEJovianDSSProxmoxCLI',
-    version='0.9.10-0',
+    version='0.10.6',
     author='Andrei Perepiolkin',
     author_email='andrei.perepiolkin@open-e.com',
     packages=['jdssc'],
@@ -28,7 +28,6 @@ setup(
     description='An assistant tool for Proxmox plugin',
     long_description=open('README.txt').read(),
     install_requires=[
-        "pytest",
         "retry",
         "pyinotify",
         "toml"
