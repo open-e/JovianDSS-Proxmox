@@ -9,22 +9,6 @@ use File::Basename;
 use JSON;
 use LWP::UserAgent;
 
-# Try to load Term::ReadLine for interactive input with tab completion
-BEGIN {
-    eval {
-        # Try Term::ReadLine::Gnu first for better arrow key support
-        require Term::ReadLine::Gnu;
-        require Term::ReadLine;
-        Term::ReadLine->import();
-    };
-    if ($@) {
-        # Fallback to basic Term::ReadLine
-        eval {
-            require Term::ReadLine;
-            Term::ReadLine->import();
-        };
-    }
-}
 
 # Try to use PVE modules if available
 BEGIN {
@@ -58,7 +42,6 @@ my $pinned_tag = "";
 my $need_restart = 1;
 my $dry_run = 0;
 my $install_all_nodes = 0;
-my $node_list = "";
 my $ssh_user = "root";
 my $remove_plugin = 0;
 my $help = 0;
@@ -75,7 +58,6 @@ GetOptions(
     "no-restart"    => sub { $need_restart = 0 },
     "dry-run"       => \$dry_run,
     "all-nodes"     => \$install_all_nodes,
-    "nodes=s"       => \$node_list,
     "user=s"        => \$ssh_user,
     "ssh-flags=s"   => \$SSH_FLAGS,
     "remove"        => \$remove_plugin,
@@ -88,194 +70,35 @@ if ($help) {
 }
 
 
-# Custom readline function with arrow key support
+# Simple readline function
 sub simple_readline {
     my ($prompt, $completion_options) = @_;
 
-    # For piped input, open TTY directly
+    # For piped input (like curl | perl -), open TTY directly
     if (!-t STDIN) {
         # Try to open /dev/tty for direct terminal access
         if (open(my $tty_in, '<', '/dev/tty') && open(my $tty_out, '>', '/dev/tty')) {
             print $tty_out $prompt;
             $tty_out->flush();
 
-            # Set raw mode on TTY
-            system('stty -F /dev/tty raw -echo 2>/dev/null');
+            my $input = <$tty_in>;
+            chomp($input) if defined $input;
 
-            my $input = "";
-            my $cursor_pos = 0;
-
-            while (1) {
-                my $key;
-                my $bytes_read = sysread($tty_in, $key, 1);
-                next unless $bytes_read && defined $key;
-                my $ord = ord($key);
-
-                if ($ord == 27) {  # ESC sequence
-                    my $seq1, my $seq2;
-                    sysread($tty_in, $seq1, 1);
-                    sysread($tty_in, $seq2, 1);
-                    next unless defined $seq1 && defined $seq2;
-
-                    if ($seq1 eq '[') {
-                        if ($seq2 eq 'D' && $cursor_pos > 0) {      # Left arrow
-                            $cursor_pos--;
-                            print $tty_out "\b";
-                            $tty_out->flush();
-                        } elsif ($seq2 eq 'C' && $cursor_pos < length($input)) { # Right arrow
-                            print $tty_out substr($input, $cursor_pos, 1);
-                            $cursor_pos++;
-                            $tty_out->flush();
-                        }
-                    }
-                } elsif ($ord == 127 || $ord == 8) {  # Backspace
-                    if ($cursor_pos > 0) {
-                        substr($input, $cursor_pos-1, 1) = '';
-                        $cursor_pos--;
-                        print $tty_out "\r" . $prompt . $input . " \r" . $prompt . substr($input, 0, $cursor_pos);
-                        $tty_out->flush();
-                    }
-                } elsif ($ord == 13 || $ord == 10) {  # Enter
-                    print $tty_out "\n";
-                    $tty_out->flush();
-                    last;
-                } elsif ($ord >= 32 && $ord <= 126) {  # Printable characters
-                    substr($input, $cursor_pos, 0) = $key;
-                    $cursor_pos++;
-                    print $tty_out substr($input, $cursor_pos-1);
-                    if ($cursor_pos < length($input)) {
-                        my $remaining = length($input) - $cursor_pos;
-                        print $tty_out "\b" x $remaining;
-                    }
-                    $tty_out->flush();
-                }
-            }
-
-            # Restore TTY mode
-            system('stty -F /dev/tty cooked echo 2>/dev/null');
             close($tty_in);
             close($tty_out);
             return $input;
         } else {
-            # Fallback to simple input if TTY not available
-            print $prompt;
-            STDOUT->flush();
-            my $input = <STDIN>;
-            chomp($input) if defined $input;
-            return $input;
+            # Fallback if TTY not available - this will likely fail
+            die "Error: Cannot read from terminal when STDIN is piped. Try running the script directly instead of piping.\n";
         }
     }
 
-    # For normal terminal input, use POSIX approach
+    # Normal terminal input
     print $prompt;
     STDOUT->flush();
 
-    # Try to set terminal to raw mode for better key handling
-    my $old_termios;
-    my $raw_mode_enabled = 0;
-
-    eval {
-        require POSIX;
-        my $termios = POSIX::Termios->new();
-        $termios->getattr(0);
-        $old_termios = $termios->getlflag();
-
-        # Disable canonical mode and echo for raw input
-        $termios->setlflag($old_termios & ~(POSIX::ECHO | POSIX::ICANON));
-        $termios->setcc(POSIX::VMIN, 1);
-        $termios->setcc(POSIX::VTIME, 0);
-        $termios->setattr(0, POSIX::TCSANOW);
-        $raw_mode_enabled = 1;
-    };
-
-    my $input = "";
-    my $cursor_pos = 0;
-    my @history = ();
-    my $history_pos = -1;
-
-    if ($raw_mode_enabled) {
-        # Raw mode - handle each key individually
-        while (1) {
-            my $key;
-            sysread(STDIN, $key, 1);
-            my $ord = ord($key);
-
-            if ($ord == 27) {  # ESC sequence (arrow keys)
-                my $seq1, my $seq2;
-                sysread(STDIN, $seq1, 1);
-                sysread(STDIN, $seq2, 1);
-
-                if ($seq1 eq '[') {
-                    if ($seq2 eq 'D') {      # Left arrow
-                        if ($cursor_pos > 0) {
-                            $cursor_pos--;
-                            print "\b";  # Move cursor left
-                            STDOUT->flush();
-                        }
-                    } elsif ($seq2 eq 'C') { # Right arrow
-                        if ($cursor_pos < length($input)) {
-                            print substr($input, $cursor_pos, 1);
-                            $cursor_pos++;
-                            STDOUT->flush();
-                        }
-                    }
-                }
-            } elsif ($ord == 127 || $ord == 8) {  # Backspace/Delete
-                if ($cursor_pos > 0) {
-                    substr($input, $cursor_pos-1, 1) = '';
-                    $cursor_pos--;
-                    # Redraw line
-                    print "\r" . $prompt . $input . " \r" . $prompt . substr($input, 0, $cursor_pos);
-                    STDOUT->flush();
-                }
-            } elsif ($ord == 13 || $ord == 10) {  # Enter
-                print "\n";
-                last;
-            } elsif ($ord == 9) {   # Tab (completion)
-                if ($completion_options && @$completion_options) {
-                    my $partial = substr($input, 0, $cursor_pos);
-                    my @matches = grep { index($_, $partial) == 0 } @$completion_options;
-                    if (@matches == 1) {
-                        # Complete the word
-                        my $completion = $matches[0];
-                        substr($input, 0, $cursor_pos) = $completion;
-                        $cursor_pos = length($completion);
-                        # Redraw line
-                        print "\r" . $prompt . $input;
-                        STDOUT->flush();
-                    } elsif (@matches > 1) {
-                        print "\n";
-                        print "  " . join("  ", @matches) . "\n";
-                        print $prompt . $input;
-                        STDOUT->flush();
-                    }
-                }
-            } elsif ($ord >= 32 && $ord <= 126) {  # Printable characters
-                substr($input, $cursor_pos, 0) = $key;
-                $cursor_pos++;
-                # Redraw from cursor position
-                print substr($input, $cursor_pos-1);
-                if ($cursor_pos < length($input)) {
-                    my $remaining = length($input) - $cursor_pos;
-                    print "\b" x $remaining;
-                }
-                STDOUT->flush();
-            }
-        }
-
-        # Restore terminal mode
-        eval {
-            my $termios = POSIX::Termios->new();
-            $termios->getattr(0);
-            $termios->setlflag($old_termios);
-            $termios->setattr(0, POSIX::TCSANOW);
-        };
-    } else {
-        # Fallback to simple line input
-        $input = <STDIN>;
-        chomp($input) if defined $input;
-    }
-
+    my $input = <STDIN>;
+    chomp($input) if defined $input;
     return $input;
 }
 
@@ -297,7 +120,6 @@ General:
 
 Cluster:
   --all-nodes                Install/remove on all nodes (uses IPs from cluster membership)
-  --nodes "n1,n2,..."        Install/remove on specific nodes (use IPs or hostnames)
   --user <name>              SSH user for remote operations (default: root)
   --ssh-flags "<flags>"      Extra SSH flags (default: $SSH_FLAGS)
 
@@ -309,8 +131,6 @@ Examples:
   # Install pre-release on all nodes (automatically uses cluster IPs)
   $prog --pre --all-nodes
 
-  # Install specific tag on two nodes using IP addresses
-  $prog --version v0.9.9-3 --nodes "192.168.1.10,192.168.1.11"
 
   # Install using sudo (when not running as root)
   $prog --sudo
@@ -321,8 +141,6 @@ Examples:
   # Remove plugin from all cluster nodes
   $prog --remove --all-nodes
 
-Note: For --nodes option, use IP addresses unless you have proper DNS records
-or /etc/hosts entries configured for the node hostnames.
 EOF
 }
 
@@ -365,51 +183,81 @@ sub run_cmd {
         return 1;
     }
 
-    # Use PVE::Tools::run_command if available (only for non-output commands)
-    if (defined &PVE::Tools::run_command && !$capture_output) {
-        eval {
-            # Set DEBIAN_FRONTEND for apt operations
-            local $ENV{DEBIAN_FRONTEND} = 'noninteractive';
-            if (defined $outfunc || defined $errfunc) {
-                PVE::Tools::run_command(\@cmd,
-                    outfunc => $outfunc || sub { },
-                    errfunc => $errfunc || sub { }
-                );
-            } else {
-                PVE::Tools::run_command(\@cmd);
-            }
-        };
-        if ($@) {
-            warn "Command failed: " . join(" ", @cmd) . "\nError: $@\n";
-            return 0;
-        }
-        return 1;
-    } else {
-        # Fallback to system() calls or backticks for output capture
-        if ($capture_output) {
-            local $ENV{DEBIAN_FRONTEND} = 'noninteractive';
-            my $cmd_str = join(" ", map { "'$_'" } @cmd);
-            $$output_ref = `$cmd_str`;
-            my $ret = $?;
-            return $ret == 0;
-        } else {
-            local $ENV{DEBIAN_FRONTEND} = 'noninteractive';
-            my $cmd_str = join(" ", map { "'$_'" } @cmd);
-            my $ret = system($cmd_str);
-            return $ret == 0;
-        }
+    # PVE::Tools::run_command must be available for Proxmox plugin
+    if (!defined &PVE::Tools::run_command) {
+        die "Error: PVE::Tools::run_command not available. This script must run on Proxmox VE.\n";
     }
+
+    eval {
+        # Set DEBIAN_FRONTEND for apt operations
+        local $ENV{DEBIAN_FRONTEND} = 'noninteractive';
+        if ($capture_output) {
+            # For output capture, use run_command with outfunc to collect output
+            my @output_lines;
+            PVE::Tools::run_command(\@cmd,
+                outfunc => sub { push @output_lines, $_[0] . "\n" },
+                errfunc => $errfunc || sub { }
+            );
+            $$output_ref = join("", @output_lines);
+        } elsif (defined $outfunc || defined $errfunc) {
+            PVE::Tools::run_command(\@cmd,
+                outfunc => $outfunc || sub { },
+                errfunc => $errfunc || sub { }
+            );
+        } else {
+            PVE::Tools::run_command(\@cmd);
+        }
+    };
+    if ($@) {
+        warn "Command failed: " . join(" ", @cmd) . "\nError: $@\n";
+        return 0;
+    }
+    return 1;
 }
 
 sub need_cmd {
     my $cmd = shift;
     my $optional = shift || 0;
 
-    if (system("command -v '$cmd' >/dev/null 2>&1") != 0) {
+    # Check if PVE::Tools::run_command is available
+    if (!defined &PVE::Tools::run_command) {
+        die "Error: PVE::Tools::run_command not available. This script must run on Proxmox VE.\n";
+    }
+
+    # Use whereis -b to check if command exists
+    my $found = 0;
+    my @output_lines;
+    my $eval_error;
+    eval {
+        PVE::Tools::run_command(["whereis", "-b", $cmd],
+            outfunc => sub {
+                my $line = shift;
+                chomp $line;
+                # whereis output format: "cmd: /path/to/cmd" or "cmd:"
+                # Command found if there's a colon followed by a path
+                if ($line =~ /^\Q$cmd\E:\s+(.+)/) {
+                    push @output_lines, $1;  # Store the path
+                }
+            },
+            errfunc => sub { }  # Ignore errors
+        );
+        # Command found if whereis returned a path
+        $found = (scalar(@output_lines) > 0);
+    };
+    if ($@) {
+        $eval_error = $@;
+        $found = 0;
+    }
+
+    if (!$found) {
         if ($optional) {
             return 0;
         } else {
-            die "Error: '$cmd' not found.\n";
+            if ($eval_error) {
+                die "Error checking for '$cmd': $eval_error\n";
+            } else {
+                die "Error: '$cmd' not found.\n";
+            }
         }
     }
     return 1;
@@ -430,15 +278,13 @@ sub remote_sudo_prefix {
 }
 
 # Check prerequisites
-need_cmd("curl");
-need_cmd("dpkg");
 need_cmd("apt-get");
 need_cmd("awk");
 need_cmd("sed");
 need_cmd("grep");
 need_cmd("sha256sum", 1);
 
-if ($install_all_nodes || $node_list) {
+if ($install_all_nodes) {
     need_cmd("ssh");
     need_cmd("scp");
 }
@@ -825,14 +671,6 @@ sub get_node_display_name {
     return $ip;
 }
 
-
-sub parse_node_list {
-    my $raw = shift;
-    my @nodes = split /[,\s]+/, $raw;
-    @nodes = grep { $_ && $_ !~ /^\s*$/ } @nodes;
-    return @nodes;
-}
-
 sub remove_remote_node {
     my $node = shift;
     my $ssh_tgt = "$ssh_user\@$node";
@@ -933,7 +771,7 @@ sub perform_remote_operations {
 
 
 my @remote_targets;
-my $process_local = 1;  # Always process local node unless using --nodes without local
+my $process_local = 1;  # Always process local node
 my $total_successful = 0;  # Track total successful operations
 
 # Determine what operations will be performed
@@ -980,19 +818,6 @@ if ($install_all_nodes) {
         say "";
     } else {
         say "No remote nodes found - single node cluster or all nodes are local";
-        say "";
-    }
-} elsif ($node_list) {
-    say "Installing on specified nodes";
-    my @manual = parse_node_list($node_list);
-    my @remote_manual = grep { !is_local_node($_) } @manual;
-    if (@remote_manual < @manual) {
-        my $filtered_count = @manual - @remote_manual;
-        say "Filtered out $filtered_count local node(s) from specified list";
-    }
-    if (@remote_manual) {
-        push @remote_targets, @remote_manual;
-        say "Target nodes: " . join(", ", @remote_manual);
         say "";
     }
 }
