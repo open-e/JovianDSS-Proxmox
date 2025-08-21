@@ -28,11 +28,11 @@ Version 0.10.5 represents a rewrite of the `joviandss` plugin.
 
 This package uses a centralized `VERSION` file that contains the authoritative version number (e.g., `0.10.5`).
 
-**Debian Package Versioning**: The Debian package uses format `0.10.5-0` where:
+The Debian package uses format `0.10.5-0` where:
 - `0.10.5` = upstream software version (matches VERSION file)
 - `-0` = Debian revision for packaging-specific changes (dependencies, scripts, metadata)
 
-**Check Current Version**: To see the currently installed version, run:
+To see the currently installed version, run:
 ```bash
 dpkg-query -W -f='${Version}\n' open-e-joviandss-proxmox-plugin
 ```
