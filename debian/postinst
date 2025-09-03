@@ -1,6 +1,11 @@
-#!/bin/sh
+#!/bin/sh -e
 
-chmod +x /usr/local/bin/jdssc
+
 mkdir -p /var/log/joviandss
 mkdir -p /etc/joviandss
+
+if [ -f /usr/local/bin/jdssc ]; then
+    chmod +x /usr/local/bin/jdssc
+fi
+
 exit 0

@@ -45,6 +45,9 @@ my $install_all_nodes = 0;
 my $ssh_user = "root";
 my $remove_plugin = 0;
 my $help = 0;
+my $add_default_multipath_config = 0;
+my $force_multipath_config = 0;
+my @warning_nodes = ();  # Track nodes with warnings
 
 # Variables for install operations
 my $tag = "";
@@ -61,6 +64,8 @@ GetOptions(
     "user=s"        => \$ssh_user,
     "ssh-flags=s"   => \$SSH_FLAGS,
     "remove"        => \$remove_plugin,
+    "add-default-multipath-config" => \$add_default_multipath_config,
+    "force-multipath-config" => \$force_multipath_config,
     "help|h"        => \$help,
 ) or die "Error parsing options\n";
 
@@ -116,6 +121,8 @@ General:
   --sudo                     Use sudo for commands (default: run without sudo)
   --no-restart               Do not restart pvedaemon after install/remove
   --dry-run                  Show what would be done without doing it
+  --add-default-multipath-config  Install default multipath configuration
+  --force-multipath-config   Overwrite existing multipath config files
   -h, --help                 Show this help
 
 Cluster:
@@ -134,6 +141,12 @@ Examples:
 
   # Install using sudo (when not running as root)
   $prog --sudo
+
+  # Install with default multipath config on all nodes
+  $prog --all-nodes --add-default-multipath-config
+
+  # Force overwrite existing multipath configs
+  $prog --all-nodes --add-default-multipath-config --force-multipath-config
 
   # Remove plugin from local node only
   $prog --remove
@@ -269,6 +282,100 @@ sub maybe_sudo {
     }
     return "";
 }
+
+sub validate_remote_argument {
+    my $arg = shift;
+    # Allow: \w (word chars: a-z A-Z 0-9 _), / . - @ :
+    if ($arg =~ /[^\w\/.:\-@]/) {
+        die "Error: Invalid characters in argument for remote execution: $arg\n";
+    }
+    return $arg;
+}
+
+sub execute_command {
+    my $is_local = shift;
+    my $node = shift;
+    my @cmd = @_;
+    my $opts = ref($_[-1]) eq 'HASH' ? pop @cmd : {};
+
+    if ($is_local) {
+        my $sudo = maybe_sudo();
+        my @full_cmd = $sudo ? ($sudo, @cmd) : @cmd;
+        return run_cmd(@full_cmd, $opts);
+    } else {
+        # Validate and quote all arguments for remote
+        my @quoted_cmd;
+        for my $arg (@cmd) {
+            validate_remote_argument($arg); # Validate all arguments
+            push @quoted_cmd, "'$arg'";
+        }
+
+        my $ssh_tgt = "$ssh_user\@$node";
+        my $r_sudo = remote_sudo_prefix();
+        my $cmd_str = "${r_sudo}" . join(" ", @quoted_cmd);
+        return run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, $cmd_str, $opts);
+    }
+}
+
+sub handle_multipath_config {
+    my $is_local = shift;
+    my $node_or_name = shift;
+
+    return 1 unless $add_default_multipath_config;
+
+    my $template_file = "/etc/joviandss/multipath-open-e-joviandss.conf.example";
+    my $target_file = "/etc/multipath/conf.d/open-e-joviandss.conf";
+
+    # Get display name for local vs remote
+    my $node_name;
+    if ($is_local) {
+        $node_name = $node_or_name || "local node";
+    } else {
+        $node_name = get_node_display_name($node_or_name);
+    }
+
+    if ($dry_run) {
+        my $prefix = $is_local ? "" : "[$node_name] ";
+        say "[dry-run] ${prefix}Checking for multipath template: $template_file";
+        say "[dry-run] ${prefix}Would install multipath config to: $target_file";
+        return 1;
+    }
+
+    # Check if template exists
+    unless (execute_command($is_local, $node_or_name, "test", "-f", $template_file, { outfunc => sub { }, errfunc => sub { } })) {
+        warn "[$node_name] ✗ Multipath template not found: $template_file (older package version?)\n";
+        return 0;
+    }
+
+    # Check if target exists
+    my $target_exists = execute_command($is_local, $node_or_name, "test", "-f", $target_file, { outfunc => sub { }, errfunc => sub { } });
+
+    if ($target_exists && !$force_multipath_config) {
+        push @warning_nodes, "$node_name: Multipath config already exists, use --force-multipath-config to overwrite";
+        say "⚠ Warning on $node_name: Multipath config file already exists, skipping";
+        return 1;  # Not an error, just skipped
+    }
+
+    # Create target directory and copy file
+    unless (execute_command($is_local, $node_or_name, "mkdir", "-p", "/etc/multipath/conf.d", { outfunc => sub { } })) {
+        warn "[$node_name] ✗ Failed to create multipath config directory\n";
+        return 0;
+    }
+
+    unless (execute_command($is_local, $node_or_name, "cp", $template_file, $target_file, { outfunc => sub { } })) {
+        warn "[$node_name] ✗ Failed to copy multipath config\n";
+        return 0;
+    }
+
+    # Reconfigure multipathd
+    unless (execute_command($is_local, $node_or_name, "multipathd", "-k", "reconfigure", { outfunc => sub { }, errfunc => sub { } })) {
+        say "[$node_name] ⚠ Warning: Failed to reconfigure multipathd (may not be running)";
+    }
+
+    say "[$node_name] ✓ Multipath configuration installed";
+    return 1;
+}
+
 
 sub remote_sudo_prefix {
     if ($use_sudo) {
@@ -535,6 +642,8 @@ sub install_local {
     }
 
     say "Installing plugin on node $local_display_name";
+
+
     my $sudo = maybe_sudo();
     my @cmd;
     if ($sudo) {
@@ -544,8 +653,16 @@ sub install_local {
     }
     push @cmd, $deb_path;
 
+
     unless (run_cmd(@cmd, { outfunc => sub { } })) {
         die "Error: Local installation failed\n";
+    }
+
+    # Handle multipath configuration after package installation
+    unless (handle_multipath_config(1, $local_display_name)) {
+        if ($add_default_multipath_config) {
+            die "Error: Multipath configuration failed on local node\n";
+        }
     }
 
     if ($need_restart) {
@@ -713,9 +830,17 @@ sub install_remote_node {
     }
 
     # Install package
-    unless (run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}DEBIAN_FRONTEND=noninteractive apt-get -y -q --reinstall install $REMOTE_TMP", { outfunc => sub { } })) {
+    unless (run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}apt-get -y -q --reinstall install $REMOTE_TMP", { outfunc => sub { } })) {
         warn "[$node] ✗ Failed to install package\n";
         return 0;
+    }
+
+    # Handle multipath configuration after package installation
+    unless (handle_multipath_config(0, $node)) {
+        if ($add_default_multipath_config) {
+            warn "[$node] ✗ Multipath configuration failed\n";
+            return 0;
+        }
     }
 
     # Restart pvedaemon
@@ -846,4 +971,14 @@ if ($remove_plugin) {
 } else {
     say "\n✓ All operations complete: Plugin installed on $total_successful node(s)";
     print "\nCheck introduction to configuration guide at https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start#configuration\n";
+}
+
+if (@warning_nodes) {
+    say "\n⚠ Warnings encountered on " . scalar(@warning_nodes) . " node(s):";
+    for my $warning (@warning_nodes) {
+        my ($node, $msg) = split(': ', $warning, 2);
+        $msg =~ s/JOVIANDSS_WARNING:\s*//;
+        chomp $msg;
+        say "  - $node: $msg";
+    }
 }
