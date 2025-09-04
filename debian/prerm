@@ -1,3 +1,11 @@
 #!/bin/bash
 
+# Clean up Python cache files that may have been created after installation
+if [ -d "/usr/lib/python3/dist-packages/jdssc" ]; then
+    # Remove .pyc files first
+    find /usr/lib/python3/dist-packages/jdssc -name "*.pyc" -delete 2>/dev/null || true
+    # Remove now-empty __pycache__ directories
+    find /usr/lib/python3/dist-packages/jdssc -type d -name "__pycache__" -exec rmdir {} + 2>/dev/null || true
+fi
+
 exit 0

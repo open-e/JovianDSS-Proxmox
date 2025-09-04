@@ -28,7 +28,6 @@ BEGIN {
 # Configuration
 my $REPO = "open-e/JovianDSS-Proxmox";
 my $API_BASE = "https://api.github.com/repos/$REPO/releases";
-my $APT_INSTALL = "apt-get -y -q --reinstall install";
 my $SSH_FLAGS = "-o BatchMode=yes -o StrictHostKeyChecking=accept-new";
 my $REMOTE_TMP = "/tmp/joviandss-plugin.deb";
 
@@ -39,7 +38,7 @@ my $deb_path = "";
 my $use_sudo = 0;
 my $channel = "stable";
 my $pinned_tag = "";
-my $need_restart = 1;
+my $need_restart = 0;
 my $dry_run = 0;
 my $install_all_nodes = 0;
 my $ssh_user = "root";
@@ -47,6 +46,7 @@ my $remove_plugin = 0;
 my $help = 0;
 my $add_default_multipath_config = 0;
 my $force_multipath_config = 0;
+my $use_reinstall = 0;  # Default to NOT using --reinstall flag
 my @warning_nodes = ();  # Track nodes with warnings
 
 # Variables for install operations
@@ -58,7 +58,7 @@ GetOptions(
     "pre"           => sub { $channel = "pre" },
     "version=s"     => \$pinned_tag,
     "sudo"          => sub { $use_sudo = 1 },
-    "no-restart"    => sub { $need_restart = 0 },
+    "restart"       => \$need_restart,
     "dry-run"       => \$dry_run,
     "all-nodes"     => \$install_all_nodes,
     "user=s"        => \$ssh_user,
@@ -66,6 +66,7 @@ GetOptions(
     "remove"        => \$remove_plugin,
     "add-default-multipath-config" => \$add_default_multipath_config,
     "force-multipath-config" => \$force_multipath_config,
+    "reinstall"     => \$use_reinstall,
     "help|h"        => \$help,
 ) or die "Error parsing options\n";
 
@@ -119,10 +120,11 @@ General:
   --version <tag>            Install a specific release tag (e.g. v0.9.9-3)
   --remove                   Remove/uninstall the plugin instead of installing
   --sudo                     Use sudo for commands (default: run without sudo)
-  --no-restart               Do not restart pvedaemon after install/remove
+  --restart                  Restart pvedaemon after install/remove
   --dry-run                  Show what would be done without doing it
   --add-default-multipath-config  Install default multipath configuration
   --force-multipath-config   Overwrite existing multipath config files
+  --reinstall                Use --reinstall apt flag (default: disabled)
   -h, --help                 Show this help
 
 Cluster:
@@ -162,35 +164,86 @@ sub say {
     print "$message\n";
 }
 
+# Output collection functions
+sub create_output_collector {
+    my ($filter_func) = @_;
+    my @collected_lines;
+
+    return {
+        collector => sub {
+            my $line = $_[0];
+            if ($filter_func) {
+                $line = $filter_func->($line);
+                push @collected_lines, $line if defined $line;
+            } else {
+                push @collected_lines, $line;
+            }
+        },
+        get_output => sub { return join("\n", @collected_lines) . "\n" },
+        get_lines => sub { return @collected_lines }
+    };
+}
+
+
+sub create_hash_filter {
+    my ($pattern) = @_;
+    return sub {
+        my $line = $_[0];
+        if ($line =~ /$pattern/) {
+            return $1 if defined $1;  # Return first capture group if exists
+            return $line;             # Return full line if no capture group
+        }
+        return undef;  # Filter out non-matching lines
+    };
+}
+
+# Custom error handlers for different contexts
+sub create_context_error_handler {
+    my ($context, $node_name) = @_;
+    $node_name = $node_name || "local";
+
+    return sub {
+        my $error_line = $_[0];
+        chomp $error_line if $error_line;
+        warn "[$node_name] $context error: $error_line\n" if $error_line;
+    };
+}
+
+sub create_silent_error_handler {
+    return sub { };  # Suppress all errors (for expected failures like test commands)
+}
+
+sub create_checksum_error_handler {
+    my ($file) = @_;
+    return sub {
+        my $error_line = $_[0];
+        chomp $error_line if $error_line;
+        warn "Checksum calculation failed for $file: $error_line\n" if $error_line;
+    };
+}
+
 sub run_cmd {
     my @args = @_;
-    my $capture_output = 0;
-    my $output_ref;
     my $outfunc;
     my $errfunc;
 
-    # Check if last argument is a reference for output capture (backward compatibility)
-    if (ref($args[-1]) eq 'SCALAR') {
-        $output_ref = pop @args;
-        $capture_output = 1;
-    }
     # Check if last argument is a hash with outfunc/errfunc
-    elsif (ref($args[-1]) eq 'HASH') {
+    if (ref($args[-1]) eq 'HASH') {
         my $opts = pop @args;
-        $outfunc = $opts->{outfunc};
-        $errfunc = $opts->{errfunc};
+        $outfunc = $opts->{outfunc} || undef;
+        $errfunc = $opts->{errfunc} || undef;
     }
 
     my @cmd = @args;
 
     if ($dry_run) {
         print "[dry-run] " . join(" ", @cmd) . "\n";
-        if ($capture_output) {
-            # For sha256sum in dry-run, provide a fake hash
+        # In dry-run mode, call outfunc with fake output if provided
+        if ($outfunc) {
             if ($cmd[0] eq 'sha256sum') {
-                $$output_ref = "09a5d9de16e9356342613dfd588fb3f30db181ee01dac845fbd4f65764b4c210  $cmd[1]\n";
+                $outfunc->("09a5d9de16e9356342613dfd588fb3f30db181ee01dac845fbd4f65764b4c210  $cmd[1]");
             } else {
-                $$output_ref = "[dry-run output]";
+                $outfunc->("[dry-run output]");
             }
         }
         return 1;
@@ -201,31 +254,20 @@ sub run_cmd {
         die "Error: PVE::Tools::run_command not available. This script must run on Proxmox VE.\n";
     }
 
+    my $exitcode = 0;
     eval {
-        # Set DEBIAN_FRONTEND for apt operations
-        local $ENV{DEBIAN_FRONTEND} = 'noninteractive';
-        if ($capture_output) {
-            # For output capture, use run_command with outfunc to collect output
-            my @output_lines;
-            PVE::Tools::run_command(\@cmd,
-                outfunc => sub { push @output_lines, $_[0] . "\n" },
-                errfunc => $errfunc || sub { }
-            );
-            $$output_ref = join("", @output_lines);
-        } elsif (defined $outfunc || defined $errfunc) {
-            PVE::Tools::run_command(\@cmd,
-                outfunc => $outfunc || sub { },
-                errfunc => $errfunc || sub { }
-            );
-        } else {
-            PVE::Tools::run_command(\@cmd);
-        }
+        $exitcode = PVE::Tools::run_command(\@cmd,
+            outfunc => $outfunc,
+            errfunc => $errfunc,
+            noerr   => 1
+        );
     };
     if ($@) {
-        warn "Command failed: " . join(" ", @cmd) . "\nError: $@\n";
         return 0;
     }
-    return 1;
+
+    # Return 1 for success (exit code 0), 0 for failure
+    return ($exitcode == 0) ? 1 : 0;
 }
 
 sub need_cmd {
@@ -252,7 +294,7 @@ sub need_cmd {
                     push @output_lines, $1;  # Store the path
                 }
             },
-            errfunc => sub { }  # Ignore errors
+            errfunc => undef  # Use PVE default error handling
         );
         # Command found if whereis returned a path
         $found = (scalar(@output_lines) > 0);
@@ -342,13 +384,13 @@ sub handle_multipath_config {
     }
 
     # Check if template exists
-    unless (execute_command($is_local, $node_or_name, "test", "-f", $template_file, { outfunc => sub { }, errfunc => sub { } })) {
+    unless (execute_command($is_local, $node_or_name, "test", "-f", $template_file, { outfunc => undef, errfunc => sub {} })) {
         warn "[$node_name] ✗ Multipath template not found: $template_file (older package version?)\n";
         return 0;
     }
 
     # Check if target exists
-    my $target_exists = execute_command($is_local, $node_or_name, "test", "-f", $target_file, { outfunc => sub { }, errfunc => sub { } });
+    my $target_exists = execute_command($is_local, $node_or_name, "test", "-f", $target_file, { outfunc => undef, errfunc => sub {} });
 
     if ($target_exists && !$force_multipath_config) {
         push @warning_nodes, "$node_name: Multipath config already exists, use --force-multipath-config to overwrite";
@@ -357,18 +399,18 @@ sub handle_multipath_config {
     }
 
     # Create target directory and copy file
-    unless (execute_command($is_local, $node_or_name, "mkdir", "-p", "/etc/multipath/conf.d", { outfunc => sub { } })) {
+    unless (execute_command($is_local, $node_or_name, "mkdir", "-p", "/etc/multipath/conf.d", { outfunc => undef })) {
         warn "[$node_name] ✗ Failed to create multipath config directory\n";
         return 0;
     }
 
-    unless (execute_command($is_local, $node_or_name, "cp", $template_file, $target_file, { outfunc => sub { } })) {
+    unless (execute_command($is_local, $node_or_name, "cp", $template_file, $target_file, { outfunc => undef })) {
         warn "[$node_name] ✗ Failed to copy multipath config\n";
         return 0;
     }
 
     # Reconfigure multipathd
-    unless (execute_command($is_local, $node_or_name, "multipathd", "-k", "reconfigure", { outfunc => sub { }, errfunc => sub { } })) {
+    unless (execute_command($is_local, $node_or_name, "multipathd", "-k", "reconfigure")) {
         say "[$node_name] ⚠ Warning: Failed to reconfigure multipathd (may not be running)";
     }
 
@@ -384,55 +426,9 @@ sub remote_sudo_prefix {
     return "";
 }
 
-# Check prerequisites
-need_cmd("apt-get");
-need_cmd("awk");
-need_cmd("sed");
-need_cmd("grep");
-need_cmd("sha256sum", 1);
-
-if ($install_all_nodes) {
-    need_cmd("ssh");
-    need_cmd("scp");
-}
-
-# Detect Proxmox (optional check)
-if (!need_cmd("pveversion", 1)) {
-    say "Warning: 'pveversion' not found. Proceeding anyway (Debian-based install assumed).";
-}
-
-# Get local node info using PVE modules if available
-my $local_node_short;
-my @local_ips;
-my $cluster_name;
-if (defined &PVE::INotify::nodename) {
-    $local_node_short = PVE::INotify::nodename();
-} else {
-    # Fallback to hostname command
-    $local_node_short = `hostname -s 2>/dev/null` || `hostname 2>/dev/null`;
-    chomp $local_node_short;
-    $local_node_short =~ s/\..*//;  # Remove domain part
-}
-
-# Get cluster name
-if (need_cmd("pvecm", 1)) {
-    my $status_output = `pvecm status 2>/dev/null`;
-    if ($status_output && $status_output =~ /Name:\s*(\S+)/) {
-        $cluster_name = $1;
-    }
-}
-$cluster_name = $cluster_name || "proxmox-cluster";
-
-# Get local IP addresses for filtering
-my $local_ips_output = `ip addr show 2>/dev/null | grep 'inet ' | awk '{print \$2}' | cut -d'/' -f1`;
-if ($local_ips_output) {
-    @local_ips = split /\n/, $local_ips_output;
-    chomp @local_ips;
-    push @local_ips, '127.0.0.1', 'localhost';  # Add standard local addresses
-}
-
-# Only resolve and download for install operations
-if (!$remove_plugin) {
+sub fetch_release_metadata {
+    my ($channel, $pinned_tag) = @_;
+    
     # Resolve release
     if ($pinned_tag) {
         say "Fetching release: $pinned_tag";
@@ -454,8 +450,10 @@ if (!$remove_plugin) {
     }
 
     my $response = $ua->get($url);
-    die "Error: Could not fetch release metadata from GitHub: " . $response->status_line . "\n"
-        unless $response->is_success;
+    unless ($response->is_success) {
+        say "✗ Error: Could not fetch release metadata from GitHub: " . $response->status_line;
+        return ();
+    }
 
     my $rel_json;
     eval {
@@ -466,10 +464,13 @@ if (!$remove_plugin) {
             $rel_json = decode_json($response->content);
         }
     };
-    die "Error: Invalid JSON response from GitHub API\n" if $@;
+    if ($@) {
+        say "✗ Error: Invalid JSON response from GitHub API";
+        return ();
+    }
 
     # Extract tag and URLs
-
+    my $tag;
     if ($pinned_tag) {
         $tag = $pinned_tag;
         # Find the matching release
@@ -482,7 +483,10 @@ if (!$remove_plugin) {
                 }
             }
         }
-        die "Error: Release tag not found: $pinned_tag\n" unless $matching_release;
+        unless ($matching_release) {
+            say "✗ Error: Release tag not found: $pinned_tag";
+            return ();
+        }
         $rel_json = $matching_release;
     } else {
         if ($channel eq "pre" && ref($rel_json) eq 'ARRAY') {
@@ -492,7 +496,7 @@ if (!$remove_plugin) {
     }
 
     # Extract download URLs and checksum
-    my $expected_sha256;
+    my ($deb_url, $sha_url, $expected_sha256);
     for my $asset (@{$rel_json->{assets}}) {
         my $url = $asset->{browser_download_url};
         if ($url =~ /\.deb$/) {
@@ -514,181 +518,367 @@ if (!$remove_plugin) {
         }
     }
 
-    die "Error: Could not locate a .deb asset in $tag\n" unless $deb_url;
-
-    say "Downloading $tag package...";
-
-    # Download .deb file
-    $deb_path = "$tmpdir/plugin.deb";
-    my $deb_response = $ua->get($deb_url, ':content_file' => $deb_path);
-    die "Error downloading .deb file: " . $deb_response->status_line . "\n"
-        unless $deb_response->is_success;
-
-    # Verify checksum if available
-    if ($expected_sha256 || $sha_url) {
-        if (need_cmd("sha256sum", 1)) {
-            say "Verifying package checksum...";
-            my $file_sum = "";
-            run_cmd("sha256sum", $deb_path, \$file_sum);
-            $file_sum =~ /^([a-f0-9]{64})/;
-            $file_sum = $1;
-
-            my $ref_sum;
-
-            if ($expected_sha256) {
-                # Use SHA256 from GitHub API response
-                $ref_sum = $expected_sha256;
-            } elsif ($sha_url) {
-                # Fallback: download and parse separate checksum file
-                my $checksum_file = "$tmpdir/checksums.txt";
-                my $sha_response = $ua->get($sha_url, ':content_file' => $checksum_file);
-
-                if ($sha_response->is_success) {
-                    my $deb_basename = basename($deb_url);
-                    run_cmd("sh", "-c", "grep -E '$deb_basename' '$checksum_file' 2>/dev/null | grep -Eo '^[a-f0-9]{64}' | head -n1", \$ref_sum);
-                    chomp $ref_sum if $ref_sum;
-                }
-            }
-
-            if ($ref_sum) {
-                if ($file_sum ne $ref_sum) {
-                    say "✗ Checksum verification failed!";
-                    say "Expected: $ref_sum";
-                    say "Got:      $file_sum";
-                    die "Error: Package integrity check failed. Download may be corrupted.\n";
-                } else {
-                    say "✓ Package verified.";
-                }
-            } else {
-                say "⚠ Checksum verification skipped (no valid checksum found).";
-            }
-        } else {
-            say "⚠ Checksum verification skipped (sha256sum command not available).";
-        }
-    } else {
-        say "⚠ Checksum verification skipped (no checksum available).";
+    unless ($deb_url) {
+        say "✗ Error: Could not locate a .deb asset in $tag";
+        return ();
     }
 
-} # End of install-only logic
+    return ($tag, $deb_url, $expected_sha256, $sha_url);
+}
+
+sub download_package {
+    my ($deb_url, $tmpdir) = @_;
+    
+    say "Downloading package...";
+
+    my $ua = LWP::UserAgent->new(timeout => 30);
+    my $deb_path = "$tmpdir/plugin.deb";
+    my $deb_response = $ua->get($deb_url, ':content_file' => $deb_path);
+    
+    unless ($deb_response->is_success) {
+        say "✗ Error downloading .deb file: " . $deb_response->status_line;
+        return "";
+    }
+
+    return $deb_path;
+}
+
+sub verify_package_checksum {
+    my ($deb_path, $expected_sha256, $sha_url, $deb_url) = @_;
+    
+    # Skip verification if no checksum available
+    unless ($expected_sha256 || $sha_url) {
+        say "⚠ Checksum verification skipped (no checksum available).";
+        return 1;
+    }
+
+    # Skip verification if sha256sum not available
+    unless (need_cmd("sha256sum", 1)) {
+        say "⚠ Checksum verification skipped (sha256sum command not available).";
+        return 1;
+    }
+
+    say "Verifying package checksum...";
+    my $collector = create_output_collector(create_hash_filter(qr/^([a-f0-9]{64})/));
+    run_cmd("sha256sum", $deb_path, { 
+        outfunc => $collector->{collector}, 
+        errfunc => create_checksum_error_handler($deb_path) 
+    });
+    my $file_sum = ($collector->{get_lines}())[0] || "";
+
+    my $ref_sum;
+
+    if ($expected_sha256) {
+        # Use SHA256 from GitHub API response
+        $ref_sum = $expected_sha256;
+    } elsif ($sha_url) {
+        # Fallback: download and parse separate checksum file
+        my $ua = LWP::UserAgent->new(timeout => 30);
+        my $checksum_file = "$tmpdir/checksums.txt";
+        my $sha_response = $ua->get($sha_url, ':content_file' => $checksum_file);
+
+        if ($sha_response->is_success) {
+            my $deb_basename = basename($deb_url);
+            my $collector = create_output_collector(create_hash_filter(qr/^([a-f0-9]{64})/));
+            run_cmd("sh", "-c", "grep -E '$deb_basename' '$checksum_file' 2>/dev/null | grep -Eo '^[a-f0-9]{64}' | head -n1", { outfunc => $collector->{collector} });
+            $ref_sum = ($collector->{get_lines}())[0] || "";
+        }
+    }
+
+    if ($ref_sum) {
+        if ($file_sum ne $ref_sum) {
+            say "✗ Checksum verification failed!";
+            say "Expected: $ref_sum";
+            say "Got:      $file_sum";
+            return 0;
+        } else {
+            say "✓ Package verified.";
+            return 1;
+        }
+    } else {
+        say "⚠ Checksum verification skipped (no valid checksum found).";
+        return 1;
+    }
+}
+
+# Generate unified apt install command
+sub get_apt_install_command {
+    my $package_path = shift;
+    my $cmd = "apt-get -y -q";
+    $cmd .= " --reinstall" if $use_reinstall;
+    $cmd .= " install $package_path";
+    return $cmd;
+}
+
+# Generate unified apt remove command
+sub get_apt_remove_command {
+    my $package_name = shift;
+    my $cmd = "apt-get -y -q remove $package_name";
+    return $cmd;
+}
+
 
 # Remove plugin locally
-sub remove_local {
-    # Get local node display name similar to remote nodes
-    my $local_display_name;
-    if ($local_node_short) {
-        # Try to get first non-loopback IP for display
-        my $display_ip = "";
-        for my $ip (@local_ips) {
-            next if $ip eq '127.0.0.1' || $ip eq 'localhost';
-            $display_ip = $ip;
-            last;
-        }
-        if ($display_ip && $display_ip ne $local_node_short) {
-            $local_display_name = "$local_node_short ($display_ip)";
+sub remove_node {
+    my $is_local = shift;
+    my $node_or_name = shift;  # For local: display name, for remote: node IP/hostname
+    my $local_node_short = shift;  # Only used for local operations
+    my $local_ips_ref = shift;     # Only used for local operations
+
+    # Generate display name
+    my $display_name;
+    if ($is_local) {
+        # Get local node display name similar to remote nodes
+        if ($local_node_short) {
+            # Try to get first non-loopback IP for display
+            my $display_ip = "";
+            for my $ip (@$local_ips_ref) {
+                next if $ip eq '127.0.0.1' || $ip eq 'localhost';
+                $display_ip = $ip;
+                last;
+            }
+            if ($display_ip && $display_ip ne $local_node_short) {
+                $display_name = "$local_node_short ($display_ip)";
+            } else {
+                $display_name = $local_node_short;
+            }
         } else {
-            $local_display_name = $local_node_short;
+            $display_name = "local node";
         }
     } else {
-        $local_display_name = "local node";
+        $display_name = get_node_display_name($node_or_name);
     }
-
-    say "Removing plugin from node $local_display_name";
-    my $sudo = maybe_sudo();
-    my @cmd;
-    if ($sudo) {
-        @cmd = ($sudo, "apt-get", "-y", "-q", "remove", "open-e-joviandss-proxmox-plugin");
-    } else {
-        @cmd = ("apt-get", "-y", "-q", "remove", "open-e-joviandss-proxmox-plugin");
-    }
-
-    unless (run_cmd(@cmd, { outfunc => sub { } })) {
-        die "Error: Local removal failed\n";
-    }
-
-    if ($need_restart) {
-        my @restart_cmd;
+    
+    say "Removing plugin from node $display_name";
+    
+    # Remove package
+    my $removal_success;
+    if ($is_local) {
+        # Local removal
+        my $sudo = maybe_sudo();
+        my $apt_cmd = get_apt_remove_command("open-e-joviandss-proxmox-plugin");
+        my @cmd;
         if ($sudo) {
-            @restart_cmd = ($sudo, "systemctl", "restart", "pvedaemon");
+            @cmd = ($sudo, split(/\s+/, $apt_cmd));
         } else {
-            @restart_cmd = ("systemctl", "restart", "pvedaemon");
+            @cmd = split(/\s+/, $apt_cmd);
         }
-        unless (run_cmd(@restart_cmd, { outfunc => sub { } })) {
-            die "Error: Failed to restart pvedaemon locally\n";
+        
+        $removal_success = run_cmd(@cmd, { 
+            outfunc => undef, 
+            errfunc => create_context_error_handler("Package removal") 
+        });
+    } else {
+        # Remote removal
+        my $ssh_tgt = "$ssh_user\@$node_or_name";
+        my $r_sudo = remote_sudo_prefix();
+        
+        my $apt_cmd = get_apt_remove_command("open-e-joviandss-proxmox-plugin");
+        $removal_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}${apt_cmd}", { 
+            outfunc => undef, 
+            errfunc => create_context_error_handler("Remote package removal", $display_name) 
+        });
+    }
+    
+    # Handle removal failure
+    unless ($removal_success) {
+        if ($is_local) {
+            die "Error: Local removal failed\n";
+        } else {
+            warn "[$node_or_name] ✗ Failed to remove package\n";
+            return 0;
         }
     }
+    
+    # Restart pvedaemon if needed
+    if ($need_restart) {
+        my $restart_success;
+        if ($is_local) {
+            my $sudo = maybe_sudo();
+            my @restart_cmd;
+            if ($sudo) {
+                @restart_cmd = ($sudo, "systemctl", "restart", "pvedaemon");
+            } else {
+                @restart_cmd = ("systemctl", "restart", "pvedaemon");
+            }
+            $restart_success = run_cmd(@restart_cmd, { 
+                outfunc => undef, 
+                errfunc => create_context_error_handler("Service restart") 
+            });
+        } else {
+            my $ssh_tgt = "$ssh_user\@$node_or_name";
+            my $r_sudo = remote_sudo_prefix();
+            $restart_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pvedaemon", { 
+                outfunc => undef, 
+                errfunc => create_context_error_handler("Remote service restart", $display_name) 
+            });
+        }
+        
+        unless ($restart_success) {
+            if ($is_local) {
+                die "Error: Failed to restart pvedaemon locally\n";
+            } else {
+                warn "[$node_or_name] ✗ Failed to restart pvedaemon\n";
+                return 0;
+            }
+        }
+    }
+    
+    say "✓ Removal completed successfully on node $display_name\n";
+    return 1;
+}
 
-    say "✓ Removal completed successfully on node $local_display_name\n";
+sub remove_local {
+    my ($local_node_short, $local_ips_ref) = @_;
+    return remove_node(1, undef, $local_node_short, $local_ips_ref);
 }
 
 # Install locally
-sub install_local {
-    # Get local node display name similar to remote nodes
-    my $local_display_name;
-    if ($local_node_short) {
-        # Try to get first non-loopback IP for display
-        my $display_ip = "";
-        for my $ip (@local_ips) {
-            next if $ip eq '127.0.0.1' || $ip eq 'localhost';
-            $display_ip = $ip;
-            last;
-        }
-        if ($display_ip && $display_ip ne $local_node_short) {
-            $local_display_name = "$local_node_short ($display_ip)";
+sub install_node {
+    my $is_local = shift;
+    my $node_or_name = shift;  # For local: display name, for remote: node IP/hostname
+    my $local_node_short = shift;  # Only used for local operations
+    my $local_ips_ref = shift;     # Only used for local operations
+    
+    # Generate display name
+    my $display_name;
+    if ($is_local) {
+        # Get local node display name similar to remote nodes
+        if ($local_node_short) {
+            # Try to get first non-loopback IP for display
+            my $display_ip = "";
+            for my $ip (@$local_ips_ref) {
+                next if $ip eq '127.0.0.1' || $ip eq 'localhost';
+                $display_ip = $ip;
+                last;
+            }
+            if ($display_ip && $display_ip ne $local_node_short) {
+                $display_name = "$local_node_short ($display_ip)";
+            } else {
+                $display_name = $local_node_short;
+            }
         } else {
-            $local_display_name = $local_node_short;
+            $display_name = "local node";
         }
     } else {
-        $local_display_name = "local node";
+        $display_name = get_node_display_name($node_or_name);
     }
-
-    say "Installing plugin on node $local_display_name";
-
-
-    my $sudo = maybe_sudo();
-    my @cmd;
-    if ($sudo) {
-        @cmd = ($sudo, split(/\s+/, $APT_INSTALL));
-    } else {
-        @cmd = split(/\s+/, $APT_INSTALL);
-    }
-    push @cmd, $deb_path;
-
-
-    unless (run_cmd(@cmd, { outfunc => sub { } })) {
-        die "Error: Local installation failed\n";
-    }
-
-    # Handle multipath configuration after package installation
-    unless (handle_multipath_config(1, $local_display_name)) {
-        if ($add_default_multipath_config) {
-            die "Error: Multipath configuration failed on local node\n";
-        }
-    }
-
-    if ($need_restart) {
-        my @restart_cmd;
+    
+    say "Installing plugin on node $display_name";
+    
+    # Install package
+    my $install_success;
+    if ($is_local) {
+        # Local installation
+        my $sudo = maybe_sudo();
+        my $apt_cmd = get_apt_install_command($deb_path);
+        my @cmd;
         if ($sudo) {
-            @restart_cmd = ($sudo, "systemctl", "restart", "pvedaemon");
+            @cmd = ($sudo, split(/\s+/, $apt_cmd));
         } else {
-            @restart_cmd = ("systemctl", "restart", "pvedaemon");
+            @cmd = split(/\s+/, $apt_cmd);
         }
-        unless (run_cmd(@restart_cmd, { outfunc => sub { } })) {
-            die "Error: Failed to restart pvedaemon locally\n";
+        
+        $install_success = run_cmd(@cmd, { 
+            outfunc => undef, 
+            errfunc => create_context_error_handler("Package installation") 
+        });
+    } else {
+        # Remote installation
+        my $ssh_tgt = "$ssh_user\@$node_or_name";
+        my $r_sudo = remote_sudo_prefix();
+        
+        # Copy package
+        unless (run_cmd("scp", split(/\s+/, $SSH_FLAGS), $deb_path, "$ssh_tgt:$REMOTE_TMP", { 
+            outfunc => undef, 
+            errfunc => create_context_error_handler("Remote file transfer", $display_name) 
+        })) {
+            warn "[$node_or_name] ✗ Failed to copy package\n";
+            return 0;
+        }
+        
+        # Install package
+        my $apt_cmd = get_apt_install_command($REMOTE_TMP);
+        $install_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}${apt_cmd}", { 
+            outfunc => undef, 
+            errfunc => create_context_error_handler("Remote package installation", $display_name) 
+        });
+    }
+    
+    # Handle installation failure
+    unless ($install_success) {
+        if ($is_local) {
+            die "Error: Local installation failed\n";
+        } else {
+            warn "[$node_or_name] ✗ Failed to install package\n";
+            return 0;
         }
     }
+    
+    # Handle multipath configuration after package installation
+    unless (handle_multipath_config($is_local, $is_local ? $display_name : $node_or_name)) {
+        if ($add_default_multipath_config) {
+            if ($is_local) {
+                die "Error: Multipath configuration failed on local node\n";
+            } else {
+                warn "[$node_or_name] ✗ Multipath configuration failed\n";
+                return 0;
+            }
+        }
+    }
+    
+    # Restart pvedaemon if needed
+    if ($need_restart) {
+        my $restart_success;
+        if ($is_local) {
+            my $sudo = maybe_sudo();
+            my @restart_cmd;
+            if ($sudo) {
+                @restart_cmd = ($sudo, "systemctl", "restart", "pvedaemon");
+            } else {
+                @restart_cmd = ("systemctl", "restart", "pvedaemon");
+            }
+            $restart_success = run_cmd(@restart_cmd, { 
+                outfunc => undef, 
+                errfunc => create_context_error_handler("Service restart") 
+            });
+        } else {
+            my $ssh_tgt = "$ssh_user\@$node_or_name";
+            my $r_sudo = remote_sudo_prefix();
+            $restart_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pvedaemon", { 
+                outfunc => undef, 
+                errfunc => create_context_error_handler("Remote service restart", $display_name) 
+            });
+        }
+        
+        unless ($restart_success) {
+            if ($is_local) {
+                die "Error: Failed to restart pvedaemon locally\n";
+            } else {
+                warn "[$node_or_name] ✗ Failed to restart pvedaemon\n";
+                return 0;
+            }
+        }
+    }
+    
+    say "✓ Installation completed successfully on node $display_name\n";
+    return 1;
+}
 
-    say "✓ Installation completed successfully on node $local_display_name\n";
+sub install_local {
+    my ($local_node_short, $local_ips_ref) = @_;
+    return install_node(1, undef, $local_node_short, $local_ips_ref);
 }
 
 # Discover cluster nodes with their IP addresses
 sub is_local_node {
-    my $node = shift;
+    my ($node, $local_node_short, $local_ips_ref) = @_;
 
     # Check if it's the local hostname
     return 1 if ($local_node_short && $node eq $local_node_short);
 
     # Check against local IP addresses
-    return 1 if (grep { $_ eq $node } @local_ips);
+    return 1 if (grep { $_ eq $node } @$local_ips_ref);
 
     return 0;
 }
@@ -760,11 +950,13 @@ sub discover_all_nodes_with_info {
 }
 
 sub discover_remote_nodes {
+    my ($local_node_short, $local_ips_ref) = @_;
     my @all_node_info = discover_all_nodes_with_info();
     my @remote_nodes;
 
     for my $node (@all_node_info) {
-        unless (is_local_node($node->{name}) || is_local_node($node->{ip})) {
+        unless (is_local_node($node->{name}, $local_node_short, $local_ips_ref) || 
+                is_local_node($node->{ip}, $local_node_short, $local_ips_ref)) {
             push @remote_nodes, $node->{ip};  # Return IP for compatibility
         }
     }
@@ -790,70 +982,12 @@ sub get_node_display_name {
 
 sub remove_remote_node {
     my $node = shift;
-    my $ssh_tgt = "$ssh_user\@$node";
-    my $r_sudo = remote_sudo_prefix();
-
-    my $display_name = get_node_display_name($node);
-    say "Removing plugin from node $display_name";
-
-    # Remove package
-    unless (run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}DEBIAN_FRONTEND=noninteractive apt-get -y -q remove open-e-joviandss-proxmox-plugin", { outfunc => sub { } })) {
-        warn "[$node] ✗ Failed to remove package\n";
-        return 0;
-    }
-
-    # Restart pvedaemon
-    if ($need_restart) {
-        unless (run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pvedaemon", { outfunc => sub { } })) {
-            warn "[$node] ✗ Failed to restart pvedaemon\n";
-            return 0;
-        }
-    }
-
-    $display_name = get_node_display_name($node);
-    say "✓ Removal completed successfully on node $display_name\n";
-    return 1;
+    return remove_node(0, $node);
 }
 
 sub install_remote_node {
     my $node = shift;
-    my $ssh_tgt = "$ssh_user\@$node";
-    my $r_sudo = remote_sudo_prefix();
-
-    my $display_name = get_node_display_name($node);
-    say "Installing plugin on node $display_name";
-
-    # Copy package
-    unless (run_cmd("scp", split(/\s+/, $SSH_FLAGS), $deb_path, "$ssh_tgt:$REMOTE_TMP", { outfunc => sub { } })) {
-        warn "[$node] ✗ Failed to copy package\n";
-        return 0;
-    }
-
-    # Install package
-    unless (run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}apt-get -y -q --reinstall install $REMOTE_TMP", { outfunc => sub { } })) {
-        warn "[$node] ✗ Failed to install package\n";
-        return 0;
-    }
-
-    # Handle multipath configuration after package installation
-    unless (handle_multipath_config(0, $node)) {
-        if ($add_default_multipath_config) {
-            warn "[$node] ✗ Multipath configuration failed\n";
-            return 0;
-        }
-    }
-
-    # Restart pvedaemon
-    if ($need_restart) {
-        unless (run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pvedaemon", { outfunc => sub { } })) {
-            warn "[$node] ✗ Failed to restart pvedaemon\n";
-            return 0;
-        }
-    }
-
-    $display_name = get_node_display_name($node);
-    say "✓ Installation completed successfully on node $display_name\n";
-    return 1;
+    return install_node(0, $node);
 }
 
 sub perform_remote_operations {
@@ -894,91 +1028,164 @@ sub perform_remote_operations {
     return $success_count;
 }
 
+sub main {
+    # Check prerequisites
+    need_cmd("apt-get");
+    need_cmd("awk");
+    need_cmd("sed");
+    need_cmd("grep");
+    need_cmd("sha256sum", 1);
 
-my @remote_targets;
-my $process_local = 1;  # Always process local node
-my $total_successful = 0;  # Track total successful operations
+    if ($install_all_nodes) {
+        need_cmd("ssh");
+        need_cmd("scp");
+    }
 
-# Determine what operations will be performed
-if ($install_all_nodes) {
-    say "Identifying nodes belonging to cluster $cluster_name";
-    my @nodes = discover_remote_nodes();
-    if (@nodes) {
-        push @remote_targets, @nodes;
+    # Detect Proxmox (optional check)
+    if (!need_cmd("pveversion", 1)) {
+        say "Warning: 'pveversion' not found. Proceeding anyway (Debian-based install assumed).";
+    }
 
-        # Show confirmation for ALL operations (local + remote)
-        my $operation = $remove_plugin ? "removed from" : "installed on";
-        if ($remove_plugin) {
-            say "Plugin will be $operation the following nodes:";
+    # Get local node info using PVE modules if available
+    my $local_node_short;
+    my @local_ips;
+    my $cluster_name;
+    if (defined &PVE::INotify::nodename) {
+        $local_node_short = PVE::INotify::nodename();
+    } else {
+        # Fallback to hostname command
+        $local_node_short = `hostname -s 2>/dev/null` || `hostname 2>/dev/null`;
+        chomp $local_node_short;
+        $local_node_short =~ s/\..*//;  # Remove domain part
+    }
+
+    # Get cluster name
+    if (need_cmd("pvecm", 1)) {
+        my $status_output = `pvecm status 2>/dev/null`;
+        if ($status_output && $status_output =~ /Name:\s*(\S+)/) {
+            $cluster_name = $1;
+        }
+    }
+    $cluster_name = $cluster_name || "proxmox-cluster";
+
+    # Get local IP addresses for filtering
+    my $local_ips_output = `ip addr show 2>/dev/null | grep 'inet ' | awk '{print \$2}' | cut -d'/' -f1`;
+    if ($local_ips_output) {
+        @local_ips = split /\n/, $local_ips_output;
+        chomp @local_ips;
+        push @local_ips, '127.0.0.1', 'localhost';  # Add standard local addresses
+    }
+
+    # Only resolve and download for install operations
+    if (!$remove_plugin) {
+        # Fetch release metadata
+        my ($tag, $deb_url, $expected_sha256, $sha_url) = fetch_release_metadata($channel, $pinned_tag);
+        unless ($tag) {
+            return 0;  # fetch_release_metadata already printed error
+        }
+
+        # Download package
+        $deb_path = download_package($deb_url, $tmpdir);
+        unless ($deb_path) {
+            return 0;  # download_package already printed error
+        }
+
+        # Verify package checksum
+        unless (verify_package_checksum($deb_path, $expected_sha256, $sha_url, $deb_url)) {
+            return 0;  # verify_package_checksum already printed error
+        }
+    }
+
+    # Core application logic
+    my @remote_targets;
+    my $process_local = 1;  # Always process local node
+    my $total_successful = 0;  # Track total successful operations
+
+    # Determine what operations will be performed
+    if ($install_all_nodes) {
+        say "Identifying nodes belonging to cluster $cluster_name";
+        my @nodes = discover_remote_nodes($local_node_short, \@local_ips);
+        if (@nodes) {
+            push @remote_targets, @nodes;
+
+            # Show confirmation for ALL operations (local + remote)
+            my $operation = $remove_plugin ? "removed from" : "installed on";
+            if ($remove_plugin) {
+                say "Plugin will be $operation the following nodes:";
+            } else {
+                say "Plugin $tag will be $operation the following nodes:";
+            }
+
+            # Get local node display name with IP
+            my $local_display = $local_node_short || "local node";
+            # If local display doesn't include IP, try to add one
+            if ($local_display eq ($local_node_short || "local node") && @local_ips) {
+                my $local_ip = "";
+                for my $ip (@local_ips) {
+                    next if $ip eq '127.0.0.1' || $ip eq 'localhost';
+                    $local_ip = $ip;
+                    last;
+                }
+                if ($local_ip) {
+                    $local_display = "$local_node_short ($local_ip)";
+                }
+            }
+            say "  $local_display [LOCAL]";
+            for my $node (@nodes) {
+                my $display_name = get_node_display_name($node);
+                say "  $display_name";
+            }
+            say "";
+
+            my $confirm = simple_readline("Continue? (y/n): ");
+            unless ($confirm && $confirm =~ /^y$/i) {
+                say "Operation cancelled.";
+                return 0;
+            }
+            say "";
         } else {
-            say "Plugin $tag will be $operation the following nodes:";
+            say "No remote nodes found - single node cluster or all nodes are local";
+            say "";
         }
-
-        # Get local node display name with IP
-        my $local_display = get_node_display_name($local_node_short || "local node");
-        # If local display doesn't include IP, try to add one
-        if ($local_display eq ($local_node_short || "local node") && @local_ips) {
-            my $local_ip = "";
-            for my $ip (@local_ips) {
-                next if $ip eq '127.0.0.1' || $ip eq 'localhost';
-                $local_ip = $ip;
-                last;
-            }
-            if ($local_ip) {
-                $local_display = "$local_node_short ($local_ip)";
-            }
-        }
-        say "  $local_display [LOCAL]";
-        for my $node (@nodes) {
-            my $display_name = get_node_display_name($node);
-            say "  $display_name";
-        }
-        say "";
-
-        my $confirm = simple_readline("Continue? (y/n): ");
-        unless ($confirm && $confirm =~ /^y$/i) {
-            say "Operation cancelled.";
-            exit 0;
-        }
-        say "";
-    } else {
-        say "No remote nodes found - single node cluster or all nodes are local";
-        say "";
     }
-}
 
-# Now perform the operations after confirmation
-if ($process_local) {
+    # Now perform the operations after confirmation
+    if ($process_local) {
+        if ($remove_plugin) {
+            remove_local($local_node_short, \@local_ips);
+            $total_successful++;
+        } else {
+            install_local($local_node_short, \@local_ips);
+            $total_successful++;
+        }
+    }
+
+    # Handle remote operations
+    if (@remote_targets) {
+        my %seen;
+        @remote_targets = grep { !$seen{$_}++ } @remote_targets;
+        my $remote_successful = perform_remote_operations(@remote_targets);
+        $total_successful += $remote_successful;
+    }
+
     if ($remove_plugin) {
-        remove_local();
-        $total_successful++;
+        say "\n✓ All operations complete: Plugin removed from $total_successful node(s)";
     } else {
-        install_local();
-        $total_successful++;
+        say "\n✓ All operations complete: Plugin installed on $total_successful node(s)";
+        print "\nCheck introduction to configuration guide at https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start#configuration\n";
     }
-}
 
-# Handle remote operations
-if (@remote_targets) {
-    my %seen;
-    @remote_targets = grep { !$seen{$_}++ } @remote_targets;
-    my $remote_successful = perform_remote_operations(@remote_targets);
-    $total_successful += $remote_successful;
-}
-
-if ($remove_plugin) {
-    say "\n✓ All operations complete: Plugin removed from $total_successful node(s)";
-} else {
-    say "\n✓ All operations complete: Plugin installed on $total_successful node(s)";
-    print "\nCheck introduction to configuration guide at https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start#configuration\n";
-}
-
-if (@warning_nodes) {
-    say "\n⚠ Warnings encountered on " . scalar(@warning_nodes) . " node(s):";
-    for my $warning (@warning_nodes) {
-        my ($node, $msg) = split(': ', $warning, 2);
-        $msg =~ s/JOVIANDSS_WARNING:\s*//;
-        chomp $msg;
-        say "  - $node: $msg";
+    if (@warning_nodes) {
+        say "\n⚠ Warnings encountered on " . scalar(@warning_nodes) . " node(s):";
+        for my $warning (@warning_nodes) {
+            my ($node, $msg) = split(': ', $warning, 2);
+            $msg =~ s/JOVIANDSS_WARNING:\s*//;
+            chomp $msg;
+            say "  - $node: $msg";
+        }
     }
+    return 1;  # Success
 }
+
+# Run the main function and exit with its return code
+exit(main() ? 0 : 1);
