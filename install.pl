@@ -32,45 +32,48 @@ my $SSH_FLAGS = "-o BatchMode=yes -o StrictHostKeyChecking=accept-new";
 my $REMOTE_TMP = "/tmp/joviandss-plugin.deb";
 
 # Global variables
-my $tmpdir = tempdir(CLEANUP => 1);
-chmod 0755, $tmpdir;
-my $deb_path = "";
-my $use_sudo = 0;
-my $channel = "stable";
-my $pinned_tag = "";
-my $need_restart = 0;
-my $dry_run = 0;
-my $install_all_nodes = 0;
-my $ssh_user = "root";
-my $remove_plugin = 0;
-my $help = 0;
-my $add_default_multipath_config = 0;
-my $force_multipath_config = 0;
-my $use_reinstall = 0;  # Default to NOT using --reinstall flag
-my @warning_nodes = ();  # Track nodes with warnings
+my $TMPDIR = tempdir(CLEANUP => 1);
+chmod 0755, $TMPDIR;
+my $DEB_PATH = "";
+my $USE_SUDO = 0;
+my $CHANNEL = "stable";
+my $PINNED_TAG = "";
+my $NEED_RESTART = 0;
+my $DRY_RUN = 0;
+my $ALL_NODES_OPERATION = 0;
+my $SSH_USER = "root";
+my $REMOVE_PLUGIN = 0;
+my $HELP = 0;
+my $ADD_DEFAULT_MULTIPATH_CONFIG = 0;
+my $FORCE_MULTIPATH_CONFIG = 0;
+my $USE_REINSTALL = 0;  # Default to NOT using --reinstall flag
+my $VERBOSE = 0;  # Default to non-verbose output
+my @WARNING_NODES = ();  # Track nodes with warnings
+my @SKIPPED_NODES = ();  # Track nodes where operations were skipped
 
 # Variables for install operations
-my $tag = "";
-my ($deb_url, $sha_url);
+my $TAG = "";
+my ($DEB_URL, $SHA_URL);
 
 # Parse command line options
 GetOptions(
-    "pre"           => sub { $channel = "pre" },
-    "version=s"     => \$pinned_tag,
-    "sudo"          => sub { $use_sudo = 1 },
-    "restart"       => \$need_restart,
-    "dry-run"       => \$dry_run,
-    "all-nodes"     => \$install_all_nodes,
-    "user=s"        => \$ssh_user,
+    "pre"           => sub { $CHANNEL = "pre" },
+    "version=s"     => \$PINNED_TAG,
+    "sudo"          => sub { $USE_SUDO = 1 },
+    "restart"       => \$NEED_RESTART,
+    "dry-run"       => \$DRY_RUN,
+    "all-nodes"     => \$ALL_NODES_OPERATION,
+    "user=s"        => \$SSH_USER,
     "ssh-flags=s"   => \$SSH_FLAGS,
-    "remove"        => \$remove_plugin,
-    "add-default-multipath-config" => \$add_default_multipath_config,
-    "force-multipath-config" => \$force_multipath_config,
-    "reinstall"     => \$use_reinstall,
-    "help|h"        => \$help,
+    "remove"        => \$REMOVE_PLUGIN,
+    "add-default-multipath-config" => \$ADD_DEFAULT_MULTIPATH_CONFIG,
+    "force-multipath-config" => \$FORCE_MULTIPATH_CONFIG,
+    "reinstall"     => \$USE_REINSTALL,
+    "verbose|v"     => \$VERBOSE,
+    "help|h"        => \$HELP,
 ) or die "Error parsing options\n";
 
-if ($help) {
+if ($HELP) {
     print_usage();
     exit 0;
 }
@@ -125,6 +128,7 @@ General:
   --add-default-multipath-config  Install default multipath configuration
   --force-multipath-config   Overwrite existing multipath config files
   --reinstall                Use --reinstall apt flag (default: disabled)
+  -v, --verbose              Show detailed output during installation/removal
   -h, --help                 Show this help
 
 Cluster:
@@ -222,6 +226,47 @@ sub create_checksum_error_handler {
     };
 }
 
+sub create_package_removal_error_handler {
+    my ($context, $display_name, $package_not_installed_ref) = @_;
+    return sub {
+        my $line = shift;
+        chomp $line if $line;
+        # Check if error indicates package is not installed
+        if ($line && ($line =~ /Package '.*' is not installed/ ||
+            $line =~ /Unable to locate package/ ||
+            $line =~ /dpkg: warning:.*not installed/)) {
+            # Set flag to indicate this should be treated as success
+            $$package_not_installed_ref = 1 if $package_not_installed_ref;
+            return;  # Don't print this as an error
+        }
+        # Handle other errors normally
+        if ($line) {
+            if ($display_name) {
+                say "[$display_name] Error during $context: $line";
+            } else {
+                say "Error during $context: $line";
+            }
+        }
+    };
+}
+
+sub get_output_handler {
+    my ($node_name) = @_;
+    if ($VERBOSE) {
+        return sub {
+            my $line = shift;
+            chomp $line if defined $line;
+            if ($node_name) {
+                say "[$node_name] $line" if $line;
+            } else {
+                say $line if $line;
+            }
+        };
+    } else {
+        return sub { };  # Suppress output
+    }
+}
+
 sub run_cmd {
     my @args = @_;
     my $outfunc;
@@ -236,7 +281,7 @@ sub run_cmd {
 
     my @cmd = @args;
 
-    if ($dry_run) {
+    if ($DRY_RUN) {
         print "[dry-run] " . join(" ", @cmd) . "\n";
         # In dry-run mode, call outfunc with fake output if provided
         if ($outfunc) {
@@ -319,7 +364,7 @@ sub need_cmd {
 }
 
 sub maybe_sudo {
-    if ($use_sudo) {
+    if ($USE_SUDO) {
         return "sudo";
     }
     return "";
@@ -352,7 +397,7 @@ sub execute_command {
             push @quoted_cmd, "'$arg'";
         }
 
-        my $ssh_tgt = "$ssh_user\@$node";
+        my $ssh_tgt = "$SSH_USER\@$node";
         my $r_sudo = remote_sudo_prefix();
         my $cmd_str = "${r_sudo}" . join(" ", @quoted_cmd);
         return run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, $cmd_str, $opts);
@@ -361,9 +406,9 @@ sub execute_command {
 
 sub handle_multipath_config {
     my $is_local = shift;
-    my $node_or_name = shift;
+    my $ip = shift;
 
-    return 1 unless $add_default_multipath_config;
+    return 1 unless $ADD_DEFAULT_MULTIPATH_CONFIG;
 
     my $template_file = "/etc/joviandss/multipath-open-e-joviandss.conf.example";
     my $target_file = "/etc/multipath/conf.d/open-e-joviandss.conf";
@@ -371,12 +416,12 @@ sub handle_multipath_config {
     # Get display name for local vs remote
     my $node_name;
     if ($is_local) {
-        $node_name = $node_or_name || "local node";
+        $node_name = $ip || "local node";
     } else {
-        $node_name = get_node_display_name($node_or_name);
+        $node_name = get_node_display_name($ip);
     }
 
-    if ($dry_run) {
+    if ($DRY_RUN) {
         my $prefix = $is_local ? "" : "[$node_name] ";
         say "[dry-run] ${prefix}Checking for multipath template: $template_file";
         say "[dry-run] ${prefix}Would install multipath config to: $target_file";
@@ -384,33 +429,33 @@ sub handle_multipath_config {
     }
 
     # Check if template exists
-    unless (execute_command($is_local, $node_or_name, "test", "-f", $template_file, { outfunc => undef, errfunc => sub {} })) {
+    unless (execute_command($is_local, $ip, "test", "-f", $template_file, { outfunc => undef, errfunc => sub {} })) {
         warn "[$node_name] ✗ Multipath template not found: $template_file (older package version?)\n";
         return 0;
     }
 
     # Check if target exists
-    my $target_exists = execute_command($is_local, $node_or_name, "test", "-f", $target_file, { outfunc => undef, errfunc => sub {} });
+    my $target_exists = execute_command($is_local, $ip, "test", "-f", $target_file, { outfunc => undef, errfunc => sub {} });
 
-    if ($target_exists && !$force_multipath_config) {
-        push @warning_nodes, "$node_name: Multipath config already exists, use --force-multipath-config to overwrite";
+    if ($target_exists && !$FORCE_MULTIPATH_CONFIG) {
+        push @WARNING_NODES, "$node_name: Multipath config already exists, use --force-multipath-config to overwrite";
         say "⚠ Warning on $node_name: Multipath config file already exists, skipping";
         return 1;  # Not an error, just skipped
     }
 
     # Create target directory and copy file
-    unless (execute_command($is_local, $node_or_name, "mkdir", "-p", "/etc/multipath/conf.d", { outfunc => undef })) {
+    unless (execute_command($is_local, $ip, "mkdir", "-p", "/etc/multipath/conf.d", { outfunc => undef })) {
         warn "[$node_name] ✗ Failed to create multipath config directory\n";
         return 0;
     }
 
-    unless (execute_command($is_local, $node_or_name, "cp", $template_file, $target_file, { outfunc => undef })) {
+    unless (execute_command($is_local, $ip, "cp", $template_file, $target_file, { outfunc => undef })) {
         warn "[$node_name] ✗ Failed to copy multipath config\n";
         return 0;
     }
 
     # Reconfigure multipathd
-    unless (execute_command($is_local, $node_or_name, "multipathd", "-k", "reconfigure")) {
+    unless (execute_command($is_local, $ip, "multipathd", "-k", "reconfigure")) {
         say "[$node_name] ⚠ Warning: Failed to reconfigure multipathd (may not be running)";
     }
 
@@ -420,29 +465,29 @@ sub handle_multipath_config {
 
 
 sub remote_sudo_prefix {
-    if ($use_sudo) {
+    if ($USE_SUDO) {
         return "sudo ";
     }
     return "";
 }
 
 sub fetch_release_metadata {
-    my ($channel, $pinned_tag) = @_;
-    
+    my ($CHANNEL, $PINNED_TAG) = @_;
+
     # Resolve release
-    if ($pinned_tag) {
-        say "Fetching release: $pinned_tag";
+    if ($PINNED_TAG) {
+        say "Fetching release: $PINNED_TAG";
     } else {
-        say "Fetching latest $channel release";
+        say "Fetching latest $CHANNEL release";
     }
 
     my $ua = LWP::UserAgent->new(timeout => 30);
     my $url;
 
-    if ($pinned_tag) {
+    if ($PINNED_TAG) {
         $url = $API_BASE;
     } else {
-        if ($channel eq "stable") {
+        if ($CHANNEL eq "stable") {
             $url = "$API_BASE/latest";
         } else {
             $url = $API_BASE;
@@ -470,37 +515,37 @@ sub fetch_release_metadata {
     }
 
     # Extract tag and URLs
-    my $tag;
-    if ($pinned_tag) {
-        $tag = $pinned_tag;
+    my $TAG;
+    if ($PINNED_TAG) {
+        $TAG = $PINNED_TAG;
         # Find the matching release
         my $matching_release;
         if (ref($rel_json) eq 'ARRAY') {
             for my $release (@$rel_json) {
-                if ($release->{tag_name} eq $pinned_tag) {
+                if ($release->{tag_name} eq $PINNED_TAG) {
                     $matching_release = $release;
                     last;
                 }
             }
         }
         unless ($matching_release) {
-            say "✗ Error: Release tag not found: $pinned_tag";
+            say "✗ Error: Release tag not found: $PINNED_TAG";
             return ();
         }
         $rel_json = $matching_release;
     } else {
-        if ($channel eq "pre" && ref($rel_json) eq 'ARRAY') {
+        if ($CHANNEL eq "pre" && ref($rel_json) eq 'ARRAY') {
             $rel_json = $rel_json->[0];
         }
-        $tag = $rel_json->{tag_name};
+        $TAG = $rel_json->{tag_name};
     }
 
     # Extract download URLs and checksum
-    my ($deb_url, $sha_url, $expected_sha256);
+    my ($DEB_URL, $SHA_URL, $expected_sha256);
     for my $asset (@{$rel_json->{assets}}) {
         my $url = $asset->{browser_download_url};
         if ($url =~ /\.deb$/) {
-            $deb_url = $url;
+            $DEB_URL = $url;
 
             # Check for sha256 field
             if ($asset->{sha256}) {
@@ -514,40 +559,40 @@ sub fetch_release_metadata {
         }
         # Still check for separate checksum files as fallback
         if ($url =~ /(sha256sum|sha256\.txt|\.sha256|hashsum|checksums?\.txt|\.checksums?)$/i) {
-            $sha_url = $url;
+            $SHA_URL = $url;
         }
     }
 
-    unless ($deb_url) {
-        say "✗ Error: Could not locate a .deb asset in $tag";
+    unless ($DEB_URL) {
+        say "✗ Error: Could not locate a .deb asset in $TAG";
         return ();
     }
 
-    return ($tag, $deb_url, $expected_sha256, $sha_url);
+    return ($TAG, $DEB_URL, $expected_sha256, $SHA_URL);
 }
 
 sub download_package {
-    my ($deb_url, $tmpdir) = @_;
-    
+    my ($DEB_URL, $TMPDIR) = @_;
+
     say "Downloading package...";
 
     my $ua = LWP::UserAgent->new(timeout => 30);
-    my $deb_path = "$tmpdir/plugin.deb";
-    my $deb_response = $ua->get($deb_url, ':content_file' => $deb_path);
-    
+    my $DEB_PATH = "$TMPDIR/plugin.deb";
+    my $deb_response = $ua->get($DEB_URL, ':content_file' => $DEB_PATH);
+
     unless ($deb_response->is_success) {
         say "✗ Error downloading .deb file: " . $deb_response->status_line;
         return "";
     }
 
-    return $deb_path;
+    return $DEB_PATH;
 }
 
 sub verify_package_checksum {
-    my ($deb_path, $expected_sha256, $sha_url, $deb_url) = @_;
-    
+    my ($DEB_PATH, $expected_sha256, $SHA_URL, $DEB_URL) = @_;
+
     # Skip verification if no checksum available
-    unless ($expected_sha256 || $sha_url) {
+    unless ($expected_sha256 || $SHA_URL) {
         say "⚠ Checksum verification skipped (no checksum available).";
         return 1;
     }
@@ -560,9 +605,9 @@ sub verify_package_checksum {
 
     say "Verifying package checksum...";
     my $collector = create_output_collector(create_hash_filter(qr/^([a-f0-9]{64})/));
-    run_cmd("sha256sum", $deb_path, { 
-        outfunc => $collector->{collector}, 
-        errfunc => create_checksum_error_handler($deb_path) 
+    run_cmd("sha256sum", $DEB_PATH, {
+        outfunc => $collector->{collector},
+        errfunc => create_checksum_error_handler($DEB_PATH)
     });
     my $file_sum = ($collector->{get_lines}())[0] || "";
 
@@ -571,14 +616,14 @@ sub verify_package_checksum {
     if ($expected_sha256) {
         # Use SHA256 from GitHub API response
         $ref_sum = $expected_sha256;
-    } elsif ($sha_url) {
+    } elsif ($SHA_URL) {
         # Fallback: download and parse separate checksum file
         my $ua = LWP::UserAgent->new(timeout => 30);
-        my $checksum_file = "$tmpdir/checksums.txt";
-        my $sha_response = $ua->get($sha_url, ':content_file' => $checksum_file);
+        my $checksum_file = "$TMPDIR/checksums.txt";
+        my $sha_response = $ua->get($SHA_URL, ':content_file' => $checksum_file);
 
         if ($sha_response->is_success) {
-            my $deb_basename = basename($deb_url);
+            my $deb_basename = basename($DEB_URL);
             my $collector = create_output_collector(create_hash_filter(qr/^([a-f0-9]{64})/));
             run_cmd("sh", "-c", "grep -E '$deb_basename' '$checksum_file' 2>/dev/null | grep -Eo '^[a-f0-9]{64}' | head -n1", { outfunc => $collector->{collector} });
             $ref_sum = ($collector->{get_lines}())[0] || "";
@@ -605,7 +650,7 @@ sub verify_package_checksum {
 sub get_apt_install_command {
     my $package_path = shift;
     my $cmd = "apt-get -y -q";
-    $cmd .= " --reinstall" if $use_reinstall;
+    $cmd .= " --reinstall" if $USE_REINSTALL;
     $cmd .= " install $package_path";
     return $cmd;
 }
@@ -620,41 +665,30 @@ sub get_apt_remove_command {
 
 # Remove plugin locally
 sub remove_node {
-    my $is_local = shift;
-    my $node_or_name = shift;  # For local: display name, for remote: node IP/hostname
-    my $local_node_short = shift;  # Only used for local operations
-    my $local_ips_ref = shift;     # Only used for local operations
+    my ($is_local, $ip, $hostname) = @_;
 
     # Generate display name
     my $display_name;
     if ($is_local) {
-        # Get local node display name similar to remote nodes
-        if ($local_node_short) {
-            # Try to get first non-loopback IP for display
-            my $display_ip = "";
-            for my $ip (@$local_ips_ref) {
-                next if $ip eq '127.0.0.1' || $ip eq 'localhost';
-                $display_ip = $ip;
-                last;
-            }
-            if ($display_ip && $display_ip ne $local_node_short) {
-                $display_name = "$local_node_short ($display_ip)";
-            } else {
-                $display_name = $local_node_short;
-            }
-        } else {
-            $display_name = "local node";
+        $display_name = $hostname || "local node";
+        if ($ip && $ip ne $hostname) {
+            $display_name = "$hostname ($ip)";
         }
     } else {
-        $display_name = get_node_display_name($node_or_name);
+        $display_name = $hostname || $ip;
+        if ($hostname && $ip ne $hostname) {
+            $display_name = "$hostname ($ip)";
+        }
     }
-    
+
     say "Removing plugin from node $display_name";
-    
+
     # Remove package
     my $removal_success;
+    my $package_not_installed = 0;
     if ($is_local) {
-        # Local removal
+        # Local removal - set environment variable for non-interactive mode
+        local $ENV{DEBIAN_FRONTEND} = 'noninteractive';
         my $sudo = maybe_sudo();
         my $apt_cmd = get_apt_remove_command("open-e-joviandss-proxmox-plugin");
         my @cmd;
@@ -663,35 +697,41 @@ sub remove_node {
         } else {
             @cmd = split(/\s+/, $apt_cmd);
         }
-        
-        $removal_success = run_cmd(@cmd, { 
-            outfunc => undef, 
-            errfunc => create_context_error_handler("Package removal") 
+        $removal_success = run_cmd(@cmd, {
+            outfunc => get_output_handler("local"),
+            errfunc => create_package_removal_error_handler("Package removal", undef, \$package_not_installed)
         });
     } else {
         # Remote removal
-        my $ssh_tgt = "$ssh_user\@$node_or_name";
+        my $ssh_tgt = "$SSH_USER\@$ip";
         my $r_sudo = remote_sudo_prefix();
-        
+
         my $apt_cmd = get_apt_remove_command("open-e-joviandss-proxmox-plugin");
-        $removal_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}${apt_cmd}", { 
-            outfunc => undef, 
-            errfunc => create_context_error_handler("Remote package removal", $display_name) 
+        $removal_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "DEBIAN_FRONTEND=noninteractive ${r_sudo}${apt_cmd}", {
+            outfunc => get_output_handler($display_name),
+            errfunc => create_package_removal_error_handler("Remote package removal", $display_name, \$package_not_installed)
         });
     }
-    
-    # Handle removal failure
-    unless ($removal_success) {
+
+    # Handle removal failure (but treat "package not installed" as success)
+    unless ($removal_success || $package_not_installed) {
         if ($is_local) {
-            die "Error: Local removal failed\n";
+            warn "✗ Failed to remove package from local node\n";
+            return 0;
         } else {
-            warn "[$node_or_name] ✗ Failed to remove package\n";
+            warn "[$ip] ✗ Failed to remove package\n";
             return 0;
         }
     }
-    
+
+    # Inform user if package wasn't installed
+    if ($package_not_installed) {
+        say "ℹ Package was not installed on node $display_name (skipping removal)";
+        push @SKIPPED_NODES, $display_name;
+    }
+
     # Restart pvedaemon if needed
-    if ($need_restart) {
+    if ($NEED_RESTART) {
         my $restart_success;
         if ($is_local) {
             my $sudo = maybe_sudo();
@@ -701,134 +741,120 @@ sub remove_node {
             } else {
                 @restart_cmd = ("systemctl", "restart", "pvedaemon");
             }
-            $restart_success = run_cmd(@restart_cmd, { 
-                outfunc => undef, 
-                errfunc => create_context_error_handler("Service restart") 
+            $restart_success = run_cmd(@restart_cmd, {
+                outfunc => get_output_handler("local"),
+                errfunc => create_context_error_handler("Service restart")
             });
         } else {
-            my $ssh_tgt = "$ssh_user\@$node_or_name";
+            my $ssh_tgt = "$SSH_USER\@$ip";
             my $r_sudo = remote_sudo_prefix();
-            $restart_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pvedaemon", { 
-                outfunc => undef, 
-                errfunc => create_context_error_handler("Remote service restart", $display_name) 
+            $restart_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pvedaemon", {
+                outfunc => get_output_handler($display_name),
+                errfunc => create_context_error_handler("Remote service restart", $display_name)
             });
         }
-        
+
         unless ($restart_success) {
             if ($is_local) {
-                die "Error: Failed to restart pvedaemon locally\n";
+                warn "✗ Failed to restart pvedaemon on local node\n";
+                return 0;
             } else {
-                warn "[$node_or_name] ✗ Failed to restart pvedaemon\n";
+                warn "[$ip] ✗ Failed to restart pvedaemon\n";
                 return 0;
             }
         }
     }
-    
+
     say "✓ Removal completed successfully on node $display_name\n";
     return 1;
 }
 
-sub remove_local {
-    my ($local_node_short, $local_ips_ref) = @_;
-    return remove_node(1, undef, $local_node_short, $local_ips_ref);
-}
 
 # Install locally
 sub install_node {
-    my $is_local = shift;
-    my $node_or_name = shift;  # For local: display name, for remote: node IP/hostname
-    my $local_node_short = shift;  # Only used for local operations
-    my $local_ips_ref = shift;     # Only used for local operations
-    
+    my ($is_local, $ip, $hostname) = @_;
+
     # Generate display name
     my $display_name;
     if ($is_local) {
-        # Get local node display name similar to remote nodes
-        if ($local_node_short) {
-            # Try to get first non-loopback IP for display
-            my $display_ip = "";
-            for my $ip (@$local_ips_ref) {
-                next if $ip eq '127.0.0.1' || $ip eq 'localhost';
-                $display_ip = $ip;
-                last;
-            }
-            if ($display_ip && $display_ip ne $local_node_short) {
-                $display_name = "$local_node_short ($display_ip)";
-            } else {
-                $display_name = $local_node_short;
-            }
-        } else {
-            $display_name = "local node";
+        $display_name = $hostname || "local node";
+        if ($ip && $ip ne $hostname) {
+            $display_name = "$hostname ($ip)";
         }
     } else {
-        $display_name = get_node_display_name($node_or_name);
+        $display_name = $hostname || $ip;
+        if ($hostname && $ip ne $hostname) {
+            $display_name = "$hostname ($ip)";
+        }
     }
-    
+
     say "Installing plugin on node $display_name";
-    
+
     # Install package
     my $install_success;
     if ($is_local) {
-        # Local installation
+        # Local installation - set environment variable for non-interactive mode
+        local $ENV{DEBIAN_FRONTEND} = 'noninteractive';
         my $sudo = maybe_sudo();
-        my $apt_cmd = get_apt_install_command($deb_path);
+        my $apt_cmd = get_apt_install_command($DEB_PATH);
         my @cmd;
         if ($sudo) {
             @cmd = ($sudo, split(/\s+/, $apt_cmd));
         } else {
             @cmd = split(/\s+/, $apt_cmd);
         }
-        
-        $install_success = run_cmd(@cmd, { 
-            outfunc => undef, 
-            errfunc => create_context_error_handler("Package installation") 
+
+        $install_success = run_cmd(@cmd, {
+            outfunc => get_output_handler("local"),
+            errfunc => create_context_error_handler("Package installation")
         });
     } else {
         # Remote installation
-        my $ssh_tgt = "$ssh_user\@$node_or_name";
+        my $ssh_tgt = "$SSH_USER\@$ip";
         my $r_sudo = remote_sudo_prefix();
-        
+
         # Copy package
-        unless (run_cmd("scp", split(/\s+/, $SSH_FLAGS), $deb_path, "$ssh_tgt:$REMOTE_TMP", { 
-            outfunc => undef, 
-            errfunc => create_context_error_handler("Remote file transfer", $display_name) 
+        unless (run_cmd("scp", split(/\s+/, $SSH_FLAGS), $DEB_PATH, "$ssh_tgt:$REMOTE_TMP", {
+            outfunc => undef,
+            errfunc => create_context_error_handler("Remote file transfer", $display_name)
         })) {
-            warn "[$node_or_name] ✗ Failed to copy package\n";
+            warn "[$ip] ✗ Failed to copy package\n";
             return 0;
         }
-        
+
         # Install package
         my $apt_cmd = get_apt_install_command($REMOTE_TMP);
-        $install_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}${apt_cmd}", { 
-            outfunc => undef, 
-            errfunc => create_context_error_handler("Remote package installation", $display_name) 
+        $install_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "DEBIAN_FRONTEND=noninteractive ${r_sudo}${apt_cmd}", {
+            outfunc => get_output_handler($display_name),
+            errfunc => create_context_error_handler("Remote package installation", $display_name)
         });
     }
-    
+
     # Handle installation failure
     unless ($install_success) {
         if ($is_local) {
-            die "Error: Local installation failed\n";
+            warn "✗ Failed to install package on local node\n";
+            return 0;
         } else {
-            warn "[$node_or_name] ✗ Failed to install package\n";
+            warn "[$ip] ✗ Failed to install package\n";
             return 0;
         }
     }
-    
+
     # Handle multipath configuration after package installation
-    unless (handle_multipath_config($is_local, $is_local ? $display_name : $node_or_name)) {
-        if ($add_default_multipath_config) {
+    unless (handle_multipath_config($is_local, $is_local ? $display_name : $ip)) {
+        if ($ADD_DEFAULT_MULTIPATH_CONFIG) {
             if ($is_local) {
                 die "Error: Multipath configuration failed on local node\n";
             } else {
-                warn "[$node_or_name] ✗ Multipath configuration failed\n";
+                warn "[$ip] ✗ Multipath configuration failed\n";
                 return 0;
             }
         }
     }
-    
+
     # Restart pvedaemon if needed
-    if ($need_restart) {
+    if ($NEED_RESTART) {
         my $restart_success;
         if ($is_local) {
             my $sudo = maybe_sudo();
@@ -838,37 +864,34 @@ sub install_node {
             } else {
                 @restart_cmd = ("systemctl", "restart", "pvedaemon");
             }
-            $restart_success = run_cmd(@restart_cmd, { 
-                outfunc => undef, 
-                errfunc => create_context_error_handler("Service restart") 
+            $restart_success = run_cmd(@restart_cmd, {
+                outfunc => get_output_handler("local"),
+                errfunc => create_context_error_handler("Service restart")
             });
         } else {
-            my $ssh_tgt = "$ssh_user\@$node_or_name";
+            my $ssh_tgt = "$SSH_USER\@$ip";
             my $r_sudo = remote_sudo_prefix();
-            $restart_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pvedaemon", { 
-                outfunc => undef, 
-                errfunc => create_context_error_handler("Remote service restart", $display_name) 
+            $restart_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pvedaemon", {
+                outfunc => get_output_handler($display_name),
+                errfunc => create_context_error_handler("Remote service restart", $display_name)
             });
         }
-        
+
         unless ($restart_success) {
             if ($is_local) {
-                die "Error: Failed to restart pvedaemon locally\n";
+                warn "✗ Failed to restart pvedaemon on local node\n";
+                return 0;
             } else {
-                warn "[$node_or_name] ✗ Failed to restart pvedaemon\n";
+                warn "[$ip] ✗ Failed to restart pvedaemon\n";
                 return 0;
             }
         }
     }
-    
+
     say "✓ Installation completed successfully on node $display_name\n";
     return 1;
 }
 
-sub install_local {
-    my ($local_node_short, $local_ips_ref) = @_;
-    return install_node(1, undef, $local_node_short, $local_ips_ref);
-}
 
 # Discover cluster nodes with their IP addresses
 sub is_local_node {
@@ -883,8 +906,28 @@ sub is_local_node {
     return 0;
 }
 
-sub discover_all_nodes_with_info {
-    my @node_info;  # Array of {name => 'hostname', ip => 'ip'} hashes
+sub acquire_target_nodes_info{
+    my @node_info;  # Array of {name => 'hostname', ip => 'ip', is_local => 0|1} hashes
+
+    # Get local node information
+    my ($local_node_short, $local_ips_ref, $cluster_name) = get_local_node_info();
+
+    # Helper function to determine if a node is local
+    my $is_local_node = sub {
+        my ($node_name, $node_ip) = @_;
+
+        # Check by hostname
+        return 1 if $node_name eq $local_node_short;
+
+        # Check by IP address
+        if ($local_ips_ref && @$local_ips_ref) {
+            for my $local_ip (@$local_ips_ref) {
+                return 1 if $node_ip eq $local_ip;
+            }
+        }
+
+        return 0;
+    };
 
     # Try .members file first to get both hostname and IP
     if (-r "/etc/pve/.members") {
@@ -902,9 +945,11 @@ sub discover_all_nodes_with_info {
             if ($data->{nodelist}) {
                 for my $node_name (keys %{$data->{nodelist}}) {
                     my $node_data = $data->{nodelist}->{$node_name};
+                    my $ip = $node_data->{ip} || $node_name;
                     push @node_info, {
                         name => $node_name,
-                        ip => $node_data->{ip} || $node_name
+                        ip => $ip,
+                        is_local => $is_local_node->($node_name, $ip)
                     };
                 }
             }
@@ -920,7 +965,8 @@ sub discover_all_nodes_with_info {
                 for my $node_name (keys %$members) {
                     push @node_info, {
                         name => $node_name,
-                        ip => $node_name  # No separate IP available
+                        ip => $node_name,  # No separate IP available
+                        is_local => $is_local_node->($node_name, $node_name)
                     };
                 }
             }
@@ -937,10 +983,24 @@ sub discover_all_nodes_with_info {
                 $name =~ s/\s*\(local\)\s*$//;
                 $name =~ s/^\s+|\s+$//g;
                 if ($name) {
-                    push @node_info, {
-                        name => $name,
-                        ip => $name
-                    };
+
+                    my $is_local = $is_local_node->($name, $name);
+
+                    if ( $ALL_NODES_OPERATION ) {
+                        push @node_info, {
+                            name => $name,
+                            ip => $name,
+                            is_local => $is_local,
+                        };
+                    } else {
+                        if ( $is_local ) {
+                            push @node_info, {
+                                name => $name,
+                                ip => $name,
+                                is_local => $is_local,
+                            };
+                        }
+                    }
                 }
             }
         }
@@ -949,28 +1009,12 @@ sub discover_all_nodes_with_info {
     return @node_info;
 }
 
-sub discover_remote_nodes {
-    my ($local_node_short, $local_ips_ref) = @_;
-    my @all_node_info = discover_all_nodes_with_info();
-    my @remote_nodes;
-
-    for my $node (@all_node_info) {
-        unless (is_local_node($node->{name}, $local_node_short, $local_ips_ref) || 
-                is_local_node($node->{ip}, $local_node_short, $local_ips_ref)) {
-            push @remote_nodes, $node->{ip};  # Return IP for compatibility
-        }
-    }
-
-    return @remote_nodes;
-}
-
-
 sub get_node_display_name {
     my $ip = shift;
 
-    # Try to get hostname from discovered nodes
-    my @all_nodes = discover_all_nodes_with_info();
-    for my $node (@all_nodes) {
+    # Get all nodes with local/remote info
+    my @nodes = acquire_target_nodes_info();
+    for my $node (@nodes) {
         if ($node->{ip} eq $ip) {
             return $node->{name} eq $ip ? $ip : "$node->{name} ($ip)";
         }
@@ -980,52 +1024,62 @@ sub get_node_display_name {
     return $ip;
 }
 
-sub remove_remote_node {
-    my $node = shift;
-    return remove_node(0, $node);
-}
 
-sub install_remote_node {
-    my $node = shift;
-    return install_node(0, $node);
-}
+sub print_operation_nodes {
+    my ($operation_text, $nodes_ref) = @_;
 
-sub perform_remote_operations {
-    my @targets = @_;
-
-    return unless @targets;
-
-    my $operation = $remove_plugin ? "removal" : "installation";
-
-    # Don't print the remote operation header since we already showed the nodes above
-    my @failed_nodes;
-    my $success_count = 0;
-
-    for my $node (@targets) {
-        my $success;
-        if ($remove_plugin) {
-            $success = remove_remote_node($node);
+    say $operation_text;
+    for my $node (@$nodes_ref) {
+        my $display_name;
+        if ($node->{is_local}) {
+            $display_name = $node->{name};
+            if ($node->{ip} ne $node->{name}) {
+                $display_name = "$node->{name} ($node->{ip})";
+            }
+            $display_name .= " [LOCAL]";
         } else {
-            $success = install_remote_node($node);
+            $display_name = $node->{name};
+            if ($node->{ip} ne $node->{name}) {
+                $display_name = "$node->{name} ($node->{ip})";
+            }
         }
-
-        if ($success) {
-            $success_count++;
-        } else {
-            push @failed_nodes, $node;
-        }
+        say "  $display_name";
     }
+    say "";
+}
 
-    # Report summary
-    if (@failed_nodes) {
-        say "\n✗ Remote $operation failed on " . scalar(@failed_nodes) . " node(s): " . join(", ", @failed_nodes);
-        say "  ✓ Successful: $success_count";
-        exit 1;
+sub get_local_node_info {
+    # Get local node name
+    my $local_node_short;
+    if (defined &PVE::INotify::nodename) {
+        $local_node_short = PVE::INotify::nodename();
     } else {
-        say "\n✓ Remote $operation completed: $success_count successful";
+        # Fallback to hostname command
+        $local_node_short = `hostname -s 2>/dev/null` || `hostname 2>/dev/null`;
+        chomp $local_node_short;
+        $local_node_short =~ s/\..*//;  # Remove domain part
     }
 
-    return $success_count;
+    # Get local IP addresses
+    my @local_ips;
+    my $local_ips_output = `ip addr show 2>/dev/null | grep 'inet ' | awk '{print \$2}' | cut -d'/' -f1`;
+    if ($local_ips_output) {
+        @local_ips = split /\n/, $local_ips_output;
+        chomp @local_ips;
+        push @local_ips, '127.0.0.1', 'localhost';  # Add standard local addresses
+    }
+
+    # Get cluster name
+    my $cluster_name;
+    if (need_cmd("pvecm", 1)) {
+        my $status_output = `pvecm status 2>/dev/null`;
+        if ($status_output && $status_output =~ /Name:\s*(\S+)/) {
+            $cluster_name = $1;
+        }
+    }
+    $cluster_name = $cluster_name || "proxmox-cluster";
+
+    return ($local_node_short, \@local_ips, $cluster_name);
 }
 
 sub main {
@@ -1036,7 +1090,7 @@ sub main {
     need_cmd("grep");
     need_cmd("sha256sum", 1);
 
-    if ($install_all_nodes) {
+    if ($ALL_NODES_OPERATION) {
         need_cmd("ssh");
         need_cmd("scp");
     }
@@ -1046,145 +1100,178 @@ sub main {
         say "Warning: 'pveversion' not found. Proceeding anyway (Debian-based install assumed).";
     }
 
-    # Get local node info using PVE modules if available
-    my $local_node_short;
-    my @local_ips;
-    my $cluster_name;
-    if (defined &PVE::INotify::nodename) {
-        $local_node_short = PVE::INotify::nodename();
-    } else {
-        # Fallback to hostname command
-        $local_node_short = `hostname -s 2>/dev/null` || `hostname 2>/dev/null`;
-        chomp $local_node_short;
-        $local_node_short =~ s/\..*//;  # Remove domain part
-    }
+    # Get local node information
+    my ($local_node_short, $local_ips_ref, $cluster_name) = get_local_node_info();
+    my @local_ips = @$local_ips_ref;
 
-    # Get cluster name
-    if (need_cmd("pvecm", 1)) {
-        my $status_output = `pvecm status 2>/dev/null`;
-        if ($status_output && $status_output =~ /Name:\s*(\S+)/) {
-            $cluster_name = $1;
+    # Main operation logic - separated by install/remove
+    my $total_successful = 0;
+    my @failed_nodes;
+
+    if ($REMOVE_PLUGIN) {
+        # REMOVAL OPERATIONS
+
+        if ($ALL_NODES_OPERATION) {
+            # Get all nodes and show confirmation
+            say "Identifying nodes belonging to cluster $cluster_name";
+            my @nodes = acquire_target_nodes_info();
+
+            if (@nodes) {
+                # Show confirmation for ALL operations (sorted alphabetically)
+                my @sorted_nodes = sort { $a->{name} cmp $b->{name} } @nodes;
+                print_operation_nodes("Plugin will be removed from the following nodes:", \@sorted_nodes);
+
+                my $confirm = simple_readline("Continue? (y/n): ");
+                unless ($confirm && $confirm =~ /^y$/i) {
+                    say "Operation cancelled.";
+                    return 0;
+                }
+                say "";
+
+                # Perform operations on all nodes (in sorted order)
+                for my $node (@sorted_nodes) {
+                    my $success;
+                    if ($node->{is_local}) {
+                        # Local removal
+                        $success = remove_node(1, $node->{ip}, $node->{name});
+                    } else {
+                        # Remote removal
+                        $success = remove_node(0, $node->{ip}, $node->{name});
+                    }
+
+                    if ($success) {
+                        $total_successful++;
+                    } else {
+                        push @failed_nodes, $node->{ip};
+                    }
+                }
+            } else {
+                say "No nodes found in cluster";
+                say "";
+            }
+        } else {
+            # Single node (local only) removal
+            # Get local IP for display
+            my $local_ip = "";
+            for my $ip (@local_ips) {
+                next if $ip eq '127.0.0.1' || $ip eq 'localhost';
+                $local_ip = $ip;
+                last;
+            }
+            my $local_success = remove_node(1, $local_ip, $local_node_short);
+            $total_successful += $local_success;
         }
-    }
-    $cluster_name = $cluster_name || "proxmox-cluster";
 
-    # Get local IP addresses for filtering
-    my $local_ips_output = `ip addr show 2>/dev/null | grep 'inet ' | awk '{print \$2}' | cut -d'/' -f1`;
-    if ($local_ips_output) {
-        @local_ips = split /\n/, $local_ips_output;
-        chomp @local_ips;
-        push @local_ips, '127.0.0.1', 'localhost';  # Add standard local addresses
-    }
+    } else {
+        # INSTALLATION OPERATIONS
 
-    # Only resolve and download for install operations
-    if (!$remove_plugin) {
-        # Fetch release metadata
-        my ($tag, $deb_url, $expected_sha256, $sha_url) = fetch_release_metadata($channel, $pinned_tag);
-        unless ($tag) {
+        # Fetch release metadata and download package
+        my ($TAG, $DEB_URL, $expected_sha256, $SHA_URL) = fetch_release_metadata($CHANNEL, $PINNED_TAG);
+        unless ($TAG) {
             return 0;  # fetch_release_metadata already printed error
         }
 
         # Download package
-        $deb_path = download_package($deb_url, $tmpdir);
-        unless ($deb_path) {
+        $DEB_PATH = download_package($DEB_URL, $TMPDIR);
+        unless ($DEB_PATH) {
             return 0;  # download_package already printed error
         }
 
         # Verify package checksum
-        unless (verify_package_checksum($deb_path, $expected_sha256, $sha_url, $deb_url)) {
+        unless (verify_package_checksum($DEB_PATH, $expected_sha256, $SHA_URL, $DEB_URL)) {
             return 0;  # verify_package_checksum already printed error
         }
-    }
+        if ($ALL_NODES_OPERATION) {
+            # Get all nodes and show confirmation
+            say "Identifying nodes belonging to cluster $cluster_name";
+            my @nodes = acquire_target_nodes_info();
 
-    # Core application logic
-    my @remote_targets;
-    my $process_local = 1;  # Always process local node
-    my $total_successful = 0;  # Track total successful operations
+            if (@nodes) {
+                # Show confirmation for ALL operations (sorted alphabetically)
+                my @sorted_nodes = sort { $a->{name} cmp $b->{name} } @nodes;
+                print_operation_nodes("Plugin $TAG will be installed on the following nodes:", \@sorted_nodes);
 
-    # Determine what operations will be performed
-    if ($install_all_nodes) {
-        say "Identifying nodes belonging to cluster $cluster_name";
-        my @nodes = discover_remote_nodes($local_node_short, \@local_ips);
-        if (@nodes) {
-            push @remote_targets, @nodes;
+                my $confirm = simple_readline("Continue? (y/n): ");
+                unless ($confirm && $confirm =~ /^y$/i) {
+                    say "Operation cancelled.";
+                    return 0;
+                }
+                say "";
 
-            # Show confirmation for ALL operations (local + remote)
-            my $operation = $remove_plugin ? "removed from" : "installed on";
-            if ($remove_plugin) {
-                say "Plugin will be $operation the following nodes:";
+                # Perform operations on all nodes (in sorted order)
+                for my $node (@sorted_nodes) {
+                    my $success;
+
+                    $success = install_node($node->{is_local}, $node->{ip}, $node->{name});
+
+                    if ($success) {
+                        $total_successful++;
+                    } else {
+                        push @failed_nodes, $node->{ip};
+                    }
+                }
             } else {
-                say "Plugin $tag will be $operation the following nodes:";
+                say "No nodes found in cluster";
+                say "";
             }
-
-            # Get local node display name with IP
-            my $local_display = $local_node_short || "local node";
-            # If local display doesn't include IP, try to add one
-            if ($local_display eq ($local_node_short || "local node") && @local_ips) {
-                my $local_ip = "";
-                for my $ip (@local_ips) {
-                    next if $ip eq '127.0.0.1' || $ip eq 'localhost';
-                    $local_ip = $ip;
-                    last;
-                }
-                if ($local_ip) {
-                    $local_display = "$local_node_short ($local_ip)";
-                }
-            }
-            say "  $local_display [LOCAL]";
-            for my $node (@nodes) {
-                my $display_name = get_node_display_name($node);
-                say "  $display_name";
-            }
-            say "";
-
-            my $confirm = simple_readline("Continue? (y/n): ");
-            unless ($confirm && $confirm =~ /^y$/i) {
-                say "Operation cancelled.";
-                return 0;
-            }
-            say "";
         } else {
-            say "No remote nodes found - single node cluster or all nodes are local";
-            say "";
+            # Single node (local only) installation
+            # Get local IP for display
+            my $local_ip = "";
+            for my $ip (@local_ips) {
+                next if $ip eq '127.0.0.1' || $ip eq 'localhost';
+                $local_ip = $ip;
+                last;
+            }
+            my $local_success = install_node(1, $local_ip, $local_node_short);
+            $total_successful += $local_success;
         }
     }
 
-    # Now perform the operations after confirmation
-    if ($process_local) {
-        if ($remove_plugin) {
-            remove_local($local_node_short, \@local_ips);
-            $total_successful++;
+    if ($REMOVE_PLUGIN) {
+        my $skipped_count = scalar(@SKIPPED_NODES);
+        my $failed_count = scalar(@failed_nodes);
+        if ($skipped_count > 0) {
+            my $actual_removed = $total_successful - $skipped_count;
+            if ($failed_count > 0) {
+                say "\n✗ Operations completed with failures: Plugin removed from $actual_removed node(s), skipped $skipped_count node(s) (not installed), failed on $failed_count node(s)";
+            } else {
+                say "\n✓ All operations complete: Plugin removed from $actual_removed node(s), skipped $skipped_count node(s) (not installed)";
+            }
         } else {
-            install_local($local_node_short, \@local_ips);
-            $total_successful++;
+            if ($failed_count > 0) {
+                say "\n✗ Operations completed with failures: Plugin removed from $total_successful node(s), failed on $failed_count node(s)";
+            } else {
+                say "\n✓ All operations complete: Plugin removed from $total_successful node(s)";
+            }
         }
-    }
-
-    # Handle remote operations
-    if (@remote_targets) {
-        my %seen;
-        @remote_targets = grep { !$seen{$_}++ } @remote_targets;
-        my $remote_successful = perform_remote_operations(@remote_targets);
-        $total_successful += $remote_successful;
-    }
-
-    if ($remove_plugin) {
-        say "\n✓ All operations complete: Plugin removed from $total_successful node(s)";
+        if ($failed_count > 0) {
+            say "Failed nodes: " . join(", ", @failed_nodes);
+        }
     } else {
-        say "\n✓ All operations complete: Plugin installed on $total_successful node(s)";
+        my $failed_count = scalar(@failed_nodes);
+        if ($failed_count > 0) {
+            say "\n✗ Operations completed with failures: Plugin installed on $total_successful node(s), failed on $failed_count node(s)";
+            say "Failed nodes: " . join(", ", @failed_nodes);
+        } else {
+            say "\n✓ All operations complete: Plugin installed on $total_successful node(s)";
+        }
         print "\nCheck introduction to configuration guide at https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start#configuration\n";
     }
 
-    if (@warning_nodes) {
-        say "\n⚠ Warnings encountered on " . scalar(@warning_nodes) . " node(s):";
-        for my $warning (@warning_nodes) {
+    if (@WARNING_NODES) {
+        say "\n⚠ Warnings encountered on " . scalar(@WARNING_NODES) . " node(s):";
+        for my $warning (@WARNING_NODES) {
             my ($node, $msg) = split(': ', $warning, 2);
             $msg =~ s/JOVIANDSS_WARNING:\s*//;
             chomp $msg;
             say "  - $node: $msg";
         }
     }
-    return 1;  # Success
+
+    # Return success only if no failures occurred
+    my $failed_count = scalar(@failed_nodes);
+    return $failed_count == 0 ? 1 : 0;
 }
 
 # Run the main function and exit with its return code
