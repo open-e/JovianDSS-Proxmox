@@ -213,10 +213,6 @@ sub create_context_error_handler {
     };
 }
 
-sub create_silent_error_handler {
-    return sub { };  # Suppress all errors (for expected failures like test commands)
-}
-
 sub create_checksum_error_handler {
     my ($file) = @_;
     return sub {
@@ -424,6 +420,7 @@ sub handle_multipath_config {
     if ($DRY_RUN) {
         my $prefix = $is_local ? "" : "[$node_name] ";
         say "[dry-run] ${prefix}Checking for multipath template: $template_file";
+        say "[dry-run] ${prefix}Would check for existing SCST vendor devices in multipath configs";
         say "[dry-run] ${prefix}Would install multipath config to: $target_file";
         return 1;
     }
@@ -441,6 +438,77 @@ sub handle_multipath_config {
         push @WARNING_NODES, "$node_name: Multipath config already exists, use --force-multipath-config to overwrite";
         say "⚠ Warning on $node_name: Multipath config file already exists, skipping";
         return 1;  # Not an error, just skipped
+    }
+
+    # Check for existing SCST vendor devices in multipath configuration
+    my $scst_warning_shown = 0;
+    my $multipath_config_files = [
+        "/etc/multipath.conf",
+        "/etc/multipath/multipath.conf"
+    ];
+    
+    # Check individual config files
+    for my $config_file (@$multipath_config_files) {
+        # Check if config file exists using the same pattern as template check
+        if (execute_command($is_local, $ip, "test", "-f", $config_file, { outfunc => undef, errfunc => sub {} })) {
+            # Search for SCST vendor entries in the config file
+            my $scst_collector = create_output_collector();
+            if (execute_command($is_local, $ip, "grep", "-i", "vendor.*scst", $config_file, { 
+                outfunc => $scst_collector->{collector}, 
+                errfunc => sub {} 
+            })) {
+                my @scst_entries = $scst_collector->{get_lines}();
+                if (@scst_entries && !$scst_warning_shown) {
+                    say "⚠ Warning on $node_name: Found existing SCST vendor device configurations in multipath config";
+                    say "  Installing default multipath config may affect operation of existing SCST devices";
+                    say "  Consider reviewing multipath configuration after installation";
+                    push @WARNING_NODES, "$node_name: SCST vendor devices found in multipath config, review after installation";
+                    $scst_warning_shown = 1;
+                    last;
+                }
+            }
+        }
+    }
+    
+    # Check conf.d directory files if no SCST found yet
+    unless ($scst_warning_shown) {
+        # Check if conf.d directory exists first
+        if (execute_command($is_local, $ip, "test", "-d", "/etc/multipath/conf.d", { outfunc => undef, errfunc => sub {} })) {
+            # List .conf files in the directory using ls instead of find
+            my $conf_collector = create_output_collector();
+            if (execute_command($is_local, $ip, "ls", "/etc/multipath/conf.d/", { 
+                outfunc => $conf_collector->{collector}, 
+                errfunc => sub {} 
+            })) {
+                my @all_files = $conf_collector->{get_lines}();
+                
+                # Check all files in the directory regardless of suffix
+                for my $file (@all_files) {
+                    chomp $file;
+                    next unless $file; # Skip empty lines
+                    next if $file eq '.' || $file eq '..'; # Skip directory entries
+                    next if $file eq 'open-e-joviandss.conf'; # Skip our own config file - handled separately
+                    
+                    my $full_path = "/etc/multipath/conf.d/$file";
+                    
+                    # Search for SCST vendor entries
+                    my $scst_collector = create_output_collector();
+                    if (execute_command($is_local, $ip, "grep", "-i", "vendor.*scst", $full_path, { 
+                        outfunc => $scst_collector->{collector}, 
+                        errfunc => sub {} 
+                    })) {
+                        my @scst_entries = $scst_collector->{get_lines}();
+                        if (@scst_entries) {
+                            say "⚠ Warning on $node_name: Found existing SCST vendor device configurations in multipath config";
+                            say "  Installing default multipath config may affect operation of existing SCST devices";
+                            say "  Consider reviewing multipath configuration after installation";
+                            push @WARNING_NODES, "$node_name: SCST vendor devices found in multipath config, review after installation";
+                            last;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     # Create target directory and copy file
@@ -893,24 +961,9 @@ sub install_node {
 }
 
 
-# Discover cluster nodes with their IP addresses
-sub is_local_node {
-    my ($node, $local_node_short, $local_ips_ref) = @_;
-
-    # Check if it's the local hostname
-    return 1 if ($local_node_short && $node eq $local_node_short);
-
-    # Check against local IP addresses
-    return 1 if (grep { $_ eq $node } @$local_ips_ref);
-
-    return 0;
-}
-
-sub acquire_target_nodes_info{
-    my @node_info;  # Array of {name => 'hostname', ip => 'ip', is_local => 0|1} hashes
-
-    # Get local node information
-    my ($local_node_short, $local_ips_ref, $cluster_name) = get_local_node_info();
+# Helper function to add nodes based on ALL_NODES_OPERATION filtering
+sub add_node_if_applicable {
+    my ($node_info_ref, $node_name, $node_ip, $local_node_short, $local_ips_ref) = @_;
 
     # Helper function to determine if a node is local
     my $is_local_node = sub {
@@ -929,6 +982,35 @@ sub acquire_target_nodes_info{
         return 0;
     };
 
+    my $is_local = $is_local_node->($node_name, $node_ip);
+
+    # Apply filtering logic based on ALL_NODES_OPERATION flag
+    if ($ALL_NODES_OPERATION) {
+        # Include all nodes when --all-nodes is specified
+        push @$node_info_ref, {
+            name => $node_name,
+            ip => $node_ip,
+            is_local => $is_local
+        };
+    } else {
+        # Include only local node when operating on single node
+        if ($is_local) {
+            push @$node_info_ref, {
+                name => $node_name,
+                ip => $node_ip,
+                is_local => $is_local
+            };
+        }
+    }
+}
+
+# Discover cluster nodes with their IP addresses
+sub acquire_target_nodes_info{
+    my @node_info;  # Array of {name => 'hostname', ip => 'ip', is_local => 0|1} hashes
+
+    # Get local node information
+    my ($local_node_short, $local_ips_ref, $cluster_name) = get_local_node_info();
+
     # Try .members file first to get both hostname and IP
     if (-r "/etc/pve/.members") {
         open my $fh, '<', "/etc/pve/.members" or return ();
@@ -946,11 +1028,7 @@ sub acquire_target_nodes_info{
                 for my $node_name (keys %{$data->{nodelist}}) {
                     my $node_data = $data->{nodelist}->{$node_name};
                     my $ip = $node_data->{ip} || $node_name;
-                    push @node_info, {
-                        name => $node_name,
-                        ip => $ip,
-                        is_local => $is_local_node->($node_name, $ip)
-                    };
+                    add_node_if_applicable(\@node_info, $node_name, $ip, $local_node_short, $local_ips_ref);
                 }
             }
         };
@@ -963,11 +1041,7 @@ sub acquire_target_nodes_info{
             my $members = PVE::Cluster::get_members();
             if ($members && ref($members) eq 'HASH') {
                 for my $node_name (keys %$members) {
-                    push @node_info, {
-                        name => $node_name,
-                        ip => $node_name,  # No separate IP available
-                        is_local => $is_local_node->($node_name, $node_name)
-                    };
+                    add_node_if_applicable(\@node_info, $node_name, $node_name, $local_node_short, $local_ips_ref);
                 }
             }
         };
@@ -983,24 +1057,7 @@ sub acquire_target_nodes_info{
                 $name =~ s/\s*\(local\)\s*$//;
                 $name =~ s/^\s+|\s+$//g;
                 if ($name) {
-
-                    my $is_local = $is_local_node->($name, $name);
-
-                    if ( $ALL_NODES_OPERATION ) {
-                        push @node_info, {
-                            name => $name,
-                            ip => $name,
-                            is_local => $is_local,
-                        };
-                    } else {
-                        if ( $is_local ) {
-                            push @node_info, {
-                                name => $name,
-                                ip => $name,
-                                is_local => $is_local,
-                            };
-                        }
-                    }
+                    add_node_if_applicable(\@node_info, $name, $name, $local_node_short, $local_ips_ref);
                 }
             }
         }
@@ -1028,6 +1085,7 @@ sub get_node_display_name {
 sub print_operation_nodes {
     my ($operation_text, $nodes_ref) = @_;
 
+    say "";
     say $operation_text;
     for my $node (@$nodes_ref) {
         my $display_name;
@@ -1054,27 +1112,74 @@ sub get_local_node_info {
     if (defined &PVE::INotify::nodename) {
         $local_node_short = PVE::INotify::nodename();
     } else {
-        # Fallback to hostname command
-        $local_node_short = `hostname -s 2>/dev/null` || `hostname 2>/dev/null`;
-        chomp $local_node_short;
-        $local_node_short =~ s/\..*//;  # Remove domain part
+        # Fallback to hostname command using run_cmd
+        my $hostname_collector = create_output_collector();
+        if (run_cmd("hostname", "-s", { 
+            outfunc => $hostname_collector->{collector}, 
+            errfunc => sub {} 
+        })) {
+            my @hostname_lines = $hostname_collector->{get_lines}();
+            $local_node_short = $hostname_lines[0] if @hostname_lines;
+        }
+        
+        # Try regular hostname if -s failed
+        unless ($local_node_short) {
+            my $hostname_collector2 = create_output_collector();
+            if (run_cmd("hostname", { 
+                outfunc => $hostname_collector2->{collector}, 
+                errfunc => sub {} 
+            })) {
+                my @hostname_lines = $hostname_collector2->{get_lines}();
+                $local_node_short = $hostname_lines[0] if @hostname_lines;
+            }
+        }
+        
+        if ($local_node_short) {
+            chomp $local_node_short;
+            $local_node_short =~ s/\..*//;  # Remove domain part
+        }
     }
 
-    # Get local IP addresses
+    # Get local IP addresses using run_cmd
     my @local_ips;
-    my $local_ips_output = `ip addr show 2>/dev/null | grep 'inet ' | awk '{print \$2}' | cut -d'/' -f1`;
-    if ($local_ips_output) {
-        @local_ips = split /\n/, $local_ips_output;
-        chomp @local_ips;
-        push @local_ips, '127.0.0.1', 'localhost';  # Add standard local addresses
+    my $ip_collector = create_output_collector();
+    if (run_cmd("ip", "addr", "show", { 
+        outfunc => $ip_collector->{collector}, 
+        errfunc => sub {} 
+    })) {
+        my @ip_lines = $ip_collector->{get_lines}();
+        
+        # Process each line to find inet addresses
+        for my $line (@ip_lines) {
+            # Look for lines like: "inet 192.168.1.1/24 brd ..."
+            if ($line =~ /^\s*inet\s+(\S+)/) {
+                my $inet_addr = $1;
+                # Extract IP part before the slash
+                if ($inet_addr =~ /^([^\/]+)/) {
+                    push @local_ips, $1;
+                }
+            }
+        }
     }
+    
+    # Add standard local addresses
+    push @local_ips, '127.0.0.1', 'localhost';
 
-    # Get cluster name
+    # Get cluster name using run_cmd
     my $cluster_name;
     if (need_cmd("pvecm", 1)) {
-        my $status_output = `pvecm status 2>/dev/null`;
-        if ($status_output && $status_output =~ /Name:\s*(\S+)/) {
-            $cluster_name = $1;
+        my $pvecm_collector = create_output_collector();
+        if (run_cmd("pvecm", "status", { 
+            outfunc => $pvecm_collector->{collector}, 
+            errfunc => sub {} 
+        })) {
+            my @pvecm_lines = $pvecm_collector->{get_lines}();
+            for my $line (@pvecm_lines) {
+                if ($line =~ /Name:\s*(\S+)/) {
+                    $cluster_name = $1;
+                    last;
+                }
+            }
         }
     }
     $cluster_name = $cluster_name || "proxmox-cluster";
@@ -1111,55 +1216,41 @@ sub main {
     if ($REMOVE_PLUGIN) {
         # REMOVAL OPERATIONS
 
-        if ($ALL_NODES_OPERATION) {
-            # Get all nodes and show confirmation
-            say "Identifying nodes belonging to cluster $cluster_name";
-            my @nodes = acquire_target_nodes_info();
+        say "Identifying nodes belonging to cluster $cluster_name";
+        my @nodes = acquire_target_nodes_info();
 
-            if (@nodes) {
-                # Show confirmation for ALL operations (sorted alphabetically)
-                my @sorted_nodes = sort { $a->{name} cmp $b->{name} } @nodes;
-                print_operation_nodes("Plugin will be removed from the following nodes:", \@sorted_nodes);
+        if (@nodes) {
+            # Show confirmation for ALL operations (sorted alphabetically)
+            my @sorted_nodes = sort { $a->{name} cmp $b->{name} } @nodes;
+            print_operation_nodes("Plugin will be removed from the following nodes:", \@sorted_nodes);
 
-                my $confirm = simple_readline("Continue? (y/n): ");
-                unless ($confirm && $confirm =~ /^y$/i) {
-                    say "Operation cancelled.";
-                    return 0;
+            my $confirm = simple_readline("Continue? (y/n): ");
+            unless ($confirm && $confirm =~ /^y$/i) {
+                say "Operation cancelled.";
+                return 0;
+            }
+            say "";
+
+            # Perform operations on all nodes (in sorted order)
+            for my $node (@sorted_nodes) {
+                my $success;
+                if ($node->{is_local}) {
+                    # Local removal
+                    $success = remove_node(1, $node->{ip}, $node->{name});
+                } else {
+                    # Remote removal
+                    $success = remove_node(0, $node->{ip}, $node->{name});
                 }
-                say "";
 
-                # Perform operations on all nodes (in sorted order)
-                for my $node (@sorted_nodes) {
-                    my $success;
-                    if ($node->{is_local}) {
-                        # Local removal
-                        $success = remove_node(1, $node->{ip}, $node->{name});
-                    } else {
-                        # Remote removal
-                        $success = remove_node(0, $node->{ip}, $node->{name});
-                    }
-
-                    if ($success) {
-                        $total_successful++;
-                    } else {
-                        push @failed_nodes, $node->{ip};
-                    }
+                if ($success) {
+                    $total_successful++;
+                } else {
+                    push @failed_nodes, $node->{ip};
                 }
-            } else {
-                say "No nodes found in cluster";
-                say "";
             }
         } else {
-            # Single node (local only) removal
-            # Get local IP for display
-            my $local_ip = "";
-            for my $ip (@local_ips) {
-                next if $ip eq '127.0.0.1' || $ip eq 'localhost';
-                $local_ip = $ip;
-                last;
-            }
-            my $local_success = remove_node(1, $local_ip, $local_node_short);
-            $total_successful += $local_success;
+                say "None nodes identified for operation";
+                say "";
         }
 
     } else {
@@ -1181,50 +1272,36 @@ sub main {
         unless (verify_package_checksum($DEB_PATH, $expected_sha256, $SHA_URL, $DEB_URL)) {
             return 0;  # verify_package_checksum already printed error
         }
-        if ($ALL_NODES_OPERATION) {
-            # Get all nodes and show confirmation
-            say "Identifying nodes belonging to cluster $cluster_name";
-            my @nodes = acquire_target_nodes_info();
+        say "Identifying nodes belonging to cluster $cluster_name";
+        my @nodes = acquire_target_nodes_info();
 
-            if (@nodes) {
-                # Show confirmation for ALL operations (sorted alphabetically)
-                my @sorted_nodes = sort { $a->{name} cmp $b->{name} } @nodes;
-                print_operation_nodes("Plugin $TAG will be installed on the following nodes:", \@sorted_nodes);
+        if (@nodes) {
+            # Show confirmation for ALL operations (sorted alphabetically)
+            my @sorted_nodes = sort { $a->{name} cmp $b->{name} } @nodes;
+            print_operation_nodes("Plugin $TAG will be installed on the following nodes:", \@sorted_nodes);
 
-                my $confirm = simple_readline("Continue? (y/n): ");
-                unless ($confirm && $confirm =~ /^y$/i) {
-                    say "Operation cancelled.";
-                    return 0;
+            my $confirm = simple_readline("Continue? (y/n): ");
+            unless ($confirm && $confirm =~ /^y$/i) {
+                say "Operation cancelled.";
+                return 0;
+            }
+            say "";
+
+            # Perform operations on all nodes (in sorted order)
+            for my $node (@sorted_nodes) {
+                my $success;
+
+                $success = install_node($node->{is_local}, $node->{ip}, $node->{name});
+
+                if ($success) {
+                    $total_successful++;
+                } else {
+                    push @failed_nodes, $node->{ip};
                 }
-                say "";
-
-                # Perform operations on all nodes (in sorted order)
-                for my $node (@sorted_nodes) {
-                    my $success;
-
-                    $success = install_node($node->{is_local}, $node->{ip}, $node->{name});
-
-                    if ($success) {
-                        $total_successful++;
-                    } else {
-                        push @failed_nodes, $node->{ip};
-                    }
-                }
-            } else {
-                say "No nodes found in cluster";
-                say "";
             }
         } else {
-            # Single node (local only) installation
-            # Get local IP for display
-            my $local_ip = "";
-            for my $ip (@local_ips) {
-                next if $ip eq '127.0.0.1' || $ip eq 'localhost';
-                $local_ip = $ip;
-                last;
-            }
-            my $local_success = install_node(1, $local_ip, $local_node_short);
-            $total_successful += $local_success;
+            say "None nodes identified for operation";
+            say "";
         }
     }
 
