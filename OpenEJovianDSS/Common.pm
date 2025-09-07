@@ -1069,94 +1069,6 @@ sub get_multipath_device_name {
     }
 }
 
-#sub block_device_multipath_path {
-#    my ( $scfg, $storeid, $targetname, $lunid, @hosts ) = @_;
-#
-#    my $tpaths = get_iscsi_device_paths( $scfg, $targetname, $lunid, $hosts );
-#
-#    unless ( @$tpaths ) {
-#        debugmsg( $scfg, "debug",
-#            "Unable to identify device path for target ${targetname}\n" );
-#        return undef;
-#    }
-#    my $bdpath = undef;
-#    foreach my $tpath (@$tpaths) {
-#        eval {
-#            run_command(
-#                [ "readlink", "-f", $tpath ],
-#                outfunc => sub { $bdpath = shift; }
-#            );
-#        };
-#        if ( defined($bdpath) ) {
-#            last;
-#        }
-#    }
-#    unless ( defined($bdpath) ) {
-#        die "Unable to identify block device related to target " .
-#        "${targetname} lun ${lunid}\n";
-#    }
-#
-#    $bdpath = clean_word($bdpath);
-#    my $block_device_name = File::Basename::basename($bdpath);
-#    unless ( $block_device_name =~ /^[a-z0-9]+$/ ) {
-#        die "Invalide block device name ${block_device_name} " .
-#                "for iscsi target ${targetname}\n";
-#    }
-#
-#    my $mpathname = get_multipath_device_name($bdpath);
-#
-#    if ( !defined($mpathname) ) {
-#        return undef;
-#    }
-#
-#    my $mpathpath = "/dev/mapper/${mpathname}";
-#
-#    if ( -b $mpathpath ) {
-#        debugmsg( $scfg, "debug", "Multipath block device is ${mpathpath}\n" );
-#        return $mpathpath;
-#    }
-#    return undef;
-#}
-
-
-#sub scsiid_from_target {
-#    my ( $scfg, $storeid, $target, $lunid ) = @_;
-#
-#    my @hosts =
-#      OpenEJovianDSS::Common::get_iscsi_addresses( $scfg, $storeid, 1 );
-#
-#    foreach my $host (@hosts) {
-#        my $targetpath = "/dev/disk/by-path/ip-${host}:${port}-iscsi-${target}-lun-${lunid}";
-#        my $getscsiidcmd =
-#          [ "/lib/udev/scsi_id", "-g", "-u", "-d", $targetpath ];
-#        my $scsiid;
-#
-#        if ( -e $targetpath ) {
-#            eval {
-#                run_command( $getscsiidcmd,
-#                    outfunc => sub { $scsiid = shift; } );
-#            };
-#
-#            if ($@) {
-#                die
-#"Unable to get the iSCSI ID for ${targetpath} because of $@\n";
-#            }
-#        }
-#        else {
-#            next;
-#        }
-#
-#        if ( defined($scsiid) ) {
-#            if ( $scsiid =~ /^([\-\@\w.\/]+)$/ ) {
-#                OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-#                    "Identified scsi id ${1}\n" );
-#                return $1;
-#            }
-#        }
-#    }
-#    return undef;
-#}
-
 sub scsiid_from_blockdevs {
     my ( $scfg, $targetpaths ) = @_;
 
@@ -1190,8 +1102,6 @@ sub scsiid_from_blockdevs {
     }
     return undef;
 }
-
-
 
 sub volume_unstage_iscsi_device {
     my ( $scfg, $storeid, $targetname, $lunid, $hosts ) = @_;
