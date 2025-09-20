@@ -686,6 +686,11 @@ sub volume_snapshot_rollback {
 
     my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+            "Volume ${volname}"
+          . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+          . "rollback start" );
+
     OpenEJovianDSS::Common::joviandss_cmd(
         $scfg,
         [
@@ -693,6 +698,12 @@ sub volume_snapshot_rollback {
             "snapshot", $snap, "rollback", "do"
         ]
     );
+
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+            "Volume ${volname}"
+          . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+          . "rollback done" );
+
 }
 
 sub volume_rollback_is_possible {
@@ -1067,7 +1078,7 @@ sub deactivate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "Deactivate volume "
+            "Deactivate volume ${volname}"
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
           . "start" );
     my $pool   = OpenEJovianDSS::Common::get_pool($scfg);
@@ -1090,7 +1101,7 @@ sub deactivate_volume {
     }
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "Deactivate volume "
+            "Deactivate volume ${volname}"
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
           . "done" );
 
