@@ -1,0 +1,7 @@
+# Open-E JovianDSS Proxmox plugin
+
+## Documentation
+
+Documentation is stored in `docs` folder.
+
+Related wiki repo is open-e/JovianDSS-Proxmox.wiki.git
