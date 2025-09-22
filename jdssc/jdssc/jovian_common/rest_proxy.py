@@ -101,7 +101,7 @@ class JovianDSSRESTProxy(object):
 
         self.active_host = (self.active_host + 1) % len(self.hosts)
 
-    def request(self, request_method, req, json_data=None, apiv=3):
+    def request(self, request_method, req, json_data=None, apiv=4):
         """Send request to the specific url.
 
         :param request_method: GET, POST, DELETE
@@ -145,7 +145,7 @@ class JovianDSSRESTProxy(object):
                 return out
         raise jexc.JDSSCommunicationFailure(self.hosts, req)
 
-    def pool_request(self, request_method, req, json_data=None, apiv=3):
+    def pool_request(self, request_method, req, json_data=None, apiv=4):
         """Send request to the specific url.
 
         :param request_method: GET, POST, DELETE
