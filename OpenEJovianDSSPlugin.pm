@@ -688,7 +688,7 @@ sub volume_snapshot_rollback {
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "Volume ${volname}"
-          . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+          . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snap )
           . "rollback start" );
 
     OpenEJovianDSS::Common::joviandss_cmd(
@@ -701,7 +701,7 @@ sub volume_snapshot_rollback {
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "Volume ${volname}"
-          . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+          . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snap )
           . "rollback done" );
 
 }
