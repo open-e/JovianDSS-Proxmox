@@ -21,10 +21,12 @@ use strict;
 use warnings;
 use Exporter 'import';
 use Carp qw( confess longmess );
+use Cwd qw( );
 use Data::Dumper;
 use File::Basename;
 use File::Find qw(find);
 use File::Path qw(make_path);
+use File::Spec;
 use String::Util;
 
 use Fcntl qw(:DEFAULT O_WRONLY O_APPEND O_CREAT O_SYNC);
@@ -396,6 +398,26 @@ sub debugmsg {
           sprintf( "%04d-%02d-%02d %02d:%02d:%02d.%03d - plugin - %s - %s",
             $year, $month,        $day,        $hour, $min,
             $sec,  $milliseconds, uc($dlevel), $msg );
+
+        if ( $log_file_path =~ /^([\:\-\@\w.\/]+)$/ ) {
+            my $log_file_abs_path;
+            $log_file_abs_path = File::Spec->rel2abs($log_file_path);
+
+            if ( $log_file_abs_path =~ /^([\:\-\@\w.\/]+)$/ ) {
+                my $log_file_abs_dir = File::Basename::dirname($log_file_abs_path);
+
+                unless ( -d $log_file_abs_dir ) {
+                    if ( $log_file_abs_dir =~ /^([\:\-\@\w.\/]+)$/ ) {
+                        make_path $log_file_abs_dir, { owner => 'root', group => 'root' };
+                        chmod 0755, $log_file_abs_dir;
+                    } else {
+                        die "Log file dir name is incorrect\n";
+                    }
+                }
+            } else {
+                die "Log file path is incorrect\n";
+            }
+        }
 
         my $fh;
 
