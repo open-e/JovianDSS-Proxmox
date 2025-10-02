@@ -496,17 +496,26 @@ sub alloc_image {
     if ( 'images' ne "${fmt}" ) {
 
         my $pool    = OpenEJovianDSS::Common::get_pool($scfg);
-        my $extsize = $size * 1024;
+        my $size_assigned = $size * 1024;
+        my $block_size = OpenEJovianDSS::Common::get_block_size($scfg);
+        my $block_size_bytes = OpenEJovianDSS::Common::get_block_size_bytes($scfg);
+
+        # JovianDSS allocates volumes with block sized chunks
+        # Volume size is rounded down to the block size
+        if ($size_assigned % $block_size_bytes != 0) {
+            $size_assigned = ( int($size_assigned / $block_size_bytes) * $block_size_bytes ) + $block_size_bytes;
+        }
+
         OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-"Creating volume ${volume_name} format ${fmt} requested size ${size}"
+"Creating volume ${volume_name} format ${fmt} requested size ${size_assigned}"
         );
 
         my $create_vol_cmd = [
             "pool",   $pool,        "volumes", "create",
-            "--size", "${extsize}", "-n",      $volume_name
+            "--size", "${size_assigned}", "-n",      $volume_name
         ];
 
-        my $block_size = OpenEJovianDSS::Common::get_block_size($scfg);
+
         my $thin_provisioning =
           OpenEJovianDSS::Common::get_thin_provisioning($scfg);
 

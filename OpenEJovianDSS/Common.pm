@@ -65,6 +65,7 @@ our @EXPORT_OK = qw(
   get_user_name
   get_user_password
   get_block_size
+  get_block_size_bytes
   get_thin_provisioning
   get_log_file
   get_content
@@ -115,21 +116,24 @@ $MULTIPATH = undef if !-X $MULTIPATH;
 my $DMSETUP = '/usr/sbin/dmsetup';
 $DMSETUP = undef if !-X $DMSETUP;
 
-my $default_prefix          = "jdss-";
-my $default_pool            = "Pool-0";
-my $default_config_path     = "/etc/pve/";
-my $default_debug           = 0;
-my $default_multipath       = 0;
-my $default_shared          = 0;
+my $default_block_size      = '16K';
+my $default_config_path     = '/etc/pve/';
 my $default_content_size    = 100;
-my $default_path            = "/mnt/joviandss";
-my $default_target_prefix   = "iqn.2025-04.proxmox.joviandss.iscsi:";
-my $default_luns_per_target = 8;
-my $default_ssl_cert_verify = 1;
 my $default_control_port    = 82;
 my $default_data_port       = 3260;
+my $default_debug           = 0;
+my $default_prefix          = 'jdss-';
+my $default_pool            = 'Pool-0';
+my $default_luns_per_target = 8;
+my $default_multipath       = 0;
+my $default_path            = '/mnt/joviandss';
+my $default_shared          = 0;
+my $default_target_prefix   = 'iqn.2025-04.proxmox.joviandss.iscsi:';
 my $default_user_name       = 'admin';
+my $default_ssl_cert_verify = 1;
 
+
+sub get_default_block_size      { return $default_block_size }
 sub get_default_prefix          { return $default_prefix }
 sub get_default_pool            { return $default_pool }
 sub get_default_config_path     { return $default_config_path }
@@ -246,7 +250,47 @@ sub get_user_password {
 
 sub get_block_size {
     my ($scfg) = @_;
-    return $scfg->{block_size};
+
+    # This function is used by others
+    # and should return only valid block size strings
+
+    if (defined( $scfg->{block_size} ) ) {
+        my $block_size_str = $scfg->{block_size};
+
+        my %valid_sizes = map { $_ => 1 } qw(
+            4K 8K 16K 32K 64K 128K 256K 512K 1M
+        );
+
+        $block_size_str =~ s/\s+//g;
+        $block_size_str = uc($block_size_str);
+
+        if ( exists $valid_sizes{$block_size_str} ) {
+            return $block_size_str;
+        } else {
+            die "Block size ${block_size_str} is not supported\n";
+        }
+    }
+    return $default_block_size;
+}
+
+sub get_block_size_bytes {
+    my ($scfg) = @_;
+
+    my $block_size_str = get_block_size($scfg);
+
+    $block_size_str =~ s/\s+//g;
+    $block_size_str = uc($block_size_str);
+
+    if ($block_size_str =~ /^(\d+)([KM]?)$/) {
+        my ($number, $unit) = ($1, $2);
+
+        if ($unit eq 'K') {
+            return $number * 1024;
+        } elsif ($unit eq 'M') {
+            return $number * 1024 * 1024;
+        }
+    }
+    die "Unable to calculate proper number of bytes in ${block_size_str}";
 }
 
 sub get_thin_provisioning {
