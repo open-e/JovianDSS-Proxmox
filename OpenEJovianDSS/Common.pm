@@ -42,7 +42,6 @@ use PVE::Tools qw(run_command);
 our @EXPORT_OK = qw(
   get_default_prefix
   get_default_pool
-  get_default_config_path
   get_default_debug
   get_default_multipath
   get_default_content_size
@@ -117,7 +116,6 @@ my $DMSETUP = '/usr/sbin/dmsetup';
 $DMSETUP = undef if !-X $DMSETUP;
 
 my $default_block_size      = '16K';
-my $default_config_path     = '/etc/pve/';
 my $default_content_size    = 100;
 my $default_control_port    = 82;
 my $default_data_port       = 3260;
@@ -136,7 +134,6 @@ my $default_ssl_cert_verify = 1;
 sub get_default_block_size      { return $default_block_size }
 sub get_default_prefix          { return $default_prefix }
 sub get_default_pool            { return $default_pool }
-sub get_default_config_path     { return $default_config_path }
 sub get_default_debug           { return $default_debug }
 sub get_default_multipath       { return $default_multipath }
 sub get_default_content_size    { return $default_content_size }
