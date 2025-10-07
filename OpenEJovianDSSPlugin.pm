@@ -235,9 +235,9 @@ sub options {
         target_prefix      => { optional => 1 },
         luns_per_target    => { optional => 1 },
         ssl_cert_verify    => { optional => 1 },
-        user_name          => { fixed    => 1 },
+        user_name          => { },
         user_password      => { optional => 1 },
-        control_addresses  => { fixed    => 1 },
+        control_addresses  => { },
         control_port       => { optional => 1 },
         data_addresses     => { optional => 1 },
         data_port          => { optional => 1 },
@@ -408,7 +408,7 @@ sub rename_volume {
     OpenEJovianDSS::Common::volume_unpublish( $scfg, $storeid,
         $original_vmid, $original_volname, undef, undef );
 
-    OpenEJovianDSS::Common::joviandss_cmd( $scfg,
+    OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool, "volume", $original_volname, "rename", $new_volname ]
     );
 
@@ -430,7 +430,7 @@ sub create_base {
 
     my $newnameprefix = join '', 'base-', $vmid, '-disk-';
 
-    my $newname = OpenEJovianDSS::Common::joviandss_cmd( $scfg,
+    my $newname = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool, "volumes", "getfreename", "--prefix", $newnameprefix ]
     );
     chomp($newname);
@@ -450,7 +450,7 @@ sub clone_image {
       $class->parse_volname($volname);
     my $clone_name = $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt );
 
-    my $size = OpenEJovianDSS::Common::joviandss_cmd( $scfg,
+    my $size = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool, "volume", $volname, "get", "-s" ] );
     $size = OpenEJovianDSS::Common::clean_word($size);
 
@@ -461,6 +461,7 @@ sub clone_image {
     if ($snap) {
         OpenEJovianDSS::Common::joviandss_cmd(
             $scfg,
+            $storeid,
             [
                 "pool",  $pool,    "volume", $volname,
                 "clone", "--size", $size,    "--snapshot",
@@ -471,6 +472,7 @@ sub clone_image {
     else {
         OpenEJovianDSS::Common::joviandss_cmd(
             $scfg,
+            $storeid,
             [
                 "pool",  $pool,    "volume", $volname,
                 "clone", "--size", $size,    "-n",
@@ -527,7 +529,7 @@ sub alloc_image {
             push @$create_vol_cmd, '--block-size', $block_size;
         }
 
-        OpenEJovianDSS::Common::joviandss_cmd( $scfg, $create_vol_cmd );
+        OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid, $create_vol_cmd );
     }
     return OpenEJovianDSS::Common::clean_word($volume_name);
 }
@@ -563,6 +565,7 @@ sub free_image {
 
     OpenEJovianDSS::Common::joviandss_cmd(
         $scfg,
+        $storeid,
         [
             "pool",   $pool, "volume",          $volname,
             "delete", "-c",  '--target-prefix', $prefix,
@@ -578,7 +581,7 @@ sub get_nfs_addresses {
     my $gethostscmd = [ "hosts", '--nfs' ];
 
     my @hosts = ();
-    my $out   = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $gethostscmd );
+    my $out   = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid, $gethostscmd );
     foreach ( split( /\n/, $out ) ) {
         push @hosts, OpenEJovianDSS::Common::clean_word(split);
     }
@@ -628,7 +631,7 @@ sub list_images {
     my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
     #TODO: rename jdssc variable
-    my $jdssc = OpenEJovianDSS::Common::joviandss_cmd( $scfg,
+    my $jdssc = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool, "volumes", "list", "--vmid" ] );
 
     my $res = [];
@@ -669,7 +672,7 @@ sub volume_snapshot {
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
-    OpenEJovianDSS::Common::joviandss_cmd( $scfg,
+    OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool, "volume", $volname, "snapshots", "create", $snap ] );
 
 }
@@ -702,6 +705,7 @@ sub volume_snapshot_rollback {
 
     OpenEJovianDSS::Common::joviandss_cmd(
         $scfg,
+        $storeid,
         [
             "pool",     $pool, "volume",   $volname,
             "snapshot", $snap, "rollback", "do"
@@ -738,6 +742,7 @@ sub volume_snapshot_delete {
 
     OpenEJovianDSS::Common::joviandss_cmd(
         $scfg,
+        $storeid,
         [
             "pool",     $pool,
             "volume",   $volname,
@@ -754,7 +759,7 @@ sub volume_snapshot_list {
 
     my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
-    my $jdssc = OpenEJovianDSS::Common::joviandss_cmd( $scfg,
+    my $jdssc = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool, "volume", $volname, "snapshots", "list" ] );
 
     my $res = [];
@@ -778,7 +783,7 @@ sub volume_size_info {
             $timeout );
     }
 
-    my $size = OpenEJovianDSS::Common::joviandss_cmd( $scfg,
+    my $size = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool, "volume", $volname, "get", "-s" ] );
     chomp($size);
     $size =~ s/[^[:ascii:]]//;
@@ -792,7 +797,7 @@ sub status {
     my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
     my $jdssc =
-      OpenEJovianDSS::Common::joviandss_cmd( $scfg, [ "pool", $pool, "get" ],
+      OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid, [ "pool", $pool, "get" ],
         10, 0, 'info' );
     my $gb = 1024 * 1024 * 1024;
     my ( $total, $avail, $used ) = split( " ", $jdssc );
@@ -830,6 +835,7 @@ sub ensure_content_volume_nfs {
     eval {
         $content_volume_size_current = OpenEJovianDSS::Common::joviandss_cmd(
             $scfg,
+            $storeid,
             [
                 'pool', $pool, 'share', $content_volume_name,
                 'get',  '-d',  '-s',    '-G'
@@ -846,6 +852,7 @@ sub ensure_content_volume_nfs {
             "Creating content volume with size ${content_volume_size}\n" );
         OpenEJovianDSS::Common::joviandss_cmd(
             $scfg,
+            $storeid,
             [
                 'pool',   $pool, 'shares',
                 'create', '-d',  '-q', "${content_volume_size}G", '-n',
@@ -870,6 +877,7 @@ sub ensure_content_volume_nfs {
         if ( $content_volume_size > $content_volume_size_current ) {
             OpenEJovianDSS::Common::joviandss_cmd(
                 $scfg,
+                $storeid,
                 [
                     "pool",   $pool, "share", $content_volume_name,
                     "resize", "-d",  "${content_volume_size}G"
@@ -1125,7 +1133,7 @@ sub volume_resize {
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
         "Resize volume ${volname} to size ${size}" );
 
-    OpenEJovianDSS::Common::joviandss_cmd( $scfg,
+    OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
         [ "pool", "${pool}", "volume", "${volname}", "resize", "${size}" ] );
 
     my $til =
@@ -1278,67 +1286,21 @@ sub volume_qemu_snapshot_method {
     return 'storage';
 }
 
-# Password file management
-sub joviandss_password_file_name {
-    my ($scfg, $storeid) = @_;
-    return "/etc/pve/priv/storage/joviandss/${storeid}.pw";
-}
-
-sub joviandss_set_password {
-    my ($password, $storeid) = @_;
-    my $pwfile = joviandss_password_file_name(undef, $storeid);
-
-    # Create directory with full path
-    my $dir = "/etc/pve/priv/storage/joviandss";
-    if (! -d $dir) {
-        File::Path::make_path($dir, { mode => 0700 });
-    }
-
-    PVE::Tools::file_set_contents($pwfile, "user_password $password\n", 0600, 1);
-}
-
-sub joviandss_get_password {
-    my ($scfg, $storeid) = @_;
-    my $pwfile = joviandss_password_file_name($scfg, $storeid);
-
-    return undef if ! -f $pwfile;
-
-    # Read entire file and parse key-value pairs
-    my $content = PVE::Tools::file_get_contents($pwfile);
-    my $config = {};
-
-    foreach my $line (split /\n/, $content) {
-        $line =~ s/^\s+|\s+$//g;  # trim whitespace
-        next if $line =~ /^#/ || $line eq '';  # skip comments and empty lines
-
-        if ($line =~ /^(\S+)\s+(.+)$/) {
-            $config->{$1} = $2;
-        }
-    }
-
-    return $config->{user_password};
-}
-
-sub joviandss_delete_password {
-    my ($storeid) = @_;
-    my $pwfile = joviandss_password_file_name(undef, $storeid);
-    unlink $pwfile;
-}
-
-# Storage hooks for sensitive properties
 sub on_add_hook {
     my ($class, $storeid, $scfg, %sensitive) = @_;
-    return if !exists($sensitive{user_password});
-    joviandss_set_password($sensitive{user_password}, $storeid);
+    if (exists($sensitive{user_password}) ) {
+        OpenEJovianDSS::Common::set_user_password($sensitive{user_password}, $storeid);
+    }
 }
 
 sub on_update_hook {
     my ($class, $storeid, $scfg, %sensitive) = @_;
-    return if !exists($sensitive{user_password});
-    if (defined($sensitive{user_password})) {
-        joviandss_set_password($sensitive{user_password}, $storeid);
-    } else {
-        joviandss_delete_password($storeid);
+    if ( exists($sensitive{user_password}) ) {
+        if (defined($sensitive{user_password})) {
+            OpenEJovianDSS::Common::set_user_password($sensitive{user_password}, $storeid);
+        } else {
+            OpenEJovianDSS::Common::delete_user_password($storeid);
+        }
     }
 }
 

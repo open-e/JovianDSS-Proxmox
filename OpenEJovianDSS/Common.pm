@@ -40,6 +40,9 @@ use Time::HiRes qw(gettimeofday);
 use PVE::Tools qw(run_command);
 
 our @EXPORT_OK = qw(
+
+  clean_word
+
   get_default_prefix
   get_default_pool
   get_default_debug
@@ -73,9 +76,13 @@ our @EXPORT_OK = qw(
   get_content_volume_size
   get_content_path
   get_multipath
-  clean_word
+
   get_log_level
   get_debug
+
+  set_user_password
+
+  delete_user_password
 
   safe_var_print
   debugmsg
@@ -122,6 +129,7 @@ my $default_data_port       = 3260;
 my $default_debug           = 0;
 my $default_prefix          = 'jdss-';
 my $default_pool            = 'Pool-0';
+my $default_log_file        = '/var/log/joviandss/joviandss.log';
 my $default_luns_per_target = 8;
 my $default_multipath       = 0;
 my $default_path            = '/mnt/joviandss';
@@ -139,6 +147,7 @@ sub get_default_multipath       { return $default_multipath }
 sub get_default_content_size    { return $default_content_size }
 sub get_default_path            { return $default_path }
 sub get_default_target_prefix   { return $default_target_prefix }
+sub get_default_log_file        { return $default_log_file }
 sub get_default_luns_per_target { return $default_luns_per_target }
 sub get_default_ssl_cert_verify { return $default_ssl_cert_verify }
 sub get_default_control_port    { return $default_control_port }
@@ -241,8 +250,48 @@ sub get_user_name {
 }
 
 sub get_user_password {
-    my ($scfg) = @_;
-    return $scfg->{user_password};
+    my ($storeid) = @_;
+    my $pwfile = get_password_file_name($storeid);
+
+    return undef if ! -f $pwfile;
+
+    my $content = PVE::Tools::file_get_contents($pwfile);
+    my $config = {};
+
+    foreach my $line (split /\n/, $content) {
+        $line =~ s/^\s+|\s+$//g;
+        next if $line =~ /^#/ || $line eq '';
+
+        if ($line =~ /^(\S+)\s+(.+)$/) {
+            $config->{$1} = $2;
+        }
+    }
+
+    return $config->{user_password};
+}
+
+sub get_password_file_name {
+    my ($storeid) = @_;
+    return "/etc/pve/priv/storage/joviandss/${storeid}.pw";
+}
+
+sub password_file_set_password {
+    my ($password, $storeid) = @_;
+    my $pwfile = get_password_file_name($storeid);
+
+    # Create directory with full path
+    my $dir = "/etc/pve/priv/storage/joviandss";
+    if (! -d $dir) {
+        File::Path::make_path($dir, { mode => 0700 });
+    }
+
+    PVE::Tools::file_set_contents($pwfile, "user_password $password\n", 0600, 1);
+}
+
+sub password_file_delete {
+    my ($storeid) = @_;
+    my $pwfile = get_password_file_name($storeid);
+    unlink $pwfile;
 }
 
 sub get_block_size {
@@ -305,7 +354,7 @@ sub get_thin_provisioning {
 
 sub get_log_file {
     my ($scfg) = @_;
-    return $scfg->{log_file};
+    return $scfg->{log_file} || $default_log_file;
 }
 
 sub get_content {
@@ -423,10 +472,6 @@ sub debugmsg {
     if ( $config_level >= $msg_level ) {
 
         $log_file_path = get_log_file($scfg);
-        if ( !defined($log_file_path) ) {
-            $log_file_path =
-              clean_word( joviandss_cmd( $scfg, [ 'cfg', '--getlogfile' ] ) );
-        }
 
         my ( $seconds, $microseconds ) = gettimeofday();
 
@@ -481,7 +526,7 @@ sub safe_var_print {
 }
 
 sub joviandss_cmd {
-    my ( $scfg, $cmd, $timeout, $retries, $force_debub_level ) = @_;
+    my ( $scfg, $storeid, $cmd, $timeout, $retries, $force_debub_level ) = @_;
 
     my $msg = '';
     my $err = undef;
@@ -511,6 +556,8 @@ sub joviandss_cmd {
     if ( defined($control_addresses) ) {
         push @$connection_options, '--control-addresses',
           "${control_addresses}";
+    } else {
+        die "JovianDSS REST IP address is not provided.\n";
     }
 
     my $control_port = get_control_port($scfg);
@@ -531,11 +578,15 @@ sub joviandss_cmd {
     my $user_name = get_user_name($scfg);
     if ( defined($user_name) ) {
         push @$connection_options, '--user-name', $user_name;
+    } else {
+        die "JovianDSS REST user name is not provided.\n";
     }
 
-    my $user_password = get_user_password($scfg);
+    my $user_password = get_user_password($storeid);
     if ( defined($user_password) ) {
         push @$connection_options, '--user-password', $user_password;
+    } else {
+        die "JovianDSS REST user password is not provided.\n";
     }
 
     my $log_file = get_log_file($scfg);
@@ -553,7 +604,7 @@ sub joviandss_cmd {
         my $exitcode = 0;
         eval {
             my $jcmd = [ '/usr/local/bin/jdssc', @$connection_options, @$cmd ];
-            #cmd_log_output($scfg, 'debug', $jcmd, '');
+            cmd_log_output($scfg, 'debug', $jcmd, '');
 
             my $output   = sub {
                                     $msg .= "$_[0]\n";
@@ -612,6 +663,7 @@ sub volume_snapshots_info {
 
     my $output = joviandss_cmd(
         $scfg,
+        $storeid,
         [
             'pool',      $pool,  'volume', $volname,
             'snapshots', 'list', '--guid', '--creation'
@@ -644,6 +696,7 @@ sub volume_rollback_check {
     eval {
         $res = joviandss_cmd(
             $scfg,
+            $storeid,
             [
                 "pool",     $pool, "volume",   $volname,
                 "snapshot", $snap, "rollback", "check",
@@ -691,7 +744,7 @@ sub get_iscsi_addresses {
 
     my $getaddressescmd = [ 'hosts', '--iscsi' ];
 
-    my $cmdout = joviandss_cmd( $scfg, $getaddressescmd );
+    my $cmdout = joviandss_cmd( $scfg, $storeid, $getaddressescmd );
 
     if ( length($cmdout) > 1 ) {
         my @hosts = ();
@@ -742,7 +795,7 @@ sub block_device_iscsi_paths {
 }
 
 sub target_active_info {
-    my ( $scfg, $tgname, $volname, $snapname, $contentvolflag ) = @_;
+    my ( $scfg, $storeid, $tgname, $volname, $snapname, $contentvolflag ) = @_;
     # Provides target info by requesting target info from joviandss
     debugmsg( $scfg, "debug", "Acquiring active target info for "
                 . "target group name ${tgname} "
@@ -766,7 +819,7 @@ sub target_active_info {
         push @$gettargetcmd, '-d';
     }
 
-    my $out = joviandss_cmd( $scfg, $gettargetcmd, 80, 3 );
+    my $out = joviandss_cmd( $scfg, $storeid, $gettargetcmd, 80, 3 );
 
     if ( defined $out and clean_word($out) eq '' ) {
         return undef;
@@ -798,7 +851,7 @@ sub get_content_target_group_name {
 }
 
 sub volume_publish {
-    my ( $scfg, $tgname, $volname, $snapname, $content_volume_flag ) = @_;
+    my ( $scfg, $storeid, $tgname, $volname, $snapname, $content_volume_flag ) = @_;
 
     my $pool   = get_pool($scfg);
     my $prefix = get_target_prefix($scfg);
@@ -818,7 +871,7 @@ sub volume_publish {
         }
     }
 
-    my $out = joviandss_cmd( $scfg, $create_target_cmd, 80, 3 );
+    my $out = joviandss_cmd( $scfg, $storeid, $create_target_cmd, 80, 3 );
     my ( $targetname, $lunid, $ips ) = split( ' ', $out );
 
     my @iplist = split /\s*,\s*/, clean_word($ips);
@@ -1545,6 +1598,7 @@ sub volume_unpublish {
     unless ( defined($snapname) ) {
         my $delitablesnaps = joviandss_cmd(
             $scfg,
+            $storeid,
             [
                 "pool",   $pool,
                 "volume", $volname,
@@ -1564,6 +1618,7 @@ sub volume_unpublish {
 
         joviandss_cmd(
             $scfg,
+            $storeid,
             [
                 'pool', $pool,
                 'targets', 'delete',
@@ -1577,6 +1632,7 @@ sub volume_unpublish {
     if ( defined( $snapname ) ) {
         joviandss_cmd(
             $scfg,
+            $storeid,
             [
                 'pool', $pool,
                 'targets', 'delete',
@@ -1787,59 +1843,6 @@ sub log_dir_content {
 
 }
 
-#sub delete_global_lun_record {
-#    my ( $scfg, $storeid, $targetname, $lunid, $volname ) = @_;
-#
-#    # Global Target Directory
-#    my $gtdir = File::Spec->catdir( $PLUGIN_GLOBAL_STATE_DIR,
-#                                     $storeid, $targetname );
-#
-#    unless ( -d $gtdir ) {
-#        return undef;
-#    }
-#
-#    # Global Target Lun Directory
-#    my $gtldir = File::Spec->catdir( $PLUGIN_GLOBAL_STATE_DIR,
-#                                     $storeid, $targetname, $lunid );
-#
-#    my $gtlfile = File::Spec->catfile( $gtldir, $volname );
-#
-#    # Remove data record
-#    if ( -f $gtlfile ) {
-#        unless ( unlink($gtlfile) ) {
-#            die "Unable to remove global target lun file ${gtlfile} because $!\n";
-#        }
-#    }
-#
-#    # Remove lun record
-#    if ( -d $gtldir ) {
-#        if ( rmdir( $gtldir ) ) {
-#            my $dh;
-#            opendir( $dh, $gtdir );
-#            my @entries = grep { $_ ne '.' && $_ ne '..' } readdir $dh;
-#            closedir $dh;
-#
-#            unless ( @entries ) {
-#                unless ( rmdir( $gtdir ) ) {
-#                    if ( -d $gtdir) {
-#                        opendir ( $dh, $gtdir) or die "Cannot open directory '$gtdir': $!\n";
-#                        @entries = grep { $_ ne '.' && $_ ne '..' } readdir $dh;
-#                        closedir $dh;
-#                        unless ( @entries ) {
-#                            die "Failed to remove global target record at ${gtdir} that seem to be empty '$!'\n";
-#                        }
-#                    }
-#                }
-#            }
-#        } else {
-#            OpenEJovianDSS::Common::debugmsg( $scfg, "warning",
-#                    "Skip removing lun dir of global target ${targetname} " .
-#                    "lun ${lunid} because of $!");
-#        }
-#    }
-#    return 1;
-#}
-
 sub lun_record_local_delete {
     my ( $scfg, $storeid, $targetname, $lunid, $volname, $snapname ) = @_;
 
@@ -1947,6 +1950,7 @@ sub volume_activate {
     eval {
         $published = 1;
         $tinfo = volume_publish($scfg,
+                                $storeid,
                                 $tgname,
                                 $volname,
                                 $snapname,
@@ -2129,6 +2133,7 @@ sub volume_deactivate {
     unless( $snapname ) {
         my $delitablesnaps = joviandss_cmd(
             $scfg,
+            $storeid,
             [
                 "pool",   $pool,
                 "volume", $volname,
@@ -2163,7 +2168,7 @@ sub volume_deactivate {
         } else {
 
             foreach my $rec (@$lunrecinfolist) {
-                my $tinfo = target_active_info( $scfg, $tgname, $volname, $snapname, $contentvolumeflag );
+                my $tinfo = target_active_info( $scfg, $storeid, $tgname, $volname, $snapname, $contentvolumeflag );
                 if ( defined( $tinfo ) ){
                     my $lr;
                     ($targetname, $lunid, $lunrecpath, $lr) = $rec;
@@ -2382,7 +2387,7 @@ sub volume_update_size {
             lun_record_update_device( $scfg, $storeid, $targetname, $lunid, $lunrecpath, $lunrecord, $size);
         } else {
             foreach my $rec (@$lunrecinfolist) {
-                my $tinfo = target_active_info( $scfg, $tgname, $volname, undef, undef );
+                my $tinfo = target_active_info( $scfg, $storeid, $tgname, $volname, undef, undef );
                 if ( defined( $tinfo ) ){
                     my ($targetname, $lunid, $lunrecpath, $lunrecord) = $rec;
 
@@ -2408,7 +2413,7 @@ sub volume_get_size {
 
     my $pool = get_pool($scfg);
 
-    my $output = joviandss_cmd($scfg, ["pool", $pool, "volume", $volname, "get", "-s"]);
+    my $output = joviandss_cmd($scfg, $storeid, ["pool", $pool, "volume", $volname, "get", "-s"]);
 
     my $size = int( clean_word( $output ) + 0 );
     return $size;
