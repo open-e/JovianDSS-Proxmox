@@ -1,3 +1,15 @@
+open-e-joviandss-proxmox-plugin (0.10.7-0) stable; urgency=medium
+
+  * Fix password file management functions and authentication reliability
+  * Fix snapshot listing functionality and debug messages
+  * Fix volume block size rounding problems
+  * Default to REST API version 4 for improved performance
+  * Automatic log directory creation
+  * Enhanced debug logging and error handling
+  * Code cleanup and function naming standardization
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Tue, 08 Oct 2025 12:00:00 +0200
+
 open-e-joviandss-proxmox-plugin (0.10.6-0) stable; urgency=medium
 
   * Add multipath configuration support via install script
