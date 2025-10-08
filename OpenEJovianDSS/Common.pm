@@ -80,9 +80,9 @@ our @EXPORT_OK = qw(
   get_log_level
   get_debug
 
-  set_user_password
+  password_file_set_password
 
-  delete_user_password
+  password_file_delete
 
   safe_var_print
   debugmsg
@@ -385,7 +385,7 @@ sub get_content_volume_type {
         if ( $scfg->{content_volume_type} eq 'iscsi' ) {
             return 'iscsi';
         }
-        die "Uncnown type of content storage requered\n";
+        die "Unknown type of content storage requered\n";
     }
     return 'iscsi';
 }
@@ -604,15 +604,12 @@ sub joviandss_cmd {
         my $exitcode = 0;
         eval {
             my $jcmd = [ '/usr/local/bin/jdssc', @$connection_options, @$cmd ];
-            cmd_log_output($scfg, 'debug', $jcmd, '');
 
             my $output   = sub {
                                     $msg .= "$_[0]\n";
-                                    #cmd_log_output($scfg, 'debug', $jcmd, $msg);
                                };
             my $errfunc  = sub {
                                     $err .= "$_[0]\n";
-                                    #cmd_log_output($scfg, 'error', $jcmd, $err);
                                };
 
             $exitcode = run_command( $jcmd,
@@ -640,7 +637,7 @@ sub joviandss_cmd {
         die "$rerr\n";
     }
 
-    die "Unhadled state during running JovianDSS command\n";
+    die "Unhandled state during running JovianDSS command\n";
 }
 
 
@@ -674,7 +671,7 @@ sub volume_snapshots_info {
     my @lines     = split( /\n/, $output );
     for my $line (@lines) {
         my ( $name, $guid, $creation ) = split( /\s+/, $line );
-        my ($sname) = split;
+        #my ($sname) = split;
         debugmsg( $scfg, "debug",
 "Volume ${volname} has snapshot ${name} with id ${guid} made at ${creation}\n"
         );
@@ -690,7 +687,7 @@ sub volume_snapshots_info {
 sub volume_rollback_check {
     my ( $scfg, $storeid, $volname, $snap, $blockers ) = @_;
 
-    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
+    my $pool = get_pool($scfg);
 
     my $res;
     eval {
@@ -881,9 +878,9 @@ sub volume_publish {
         lunid  => clean_word($lunid),
         iplist => \@iplist
     );
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+    debugmsg( $scfg, "debug",
             "Publish volume ${volname} "
-          . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+          . safe_var_print( "snapshot", $snapname )
           . 'acquired '
           . "target ${targetname} "
           . "lun ${lunid} "
@@ -1210,7 +1207,7 @@ sub scsiid_from_blockdevs {
 
         if ( defined($scsiid) ) {
             if ( $scsiid =~ /^([\-\@\w.\/]+)$/ ) {
-                OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                debugmsg( $scfg, "debug",
                     "Identified scsi id ${1}\n" );
                 return $1;
             }
@@ -1245,7 +1242,7 @@ sub volume_unstage_iscsi_device {
             }
             my $block_device_name = File::Basename::basename($bdp);
             unless ( $block_device_name =~ /^[a-z0-9]+$/ ) {
-                die "Invalide block device name ${block_device_name} " .
+                die "Invalid block device name ${block_device_name} " .
                         "for iscsi target ${targetname}\n";
             }
             my $delete_file = "/sys/block/${block_device_name}/device/delete";
@@ -1906,7 +1903,7 @@ sub lun_record_local_delete {
                 }
             }
         } else {
-            OpenEJovianDSS::Common::debugmsg( $scfg, "warning",
+            debugmsg( $scfg, "warning",
                     "Skip removing lun dir of global target ${targetname} " .
                     "lun ${lunid} because of $!");
         }
@@ -1937,12 +1934,12 @@ sub volume_activate {
     my $hosts;
 
     if ( defined($content_volume_flag) && $content_volume_flag != 0 ) {
-        $tgname = OpenEJovianDSS::Common::get_content_target_group_name($scfg);
+        $tgname = get_content_target_group_name($scfg);
     } else {
-        $tgname = OpenEJovianDSS::Common::get_vm_target_group_name($scfg, $vmid);
+        $tgname = get_vm_target_group_name($scfg, $vmid);
     }
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+    debugmsg( $scfg, "debug",
             "Activating volume ${volname} "
           . safe_var_print( "snapshot", $snapname )
           . "\n" );
@@ -2080,7 +2077,7 @@ sub volume_activate {
     }
     unless ( defined( $block_devs ) ) {
         die "Unable to provide block device for volume ${volname}"
-                . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+                . safe_var_print( "snapshot", $snapname )
                 . " after activation\n";
     } else {
         return $block_devs;
@@ -2116,18 +2113,18 @@ sub volume_deactivate {
 
     my $local_cleanup = 0;
 
-    my $pool   = OpenEJovianDSS::Common::get_pool($scfg);
+    my $pool   = get_pool($scfg);
     my $prefix = get_target_prefix($scfg);
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+    debugmsg( $scfg, "debug",
             "Volume ${volname} deactivate "
-          . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+          . safe_var_print( "snapshot", $snapname )
           . "\n" );
 
     if ( defined($contentvolumeflag) && $contentvolumeflag != 0 ) {
-        $tgname = OpenEJovianDSS::Common::get_content_target_group_name($scfg);
+        $tgname = get_content_target_group_name($scfg);
     } else {
-        $tgname = OpenEJovianDSS::Common::get_vm_target_group_name($scfg, $vmid);
+        $tgname = get_vm_target_group_name($scfg, $vmid);
     }
 
     unless( $snapname ) {
@@ -2157,7 +2154,7 @@ sub volume_deactivate {
             "warning",
             "Unable to identify lun record for "
                 . "volume ${volname} "
-                . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+                . safe_var_print( "snapshot", $snapname )
                 . "\n"
             );
         return 1;
@@ -2289,7 +2286,7 @@ sub lun_record_update_device {
                 );
             };
 
-            $block_device_path = OpenEJovianDSS::Common::clean_word($block_device_path);
+            $block_device_path = clean_word($block_device_path);
             my $block_device_name = basename($block_device_path);
             unless ( $block_device_name =~ /^[a-z0-9]+$/ ) {
                 die "Invalide block device name ${block_device_name} " .
@@ -2377,9 +2374,9 @@ sub volume_update_size {
     my ( $scfg, $storeid, $vmid, $volname, $size ) = @_;
 
     my $tgname;
-    my $lunrecinfolist = OpenEJovianDSS::Common::lun_record_local_get_info_list( $scfg, $storeid, $volname, undef );
+    my $lunrecinfolist = lun_record_local_get_info_list( $scfg, $storeid, $volname, undef );
 
-    $tgname = OpenEJovianDSS::Common::get_vm_target_group_name($scfg, $vmid);
+    $tgname = get_vm_target_group_name($scfg, $vmid);
 
     if ( @$lunrecinfolist ) {
         if ( @$lunrecinfolist == 1 ) {
@@ -2422,7 +2419,7 @@ sub volume_get_size {
 sub store_settup {
     my ( $scfg, $storeid ) = @_;
 
-    my $path = OpenEJovianDSS::Common::get_content_path($scfg);
+    my $path = get_content_path($scfg);
 
     my $lldir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR, $storeid );
 

@@ -217,7 +217,7 @@ sub properties {
         log_file => {
             description => "Log file path",
             type        => 'string',
-            default     => '/var/log/joviandss.log',
+            default     => '/var/log/joviandss/joviandss.log',
         },
     };
 }
@@ -295,10 +295,10 @@ sub path {
                 my $clean_error = $error;
                 $clean_error =~ s/\s+$//;
                 if ($clean_error =~ /^JDSS resource volume .+ DNE\.$/) {
-                    debugmsg($scfg, "debug", "Volume $volname does not exist: ${clean_error}");
+                    OpenEJovianDSS::Common::debugmsg($scfg, "debug", "Volume $volname does not exist: ${clean_error}");
                     return wantarray ? ( undef, $vmid, $vtype ) : undef;
                 }
-                debugmsg($scfg, "error", "Volume activation error: ${error}");
+                OpenEJovianDSS::Common::debugmsg($scfg, "error", "Volume activation error: ${error}");
                 die $error;  # Re-throw other errors
             }
 
@@ -765,7 +765,7 @@ sub volume_snapshot_list {
     my $res = [];
     foreach ( split( /\n/, $jdssc ) ) {
         my ($sname) = split;
-        push @$res, { 'name' => '$sname' };
+        push @$res, { 'name' => "$sname" };
     }
 
     return $res;
@@ -1289,7 +1289,7 @@ sub volume_qemu_snapshot_method {
 sub on_add_hook {
     my ($class, $storeid, $scfg, %sensitive) = @_;
     if (exists($sensitive{user_password}) ) {
-        OpenEJovianDSS::Common::set_user_password($sensitive{user_password}, $storeid);
+        OpenEJovianDSS::Common::password_file_set_password($sensitive{user_password}, $storeid);
     }
 }
 
@@ -1297,9 +1297,9 @@ sub on_update_hook {
     my ($class, $storeid, $scfg, %sensitive) = @_;
     if ( exists($sensitive{user_password}) ) {
         if (defined($sensitive{user_password})) {
-            OpenEJovianDSS::Common::set_user_password($sensitive{user_password}, $storeid);
+            OpenEJovianDSS::Common::password_file_set_password($sensitive{user_password}, $storeid);
         } else {
-            OpenEJovianDSS::Common::delete_user_password($storeid);
+            OpenEJovianDSS::Common::password_file_delete($storeid);
         }
     }
 }
