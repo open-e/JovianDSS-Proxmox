@@ -1,0 +1,2 @@
+SUBSYSTEM=="block", ENV{DEVTYPE}=="disk", KERNEL=="sd*", ENV{SCSI_IDENT_LUN_T10}=="SCST_BIO*-????????????????", PROGRAM="/bin/bash -c 'echo %E{SCSI_IDENT_LUN_T10} | sed s/.*-//'", SYMLINK+="disk/by-scsi-id/%c-path"
+
