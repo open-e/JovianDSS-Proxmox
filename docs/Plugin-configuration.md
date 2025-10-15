@@ -17,9 +17,10 @@ Where each storage `type` represents a plugin that implements a common interface
 
 `STORAGE_ID` names the storage pool as it appears in the Proxmox VE UI and CLI.
 
-`property` and `value` are key-value pairs of property and its value 
+`property` and `value` are key-value pairs of property and its value.
 
-
+The property change becomes effective immediately after the storage.cfg file is written.
+The very next request to the Proxmox VE API will take the new configuration into account.
 
 [More about ProxmoxVE storage configuration can be found here](https://pve.proxmox.com/wiki/Storage)
 
