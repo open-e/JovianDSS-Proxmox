@@ -2410,7 +2410,7 @@ sub volume_get_size {
 
     my $pool = get_pool($scfg);
 
-    my $output = joviandss_cmd($scfg, $storeid, ["pool", $pool, "volume", $volname, "get", "-s"]);
+    my $output = joviandss_cmd($scfg, $storeid, ['pool', $pool, 'volume', $volname, 'get', '-s']);
 
     my $size = int( clean_word( $output ) + 0 );
     return $size;
