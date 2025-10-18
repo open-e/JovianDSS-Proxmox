@@ -1410,11 +1410,11 @@ class JovianDSSDriver(object):
         if (not direct_mode) and (not jcom.is_volume(name)):
             return dict()
 
-        ret={'name': name,
-               'size': data['volsize']}
-
-        if 'san:volume_id' in data:
-            ret['id']=data['san:volume_id'],
+        ret = {'name': name,
+               'size': data['volsize'],
+               'san_scsi_id': data['san:volume_id'],
+               'scsi_id': data['default_scsi_id']
+               }
 
         return ret
 
@@ -1423,28 +1423,28 @@ class JovianDSSDriver(object):
 
         :return: volume id, size
         """
-        name=None
+        name = None
 
         if direct_mode:
-            name=nas_volume_name
+            name = nas_volume_name
         else:
-            name=jcom.vname(nas_volume_name)
-        data=self.ra.get_nas_volume(name)
+            name = jcom.vname(nas_volume_name)
+        data = self.ra.get_nas_volume(name)
 
-        ret={'name': name,
+        ret = {'name': name,
                'quota': data['quota']}
 
         return ret
 
     def _set_provisioning_thin(self, vname, thinp):
 
-        provisioning='thin' if thinp else 'thick'
+        provisioning = 'thin' if thinp else 'thick'
 
         LOG.info("Setting volume %s provisioning %s",
                  jcom.idname(vname),
                  provisioning)
 
-        prop={'provisioning': provisioning}
+        prop = {'provisioning': provisioning}
         try:
             self.ra.modify_lun(vname, prop=prop)
         except jexc.JDSSException as err:
@@ -1459,9 +1459,9 @@ class JovianDSSDriver(object):
                   volume_name,
                   new_volume_name)
 
-        vname=jcom.vname(volume_name)
-        nvname=jcom.vname(new_volume_name)
-        prop={'name': nvname}
+        vname = jcom.vname(volume_name)
+        nvname = jcom.vname(new_volume_name)
+        prop = {'name': nvname}
         try:
             self.ra.modify_lun(vname, prop)
         except jexc.JDSSException as err:
@@ -1471,10 +1471,10 @@ class JovianDSSDriver(object):
             raise Exception(emsg) from err
 
     def _list_all_snapshots(self, f=None):
-        resp=[]
-        i=0
+        resp = []
+        i = 0
         while True:
-            spage=self.ra.get_snapshots_page(i)
+            spage = self.ra.get_snapshots_page(i)
 
             if len(spage) > 0:
                 LOG.debug("Page: %s", str(spage))
