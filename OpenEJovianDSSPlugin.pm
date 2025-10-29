@@ -275,15 +275,8 @@ sub path {
                       . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
                       . "\n");
 
-                my $bdpl = OpenEJovianDSS::Common::volume_activate($scfg, $storeid,
-                    $vmid, $volname, $snapname, undef );
+                my $pathval = OpenEJovianDSS::Common::block_device_path_from_rest( $scfg, $storeid, $volname, $snapname );
 
-                unless ( defined($bdpl) ) {
-                    die "Unable to identify block device related to ${volname}"
-                      . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
-                      . "\n";
-                }
-                my $pathval = ${$bdpl}[0];
                 $pathval =~ m{^([\:\w\-/\.]+)$}
                   or die "Invalid source path '$pathval'";
                 $path = $pathval;
@@ -298,7 +291,10 @@ sub path {
                     OpenEJovianDSS::Common::debugmsg($scfg, "debug", "Volume $volname does not exist: ${clean_error}");
                     return wantarray ? ( undef, $vmid, $vtype ) : undef;
                 }
-                OpenEJovianDSS::Common::debugmsg($scfg, "error", "Volume activation error: ${error}");
+                OpenEJovianDSS::Common::debugmsg($scfg, "error",
+                    "Unable to identify expected block device path for volume "
+                    . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+                    . "activation error: ${error}");
                 die $error;  # Re-throw other errors
             }
 
@@ -346,6 +342,10 @@ sub path {
                 $pathval =~ m{^([\:\w\-/\.]+)$}
                   or die "Invalid source path '$pathval'";
             }
+            OpenEJovianDSS::Common::debugmsg($scfg, 'debug', "One lun record found for volume ${volname}, "
+                  . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+                  . "\n");
+
             return wantarray ? ( $pathval, $vmid, $vtype ) : $pathval;
         }
 
@@ -586,43 +586,6 @@ sub get_nfs_addresses {
         push @hosts, OpenEJovianDSS::Common::clean_word(split);
     }
     return @hosts;
-}
-
-sub get_scsiid {
-    my ( $class, $scfg, $target, $storeid ) = @_;
-
-    my @hosts = $class->get_iscsi_addresses( $scfg, $storeid, 1 );
-
-    foreach my $host (@hosts) {
-        my $targetpath = "/dev/disk/by-path/ip-${host}-iscsi-${target}-lun-0";
-        my $getscsiidcmd =
-          [ "/lib/udev/scsi_id", "-g", "-u", "-d", $targetpath ];
-        my $scsiid;
-
-        if ( -e $targetpath ) {
-            eval {
-                run_command( $getscsiidcmd,
-                    outfunc => sub { $scsiid = shift; } );
-            };
-
-            if ($@) {
-                die
-"Unable to get the iSCSI ID for ${targetpath} because of $@\n";
-            }
-        }
-        else {
-            next;
-        }
-
-        if ( defined($scsiid) ) {
-            if ( $scsiid =~ /^([\-\@\w.\/]+)$/ ) {
-                OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-                    "Identified scsi id ${1}\n" );
-                return $1;
-            }
-        }
-    }
-    return undef;
 }
 
 sub list_images {
@@ -1014,11 +977,9 @@ sub activate_storage {
             $class->ensure_content_volume_nfs( $storeid, $scfg, $cache );
         }
 
-        #else {
-        #    $class->ensure_content_volume( $storeid, $scfg, $cache );
-        #}
     }
-    return 1;
+    $class->SUPER::activate_storage($storeid, $scfg, $cache);
+    return;
 }
 
 sub deactivate_storage {
@@ -1087,8 +1048,6 @@ sub activate_volume {
             "Activate volume ${volname}"
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
           . " done" );
-
-    return 1;
 }
 
 sub deactivate_volume {
@@ -1122,7 +1081,7 @@ sub deactivate_volume {
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
           . "done" );
 
-    return 1;
+    return;
 }
 
 sub volume_resize {
