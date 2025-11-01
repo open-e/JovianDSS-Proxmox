@@ -258,6 +258,9 @@ $SYSTEMCTL = undef if !-X $SYSTEMCTL;
 
 sub path {
     my ( $class, $scfg, $volname, $storeid, $snapname ) = @_;
+    OpenEJovianDSS::Common::debugmsg($scfg, 'debug', "Path start for volume ${volname} "
+          . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+          . "\n");
 
     my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
@@ -299,6 +302,9 @@ sub path {
             }
 
             if (defined($path)) {
+                OpenEJovianDSS::Common::debugmsg($scfg, 'debug', "Path after activation of volume ${volname} "
+                      . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+                      . "${path}\n");
                 return wantarray ? ( $path, $vmid, $vtype ) : $path;
             }
         }
@@ -342,9 +348,9 @@ sub path {
                 $pathval =~ m{^([\:\w\-/\.]+)$}
                   or die "Invalid source path '$pathval'";
             }
-            OpenEJovianDSS::Common::debugmsg($scfg, 'debug', "One lun record found for volume ${volname}, "
+            OpenEJovianDSS::Common::debugmsg($scfg, 'debug', "Path from lun record ${volname}, "
                   . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
-                  . "\n");
+                  . "${pathval}\n");
 
             return wantarray ? ( $pathval, $vmid, $vtype ) : $pathval;
         }

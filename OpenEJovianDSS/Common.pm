@@ -1028,10 +1028,11 @@ sub volume_stage_multipath {
             };
             die "Unable to call multipath: $@\n" if $@;
 
-            $mpathname = get_device_mapper_name( $scfg, $id );
-            if ( defined($mpathname) ) {
-                last;
+            $mpathname = "/dev/mapper/${id}";
+            if ( -e $mpathname ) {
+                return clean_word($mpathname);
             }
+
             debugmsg( $scfg,
                     "debug",
                     "Unable to identigy block device maper name for "
@@ -1044,10 +1045,7 @@ sub volume_stage_multipath {
             die "Unable to identify the multipath name for scsiid ${id}\n";
         }
 
-        $mpathname = "/dev/mapper/${mpathname}";
-        if ( -e $mpathname ) {
-            return clean_word($mpathname);
-        }
+
     } else {
         die "Invalid characters in scsiid: ${scsiid}";
     }
@@ -1987,7 +1985,6 @@ sub volume_activate {
                                 $snapname,
                                 $content_volume_flag
         );
-        #my $dumpdata = Data::Dumper->new([$tinfo]);
 
         if ($tinfo) {
             $targetname = $tinfo->{target};
@@ -2011,7 +2008,7 @@ sub volume_activate {
         unless (scalar(@$block_devs) == scalar(@$hosts)) {
             die "Unable to connect all storage addresses\n";
         }
-        $scsiid = id_serial_from_blockdevs( $scfg, $block_devs );
+        $scsiid = id_serial_from_rest( $scfg, $storeid, $volname, $snapname );
 
         if (defined( $scsiid ) ) {
             $scsiid_acquired = 1;
