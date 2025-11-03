@@ -1199,19 +1199,50 @@ sub id_serial_from_rest {
 
     my $pool = get_pool( $scfg );
 
-    my $jscsiid = joviandss_cmd(
-        $scfg,
-        $storeid,
-        [
-            "pool",   $pool,
-            "volume", $volname,
-            "get", "-i"
-        ]
-    );
+    debugmsg( $scfg,"debug",
+                "Obtain SCSI ID for volume ${volname} "
+                . safe_var_print( "snapshot", $snapname )
+                . "\n");
 
-    my $uei64_bytes = substr( $jscsiid, 0, 16 );
+    my $jscsiid;
+    if (defined($volname) && !defined($snapname)) {
+        $jscsiid = joviandss_cmd(
+            $scfg,
+            $storeid,
+            [
+                "pool",   $pool,
+                "volume", $volname,
+                "get", "-i"
+            ]
+        );
+    } elsif (defined($volname) && defined($snapname)) {
+        $jscsiid = joviandss_cmd(
+            $scfg,
+            $storeid,
+            [
+                "pool",   $pool,
+                "volume", $volname,
+                "snapshot", $snapname,
+                "get", "-i"
+            ]
+        );
+    } else {
+        die "Volume name is required to acquire scsi id\n";
+    }
 
-    return "2${uei64_bytes}";
+    if ( $jscsiid =~ /^([\:\-\@\w.\/]+)$/ ) {
+        my $id = $1;
+        my $uei64_bytes = substr( $id, 0, 16 );
+
+        debugmsg( $scfg,"debug",
+                "Obtain SCSI ID for volume ${volname} "
+                . safe_var_print( "snapshot", $snapname )
+                . "\n");
+
+        return "2${uei64_bytes}";
+    } else {
+        die "Invalid characters in scsi id ${jscsiid}\n";
+    }
 }
 
 sub id_serial_from_blockdevs {
