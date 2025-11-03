@@ -41,6 +41,9 @@ use PVE::Tools qw(run_command);
 
 our @EXPORT_OK = qw(
 
+  block_device_path_from_lun_rec
+  block_device_path_from_rest
+
   clean_word
 
   get_default_prefix
@@ -1025,10 +1028,11 @@ sub volume_stage_multipath {
             };
             die "Unable to call multipath: $@\n" if $@;
 
-            $mpathname = get_device_mapper_name( $scfg, $id );
-            if ( defined($mpathname) ) {
-                last;
+            $mpathname = "/dev/mapper/${id}";
+            if ( -e $mpathname ) {
+                return clean_word($mpathname);
             }
+
             debugmsg( $scfg,
                     "debug",
                     "Unable to identigy block device maper name for "
@@ -1041,15 +1045,23 @@ sub volume_stage_multipath {
             die "Unable to identify the multipath name for scsiid ${id}\n";
         }
 
-        $mpathname = "/dev/mapper/${mpathname}";
-        if ( -e $mpathname ) {
-            return clean_word($mpathname);
-        }
+
     } else {
         die "Invalid characters in scsiid: ${scsiid}";
     }
 
     return undef;
+}
+
+sub block_device_path_from_rest {
+    my ( $scfg, $storeid, $volname, $snapname ) = @_;
+
+    my $id_serial = id_serial_from_rest( $scfg, $storeid, $volname, $snapname );
+
+    if ( get_multipath($scfg) ) {
+        return "/dev/mapper/${id_serial}";
+    }
+    return "/dev/disk/by-id/${id_serial}";
 }
 
 sub block_device_path_from_lun_rec {
@@ -1182,7 +1194,58 @@ sub get_multipath_device_name {
     }
 }
 
-sub scsiid_from_blockdevs {
+sub id_serial_from_rest {
+    my ( $scfg, $storeid, $volname, $snapname ) = @_;
+
+    my $pool = get_pool( $scfg );
+
+    debugmsg( $scfg,"debug",
+                "Obtain SCSI ID for volume ${volname} "
+                . safe_var_print( "snapshot", $snapname )
+                . "\n");
+
+    my $jscsiid;
+    if (defined($volname) && !defined($snapname)) {
+        $jscsiid = joviandss_cmd(
+            $scfg,
+            $storeid,
+            [
+                "pool",   $pool,
+                "volume", $volname,
+                "get", "-i"
+            ]
+        );
+    } elsif (defined($volname) && defined($snapname)) {
+        $jscsiid = joviandss_cmd(
+            $scfg,
+            $storeid,
+            [
+                "pool",   $pool,
+                "volume", $volname,
+                "snapshot", $snapname,
+                "get", "-i"
+            ]
+        );
+    } else {
+        die "Volume name is required to acquire scsi id\n";
+    }
+
+    if ( $jscsiid =~ /^([\:\-\@\w.\/]+)$/ ) {
+        my $id = $1;
+        my $uei64_bytes = substr( $id, 0, 16 );
+
+        debugmsg( $scfg,"debug",
+                "Obtain SCSI ID for volume ${volname} "
+                . safe_var_print( "snapshot", $snapname )
+                . "\n");
+
+        return "2${uei64_bytes}";
+    } else {
+        die "Invalid characters in scsi id ${jscsiid}\n";
+    }
+}
+
+sub id_serial_from_blockdevs {
     my ( $scfg, $targetpaths ) = @_;
 
     foreach my $targetpath (@$targetpaths) {
@@ -1953,7 +2016,6 @@ sub volume_activate {
                                 $snapname,
                                 $content_volume_flag
         );
-        #my $dumpdata = Data::Dumper->new([$tinfo]);
 
         if ($tinfo) {
             $targetname = $tinfo->{target};
@@ -1977,7 +2039,7 @@ sub volume_activate {
         unless (scalar(@$block_devs) == scalar(@$hosts)) {
             die "Unable to connect all storage addresses\n";
         }
-        $scsiid = scsiid_from_blockdevs( $scfg, $block_devs );
+        $scsiid = id_serial_from_rest( $scfg, $storeid, $volname, $snapname );
 
         if (defined( $scsiid ) ) {
             $scsiid_acquired = 1;
@@ -2215,21 +2277,6 @@ sub volume_deactivate {
 
     volume_unstage_iscsi_device ( $scfg, $storeid, $targetname, $lunid, $lunrecord->{hosts} );
 
-    #eval {
-    #    volume_unstage_iscsi(
-    #        $scfg,
-    #        $storeid,
-    #        $targetname,
-    #        $lunrecord->{lunid},
-    #        $lunrecord->{hosts}
-    #    );
-    #};
-
-    #if ($cerr) {
-    #    $local_cleanup = 1;
-    #    warn "unstage_volume_iscsi failed: $@" if $@;
-    #}
-
     my $cerr;
     if ( $snapname ) {
     # We do not delete target on joviandss as this will lead to race condition
@@ -2410,7 +2457,7 @@ sub volume_get_size {
 
     my $pool = get_pool($scfg);
 
-    my $output = joviandss_cmd($scfg, $storeid, ["pool", $pool, "volume", $volname, "get", "-s"]);
+    my $output = joviandss_cmd($scfg, $storeid, ['pool', $pool, 'volume', $volname, 'get', '-s']);
 
     my $size = int( clean_word( $output ) + 0 );
     return $size;

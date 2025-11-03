@@ -1410,11 +1410,11 @@ class JovianDSSDriver(object):
         if (not direct_mode) and (not jcom.is_volume(name)):
             return dict()
 
-        ret={'name': name,
-               'size': data['volsize']}
-
-        if 'san:volume_id' in data:
-            ret['id']=data['san:volume_id'],
+        ret = {'name': name,
+               'size': data['volsize'],
+               'san_scsi_id': data['san:volume_id'],
+               'scsi_id': data['default_scsi_id']
+               }
 
         return ret
 
@@ -1423,28 +1423,55 @@ class JovianDSSDriver(object):
 
         :return: volume id, size
         """
-        name=None
+        name = None
 
         if direct_mode:
-            name=nas_volume_name
+            name = nas_volume_name
         else:
-            name=jcom.vname(nas_volume_name)
-        data=self.ra.get_nas_volume(name)
+            name = jcom.vname(nas_volume_name)
+        data = self.ra.get_nas_volume(name)
 
-        ret={'name': name,
+        ret = {'name': name,
                'quota': data['quota']}
 
         return ret
 
+    def get_snapshot(self, volume_name, snapshot_name,
+                     export=False, direct_mode=False):
+        """Get volume information.
+
+        :return: volume id, san id, size
+        """
+
+        if direct_mode:
+            vname = volume_name
+            sname = snapshot_name
+        else:
+            if export:
+                sname = jcom.sname(snapshot_name, volume_name)
+                data = self.ra.get_lun(sname)
+            else:
+                vname = jcom.vname(volume_name)
+                sname = jcom.sname(snapshot_name)
+                data = self.ra.get_snapshot(vname, sname)
+
+        ret = dict()
+
+        if 'san:volume_id' in data:
+            ret['san_scsi_id'] = data['san:volume_id']
+        if 'default_scsi_id' in data:
+            ret['scsi_id'] = data['default_scsi_id']
+        return ret
+
     def _set_provisioning_thin(self, vname, thinp):
 
-        provisioning='thin' if thinp else 'thick'
+        provisioning = 'thin' if thinp else 'thick'
 
         LOG.info("Setting volume %s provisioning %s",
                  jcom.idname(vname),
                  provisioning)
 
-        prop={'provisioning': provisioning}
+        prop = {'provisioning': provisioning}
         try:
             self.ra.modify_lun(vname, prop=prop)
         except jexc.JDSSException as err:
@@ -1459,9 +1486,9 @@ class JovianDSSDriver(object):
                   volume_name,
                   new_volume_name)
 
-        vname=jcom.vname(volume_name)
-        nvname=jcom.vname(new_volume_name)
-        prop={'name': nvname}
+        vname = jcom.vname(volume_name)
+        nvname = jcom.vname(new_volume_name)
+        prop = {'name': nvname}
         try:
             self.ra.modify_lun(vname, prop)
         except jexc.JDSSException as err:
@@ -1471,10 +1498,10 @@ class JovianDSSDriver(object):
             raise Exception(emsg) from err
 
     def _list_all_snapshots(self, f=None):
-        resp=[]
-        i=0
+        resp = []
+        i = 0
         while True:
-            spage=self.ra.get_snapshots_page(i)
+            spage = self.ra.get_snapshots_page(i)
 
             if len(spage) > 0:
                 LOG.debug("Page: %s", str(spage))
@@ -1795,7 +1822,7 @@ class JovianDSSDriver(object):
                 (type(snap['creation']) is str) and
                     (len(snap['creation']) > 0)):
 
-                date=datetime.datetime.strptime(snap['creation'], dformat)
+                date = datetime.datetime.strptime(snap['creation'], dformat)
                 if date >= rdate:
                     return True
                 else:
@@ -1803,11 +1830,11 @@ class JovianDSSDriver(object):
             else:
                 return True
 
-        snapshots=self._list_all_volume_snapshots(
+        snapshots = self._list_all_volume_snapshots(
             vname, filter_older_snapshots)
 
-        snapshot_names=[jcom.idname(s['name']) for s in snapshots]
-        clone_names=[]
+        snapshot_names = [jcom.idname(s['name']) for s in snapshots]
+        clone_names = []
         for s in snapshots:
             clone_names.extend([jcom.idname(c)
                                 for c in jcom.snapshot_clones(s)])
@@ -1829,11 +1856,11 @@ class JovianDSSDriver(object):
         :return: { 'snapshots': [<list of snapshots preventing rollback>],
                    'clones':    [<list of clones preventing rollback>]}
         """
-        vname=jcom.vname(volume_name)
-        sname=jcom.sname(snapshot_name, None)
-        dependency={}
+        vname = jcom.vname(volume_name)
+        sname = jcom.sname(snapshot_name, None)
+        dependency = {}
         try:
-            dependency=self.ra.get_snapshot_rollback(vname, sname)
+            dependency = self.ra.get_snapshot_rollback(vname, sname)
         except jexc.JDSSResourceNotFoundException as nferr:
             LOG.debug('Volumes %s snapshot %s not found', vname, sname)
             raise nferr
@@ -1859,10 +1886,10 @@ class JovianDSSDriver(object):
         out=self._list_snapshot_rollback_dependency(vname, sname)
 
         if len(out['snapshots']) == 0 and dependency['snapshots'] > 0:
-            out['snapshots']=["Unknown"]
+            out['snapshots'] = ["Unknown"]
 
         if len(out['clones']) == 0 and dependency['clones'] > 0:
-            out['clones']=["Unknown"]
+            out['clones'] = ["Unknown"]
 
         return out
 
@@ -1880,12 +1907,12 @@ class JovianDSSDriver(object):
         :return: None
         """
 
-        vname=jcom.vname(volume_name)
-        sname=jcom.sname(snapshot_name, None)
+        vname = jcom.vname(volume_name)
+        sname = jcom.sname(snapshot_name, None)
 
-        dependency={}
+        dependency = {}
         try:
-            dependency=self.ra.get_snapshot_rollback(vname, sname)
+            dependency = self.ra.get_snapshot_rollback(vname, sname)
         except jexc.JDSSResourceNotFoundException as nferr:
             LOG.debug('Volumes %s snapshot %s not found', vname, sname)
             raise nferr
@@ -1953,7 +1980,7 @@ class JovianDSSDriver(object):
         except jexc.JDSSDatasetExistsException:
             LOG.debug("Looks like nas volume %s already exists", share_name)
 
-        path="{}/{}".format(self._pool, sharename)
+        path = "{}/{}".format(self._pool, sharename)
 
         self.ra.create_share(sharename, path,
                              active=True,

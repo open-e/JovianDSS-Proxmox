@@ -57,21 +57,35 @@ class Volume():
         parsers = parser.add_subparsers(dest='volume_action')
 
         get = parsers.add_parser('get')
-        get.add_argument('-s',
-                         dest='volume_size',
-                         action='store_true',
-                         default=False,
-                         help='Print volume size')
-        get.add_argument('-G',
-                         dest='volume_gigabyte_size',
-                         action='store_true',
-                         default=False,
-                         help='Print volume size in gigabytes')
         get.add_argument('-d',
                          dest='direct_mode',
                          action='store_true',
                          default=False,
                          help='Use real volume name')
+        get_print = get.add_mutually_exclusive_group(required=True)
+
+        get_print.add_argument('-G',
+                               dest='volume_gigabyte_size',
+                               action='store_true',
+                               default=False,
+                               help='Print volume size in gigabytes')
+        get_print.add_argument('-i',
+                               '--scsi-id',
+                               dest='scsi_id',
+                               action='store_true',
+                               default=False,
+                               help='Print volume scsi id')
+        get_print.add_argument('-n',
+                               '--san-scsi-id',
+                               dest='san_scsi_id',
+                               action='store_true',
+                               default=False,
+                               help='Print volume san scsi id')
+        get_print.add_argument('-s',
+                               dest='volume_size',
+                               action='store_true',
+                               default=False,
+                               help='Print volume size')
 
         clone = parsers.add_parser('clone')
         clone.add_argument('--snapshot',
@@ -171,6 +185,12 @@ class Volume():
                 print(int(d['size']))
             if self.args['volume_gigabyte_size']:
                 print(int((int(d['size'])) / (1024*1024*1024)))
+            if self.args['scsi_id']:
+                print(''.join(['{:x}'.format(ord(c)) for c in d['scsi_id']]))
+            if self.args['san_scsi_id']:
+                print(''.join(
+                    ['{:x}'.format(ord(c)) for c in d['san_scsi_id']]
+                ))
 
         except jexc.JDSSCommunicationFailure as jerr:
             LOG.error(("Unable to communicate with JovianDSS over given "
