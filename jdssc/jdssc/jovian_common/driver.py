@@ -173,7 +173,8 @@ class JovianDSSDriver(object):
 
             for snap in bsnaps:
                 if snap['name'] == sname:
-                    cvnames = jcom.snapshot_clones(snap)
+                    cvnames = self._list_snapshot_clones_names(vname,
+                                                               snap['name'])
                     for cvname in cvnames:
                         if jcom.is_volume(cvname):
                             promote_target = cvname
@@ -258,12 +259,12 @@ class JovianDSSDriver(object):
         update = False
         for snap in snapshots:
             if jcom.is_volume(jcom.sname_from_snap(snap)):
-                cvnames = jcom.snapshot_clones(snap)
+                cvnames = self._list_snapshot_clones_names(vname, snap['name'])
                 if len(cvnames) == 0:
                     self._delete_snapshot(vname, jcom.sname_from_snap(snap))
                     update = True
             if jcom.is_snapshot(jcom.sname_from_snap(snap)):
-                cvnames = jcom.snapshot_clones(snap)
+                cvnames = self._list_snapshot_clones_names(vname, snap['name'])
                 for cvname in cvnames:
                     if jcom.is_hidden(cvname):
                         self._promote_newest_delete(cvname, cascade=False)
@@ -275,6 +276,20 @@ class JovianDSSDriver(object):
         if update:
             snapshots = self.ra.get_snapshots(vname)
         return snapshots
+
+    def _list_snapshot_clones_names(self, vname, sname):
+        """Lists all snapshot clones
+
+        :return: list of clone names related to given snapshot
+        """
+
+        clist = list()
+
+        clones = self.ra.get_snapshot_clones(vname, sname)
+        for c in clones:
+            clist.append(c['name'])
+
+        return clist
 
     def _list_busy_snapshots(self, vname, snapshots,
                              exclude_dedicated_volumes=False,
@@ -297,12 +312,17 @@ class JovianDSSDriver(object):
 
         out = []
         for snap in snapshots:
-            clones = jcom.snapshot_clones(snap)
+            LOG.debug("Checking snapshot %(snap)s for clones", {"snap": snap})
+
+            clones = self._list_snapshot_clones_names(vname, snap['name'])
             add = False
-            for cvname in clones:
-                if exclude_dedicated_volumes and jcom.is_volume(cvname):
+
+            for clone in clones:
+                LOG.debug("Found clone %(clone)s", {'clone': clone})
+                if exclude_dedicated_volumes and jcom.is_volume(clone):
                     continue
-                if exclude_dedicated_snapshots and jcom.is_snapshot(cvname):
+                if (exclude_dedicated_snapshots and
+                        jcom.is_snapshot(clone)):
                     continue
                 add = True
             if add:
@@ -323,7 +343,7 @@ class JovianDSSDriver(object):
             LOG.debug("%s", s['name'])
 
         for snap in snapshots:
-            clones = jcom.snapshot_clones(snap)
+            clones = self._list_snapshot_clones_names(vname, snap['name'])
             for cname in [c for c in clones if jcom.is_snapshot(c)]:
                 # self._remove_target_volume(jcom.idname(cname), cname)
                 LOG.debug("Delete snapshot mount point %s", cname)
@@ -334,7 +354,7 @@ class JovianDSSDriver(object):
         cnames = []
 
         for s in snapshots:
-            cnames.extend(jcom.snapshot_clones(s))
+            cnames.extend(self._list_snapshot_clones_names(vname, s['name']))
 
         volume_names = [jcom.idname(vn) for vn in cnames]
         msg = (("Volume %(volume_name)s is busy, delete dependent "
@@ -415,7 +435,8 @@ class JovianDSSDriver(object):
         if len(bsnaps) > 0:
             cnames = []
             for s in snapshots:
-                cnames.extend(jcom.snapshot_clones(s))
+                cnames.extend(
+                    self._list_snapshot_clones_names(vname, s['name']))
             volume_names = [jcom.idname(vn) for vn in cnames]
             raise jexc.JDSSResourceVolumeIsBusyException(jcom.idname(vname),
                                                          volume_names)
@@ -436,7 +457,7 @@ class JovianDSSDriver(object):
         LOG.debug('deleting volume %s', vname)
 
         if print_and_exit:
-            LOG.debug(cascade)
+            LOG.debug("Print only deletion")
             return self._list_resources_to_delete(vname, cascade=True)
         else:
             return self._delete_volume(vname, cascade=cascade)
@@ -471,8 +492,8 @@ class JovianDSSDriver(object):
         LOG.debug("Busy snaps to delete %s", str(bsnaps))
 
         for snap in bsnaps:
-            ret.extend([jcom.idname(c) for c in jcom.snapshot_clones(snap)
-                        if jcom.is_snapshot(c)])
+            clones = self._list_snapshot_clones_names(vname, snap['name'])
+            ret.extend([jcom.idname(c) for c in clones if jcom.is_snapshot(c)])
         LOG.debug("Snaps to delete %s", str(ret))
         return ret
 
@@ -696,6 +717,9 @@ class JovianDSSDriver(object):
 
         :param str volume_name: openstack volume id
         """
+        LOG.debug('Remove export for volume %(vol)s', {
+                'vol': volume_name})
+
         vname = jcom.vname(volume_name)
 
         if direct_mode:
@@ -730,6 +754,9 @@ class JovianDSSDriver(object):
         :param str volume_name: openstack volume id
         :param bool direct_mode: use actual disk name as volume id
         """
+        LOG.debug('Remove export for volume %(vol)s snapshot %(snap)s', {
+                'vol': volume_name,
+                'snap': snapshot_name})
 
         scname = jcom.sname(snapshot_name, volume_name)
 
@@ -750,7 +777,7 @@ class JovianDSSDriver(object):
 
         try:
             if (volume_attached_flag or (new_target_flag is False)):
-                self._detach_target_volume(target_name, scname)
+                self._detach_target_volume(tname, scname)
         except jexc.JDSSException as jerr:
             self._delete_volume(scname, cascade=True)
             raise jerr
@@ -783,8 +810,7 @@ class JovianDSSDriver(object):
                       'deleted', sname)
             return
 
-        clones = jcom.snapshot_clones(snapshot)
-
+        clones = self._list_snapshot_clones_names(vname, snapshot['name'])
         if len(clones) > 0:
 
             for cvname in clones:
@@ -921,7 +947,7 @@ class JovianDSSDriver(object):
 
         :param str vname: physical volume id
         """
-        LOG.debug("detach volume %s", vname)
+        LOG.debug("detach target %s volume %s", tname, vname)
 
         try:
             self.ra.detach_target_vol(tname, vname)
@@ -1575,7 +1601,7 @@ class JovianDSSDriver(object):
         # First we list all volume snapshots page by page
         try:
             while True:
-                spage=self.ra.get_volume_snapshots_page(vname, i)
+                spage = self.ra.get_volume_snapshots_page(vname, i)
 
                 if len(spage) > 0:
                     LOG.debug("Page: %s", str(spage))
@@ -1595,27 +1621,29 @@ class JovianDSSDriver(object):
             # want to list it for specific volume
             if jcom.is_volume(snap['name']):
                 if all:
-                    snap['volume_name']=vname
+                    snap['volume_name'] = vname
                     out.append(snap)
                 else:
                     LOG.warning("Linked clone present among volumes")
                 continue
 
-            vid=jcom.vid_from_sname(snap['name'])
+            vid = jcom.vid_from_sname(snap['name'])
             if vid is None or vid == ovolume_name:
                 # That is used in create_snapshot function to provide detailed
                 # info in case volume already have snapshot
-                snap['volume_name']=vname
+                snap['volume_name'] = vname
 
                 out.append(snap)
-                for clone in jcom.snapshot_clones(snap):
+                for clone in self._list_snapshot_clones_names(vname,
+                                                              snap['name']):
+
                     LOG.debug(
                         "List volume recursion step for list_volume_snapshots")
                     out.extend(self._list_volume_snapshots(ovolume_name,
                                                            clone))
                 continue
             if all:
-                snap['volume_name']=vname
+                snap['volume_name'] = vname
                 out.append(snap)
 
         return out
@@ -1626,10 +1654,10 @@ class JovianDSSDriver(object):
         :return: list of volumes
         """
 
-        ret=[]
-        vname=jcom.vname(volume_name)
+        ret = []
+        vname = jcom.vname(volume_name)
         try:
-            data=self._list_volume_snapshots(volume_name, vname)
+            data = self._list_volume_snapshots(volume_name, vname)
             # data = self.ra.get_snapshots(vname)
 
         except jexc.JDSSException as ex:
@@ -1644,7 +1672,7 @@ class JovianDSSDriver(object):
                           jcom.vid_from_sname(r['name']),
                           r['name'])
 
-                vid=jcom.vid_from_sname(r['name'])
+                vid = jcom.vid_from_sname(r['name'])
                 if vid == volume_name or vid is None:
                     ret.append({'name': jcom.sid_from_sname(r['name'])})
 
@@ -1718,8 +1746,8 @@ class JovianDSSDriver(object):
                 LOG.warning("Linked clone present among volumes")
                 continue
 
-            for clone in jcom.snapshot_clones(snap):
-                out=self._find_snapshot_parent(clone, sname)
+            for clone in self._list_snapshot_clones_names(vname, snap['name']):
+                out = self._find_snapshot_parent(clone, sname)
                 if out is not None:
                     return out
         return None
@@ -1728,25 +1756,25 @@ class JovianDSSDriver(object):
         """Retrieve stats info."""
         LOG.debug('Updating volume stats')
 
-        pool_stats=self.ra.get_pool_stats()
-        total_capacity=math.floor(int(pool_stats["size"]) / o_units.Gi)
-        free_capacity=math.floor(int(pool_stats["available"]) / o_units.Gi)
+        pool_stats = self.ra.get_pool_stats()
+        total_capacity = math.floor(int(pool_stats["size"]) / o_units.Gi)
+        free_capacity = math.floor(int(pool_stats["available"]) / o_units.Gi)
 
-        reserved_percentage=(
+        reserved_percentage = (
             self.configuration.get('reserved_percentage', 0))
 
         if total_capacity is None:
-            total_capacity='unknown'
+            total_capacity = 'unknown'
         if free_capacity is None:
-            free_capacity='unknown'
+            free_capacity = 'unknown'
 
-        location_info='%(driver)s:%(host)s:%(volume)s' % {
+        location_info = '%(driver)s:%(host)s:%(volume)s' % {
             'driver': self.__class__.__name__,
             'host': self.ra.get_active_host()[0],
             'volume': self._pool
         }
 
-        self._stats={
+        self._stats = {
             'vendor_name': 'Open-E',
             'driver_version': self.VERSION,
             'storage_protocol': 'iSCSI',
@@ -1836,10 +1864,11 @@ class JovianDSSDriver(object):
         snapshot_names = [jcom.idname(s['name']) for s in snapshots]
         clone_names = []
         for s in snapshots:
+            snap_clones = self._list_snapshot_clones_names(vname, s['name'])
             clone_names.extend([jcom.idname(c)
-                                for c in jcom.snapshot_clones(s)])
+                                for c in snap_clones])
 
-        out={'snapshots': snapshot_names,
+        out = {'snapshots': snapshot_names,
                'clones': clone_names}
         return out
 
