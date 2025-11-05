@@ -1,6 +1,8 @@
 open-e-joviandss-proxmox-plugin (0.10.8-0) stable; urgency=medium
 
   * Use T10 SCSI ID for improved device identification and path reliability
+  * Improve snapshot clone detection and dependency management
+  * Enhanced reliability and error handling for snapshot operations
   * Remove unused functions and legacy code for improved maintainability
   * Code cleanup and documentation updates
 
