@@ -985,7 +985,7 @@ sub activate_storage {
 
     }
     $class->SUPER::activate_storage($storeid, $scfg, $cache);
-    return;
+    return 1;
 }
 
 sub deactivate_storage {
@@ -1012,6 +1012,7 @@ sub deactivate_storage {
             warn "Unable to unmount ${path}" if $@;
         }
     }
+    return 1;
 }
 
 sub activate_volume {
