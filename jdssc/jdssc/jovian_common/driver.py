@@ -810,7 +810,7 @@ class JovianDSSDriver(object):
                       'deleted', sname)
             return
 
-        clones = self._list_snapshot_clones_names(vname, snapshot['name'])
+        clones = self._list_snapshot_clones_names(vname, sname)
         if len(clones) > 0:
 
             for cvname in clones:
