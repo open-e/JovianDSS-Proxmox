@@ -1,3 +1,13 @@
+open-e-joviandss-proxmox-plugin (0.10.9-0) stable; urgency=medium
+
+  * Add automatic path directory creation for storage initialization
+  * Fix snapshot deletion functionality and error handling
+  * Improve storage activation return codes for better integration
+  * Enhanced snapshot clone retrieval and dependency management
+  * Code cleanup and function naming improvements
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Wed, 13 Nov 2024 12:00:00 +0100
+
 open-e-joviandss-proxmox-plugin (0.10.8-0) stable; urgency=medium
 
   * Use T10 SCSI ID for improved device identification and path reliability
