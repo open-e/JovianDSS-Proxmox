@@ -125,37 +125,46 @@ $MULTIPATH = undef if !-X $MULTIPATH;
 my $DMSETUP = '/usr/sbin/dmsetup';
 $DMSETUP = undef if !-X $DMSETUP;
 
-my $default_block_size      = '16K';
-my $default_content_size    = 100;
-my $default_control_port    = 82;
-my $default_data_port       = 3260;
-my $default_debug           = 0;
-my $default_prefix          = 'jdss-';
-my $default_pool            = 'Pool-0';
-my $default_log_file        = '/var/log/joviandss/joviandss.log';
-my $default_luns_per_target = 8;
-my $default_multipath       = 0;
-my $default_path            = '/mnt/joviandss';
-my $default_shared          = 0;
-my $default_target_prefix   = 'iqn.2025-04.proxmox.joviandss.iscsi:';
-my $default_user_name       = 'admin';
-my $default_ssl_cert_verify = 1;
+my $default_block_size       = '16K';
+my $default_content_size     = 100;
+my $default_control_port     = 82;
+my $default_create_base_path = 1;
+my $default_data_port        = 3260;
+my $default_debug            = 0;
+my $default_prefix           = 'jdss-';
+my $default_pool             = 'Pool-0';
+my $default_log_file         = '/var/log/joviandss/joviandss.log';
+my $default_luns_per_target  = 8;
+my $default_multipath        = 0;
+my $default_path             = '/mnt/joviandss';
+my $default_shared           = 0;
+my $default_target_prefix    = 'iqn.2025-04.proxmox.joviandss.iscsi:';
+my $default_user_name        = 'admin';
+my $default_ssl_cert_verify  = 1;
 
 
-sub get_default_block_size      { return $default_block_size }
-sub get_default_prefix          { return $default_prefix }
-sub get_default_pool            { return $default_pool }
-sub get_default_debug           { return $default_debug }
-sub get_default_multipath       { return $default_multipath }
-sub get_default_content_size    { return $default_content_size }
-sub get_default_path            { return $default_path }
-sub get_default_target_prefix   { return $default_target_prefix }
-sub get_default_log_file        { return $default_log_file }
-sub get_default_luns_per_target { return $default_luns_per_target }
-sub get_default_ssl_cert_verify { return $default_ssl_cert_verify }
-sub get_default_control_port    { return $default_control_port }
-sub get_default_data_port       { return $default_data_port }
-sub get_default_user_name       { return $default_user_name }
+sub get_default_block_size       { return $default_block_size }
+sub get_default_create_base_path { return $default_create_base_path }
+sub get_default_prefix           { return $default_prefix }
+sub get_default_pool             { return $default_pool }
+sub get_default_debug            { return $default_debug }
+sub get_default_multipath        { return $default_multipath }
+sub get_default_content_size     { return $default_content_size }
+sub get_default_path             { return $default_path }
+sub get_default_target_prefix    { return $default_target_prefix }
+sub get_default_log_file         { return $default_log_file }
+sub get_default_luns_per_target  { return $default_luns_per_target }
+sub get_default_ssl_cert_verify  { return $default_ssl_cert_verify }
+sub get_default_control_port     { return $default_control_port }
+sub get_default_data_port        { return $default_data_port }
+sub get_default_user_name        { return $default_user_name }
+
+sub get_path {
+    my ($scfg) = @_;
+
+    return $scfg->{'path'} if defined( $scfg->{ 'path' } );
+    return get_default_path();
+}
 
 sub get_pool {
     my ($scfg) = @_;
@@ -165,6 +174,14 @@ sub get_pool {
     return $scfg->{'pool_name'};
 }
 
+sub get_create_base_path {
+    my ($scfg) = @_;
+
+    return $scfg->{'create-base-path'} if ( defined( $scfg->{ 'create-base-path' } ) );
+
+    return get_default_create_base_path();
+}
+
 sub get_config {
     my ($scfg) = @_;
 
@@ -172,6 +189,7 @@ sub get_config {
 
     return undef;
 }
+
 
 sub get_debug {
     my ($scfg) = @_;
@@ -1053,15 +1071,23 @@ sub volume_stage_multipath {
     return undef;
 }
 
+sub block_device_path_from_serial {
+    my ($id_serial, $multipath) = @_;
+
+    if ( $multipath ) {
+        return "/dev/mapper/${id_serial}";
+    }
+    return "/dev/disk/by-id/${id_serial}";
+}
+
 sub block_device_path_from_rest {
     my ( $scfg, $storeid, $volname, $snapname ) = @_;
 
     my $id_serial = id_serial_from_rest( $scfg, $storeid, $volname, $snapname );
 
-    if ( get_multipath($scfg) ) {
-        return "/dev/mapper/${id_serial}";
-    }
-    return "/dev/disk/by-id/${id_serial}";
+    return block_device_path_from_serial(
+                $id_serial,
+                get_multipath($scfg) );
 }
 
 sub block_device_path_from_lun_rec {
@@ -1069,6 +1095,7 @@ sub block_device_path_from_lun_rec {
 
     my $block_dev;
 
+    my $block_device_path = undef;
     if ( get_multipath($scfg) ) {
 
         unless ($lunrec->{multipath}) {
@@ -1077,38 +1104,44 @@ sub block_device_path_from_lun_rec {
                                      $targetname, $lunid,
                                      $lunrec->{volname}, $lunrec->{snapname},
                                      $lunrec );
+            $block_dev = volume_stage_multipath( $scfg, $lunrec->{scsiid} );
+            return $block_dev;
         }
 
-        $block_dev = volume_stage_multipath( $scfg, $lunrec->{scsiid} );
-        return $block_dev;
-
+        if ( $lunrec->{scsiid} =~ /^([\:\-\@\w.\/]+)$/ ) {
+            my $id = $1;
+            $block_device_path = block_device_path_from_rest($id, 1);
+        } else {
+            die "Incorrect symbols in scsi id $lunrec->{scsiid}\n";
+        }
     }
-    my @hosts = @{ $lunrec->{hosts} };
 
-    my $iscsi_block_devices = block_device_iscsi_paths( $scfg, $targetname, $lunid, $lunrec->{hosts} );
+    # Return scsi device path
+    if ( $lunrec->{scsiid} =~ /^([\:\-\@\w.\/]+)$/ ) {
+        $block_device_path = block_device_path_from_rest($1, 0);
+    } else {
+        die "Incorrect symbols in scsi id $lunrec->{scsiid}\n";
+    }
 
-    if (@$iscsi_block_devices) {
-        my $bd = $iscsi_block_devices->[0];
-
+    unless ( defined($block_device_path) ) {
         debugmsg( $scfg,
                 "debug",
                 "Block device path from lun record for "
                 . "target ${targetname} "
                 . "lun ${lunid} "
-                . "is ${bd}\n"
+                . "not found\n"
             );
-
-        return $bd;
+        die "Unbale to identify path from lun record.\n";
     }
+
     debugmsg( $scfg,
             "debug",
             "Block device path from lun record for "
             . "target ${targetname} "
             . "lun ${lunid} "
-            . "not found\n"
+            . "is ${block_device_path}\n"
         );
-
-    return undef;
+    return $block_device_path;
 }
 
 sub get_device_mapper_name {

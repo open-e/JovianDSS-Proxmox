@@ -1254,6 +1254,14 @@ sub volume_qemu_snapshot_method {
 
 sub on_add_hook {
     my ($class, $storeid, $scfg, %sensitive) = @_;
+
+    if ( OpenEJovianDSS::Common::get_create_base_path($scfg) ) {
+        my $path = OpenEJovianDSS::Common::get_path($scfg);
+        if (! -d $path) {
+            File::Path::make_path($path, { owner => 'root', group => 'root' } );
+            chmod 0755, $path;
+        }
+    }
     if (exists($sensitive{user_password}) ) {
         OpenEJovianDSS::Common::password_file_set_password($sensitive{user_password}, $storeid);
     }
