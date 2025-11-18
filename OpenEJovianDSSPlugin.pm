@@ -46,7 +46,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.10.9';
+my $PLUGIN_VERSION = '0.10.10';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -779,158 +779,6 @@ sub disk_for_target {
     return undef;
 }
 
-sub ensure_content_volume_nfs {
-    my ( $class, $storeid, $scfg, $cache ) = @_;
-
-    my $content_path = OpenEJovianDSS::Common::get_content_path($scfg);
-
-    unless ( defined($content_path) ) {
-        return undef;
-    }
-
-    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
-
-    my $content_volume_name =
-      OpenEJovianDSS::Common::get_content_volume_name($scfg);
-    my $content_volume_size =
-      OpenEJovianDSS::Common::get_content_volume_size($scfg);
-
-    my $content_volume_size_current = undef;
-
-    unless ( -d "$content_path" ) {
-        mkdir "$content_path";
-    }
-
-    eval {
-        $content_volume_size_current = OpenEJovianDSS::Common::joviandss_cmd(
-            $scfg,
-            $storeid,
-            [
-                'pool', $pool, 'share', $content_volume_name,
-                'get',  '-d',  '-s',    '-G'
-            ]
-        );
-    };
-
-    if ( !defined($content_volume_size_current) ) {
-
-        # If we are not able to identify size of content volume
-        # most likely it does not exists
-        # there fore we have to create it
-        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "Creating content volume with size ${content_volume_size}\n" );
-        OpenEJovianDSS::Common::joviandss_cmd(
-            $scfg,
-            $storeid,
-            [
-                'pool',   $pool, 'shares',
-                'create', '-d',  '-q', "${content_volume_size}G", '-n',
-                $content_volume_name
-            ]
-        );
-    }
-    elsif (defined($content_volume_size_current)
-        && $content_volume_size_current =~ /^\d+$/
-        && $content_volume_size_current > 0 )
-    {
-
-        # TODO: check for volume size on the level of OS
-        # If volume needs resize do it with jdssc
-        die "Unable to identify content volume ${content_volume_name} size\n"
-          unless defined($content_volume_size);
-        $content_volume_size_current =
-          OpenEJovianDSS::Common::clean_word($content_volume_size_current);
-        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-"Current content volume size ${content_volume_size_current}, config value ${content_volume_size}\n"
-        );
-        if ( $content_volume_size > $content_volume_size_current ) {
-            OpenEJovianDSS::Common::joviandss_cmd(
-                $scfg,
-                $storeid,
-                [
-                    "pool",   $pool, "share", $content_volume_name,
-                    "resize", "-d",  "${content_volume_size}G"
-                ]
-            );
-        }
-    }
-    else {
-        OpenEJovianDSS::Common::debugmsg( $scfg, "warning",
-"Unable to process current size of content volume <${content_volume_size_current}>, please make sure that JovianDSS is accessible over network\n"
-        );
-        die
-"Unable to process current size of content volume <${content_volume_size_current}>, please make sure that JovianDSS is accessible over network\n";
-    }
-
-    my @hosts = $class->get_nfs_addresses( $scfg, $storeid );
-
-    foreach my $host (@hosts) {
-        my $not_found_code = 1;
-        my $nfs_path       = "${host}:/Pools/${pool}/${content_volume_name}";
-        my $cmd            = [
-            '/usr/bin/findmnt', '-t', 'nfs', '-S',
-            $nfs_path,          '-M', $content_path
-        ];
-        eval {
-            $not_found_code = run_command( $cmd, outfunc => sub { } );
-        };
-        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "Code for find mnt ${not_found_code}\n" );
-        $class->ensure_fs($scfg);
-
-        if ( $not_found_code eq 0 ) {
-            return 0;
-        }
-    }
-
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-        "Content storage found not to be mounted, mounting.\n" );
-
-    my $not_mounted = 1;
-    eval {
-        $not_mounted =
-          run_command( [ "findmnt", $content_path ], outfunc => sub { } );
-    };
-
-    if ( $not_mounted == 0 ) {
-        $class->deactivate_storage( $storeid, $scfg, $cache );
-    }
-
-    foreach my $host (@hosts) {
-        my $not_found_code = 1;
-        my $nfs_path       = "${host}:/Pools/${pool}/${content_volume_name}";
-        run_command(
-            [
-                "/usr/bin/mount",         "-t",
-                "nfs",                    "-o",
-                "vers=3,nconnect=4,sync", $nfs_path,
-                $content_path
-            ],
-            outfunc => sub { },
-            timeout => 10,
-            noerr   => 1
-        );
-
-        my $cmd = [
-            '/usr/bin/findmnt', '-t', 'nfs', '-S',
-            $nfs_path,          '-M', $content_path
-        ];
-        eval {
-            $not_found_code = run_command( $cmd, outfunc => sub { } );
-        };
-        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "Code for find mnt ${not_found_code}\n" );
-
-        $class->ensure_fs($scfg);
-
-        if ( $not_found_code eq 0 ) {
-            return 0;
-        }
-    }
-
-    die "Unable to mount content storage\n";
-}
-
 sub ensure_fs {
     my ( $class, $scfg ) = @_;
 
@@ -964,26 +812,25 @@ sub activate_storage {
 
     return undef if !defined( $scfg->{content} );
 
-    my @content_types = ( 'iso', 'backup', 'vztmpl', 'snippets' );
+    my @content_types = ( 'images', 'rootdir' );
 
     my $enabled_content = OpenEJovianDSS::Common::get_content($scfg);
 
     my $content_volume_needed = 0;
     foreach my $content_type (@content_types) {
-        if ( exists $enabled_content->{$content_type} ) {
-            $content_volume_needed = 1;
-            last;
+        unless ( exists $enabled_content->{$content_type} ) {
+            die "Content type ${content_type} is not supported\n";
         }
     }
 
-    if ($content_volume_needed) {
-        my $cvt = OpenEJovianDSS::Common::get_content_volume_type($scfg);
-
-        if ( $cvt eq "nfs" ) {
-            $class->ensure_content_volume_nfs( $storeid, $scfg, $cache );
+    if ( OpenEJovianDSS::Common::get_create_base_path($scfg) ) {
+        my $path = OpenEJovianDSS::Common::get_path($scfg);
+        if (! -d $path) {
+            File::Path::make_path($path, { owner => 'root', group => 'root' } );
+            chmod 0755, $path;
         }
-
     }
+
     $class->SUPER::activate_storage($storeid, $scfg, $cache);
     return 1;
 }
@@ -994,24 +841,6 @@ sub deactivate_storage {
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
         "Deactivating storage ${storeid}\n" );
 
-    my $path = OpenEJovianDSS::Common::get_content_path($scfg);
-    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
-
-    my $content_volname =
-      OpenEJovianDSS::Common::get_content_volume_name($scfg);
-    my $target;
-
-# TODO: consider removing multipath and iscsi target on the basis of mount point
-    if ( defined($path) ) {
-        my $cmd = [ '/bin/umount', $path ];
-        eval {
-            run_command( $cmd, errmsg => 'umount error', outfunc => sub { } );
-        };
-
-        if ( OpenEJovianDSS::Common::get_debug($scfg) ) {
-            warn "Unable to unmount ${path}" if $@;
-        }
-    }
     return 1;
 }
 
