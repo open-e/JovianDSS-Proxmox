@@ -237,7 +237,7 @@ sub get_control_addresses {
             return $scfg->{control_addresses};
         }
     }
-    return undef;
+    return get_data_addresses( $scfg );
 }
 
 sub get_control_port {
@@ -252,8 +252,9 @@ sub get_data_addresses {
 
     if ( defined( $scfg->{data_addresses} ) ) {
         return clean_word($scfg->{data_addresses});
+    } else {
+        die "JovianDSS data addresses are not provided.\n";
     }
-    return undef;
 }
 
 sub get_data_port {
@@ -577,8 +578,6 @@ sub joviandss_cmd {
     if ( defined($control_addresses) ) {
         push @$connection_options, '--control-addresses',
           "${control_addresses}";
-    } else {
-        die "JovianDSS REST IP address is not provided.\n";
     }
 
     my $control_port = get_control_port($scfg);

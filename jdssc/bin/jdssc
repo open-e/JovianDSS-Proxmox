@@ -94,19 +94,19 @@ def parse_args():
 
     parser.add_argument('--user-name',
                         dest='user_name',
-                        required=False,
+                        required=True,
                         default=None,
                         help='User name')
 
     parser.add_argument('--user-password',
                         dest='user_password',
-                        required=False,
+                        required=True,
                         default=None,
                         help='User password')
 
     parser.add_argument('--data-addresses',
                         dest='data_addresses',
-                        required=False,
+                        required=True,
                         default=None,
                         help='''Coma separated list of ip addresses,
                         that will be used to transfer storage data
