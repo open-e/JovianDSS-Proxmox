@@ -154,7 +154,7 @@ class Snapshot():
             else:
                 if 'san_scsi_id' in d:
                     print(''.join(['{:x}'.format(ord(c))
-                                   for c in d['scsi_id'][:16]]))
+                                   for c in d['san_scsi_id'][:16]]))
                 else:
                     LOG.error(("Unable to acquire scsi id for "
                                "snapshot %(snapshot)s"
