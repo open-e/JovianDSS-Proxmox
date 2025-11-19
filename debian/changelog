@@ -1,3 +1,16 @@
+open-e-joviandss-proxmox-plugin (0.10.10-0) stable; urgency=medium
+
+  * Simplify storage configuration by making control_addresses optional
+  * Use data_addresses as default for REST communication if no control_addresses is provided
+  * Enhanced error logging and debugging for connection and JSON decode failures
+  * Fix SCSI ID printing logic in snapshot CLI tool
+  * Restrict supported content types to images and rootdir only
+  * Automatic base path creation with proper directory permissions
+  * Code cleanup by removing commented code blocks and legacy functions
+  * Improved storage activation process with streamlined directory handling
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Tue, 19 Nov 2024 12:00:00 +0100
+
 open-e-joviandss-proxmox-plugin (0.10.9-0) stable; urgency=medium
 
   * Add automatic path directory creation for storage initialization
