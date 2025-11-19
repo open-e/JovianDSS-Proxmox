@@ -81,9 +81,6 @@ class JovianRESTAPI(object):
 
         self.message_vip_allowed_portals_not_supported = (
             re.compile((r"^Additional properties are not allowed \('vip_allowed_portals' was unexpected\)$")))
-#                r"Additional properties are not allowed \('vip_allowed_portals' was unexpected\)"))
-        # (r"^Additional properties are not allowed "
-        #            "('vip_allowed_portals' was unexpected)$")))
 
     def _general_error(self, url, resp):
         reason = "Request %s failure" % url
@@ -140,23 +137,6 @@ class JovianRESTAPI(object):
         if (resp['error'] is None) and (resp['code'] == 200):
             return resp['data']
         self._general_error(req, resp)
-
-    # def get_luns(self):
-    #    """get_all_pool_volumes.
-
-    #    GET
-    #    /pools/<string:poolname>/volumes
-    #    :param pool_name
-    #    :return list of all pool volumes
-    #    """
-    #    req = '/volumes'
-
-    #    LOG.debug("get all volumes")
-    #    resp = self.rproxy.pool_request('GET', req)
-
-    #    if resp['error'] is None and resp['code'] == 200:
-    #        return resp['data']
-    #    self._general_error(req, resp)
 
     def get_volumes_page(self, page_id):
         """get_volumes_page
