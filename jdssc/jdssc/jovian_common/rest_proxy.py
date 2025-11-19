@@ -136,7 +136,19 @@ class JovianDSSRESTProxy(object):
                     # TODO: provide proper handling of ssl certificate error
                     exit(1)
 
-                except requests.exceptions.ConnectionError:
+                except requests.exceptions.ConnectionError as conerr:
+                    LOG.debug("Connection error %(cerr)s", {'cerr': conerr})
+                    self._next_host()
+                    continue
+
+                except json.JSONDecodeError as decodeerr:
+                    LOG.debug("Decode error %(derr)s", {'derr': decodeerr})
+                    self._next_host()
+                    continue
+
+                except Exception as gerr:
+                    LOG.debug("Request sending Error %(gerr)s",
+                              {'gerr': str(gerr)})
                     self._next_host()
                     continue
 
@@ -200,7 +212,9 @@ class JovianDSSRESTProxy(object):
             try:
                 data = json.loads(resp.text)
                 error = data.get("error")
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as decodeerr:
+                LOG.error("JSON Decode error: %(derr)s",
+                          {'derr': str(decodeerr)})
                 return
         else:
             return
