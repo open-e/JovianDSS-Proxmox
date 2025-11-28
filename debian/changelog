@@ -1,3 +1,12 @@
+open-e-joviandss-proxmox-plugin (0.10.11-0) stable; urgency=medium
+
+  * Update to Proxmox API v13 for compatibility with latest Proxmox VE
+  * Add dynamic API version detection (supports API v9-v13)
+  * Extend REST API retry mechanism from 3 to 50 attempts
+  * Increase delay between REST request retries to 3 seconds
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Thu, 28 Nov 2025 04:32:00 -0500
+
 open-e-joviandss-proxmox-plugin (0.10.10-0) stable; urgency=medium
 
   * Simplify storage configuration by making control_addresses optional
