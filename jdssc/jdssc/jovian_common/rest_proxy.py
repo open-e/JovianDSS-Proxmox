@@ -20,6 +20,7 @@ import json
 import logging
 from oslo_utils import netutils as o_netutils
 import requests
+import time
 import urllib3
 
 from jdssc.jovian_common import cexception as exception
@@ -85,9 +86,9 @@ class JovianDSSRESTProxy(object):
     def _get_base_url(self, apiv):
         """Get url prefix with active host"""
 
-        api = 'v3'
-        if str(apiv) == '4':
-            api = 'v4'
+        api = 'v4'
+        if str(apiv) == '3':
+            api = 'v3'
         url = ('%(proto)s://%(host)s:%(port)s/api/%(apiv)s' % {
             'proto': self.proto,
             'host': self.hosts[self.active_host],
@@ -109,7 +110,8 @@ class JovianDSSRESTProxy(object):
         :param json_data: data
         """
         out = None
-        for i in range(3):
+        for i in range(50):
+
             for i in range(len(self.hosts)):
                 try:
                     addr = "%(base)s%(req)s" % {
@@ -155,6 +157,9 @@ class JovianDSSRESTProxy(object):
                 LOG.debug("Geting %(data)s from %(t)s to %(addr)s",
                           {'data': out, 't': request_method, 'addr': addr})
                 return out
+
+            # Adding 3 sec sleep delay
+            time.sleep(3)
         raise jexc.JDSSCommunicationFailure(self.hosts, req)
 
     def pool_request(self, request_method, req, json_data=None, apiv=4):
@@ -174,7 +179,7 @@ class JovianDSSRESTProxy(object):
                             apiv=apiv)
 
     @retry(json.JSONDecodeError,
-           tries=3)
+           tries=50)
     def _send(self, pr):
         """Send prepared request
 

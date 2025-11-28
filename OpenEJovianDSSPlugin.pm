@@ -46,7 +46,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.10.10';
+my $PLUGIN_VERSION = '0.10.11';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -106,10 +106,15 @@ my $PLUGIN_VERSION = '0.10.10';
 # Configuration
 
 sub api {
+    my $supported_apiver_min = 9;
+    my $supported_apiver_max = 13;
 
-    my $apiver = 12;
+    my $api_ver = PVE::Storage::APIVER;
 
-    return $apiver;
+    if ($api_ver >= $supported_apiver_min and $api_ver <= $supported_apiver_max) {
+        return $api_ver;
+    }
+    return $supported_apiver_max;
 }
 
 sub type {
@@ -887,7 +892,7 @@ sub activate_volume {
 }
 
 sub deactivate_volume {
-    my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
+    my ( $class, $storeid, $scfg, $volname, $snapname, $cache, $hints ) = @_;
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "Deactivate volume ${volname}"
@@ -917,7 +922,7 @@ sub deactivate_volume {
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
           . "done" );
 
-    return;
+    return 1;
 }
 
 sub volume_resize {
@@ -1105,6 +1110,13 @@ sub on_update_hook {
             OpenEJovianDSS::Common::password_file_delete($storeid);
         }
     }
+    return undef;
+}
+
+sub on_update_hook_full {
+    my ($class, $storeid, $scfg, $update, $delete, $sensitive) = @_;
+
+    return $class->on_update_hook($storeid, $update, $sensitive->%*);
 }
 
 1;
