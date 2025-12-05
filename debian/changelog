@@ -1,3 +1,18 @@
+open-e-joviandss-proxmox-plugin (0.10.12-0) stable; urgency=medium
+
+  * Fix multipath device selection bug causing wrong block device usage
+  * Fix variable scoping issues in multipath staging function
+  * Fix syntax errors in command logging callbacks
+  * Improve block device type checking precision (existence to block device tests)
+  * Add comprehensive error handling and logging for command execution
+  * Add protection for blockdev operations with device validation
+  * Fix SCSI device path format for by-id symlinks
+  * Standardize logging levels (warning to warn) across codebase
+  * Remove obsolete code and unused functions
+  * Fix multiple typos in error messages and documentation
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Wed, 04 Dec 2025 12:00:00 +0000
+
 open-e-joviandss-proxmox-plugin (0.10.11-0) stable; urgency=medium
 
   * Update to Proxmox API v13 for compatibility with latest Proxmox VE
