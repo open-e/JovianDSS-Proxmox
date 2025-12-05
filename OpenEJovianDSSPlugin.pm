@@ -57,7 +57,7 @@ my $PLUGIN_VERSION = '0.10.11';
 #               Extend REST API error handling
 #               Fix volume provisioning bug
 #               Fix Pool selection bug
-#               Prevent possible iscis target name collision
+#               Prevent possible iscsi target name collision
 #
 #    0.9.9.0 - 2024.11.15
 #               Add NFS base context volume
@@ -72,7 +72,7 @@ my $PLUGIN_VERSION = '0.10.11';
 #
 #    0.9.9.2 - 2024.12.17
 #               Add logging to jdssc debug file
-#               Fix data coruption during migration
+#               Fix data corruption during migration
 #
 #    0.9.10-8 - 2025.04.02
 #               Make plugin configurable solely by from storage.cfg
@@ -171,9 +171,9 @@ sub properties {
         },
         luns_per_target => {
             description =>
-              'Maximun number of luns assigned to single iSCSI target',
+              'Maximum number of luns assigned to single iSCSI target',
             type    => 'int',
-            default => OpenEJovianDSS::Common::get_luns_per_target(),
+            default => OpenEJovianDSS::Common::get_default_luns_per_target(),
         },
         ssl_cert_verify => {
             description =>
@@ -375,7 +375,7 @@ sub path {
                 my $snap = defined($lr->{snapname}) ? $lr->{snapname} : 'undef';
                 $records_info .= "Record $i: volume=$vol snapshot=$snap target=$targetname lun=$lunid\n";
             }
-            OpenEJovianDSS::Common::debugmsg($scfg, 'warning', "Failed to identify correct record for ${volname}"
+            OpenEJovianDSS::Common::debugmsg($scfg, 'warn', "Failed to identify correct record for ${volname}"
               . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
               . "\nFound records:\n${records_info}"
             );

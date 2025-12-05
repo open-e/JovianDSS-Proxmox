@@ -250,6 +250,8 @@ def unify_config_options(args, cfg):
 
     if args.control_addresses:
         cfg['san_hosts'] = args.control_addresses.split(',')
+    else:
+        cfg['san_hosts'] = args.data_addresses.split(',')
 
     if args.control_port:
         cfg['san_api_port'] = args.control_port

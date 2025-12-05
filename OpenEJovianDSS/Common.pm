@@ -46,17 +46,18 @@ our @EXPORT_OK = qw(
 
   clean_word
 
-  get_default_prefix
-  get_default_pool
-  get_default_debug
-  get_default_multipath
-  get_default_content_size
-  get_default_path
-  get_default_target_prefix
-  get_default_ssl_cert_verify
   get_default_control_port
+  get_default_content_size
   get_default_data_port
+  get_default_debug
+  get_default_luns_per_target
+  get_default_multipath
+  get_default_path
+  get_default_pool
+  get_default_prefix
   get_default_user_name
+  get_default_ssl_cert_verify
+  get_default_target_prefix
 
   get_pool
   get_config
@@ -121,6 +122,9 @@ $ISCSIADM = undef if !-X $ISCSIADM;
 
 my $MULTIPATH = '/usr/sbin/multipath';
 $MULTIPATH = undef if !-X $MULTIPATH;
+
+my $MULTIPATHD = '/usr/sbin/multipathd';
+$MULTIPATHD = undef if !-X $MULTIPATHD;
 
 my $DMSETUP = '/usr/sbin/dmsetup';
 $DMSETUP = undef if !-X $DMSETUP;
@@ -407,7 +411,7 @@ sub get_content_volume_type {
         if ( $scfg->{content_volume_type} eq 'iscsi' ) {
             return 'iscsi';
         }
-        die "Unknown type of content storage requered\n";
+        die "Unknown type of content storage required\n";
     }
     return 'iscsi';
 }
@@ -801,7 +805,7 @@ sub block_device_iscsi_paths {
     my $port = get_data_port( $scfg );
     foreach my $host (@$hosts) {
         $path = "/dev/disk/by-path/ip-${host}:${port}-iscsi-${target}-lun-${lunid}";
-        if ( -e $path ) {
+        if ( -b $path ) {
             debugmsg( $scfg, "debug", "Target ${target} mapped to ${path}\n" );
             $path = clean_word($path);
             ($path) = $path =~ m{^(/dev/disk/by-path/[\w\-\.:/]+)$} or die "Tainted path: $path";
@@ -939,7 +943,8 @@ sub volume_stage_iscsi {
                 },
                 errfunc => sub {
                     cmd_log_output($scfg, 'error', $cmd, shift);
-                }
+                },
+                noerr   => 1
             );
         };
 
@@ -960,7 +965,8 @@ sub volume_stage_iscsi {
                     outfunc => sub { },
                     errfunc => sub {
                         cmd_log_output($scfg, 'warn', $cmd, shift);
-                    }
+                    },
+                    noerr   => 1
                 );
             };
             # Don't warn on node creation errors - already existing is normal
@@ -980,7 +986,8 @@ sub volume_stage_iscsi {
                     outfunc => sub { },
                     errfunc => sub {
                         cmd_log_output($scfg, 'warn', $cmd, shift);
-                    }
+                    },
+                    noerr   => 1
                 );
             };
         } # End of iscsi session creation for given address
@@ -1002,7 +1009,8 @@ sub volume_stage_iscsi {
             run_command(
                 $cmd ,
                 outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                noerr   => 1
             );
         } else {
             debugmsg( $scfg, "warn", "Lun id ${lunid} contains non digit symbols" );
@@ -1010,7 +1018,7 @@ sub volume_stage_iscsi {
     }
 
     log_dir_content($scfg, $storeid, '/dev/disk/by-path');
-    debugmsg( $scfg, "warn", "Unable to locate iscsi block device locati @{ $targets_block_devices }\n" );
+    debugmsg( $scfg, "warn", "Unable to identify iscsi block device location @{ $targets_block_devices }\n" );
 
     die "Unable to locate target ${targetname} block device location.\n";
 }
@@ -1018,6 +1026,8 @@ sub volume_stage_iscsi {
 sub volume_stage_multipath {
     my ( $scfg, $scsiid ) = @_;
     $scsiid = clean_word($scsiid);
+
+    my $mpath;
 
     if ( $scsiid =~ /^([\:\-\@\w.\/]+)$/ ) {
         my $id = $1;
@@ -1027,56 +1037,77 @@ sub volume_stage_multipath {
             run_command(
                 $cmd ,
                 outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                noerr   => 1
             );
         };
-        die "Unable to add the SCSI ID ${id} $@\n" if $@;
 
+        my $is_multipath = 1;
 
-        my $mpathname;
-        for my $attempt ( 1 .. 5) {
+        $mpath = block_device_path_from_serial( $id, $is_multipath);
+
+        for my $attempt ( 1 .. 10) {
             eval {
                 my $cmd = [ $MULTIPATH ];
                 run_command(
                     $cmd,
                     outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                    noerr   => 1
                 );
             };
-            die "Unable to call multipath: $@\n" if $@;
 
-            $mpathname = "/dev/mapper/${id}";
-            if ( -e $mpathname ) {
-                return clean_word($mpathname);
+            if ( -b $mpath ) {
+                return clean_word($mpath);
             }
 
             debugmsg( $scfg,
                     "debug",
-                    "Unable to identigy block device maper name for "
+                    "Unable to identify block device mapper name for "
                     . "scsiid ${id} "
                     . "attempt ${attempt}"
                 );
+            eval {
+                my $cmd = [ $MULTIPATH, '-a', $id ];
+                run_command(
+                    $cmd ,
+                    outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                    noerr   => 1
+                );
+            };
+
+            eval {
+                my $cmd = [ $MULTIPATHD, 'add', 'map', $id ];
+                run_command(
+                    $cmd ,
+                    outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                    noerr   => 1
+                );
+            };
             sleep(1);
         }
-        unless ( defined($mpathname) ) {
-            die "Unable to identify the multipath name for scsiid ${id}\n";
-        }
-
-
     } else {
         die "Invalid characters in scsiid: ${scsiid}";
     }
 
-    return undef;
+    if ( -b $mpath ) {
+        return clean_word($mpath);
+    }
+
+    die "Unable to identify the multipath name for scsiid ${scsiid}\n";
 }
 
+# This function provides expecte path of block device
+# on the side of proxmox server
 sub block_device_path_from_serial {
     my ($id_serial, $multipath) = @_;
 
     if ( $multipath ) {
         return "/dev/mapper/${id_serial}";
     }
-    return "/dev/disk/by-id/${id_serial}";
+    return "/dev/disk/by-id/scsi-${id_serial}";
 }
 
 sub block_device_path_from_rest {
@@ -1109,7 +1140,8 @@ sub block_device_path_from_lun_rec {
 
         if ( $lunrec->{scsiid} =~ /^([\:\-\@\w.\/]+)$/ ) {
             my $id = $1;
-            $block_device_path = block_device_path_from_rest($id, 1);
+            my $is_multipath = 1;
+            $block_device_path = block_device_path_from_serial( $id, $is_multipath );
         } else {
             die "Incorrect symbols in scsi id $lunrec->{scsiid}\n";
         }
@@ -1117,7 +1149,10 @@ sub block_device_path_from_lun_rec {
 
     # Return scsi device path
     if ( $lunrec->{scsiid} =~ /^([\:\-\@\w.\/]+)$/ ) {
-        $block_device_path = block_device_path_from_rest($1, 0);
+        my $id = $1;
+        my $is_not_multipath = 0;
+
+        $block_device_path = block_device_path_from_serial( $id, $is_not_multipath );
     } else {
         die "Incorrect symbols in scsi id $lunrec->{scsiid}\n";
     }
@@ -1130,7 +1165,7 @@ sub block_device_path_from_lun_rec {
                 . "lun ${lunid} "
                 . "not found\n"
             );
-        die "Unbale to identify path from lun record.\n";
+        die "Unable to identify path from lun record.\n";
     }
 
     debugmsg( $scfg,
@@ -1163,7 +1198,8 @@ sub get_device_mapper_name {
                         $device_mapper_name = $parts[0];
                     }
                 },
-            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+            noerr   => 1
         );
     } else {
         die "Invalid characters in wwid: ${wwid}\n";
@@ -1277,40 +1313,6 @@ sub id_serial_from_rest {
     }
 }
 
-sub id_serial_from_blockdevs {
-    my ( $scfg, $targetpaths ) = @_;
-
-    foreach my $targetpath (@$targetpaths) {
-        my $getscsiidcmd =
-          [ "/lib/udev/scsi_id", "-g", "-u", "-d", $targetpath ];
-        my $scsiid;
-
-        if ( -e $targetpath ) {
-            eval {
-                run_command( $getscsiidcmd,
-                    outfunc => sub { $scsiid = shift; } );
-            };
-
-            if ($@) {
-                die
-"Unable to get the iSCSI ID for ${targetpath} because of $@\n";
-            }
-        }
-        else {
-            next;
-        }
-
-        if ( defined($scsiid) ) {
-            if ( $scsiid =~ /^([\-\@\w.\/]+)$/ ) {
-                debugmsg( $scfg, "debug",
-                    "Identified scsi id ${1}\n" );
-                return $1;
-            }
-        }
-    }
-    return undef;
-}
-
 sub volume_unstage_iscsi_device {
     my ( $scfg, $storeid, $targetname, $lunid, $hosts ) = @_;
 
@@ -1318,7 +1320,7 @@ sub volume_unstage_iscsi_device {
     my $block_devs = block_device_iscsi_paths ( $scfg, $targetname, $lunid, $hosts );
 
     foreach my $idp (@$block_devs) {
-        if ( -e $idp ) {
+        if ( -b $idp ) {
 
             my $bdp; # Block Device Path
             if ( $idp =~ /^([\:\-\@\w.\/]+)$/ ) {
@@ -1371,10 +1373,10 @@ sub volume_unstage_iscsi {
         run_command(
             $cmd,
             outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+            noerr   => 1
         );
     };
-    warn $@ if $@;
 
     eval {
         my $cmd =[ $ISCSIADM,
@@ -1385,10 +1387,10 @@ sub volume_unstage_iscsi {
         run_command(
             $cmd,
             outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+            noerr   => 1
         );
     };
-    warn $@ if $@;
     debugmsg( $scfg, "debug", "Volume unstage iscsi target ${targetname} done\n" );
 }
 
@@ -1462,7 +1464,7 @@ sub _volume_unstage_multipath_wait_unused {
             my $mapper_path = "/dev/mapper/${clean_mapper_name}";
 
             # Check if mapper device file exists
-            if ( !-e $mapper_path ) {
+            if ( !-b $mapper_path ) {
                 debugmsg( $scfg, "debug", "Multipath device mapping ${mapper_path} does not exist");
                 return;
             }
@@ -1508,7 +1510,7 @@ sub _volume_unstage_multipath_wait_unused {
                     my $warningmsg = "Multipath device "
                         . "with scsi id ${scsiid}, "
                         . "is used by ${blocker_name} with pid ${pid}";
-                    debugmsg( $scfg, "warn", $warningmsg );
+                    debugmsg( $scfg, 'warn', $warningmsg );
                     warn "${warningmsg}\n";
                 }
             } else {
@@ -1518,7 +1520,7 @@ sub _volume_unstage_multipath_wait_unused {
         };
 
         if ($@) {
-            debugmsg( $scfg, "warning", "Error during device usage check: $@" );
+            debugmsg( $scfg, 'warn', "Error during device usage check: $@" );
         }
 
         # Exit loop if device is unused or we encountered an exit condition
@@ -1544,11 +1546,12 @@ sub _volume_unstage_multipath_remove_device {
             run_command(
                 $cmd,
                 outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                noerr   => 1
             );
         };
         if ($@) {
-            debugmsg( $scfg, "warning", "Unable to remove scsi id ${scsiid} from wwid file: $@" );
+            debugmsg( $scfg, 'warn', "Unable to remove scsi id ${scsiid} from wwid file: $@" );
         }
 
         # Step 2: Reload multipath maps
@@ -1557,12 +1560,10 @@ sub _volume_unstage_multipath_remove_device {
             run_command(
                 $cmd,
                 outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                noerr   => 1
             );
         };
-        if ($@) {
-            debugmsg( $scfg, "warning", "Unable to reload multipath maps: $@" );
-        }
 
         # Step 3: Refresh multipath state
         eval {
@@ -1570,12 +1571,10 @@ sub _volume_unstage_multipath_remove_device {
             run_command(
                 $cmd,
                 outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                noerr   => 1
             );
         };
-        if ($@) {
-            debugmsg( $scfg, "warning", "Unable to refresh multipath state: $@" );
-        }
 
         # Step 4: Force remove via dmsetup if mapper still exists
         my $mapper_name = get_device_mapper_name( $scfg, $scsiid );
@@ -1583,14 +1582,17 @@ sub _volume_unstage_multipath_remove_device {
             if ( $mapper_name =~ /^([\:\-\@\w.\/]+)$/ ) {
                 my $clean_mapper_name = $1;
                 eval {
-                    run_command( [ $DMSETUP, "remove", "-f", $clean_mapper_name ],
-                        outfunc => sub { } );
+                    my $cmd = [ $DMSETUP, "remove", "-f", $clean_mapper_name ];
+                    run_command( $cmd,
+                        outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                        errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                    );
                 };
                 if ($@) {
-                    debugmsg( $scfg, "warning", "Unable to remove the multipath mapping for volume with scsi id ${scsiid} with dmsetup: $@" );
+                    debugmsg( $scfg, 'warn', "Unable to remove the multipath mapping for volume with scsi id ${scsiid} with dmsetup: $@" );
                 }
             } else {
-                debugmsg( $scfg, "warning", "Mapper name contains forbidden symbols: ${mapper_name}" );
+                debugmsg( $scfg, 'warn', "Mapper name contains forbidden symbols: ${mapper_name}" );
             }
         } else {
             debugmsg( $scfg, "debug", "Volume unstage multipath scsiid ${scsiid} done" );
@@ -1603,7 +1605,8 @@ sub _volume_unstage_multipath_remove_device {
             run_command(
                 $cmd,
                 outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                noerr   => 1
             );
         };
 
@@ -1626,7 +1629,7 @@ sub _volume_unstage_multipath_log_blockers {
     my ( $scfg, $scsiid, $mapper_name ) = @_;
 
     my $mapper_path = "/dev/mapper/${mapper_name}";
-    if ( -e $mapper_path) {
+    if ( -b $mapper_path) {
         my $pid;
         my $blocker_name;
         eval {
@@ -1653,12 +1656,12 @@ sub _volume_unstage_multipath_log_blockers {
                 my $warningmsg = "Unable to deactivate multipath device "
                     . "with scsi id ${scsiid}, "
                     . "device is used by ${blocker_name} with pid ${pid}";
-                debugmsg( $scfg, "warning", $warningmsg );
+                debugmsg( $scfg, 'warn', $warningmsg );
                 warn "${warningmsg}\n";
             }
         };
         if ($@) {
-            debugmsg( $scfg, "warning", "Unable to identify multipath blocker: $@" );
+            debugmsg( $scfg, 'warn', "Unable to identify multipath blocker: $@" );
         }
     } else {
         debugmsg( $scfg, "debug", "Multipath device file ${mapper_path} removed" );
@@ -1998,7 +2001,7 @@ sub lun_record_local_delete {
                 }
             }
         } else {
-            debugmsg( $scfg, "warning",
+            debugmsg( $scfg, 'warn',
                     "Skip removing lun dir of global target ${targetname} " .
                     "lun ${lunid} because of $!");
         }
@@ -2245,7 +2248,7 @@ sub volume_deactivate {
     if (scalar(@$lunrecinfolist) == 0) {
         debugmsg(
             $scfg,
-            "warning",
+            'warn',
             "Unable to identify lun record for "
                 . "volume ${volname} "
                 . safe_var_print( "snapshot", $snapname )
@@ -2287,7 +2290,7 @@ sub volume_deactivate {
     unless( defined( $lunrecord ) ) {
         debugmsg(
             $scfg,
-            "warning",
+            'warn',
             "Unable to identify lun record for "
                 . "volume ${volname} "
                 . safe_var_print( "snapshot", $snapname )
@@ -2359,16 +2362,22 @@ sub lun_record_update_device {
         my $block_device_path;
         foreach my $iscsi_block_device ( @{ $iscsi_block_devices } ) {
             eval {
+                my $cmd = [ "readlink", "-f", $iscsi_block_device ];
+
                 run_command(
-                    [ "readlink", "-f", $iscsi_block_device ],
-                    outfunc => sub { $block_device_path = shift; }
+                    $cmd,
+                    outfunc => sub { $block_device_path = shift; },
+                    errfunc => sub {
+                        cmd_log_output($scfg, 'error', $cmd, shift);
+                    },
+                    noerr   => 1
                 );
             };
 
             $block_device_path = clean_word($block_device_path);
             my $block_device_name = basename($block_device_path);
             unless ( $block_device_name =~ /^[a-z0-9]+$/ ) {
-                die "Invalide block device name ${block_device_name} " .
+                die "Invalid block device name ${block_device_name} " .
                     " for iscsi target ${targetname}\n";
             }
             my $rescan_file = "/sys/block/${block_device_name}/device/rescan";
@@ -2379,20 +2388,33 @@ sub lun_record_update_device {
 
 
         eval {
-            run_command( [ $ISCSIADM, '-m', 'session', '--rescan' ],
-                outfunc => sub { } );
+            my $cmd = [ $ISCSIADM, '-m', 'session', '--rescan' ];
+
+            run_command( $cmd,
+                outfunc => sub { },
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                noerr   => 1
+            );
         };
 
         eval {
-            run_command( [ $ISCSIADM, '-m', 'node', '-R', '-T', ${targetname} ],
-                outfunc => sub { } );
+            my $cmd = [ $ISCSIADM, '-m', 'node', '-R', '-T', ${targetname} ];
+            run_command( $cmd,
+                outfunc => sub { },
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                noerr   => 1
+            );
         };
 
-        my $updateudevadm = [ 'udevadm', 'trigger', '-t', 'all' ];
-        run_command( $updateudevadm,
-            errmsg =>
-              "Failed to update udev devices after iscsi target attachment" );
-
+        eval {
+            my $cmd = [ 'udevadm', 'trigger', '-t', 'all' ];
+            run_command( $cmd,
+                outfunc => sub { },
+                errmsg =>
+                  "Failed to update udev devices after iscsi target attachment",
+                noerr   => 1
+              );
+        };
         if ( get_multipath($scfg) ) {
 
             unless ($lunrec->{multipath}) {
@@ -2402,35 +2424,45 @@ sub lun_record_update_device {
                                          $lunrec->{volname}, $lunrec->{snapname},
                                          $lunrec );
             }
-            my $block_device_path = volume_stage_multipath( $scfg, $lunrec->{scsiid} );
+            $block_device_path = volume_stage_multipath( $scfg, $lunrec->{scsiid} );
             eval {
                 my $cmd = [ $MULTIPATH, '-r', ${block_device_path} ];
                 run_command(
                     $cmd ,
                     outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                    noerr   => 1
                 );
                 $cmd = [ $MULTIPATH, 'reconfigure'];
                 run_command(
                     $cmd ,
                     outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                    noerr   => 1
                 );
             };
         }
 
         sleep(1);
 
+        unless( -b $block_device_path ) {
+            next;
+        }
         my $updated_size;
-        run_command(
-            [ '/sbin/blockdev', '--getsize64', $block_device_path ],
-            outfunc => sub {
-                my ($line) = @_;
-                die "unexpected output from /sbin/blockdev: $line\n"
-                  if $line !~ /^(\d+)$/;
-                $updated_size = int($1);
-            }
-        );
+        eval {
+            my $cmd = [ '/sbin/blockdev', '--getsize64', $block_device_path ];
+            run_command(
+                $cmd,
+                outfunc => sub {
+                    my ($line) = @_;
+                    die "unexpected output from /sbin/blockdev: $line\n"
+                      if $line !~ /^(\d+)$/;
+                    $updated_size = int($1);
+                },
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                noerr   => 1
+            );
+        };
 
         if ($expectedsize) {
             if ( $updated_size eq $expectedsize ) {
