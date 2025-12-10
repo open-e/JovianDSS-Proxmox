@@ -469,7 +469,7 @@ sub handle_multipath_config {
             }
         }
     }
-    
+
     # Check conf.d directory files if no SCST found yet
     unless ($scst_warning_shown) {
         # Check if conf.d directory exists first
@@ -481,16 +481,16 @@ sub handle_multipath_config {
                 errfunc => sub {} 
             })) {
                 my @all_files = $conf_collector->{get_lines}();
-                
+
                 # Check all files in the directory regardless of suffix
                 for my $file (@all_files) {
                     chomp $file;
                     next unless $file; # Skip empty lines
                     next if $file eq '.' || $file eq '..'; # Skip directory entries
                     next if $file eq 'open-e-joviandss.conf'; # Skip our own config file - handled separately
-                    
+
                     my $full_path = "/etc/multipath/conf.d/$file";
-                    
+
                     # Search for SCST vendor entries
                     my $scst_collector = create_output_collector();
                     if (execute_command($is_local, $ip, "grep", "-i", "vendor.*scst", $full_path, { 
@@ -1061,6 +1061,17 @@ sub acquire_target_nodes_info{
                 }
             }
         }
+        return @node_info if @node_info;
+    }
+
+    # If no cluster detection methods worked:
+    #   standalone Proxmox node
+    #   cluster tools unavailable
+    #   not part of a cluster
+    # add local node as the only installation target
+    if (@node_info == 0) {
+        add_node_if_applicable(\@node_info, $local_node_short, $local_ips_ref->[0],
+                               $local_node_short, $local_ips_ref);
     }
 
     return @node_info;
@@ -1114,14 +1125,14 @@ sub get_local_node_info {
     } else {
         # Fallback to hostname command using run_cmd
         my $hostname_collector = create_output_collector();
-        if (run_cmd("hostname", "-s", { 
-            outfunc => $hostname_collector->{collector}, 
+        if (run_cmd("hostname", "-s", {
+            outfunc => $hostname_collector->{collector},
             errfunc => sub {} 
         })) {
             my @hostname_lines = $hostname_collector->{get_lines}();
             $local_node_short = $hostname_lines[0] if @hostname_lines;
         }
-        
+
         # Try regular hostname if -s failed
         unless ($local_node_short) {
             my $hostname_collector2 = create_output_collector();
@@ -1133,7 +1144,7 @@ sub get_local_node_info {
                 $local_node_short = $hostname_lines[0] if @hostname_lines;
             }
         }
-        
+
         if ($local_node_short) {
             chomp $local_node_short;
             $local_node_short =~ s/\..*//;  # Remove domain part
@@ -1143,16 +1154,25 @@ sub get_local_node_info {
     # Get local IP addresses using run_cmd
     my @local_ips;
     my $ip_collector = create_output_collector();
-    if (run_cmd("ip", "addr", "show", { 
-        outfunc => $ip_collector->{collector}, 
-        errfunc => sub {} 
+    if (run_cmd("ip", "addr", "show", {
+        outfunc => $ip_collector->{collector},
+        errfunc => sub {}
     })) {
         my @ip_lines = $ip_collector->{get_lines}();
-        
+
+        # Track current interface to exclude loopback
+        my $current_interface = '';
+
         # Process each line to find inet addresses
         for my $line (@ip_lines) {
+            # Match interface line: "1: lo: <LOOPBACK..." or "2: eth0: <BROADCAST..."
+            if ($line =~ /^\d+:\s+(\S+):/) {
+                $current_interface = $1;
+            }
+
             # Look for lines like: "inet 192.168.1.1/24 brd ..."
-            if ($line =~ /^\s*inet\s+(\S+)/) {
+            # Skip if current interface is loopback (lo)
+            if ($line =~ /^\s*inet\s+(\S+)/ && $current_interface ne 'lo') {
                 my $inet_addr = $1;
                 # Extract IP part before the slash
                 if ($inet_addr =~ /^([^\/]+)/) {
@@ -1161,7 +1181,7 @@ sub get_local_node_info {
             }
         }
     }
-    
+
     # Add standard local addresses
     push @local_ips, '127.0.0.1', 'localhost';
 
