@@ -1154,16 +1154,25 @@ sub get_local_node_info {
     # Get local IP addresses using run_cmd
     my @local_ips;
     my $ip_collector = create_output_collector();
-    if (run_cmd("ip", "addr", "show", { 
-        outfunc => $ip_collector->{collector}, 
-        errfunc => sub {} 
+    if (run_cmd("ip", "addr", "show", {
+        outfunc => $ip_collector->{collector},
+        errfunc => sub {}
     })) {
         my @ip_lines = $ip_collector->{get_lines}();
 
+        # Track current interface to exclude loopback
+        my $current_interface = '';
+
         # Process each line to find inet addresses
         for my $line (@ip_lines) {
+            # Match interface line: "1: lo: <LOOPBACK..." or "2: eth0: <BROADCAST..."
+            if ($line =~ /^\d+:\s+(\S+):/) {
+                $current_interface = $1;
+            }
+
             # Look for lines like: "inet 192.168.1.1/24 brd ..."
-            if ($line =~ /^\s*inet\s+(\S+)/) {
+            # Skip if current interface is loopback (lo)
+            if ($line =~ /^\s*inet\s+(\S+)/ && $current_interface ne 'lo') {
                 my $inet_addr = $1;
                 # Extract IP part before the slash
                 if ($inet_addr =~ /^([^\/]+)/) {
