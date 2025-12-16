@@ -9,16 +9,30 @@ The JovianDSS plugin **must** be installed on **every** Proxmox VE node in your 
 
 The easiest way to install the JovianDSS Proxmox plugin is using our automated installation script. This script handles downloading, verification, and installation across all cluster nodes.
 
-### Quick Installation
+### Fresh Installation
 
-**Install on all cluster nodes:**
+It is recommended to run the installation command via `ssh`, *not* through the [Proxmox Web UI shell](https://pve.proxmox.com/wiki/Graphical_User_Interface#:~:text=syntax%2E-,Shell).
+The plugin installation requires a restart of Proxmox services, which the [Web UI shell](https://pve.proxmox.com/wiki/Graphical_User_Interface#:~:text=syntax%2E-,Shell) shell depends on.
+Therefore, using the `--restart` flag in the Web UI shell will abruptly terminate the terminal session and prematurely stop the installation script.
+
+**Install on all cluster nodes over `ssh`**
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes --add-default-multipath-config --restart
 ```
 
-**Remove from all cluster nodes:**
+**Install on all cluster nodes with [Proxmox Web UI shell](https://pve.proxmox.com/wiki/Graphical_User_Interface#:~:text=syntax%2E-,Shell)**
+
+If installing from the [Proxmox Web UI shell](https://pve.proxmox.com/wiki/Graphical_User_Interface#:~:text=syntax%2E-,Shell), do not use the `--restart` flag:
+
 ```bash
-curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --remove --all-nodes
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes --add-default-multipath-config
+```
+
+Once installation is complete, restart the Proxmox `pvedaemon` service on all cluster nodes:
+
+```bash
+systemctl restart pvedaemon
 ```
 
 ### Additional Options
@@ -31,7 +45,7 @@ curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/insta
 curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --pre --all-nodes
 
 # Install specific version on all nodes
-curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --version v0.10.9 --all-nodes
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --version v0.10.12 --all-nodes
 
 # Test installation without making changes
 curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --dry-run --all-nodes
@@ -74,6 +88,24 @@ If you encounter issues:
 3. **SSH issues**: For cluster operations, ensure SSH key authentication is set up between nodes
 
 After installation, proceed to the [Configuration](#configuration) section to set up storage configurations.
+
+## Automated Removal
+
+Automated removal from all nodes in the cluster can be accomplished by invoking the installation script with the --remove flag:"
+
+**Remove from all cluster nodes**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --remove --all-nodes
+```
+
+In the same manner, removal from a single node can be done using:
+
+**Remove from a single node**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --remove
+```
 
 ## Manual Installation for `deb` package
 

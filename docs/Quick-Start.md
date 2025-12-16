@@ -45,20 +45,6 @@ Test the REST API address:
 root@pve-node1:~# ping -c 5 192.168.21.100
 ```
 
-If connectivity is good, you’ll see output similar to:
-
-```
-PING 192.168.21.100 (192.168.21.100) 56(84) bytes of data.
-64 bytes from 192.168.21.100: icmp_seq=1 ttl=64 time=0.258 ms
-64 bytes from 192.168.21.100: icmp_seq=2 ttl=64 time=0.336 ms
-64 bytes from 192.168.21.100: icmp_seq=3 ttl=64 time=0.323 ms
-64 bytes from 192.168.21.100: icmp_seq=4 ttl=64 time=0.357 ms
-64 bytes from 192.168.21.100: icmp_seq=5 ttl=64 time=0.291 ms
-
---- 192.168.21.100 ping statistics ---
-5 packets transmitted, 5 received, 0% packet loss, time 4101ms
-rtt min/avg/max/mdev = 0.258/0.313/0.357/0.034 ms
-```
 Possible source of issues: routing problems. If you encounter connectivity issues, check the [Network Configuration Guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking).
 
 **Ensure that both the REST API and VIP addresses are accessible from every node in the cluster.**
@@ -68,7 +54,12 @@ Possible source of issues: routing problems. If you encounter connectivity issue
 Install latest plugin on all nodes in a cluster by running following command on any Proxmox VE server:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes --add-default-multipath-config
+```
+
+To check latest `pre-release` run:
+```bash
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --pre --all-nodes --add-default-multipath-config
 ```
 
 Restart the pvedaemon service to load the newly installed plugin:
@@ -82,6 +73,14 @@ To check the current version of the installed plugin, run the following script:
 dpkg-query -W -f='${Version}\n' open-e-joviandss-proxmox-plugin
 ```
 
+To update to a newest version, the user must re-run the installation script.
+
+The script will automatically install the latest release, or a pre-release version if specified.
+
+To downgrade, the current plugin must be removed first.
+For more information, please refer to the [Installation script](https://github.com/open-e/JovianDSS-Proxmox/wiki/Installation-script).
+
+
 ## Configuration
 
 Next, make Proxmox aware of the plugin by creating a storage pool configuration.
@@ -91,6 +90,8 @@ The recommended approach is to use the `pvesm` command, which automatically hand
 ### Using pvesm command (Recommended)
 
 Create the storage configuration using the `pvesm add` command with this general format:
+
+
 
 ```bash
 pvesm add joviandss <storage_pool_name> \
@@ -102,22 +103,25 @@ pvesm add joviandss <storage_pool_name> \
   --control_addresses <rest_api_vips> \
   --data_addresses <iscsi_data_vips> \
   --path <directory_path> \
+  --create-base-path 1 \
   --shared 1
 ```
+
 
 #### Understanding the parameters
 
 Below are explanations for each parameter used in the command above:
-
 - **storage_pool_name** - Name as it appears in Proxmox VE UI and CLI (choose something concise like `jdss-Pool-0`)
-- **joviandss_pool_name** - Pool name that exists on your JovianDSS storage system (e.g., `Pool-0`)
-- **rest_api_username/password** - Credentials configured in JovianDSS REST API settings
-- **content** - Types of data to store (`images` for VM disks, `rootdir` for containers)
-- **ssl_cert_verify** - Set to `0` to accept self-signed certificates
-- **rest_api_vips** - Comma-separated list of VIP addresses for JovianDSS REST API communication
-- **iscsi_data_vips** - Comma-separated list of VIP addresses assigned to the JovianDSS pool for iSCSI data
-- **directory_path** - Directory path for plugin reference (not actually used by the plugin)
-- **shared** - Set to `1` to allow VM migration within the Proxmox cluster
+- [pool_name](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#pool_name) with **<joviandss_pool_name>** - Pool name that exists on your JovianDSS storage system (e.g., `Pool-0`)
+- [user_name](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#user_name)/[user_password](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#user_password) with **<rest_api_username/rest_api_password>** - Credentials configured in JovianDSS REST API settings. Both of them must be identical across all nodes in the [High Availability Cluster](https://www.open-e.com/products/open-e-joviandss/open-e-joviandss-advanced-metro-high-availability-cluster-feature-pack/) that share same [pool_name](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#pool_name) for failover to function correctly
+- [content](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#content) with **images,rootdir** - Types of data to store (`images` for VM disks, `rootdir` for containers)
+- [ssl_cert_verify](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#ssl_cert_verify) with **0** - Set to `0` to accept self-signed certificates
+- [control_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#control_addresses) with **<rest_api_vips>** - A comma-separated list of VIP addresses used for communication with the JovianDSS REST API.
+It is recommended to have `control_addresses` as VIPs, as this is required for the [High Availability Cluster feature](https://www.open-e.com/products/open-e-joviandss/open-e-joviandss-advanced-metro-high-availability-cluster-feature-pack/) to function properly.
+- [data_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#data_addresses) with **<iscsi_data_vips>** - Comma-separated list of VIP addresses used for communication with the JovianDSS iSCSI.
+- [path](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#path) with **<directory_path>** - Directory path for plugin reference (not actually used by the plugin, but required by Proxmox VE)
+- [create-base-path](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#create-base-path) with **1** - Set to 1 to automatically create `path` directory
+- [shared](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#shared) with **1** - Set to `1` to allow VM migration within the Proxmox cluster
 
 For the complete list of available options, see the [configuration guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-installation-and-configuration).
 
@@ -127,6 +131,7 @@ Let's configure a concrete example where:
 - JovianDSS has pool `Pool-0`
 - REST API available at VIP `192.168.21.100` with credentials `admin/admin`
 - Data transfer should be conducted over VIP `192.168.41.100` assigned to Pool-0
+
 
 ```bash
 pvesm add joviandss jdss-Pool-0 \
@@ -138,6 +143,7 @@ pvesm add joviandss jdss-Pool-0 \
   --control_addresses 192.168.21.100 \
   --data_addresses 192.168.41.100 \
   --path /mnt/pve/jdss-Pool-0 \
+  --create-base-path 1 \
   --shared 1
 ```
 
@@ -156,6 +162,7 @@ joviandss: jdss-Pool-0
         control_addresses 192.168.21.100
         data_addresses 192.168.41.100
         path /mnt/pve/jdss-Pool-0
+        create-base-path 1
         shared 1
 ```
 
@@ -196,12 +203,12 @@ With debugging enabled, the plugin configuration dump will include the debug lin
 joviandss: jdss-Pool-0
         pool_name Pool-0
         user_name admin
-        user_password admin
         content images,rootdir
         ssl_cert_verify 0
         control_addresses 192.168.21.100
         data_addresses 192.168.41.100
         path /mnt/pve/jdss-Pool-0
+        create-base-path 1
         shared 1
         debug 1
         log_file /var/log/joviandss/joviandss-pool-0.log
