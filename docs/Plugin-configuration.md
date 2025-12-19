@@ -41,9 +41,9 @@ joviandss: jdss-Pool-0
         target_prefix iqn.2025-06.proxmox.pool-0
         user_name admin
         ssl_cert_verify 0
-        control_addresses 192.168.21.100
+        control_addresses 192.168.28.100
         control_port 82
-        data_addresses 192.168.41.100
+        data_addresses 192.168.29.100
         data_port 3260
         thin_provisioning 1
         luns_per_target 8
@@ -79,12 +79,13 @@ Never create multiple storage `pool` records with the same `pool_name`, as doing
 
 **Supported values**: `images` `rootdir`
 
-Specifies the types of content stored on this backed. Since version 0.10.0, the joviandss plugin supports only two formats:
+Specifies the types of content stored on this backed. `joviandss` plugin supports only two formats:
 
     images — VM disk images
 
     rootdir — container root-directory disks
 
+To store other content types on JovianDSS, please use the [NFS plugin](https://www.open-e.com/site_media/download/documents/howtoresource/Open-E_Jovian_DSS_with_NFS_for_Proxmox_VE_Best_Practices_Guide_1.00.pdf)
 
 ### target_prefix
 
@@ -123,6 +124,16 @@ For instance:  `iqn.2025-06.proxmox.pool-2:vm-102-0`.
 The folder associated with the JovianDSS Proxmox plugin—intended to host disks and resources presented to the Proxmox VE system—remains unused.
 
 Instead, the plugin attaches iSCSI block devices and creates multipath devices as needed; once a block device appears under `/dev/...` on the Proxmox node, the plugin registers it with the Proxmox VE storage subsystem.
+
+### create-base-path
+
+**Default**: None
+
+**Type**: *bool*
+
+**Required**: `False`
+
+Creates [path](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#path) directory if it does not exists.
 
 
 ### shared
@@ -188,6 +199,7 @@ Configure it in the JovianDSS web UI under the REST API settings. For details, s
 - [Quick Start: Enabling the REST API](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start#enable-rest-api)
 - [Advanced Metro HA Cluster Step-by-Step (2-rings)](https://www.open-e.com/site_media/download/documents/Open-E-JovianDSS-Advanced-Metro-High-Avability-Cluster-Step-by-Step-2rings.pdf)
 
+`user_name` must be identical across all nodes in the [High Availability Cluster](https://www.open-e.com/products/open-e-joviandss/open-e-joviandss-advanced-metro-high-availability-cluster-feature-pack/) that share same [pool_name](#pool_name) for `failover` to function correctly.
 
 ### user_password
 
@@ -197,9 +209,9 @@ Configure it in the JovianDSS web UI under the REST API settings. For details, s
 
 **Required**: `True`
 
-**Security Note**: Starting with plugin version 0.10.4-0, the `user_password` property is handled as a sensitive parameter and stored securely in `/etc/pve/priv/storage/joviandss/<storage-id>.pw` instead of appearing in the main `storage.cfg` file.
+**Security Note**: `user_password` property is handled as a sensitive parameter and stored securely in `/etc/pve/priv/storage/joviandss/<storage-id>.pw` instead of appearing in the main `storage.cfg` file.
 
-The `user_password` property specifies the JovianDSS REST API password the plugin uses for authentication and command execution. Configure it in the JovianDSS web UI under the REST API settings.
+The `user_password` property specifies the JovianDSS REST API password the plugin uses for authentication and command execution. Configure it in the JovianDSS web UI under the REST API settings. `user_password` must be identical across all nodes in the [High Availability Cluster](https://www.open-e.com/products/open-e-joviandss/open-e-joviandss-advanced-metro-high-availability-cluster-feature-pack/) that share same [pool_name](#pool_name) for `failover` to function correctly.
 
 **Usage**:
 - When using `pvesm add` command: Include `--user_password <password>` and it will be automatically stored securely
@@ -240,7 +252,19 @@ Check following JovianDSS guides:
 
 A comma-separated list of IP addresses used to send REST requests to JovianDSS.
 The plugin cycles through these addresses in round-robin fashion—retrying up to three times before giving up on a command.
-If [data_addresses](#data_addresses) is not specified, the plugin falls back to using `control_addresses` for iSCSI data transfer.
+
+```
+joviandss: jdss-Pool-0
+        ...
+        control_addresses 192.168.27.102,192.168.28.102
+        ...
+```
+
+If no dedicated VIP is available for `control_addresses`, it is recommended to use one or more `data_addresses`.
+
+**IMPORTANT!**
+
+For [JovianDSS High Availability cluster](https://www.open-e.com/products/open-e-joviandss/open-e-joviandss-advanced-metro-high-availability-cluster-feature-pack/) setup user **MUST** use VIPs(Virtual IP addresses) for `control_addresses` as it allows dynamic access to the `Pool`.
 
 
 ### control_port
@@ -251,7 +275,7 @@ If [data_addresses](#data_addresses) is not specified, the plugin falls back to 
 
 **Required**: `False`
 
-Specifies the TCP port used for REST commands to JovianDSS over all entries in [control_addresses](#controll_addresses).
+Specifies the TCP port used for REST commands to JovianDSS over all entries in [control_addresses](#control_addresses).
 JovianDSS accepts connections only over SSL/TLS; changing this port does not alter the protocol.
 
 

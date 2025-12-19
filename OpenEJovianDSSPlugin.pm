@@ -46,7 +46,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.10.12';
+my $PLUGIN_VERSION = '0.10.13';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -871,6 +871,28 @@ sub activate_volume {
     }
     else {
 # If volume was resized on other node we have to make sure that current size is accurate
+        my ( $targetname, $lunid, $lunrecpath, $lr ) = @{ $til->[0] };
+
+        my $pathval;
+        eval {
+            $pathval =
+              OpenEJovianDSS::Common::block_device_path_from_lun_rec( $scfg,
+                $storeid, $targetname, $lunid, $lr );
+            $pathval =~ m{^([\:\w\-/\.]+)$}
+              or die "Invalid source path '$pathval'";
+        };
+
+        unless (-b $pathval) {
+            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                    "Block device with given path ${pathval} for volume ${volname}"
+                  . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+                  . " not found. Re-activating." );
+            OpenEJovianDSS::Common::volume_deactivate( $scfg, $storeid,
+                $vmid, $volname, $snapname, undef );
+            OpenEJovianDSS::Common::volume_activate( $scfg, $storeid,
+                $vmid, $volname, $snapname, undef );
+        }
+
         my $current_size =
           OpenEJovianDSS::Common::volume_get_size( $scfg, $storeid, $volname );
         if ( @$til == 1 ) {
