@@ -1408,11 +1408,13 @@ class JovianDSSDriver(object):
 
                 vdata = {'name': jcom.idname(r['name']),
                          'size': r['volsize'],
-                         'creation': r['creation'],
-                         'scsi_id': r['default_scsi_id']}
+                         'creation': r['creation']}
 
                 if 'san:volume_id' in r:
-                    vdata['id'] = r['san:volume_id']
+                    vdata['san_scsi_id'] = r['san:volume_id']
+
+                if 'default_scsi_id' in r:
+                    vdata['scsi_id'] = r['default_scsi_id']
 
                 ret.append(vdata)
 
@@ -1437,10 +1439,13 @@ class JovianDSSDriver(object):
             return dict()
 
         ret = {'name': name,
-               'size': data['volsize'],
-               'san_scsi_id': data['san:volume_id'],
-               'scsi_id': data['default_scsi_id']
-               }
+               'size': data['volsize']}
+
+        if 'san:volume_id' in data:
+            ret['san_scsi_id'] = data['san:volume_id']
+
+        if 'default_scsi_id' in data:
+            ret['scsi_id'] = data['default_scsi_id']
 
         return ret
 
@@ -1501,7 +1506,7 @@ class JovianDSSDriver(object):
         try:
             self.ra.modify_lun(vname, prop=prop)
         except jexc.JDSSException as err:
-            emsg=(("Failed to set volume %(vol)s provisioning "
+            emsg = (("Failed to set volume %(vol)s provisioning "
                      "%(ptype)s") % {
                 'vol': jcom.idname(vname),
                 'ptype': provisioning})

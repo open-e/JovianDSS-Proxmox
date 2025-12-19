@@ -17,6 +17,7 @@ import argparse
 import hashlib
 import logging
 import sys
+import time
 
 import jdssc.rollback as cli_rollback
 
@@ -125,10 +126,23 @@ class Snapshot():
             if (self.args['scsi_id'] or
                     self.args['san_scsi_id']):
 
-                d = self.jdss.get_snapshot(volume_name,
-                                           snapshot_name,
-                                           export=True,
-                                           direct_mode=self.args['direct_mode'])
+                for i in range(3):
+                    d = self.jdss.get_snapshot(volume_name,
+                                               snapshot_name,
+                                               export=True,
+                                               direct_mode=self.args['direct_mode'])
+
+                    if self.args['scsi_id']:
+                        if 'scsi_id' not in d:
+                            time.sleep(1)
+                            continue
+
+                    if self.args['san_scsi_id']:
+                        if 'san_scsi_id' not in d:
+                            time.sleep(1)
+                            continue
+                    break
+
             else:
                 d = self.jdss.get_snapshot(volume_name,
                                            snapshot_name,

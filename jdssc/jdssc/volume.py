@@ -179,18 +179,53 @@ class Volume():
         volume = {'id': volume_name}
 
         try:
-            d = self.jdss.get_volume(volume,
-                                     direct_mode=self.args['direct_mode'])
+            d = dict()
+
+            for i in range(3):
+                d = self.jdss.get_volume(volume,
+                                         direct_mode=self.args['direct_mode'])
+                if self.args['scsi_id']:
+                    if 'scsi_id' not in d:
+                        time.sleep(1)
+                        continue
+
+                if self.args['san_scsi_id']:
+                    if 'san_scsi_id' not in d:
+                        time.sleep(1)
+                        continue
+                break
+
             if self.args['volume_size']:
                 print(int(d['size']))
             if self.args['volume_gigabyte_size']:
                 print(int((int(d['size'])) / (1024*1024*1024)))
+
             if self.args['scsi_id']:
-                print(''.join(['{:x}'.format(ord(c)) for c in d['scsi_id']]))
+                if (('scsi_id' in d) and
+                        (d['scsi_id'] is not None)):
+                    print(''.join(['{:x}'.format(ord(c))
+                                   for c in d['scsi_id']]))
+                else:
+                    if 'san_scsi_id' in d:
+                        print(''.join(['{:x}'.format(ord(c))
+                                       for c in d['san_scsi_id'][:16]]))
+                    else:
+                        LOG.error(("Unable to acquire scsi id for "
+                                   "volume %(volume)s") %
+                                  {'volume': volume_name})
+                        exit(1)
+
             if self.args['san_scsi_id']:
-                print(''.join(
-                    ['{:x}'.format(ord(c)) for c in d['san_scsi_id']]
-                ))
+                if (('san_scsi_id' in d) and
+                        (d['san_scsi_id'] is not None)):
+                    print(''.join(
+                        ['{:x}'.format(ord(c)) for c in d['san_scsi_id']]
+                    ))
+                else:
+                    LOG.error(("Unable to acquire san scsi id for "
+                               "volume %(volume)s") %
+                              {'volume': volume_name})
+                    exit(1)
 
         except jexc.JDSSCommunicationFailure as jerr:
             LOG.error(("Unable to communicate with JovianDSS over given "
