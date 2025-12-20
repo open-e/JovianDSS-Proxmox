@@ -48,6 +48,7 @@ my $ADD_DEFAULT_MULTIPATH_CONFIG = 0;
 my $FORCE_MULTIPATH_CONFIG = 0;
 my $USE_REINSTALL = 0;  # Default to NOT using --reinstall flag
 my $VERBOSE = 0;  # Default to non-verbose output
+my $ASSUME_YES = 0;  # Default to interactive confirmation
 my @WARNING_NODES = ();  # Track nodes with warnings
 my @SKIPPED_NODES = ();  # Track nodes where operations were skipped
 
@@ -69,6 +70,7 @@ GetOptions(
     "add-default-multipath-config" => \$ADD_DEFAULT_MULTIPATH_CONFIG,
     "force-multipath-config" => \$FORCE_MULTIPATH_CONFIG,
     "reinstall"     => \$USE_REINSTALL,
+    "assume-yes"    => \$ASSUME_YES,
     "verbose|v"     => \$VERBOSE,
     "help|h"        => \$HELP,
 ) or die "Error parsing options\n";
@@ -128,6 +130,7 @@ General:
   --add-default-multipath-config  Install default multipath configuration
   --force-multipath-config   Overwrite existing multipath config files
   --reinstall                Use --reinstall apt flag (default: disabled)
+  --assume-yes               Automatic yes to prompts (non-interactive mode)
   -v, --verbose              Show detailed output during installation/removal
   -h, --help                 Show this help
 
@@ -1244,10 +1247,12 @@ sub main {
             my @sorted_nodes = sort { $a->{name} cmp $b->{name} } @nodes;
             print_operation_nodes("Plugin will be removed from the following nodes:", \@sorted_nodes);
 
-            my $confirm = simple_readline("Continue? (y/n): ");
-            unless ($confirm && $confirm =~ /^y$/i) {
-                say "Operation cancelled.";
-                return 0;
+            unless ($ASSUME_YES) {
+                my $confirm = simple_readline("Continue? (y/n): ");
+                unless ($confirm && $confirm =~ /^y$/i) {
+                    say "Operation cancelled.";
+                    return 0;
+                }
             }
             say "";
 
@@ -1300,10 +1305,12 @@ sub main {
             my @sorted_nodes = sort { $a->{name} cmp $b->{name} } @nodes;
             print_operation_nodes("Plugin $TAG will be installed on the following nodes:", \@sorted_nodes);
 
-            my $confirm = simple_readline("Continue? (y/n): ");
-            unless ($confirm && $confirm =~ /^y$/i) {
-                say "Operation cancelled.";
-                return 0;
+            unless ($ASSUME_YES) {
+                my $confirm = simple_readline("Continue? (y/n): ");
+                unless ($confirm && $confirm =~ /^y$/i) {
+                    say "Operation cancelled.";
+                    return 0;
+                }
             }
             say "";
 
