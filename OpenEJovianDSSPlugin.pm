@@ -817,14 +817,18 @@ sub activate_storage {
 
     return undef if !defined( $scfg->{content} );
 
-    my @content_types = ( 'images', 'rootdir' );
+    my %supported_content = (
+                images  => 1,
+                rootdir => 1
+            );
 
     my $enabled_content = OpenEJovianDSS::Common::get_content($scfg);
 
     my $content_volume_needed = 0;
-    foreach my $content_type (@content_types) {
-        unless ( exists $enabled_content->{$content_type} ) {
-            die "Content type ${content_type} is not supported\n";
+
+    foreach my $enabled_content_type (keys %{$enabled_content}) {
+        unless ( exists $supported_content{$enabled_content_type} ) {
+            die "Content type ${enabled_content_type} is not supported\n";
         }
     }
 
