@@ -737,6 +737,95 @@ sub get_apt_remove_command {
     return $cmd;
 }
 
+sub restart_services {
+    my ($is_local, $ip, $display_name) = @_;
+
+    my $restart_success = 1;
+    my $cmd_code;
+
+    if ($is_local) {
+        my $sudo = maybe_sudo();
+        my @restart_cmd;
+        if ($sudo) {
+            @restart_cmd = ($sudo, "systemctl", "restart", "pvedaemon");
+        } else {
+            @restart_cmd = ("systemctl", "restart", "pvedaemon");
+        }
+        $cmd_code = run_cmd(@restart_cmd, {
+            outfunc => get_output_handler($display_name),
+            errfunc => create_context_error_handler("Service pvedaemon restart")
+        });
+
+        $restart_success = $restart_success && $cmd_code;
+        unless ($cmd_code) {
+            warn "[local] ✗ Failed to restart local pvedaemon\n";
+        }
+
+        if ($sudo) {
+            @restart_cmd = ($sudo, "systemctl", "restart", "pve-ha-lrm.service");
+        } else {
+            @restart_cmd = ("systemctl", "restart", "pve-ha-lrm.service");
+        }
+        $cmd_code = run_cmd(@restart_cmd, {
+            outfunc => get_output_handler($display_name),
+            errfunc => create_context_error_handler("Service pve-ha-lrm restart")
+        });
+
+        $restart_success = $restart_success && $cmd_code;
+        unless ($cmd_code) {
+            warn "[local] ✗ Failed to restart local pve-ha-lrm\n";
+        }
+
+        if ($sudo) {
+            @restart_cmd = ($sudo, "systemctl", "restart", "pve-ha-crm.service");
+        } else {
+            @restart_cmd = ("systemctl", "restart", "pve-ha-crm.service");
+        }
+        $cmd_code = run_cmd(@restart_cmd, {
+            outfunc => get_output_handler($display_name),
+            errfunc => create_context_error_handler("Service pve-ha-crm restart")
+        });
+
+        $restart_success = $restart_success && $cmd_code;
+        unless ($cmd_code) {
+            warn "[local] ✗ Failed to restart local pve-ha-crm\n";
+        }
+    } else {
+        my $ssh_tgt = "$SSH_USER\@$ip";
+        my $r_sudo = remote_sudo_prefix();
+        $cmd_code = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pvedaemon", {
+            outfunc => get_output_handler($display_name),
+            errfunc => create_context_error_handler("Remote service pvedaemon restart", $display_name)
+        });
+
+        $restart_success = $restart_success && $cmd_code;
+        unless ($cmd_code) {
+            warn "[$ip] ✗ Failed to restart pvedaemon\n";
+        }
+
+        $cmd_code = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pve-ha-lrm.service", {
+            outfunc => get_output_handler($display_name),
+            errfunc => create_context_error_handler("Remote service pve-ha-lrm restart", $display_name)
+        });
+
+        $restart_success = $restart_success && $cmd_code;
+        unless ($cmd_code) {
+            warn "[$ip] ✗ Failed to restart pve-ha-lrm\n";
+        }
+
+        $cmd_code = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pve-ha-crm.service", {
+            outfunc => get_output_handler($display_name),
+            errfunc => create_context_error_handler("Remote service pve-ha-crm restart", $display_name)
+        });
+
+        $restart_success = $restart_success && $cmd_code;
+        unless ($cmd_code) {
+            warn "[$ip] ✗ Failed to restart pve-ha-crm\n";
+        }
+    }
+
+    return $restart_success;
+}
 
 # Remove plugin locally
 sub remove_node {
@@ -805,37 +894,13 @@ sub remove_node {
         push @SKIPPED_NODES, $display_name;
     }
 
-    # Restart pvedaemon if needed
     if ($NEED_RESTART) {
-        my $restart_success;
-        if ($is_local) {
-            my $sudo = maybe_sudo();
-            my @restart_cmd;
-            if ($sudo) {
-                @restart_cmd = ($sudo, "systemctl", "restart", "pvedaemon");
-            } else {
-                @restart_cmd = ("systemctl", "restart", "pvedaemon");
-            }
-            $restart_success = run_cmd(@restart_cmd, {
-                outfunc => get_output_handler("local"),
-                errfunc => create_context_error_handler("Service restart")
-            });
-        } else {
-            my $ssh_tgt = "$SSH_USER\@$ip";
-            my $r_sudo = remote_sudo_prefix();
-            $restart_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pvedaemon", {
-                outfunc => get_output_handler($display_name),
-                errfunc => create_context_error_handler("Remote service restart", $display_name)
-            });
-        }
-
+        my $restart_success = restart_services($is_local, $ip, $display_name);
         unless ($restart_success) {
             if ($is_local) {
-                warn "✗ Failed to restart pvedaemon on local node\n";
-                return 0;
+                warn "✗ Failed to restart some services, that might affect operation\n";
             } else {
-                warn "[$ip] ✗ Failed to restart pvedaemon\n";
-                return 0;
+                warn "[$ip] ✗ Failed to restart some services, that might affect operation\n";
             }
         }
     }
@@ -928,36 +993,14 @@ sub install_node {
         }
     }
 
-    # Restart pvedaemon if needed
     if ($NEED_RESTART) {
-        my $restart_success;
-        if ($is_local) {
-            my $sudo = maybe_sudo();
-            my @restart_cmd;
-            if ($sudo) {
-                @restart_cmd = ($sudo, "systemctl", "restart", "pvedaemon");
-            } else {
-                @restart_cmd = ("systemctl", "restart", "pvedaemon");
-            }
-            $restart_success = run_cmd(@restart_cmd, {
-                outfunc => get_output_handler("local"),
-                errfunc => create_context_error_handler("Service restart")
-            });
-        } else {
-            my $ssh_tgt = "$SSH_USER\@$ip";
-            my $r_sudo = remote_sudo_prefix();
-            $restart_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pvedaemon", {
-                outfunc => get_output_handler($display_name),
-                errfunc => create_context_error_handler("Remote service restart", $display_name)
-            });
-        }
-
+        my $restart_success = restart_services($is_local, $ip, $display_name);
         unless ($restart_success) {
             if ($is_local) {
-                warn "✗ Failed to restart pvedaemon on local node\n";
+                warn "✗ Failed to restart some services, that might affect plugin operation\n";
                 return 0;
             } else {
-                warn "[$ip] ✗ Failed to restart pvedaemon\n";
+                warn "[$ip] ✗ Failed to restart some services; this might affect plugin operation\n";
                 return 0;
             }
         }
