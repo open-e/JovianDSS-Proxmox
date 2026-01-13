@@ -126,6 +126,33 @@ class NASVolumes():
         if self.args['volume_size']:
             print(d['size'])
 
+    def list(self):
+        """List all NAS volumes in the pool."""
+
+        data = self.jdss.list_nas_volumes()
+
+        if 'entries' in data:
+            for volume in data['entries']:
+                name = volume.get('name', volume.get('full_name', ''))
+                if self.args.get('vmid', False):
+                    # Only show volumes with VM ID pattern
+                    if 'vm-' in name:
+                        print(name)
+                else:
+                    print(name)
+        else:
+            # If data is already a list
+            for volume in data:
+                if isinstance(volume, dict):
+                    name = volume.get('name', volume.get('full_name', ''))
+                    if self.args.get('vmid', False):
+                        if 'vm-' in name:
+                            print(name)
+                    else:
+                        print(name)
+                else:
+                    print(volume)
+
     def delete(self):
 
         self.jdss.ra.delete_nas_volume(self.args['nas_volume_name'])

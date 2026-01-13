@@ -1467,6 +1467,126 @@ class JovianDSSDriver(object):
 
         return ret
 
+    def list_nas_volumes(self):
+        """List all NAS volumes (datasets) in the pool.
+
+        :return: list of NAS volumes
+        """
+        LOG.debug('list all nas volumes')
+
+        data = self.ra.get_nas_volumes()
+
+        return data
+
+    def create_nas_snapshot(self, snapshot_name, dataset_name):
+        """Create snapshot of existing NAS volume (dataset).
+
+        :param str snapshot_name: new snapshot name
+        :param str dataset_name: dataset name
+        """
+        LOG.debug('create snapshot %(snap)s for NAS volume %(vol)s', {
+            'snap': snapshot_name,
+            'vol': dataset_name})
+
+        dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, None)
+
+        self.ra.create_nas_snapshot(dname, sname)
+
+    def delete_nas_snapshot(self, dataset_name, snapshot_name):
+        """Delete snapshot of existing NAS volume (dataset).
+
+        :param str dataset_name: dataset name
+        :param str snapshot_name: snapshot name
+        """
+        dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, None)
+
+        self.ra.delete_nas_snapshot(dname, sname)
+
+    def list_nas_snapshots(self, dataset_name):
+        """List snapshots for NAS volume (dataset).
+
+        :param str dataset_name: dataset name
+        :return: list of snapshots
+        """
+        dname = jcom.vname(dataset_name)
+        try:
+            data = self.ra.get_nas_snapshots(dname)
+        except jexc.JDSSException as ex:
+            LOG.error("List NAS snapshots error. Because %(err)s",
+                      {"err": ex})
+            raise
+
+        return data
+
+    def get_nas_snapshot(self, dataset_name, snapshot_name):
+        """Get NAS snapshot information.
+
+        :param str dataset_name: dataset name
+        :param str snapshot_name: snapshot name
+        :return: snapshot data
+        """
+        dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, None)
+
+        data = self.ra.get_nas_snapshot(dname, sname)
+        return data
+
+    def create_nas_clone(self, dataset_name, snapshot_name, clone_name,
+                         **options):
+        """Create clone from NAS snapshot.
+
+        :param str dataset_name: dataset name
+        :param str snapshot_name: snapshot name
+        :param str clone_name: clone name
+        :param options: optional ZFS properties
+        :return: clone data
+        """
+        LOG.debug('create clone %(clone)s from snapshot %(snap)s '
+                  'of NAS volume %(vol)s', {
+            'clone': clone_name,
+            'snap': snapshot_name,
+            'vol': dataset_name})
+
+        dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, None)
+        cname = clone_name
+
+        return self.ra.create_nas_clone(dname, sname, cname, **options)
+
+    def delete_nas_clone(self, dataset_name, snapshot_name, clone_name):
+        """Delete NAS clone.
+
+        :param str dataset_name: dataset name
+        :param str snapshot_name: snapshot name
+        :param str clone_name: clone name
+        """
+        dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, None)
+        cname = clone_name
+
+        self.ra.delete_nas_clone(dname, sname, cname)
+
+    def list_nas_clones(self, dataset_name, snapshot_name):
+        """List clones for NAS snapshot.
+
+        :param str dataset_name: dataset name
+        :param str snapshot_name: snapshot name
+        :return: list of clones
+        """
+        dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, None)
+
+        try:
+            data = self.ra.get_nas_clones(dname, sname)
+        except jexc.JDSSException as ex:
+            LOG.error("List NAS clones error. Because %(err)s",
+                      {"err": ex})
+            raise
+
+        return data
+
     def get_snapshot(self, volume_name, snapshot_name,
                      export=False, direct_mode=False):
         """Get volume information.

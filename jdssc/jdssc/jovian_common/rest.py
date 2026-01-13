@@ -1325,6 +1325,19 @@ class JovianRESTAPI(object):
                     raise jexc.JDSSResourceNotFoundException(res=nas_volume)
         self._general_error(req, resp)
 
+    def get_nas_volumes(self):
+        """get_nas_volumes
+        GET /nas-volumes
+        List all NAS volumes (datasets) in the pool
+        :return: list of NAS volumes
+        """
+        req = '/nas-volumes'
+        LOG.debug("get all nas volumes")
+        resp = self.rproxy.pool_request('GET', req)
+        if not resp["error"] and resp["code"] in (200, 201):
+            return resp['data']
+        self._general_error(req, resp)
+
     def create_nas_volume(self, volume_name, quota,
                           reservation=None):
         """create_nas_volumes.
@@ -1454,6 +1467,247 @@ class JovianRESTAPI(object):
 
         if resp['code'] == 204:
             return
+
+        self._general_error(req, resp)
+
+    def create_nas_snapshot(self, dataset_name, snapshot_name):
+        """create_nas_snapshot.
+
+        POST /pools/<poolname>/nas-volumes/<datasetname>/snapshots
+        :param dataset_name: NAS volume (dataset) name
+        :param snapshot_name: snapshot name
+        :return:
+        """
+        req = '/nas-volumes/%s/snapshots' % dataset_name
+
+        jbody = {
+            'name': snapshot_name
+        }
+
+        LOG.info("create snapshot %(snap)s for NAS volume %(vol)s",
+                 {'snap': jcom.idname(snapshot_name),
+                  'vol': jcom.idname(dataset_name)})
+
+        resp = self.rproxy.pool_request('POST', req, json_data=jbody)
+
+        if not resp["error"] and resp["code"] in (200, 201, 204):
+            return
+
+        if resp["code"] == 500:
+            if resp["error"]:
+                if resp["error"].get("errno") == 5:
+                    raise jexc.JDSSSnapshotExistsException(
+                        snapshot_name, dataset_name)
+                if resp["error"].get("errno") == 1:
+                    raise jexc.JDSSResourceNotFoundException(
+                        res=dataset_name)
+
+        self._general_error(req, resp)
+
+    def delete_nas_snapshot(self, dataset_name, snapshot_name):
+        """delete_nas_snapshot.
+
+        DELETE /pools/<poolname>/nas-volumes/<datasetname>/
+            snapshots/<snapshotname>
+        :param dataset_name: NAS volume (dataset) name
+        :param snapshot_name: snapshot name
+        :return:
+        """
+
+        req = '/nas-volumes/%(vol)s/snapshots/%(snap)s' % {
+            'vol': dataset_name,
+            'snap': snapshot_name}
+
+        LOG.info("delete snapshot %(snap)s for NAS volume %(vol)s",
+                 {'vol': jcom.idname(dataset_name),
+                  'snap': jcom.idname(snapshot_name)})
+
+        resp = self.rproxy.pool_request('DELETE', req)
+
+        if resp["code"] in (200, 201, 204):
+            LOG.debug("snapshot %s deleted", snapshot_name)
+            return
+
+        if resp["code"] == 500:
+            if resp["error"]:
+                if resp["error"].get("errno") == 1000:
+                    raise jexc.JDSSSnapshotIsBusyException(
+                        snapshot=snapshot_name)
+            if 'message' in resp.get('error', {}):
+                if self.resource_dne_msg.match(resp['error']['message']):
+                    raise jexc.JDSSResourceNotFoundException(snapshot_name)
+
+        self._general_error(req, resp)
+
+    def get_nas_snapshot(self, dataset_name, snapshot_name):
+        """get_nas_snapshot.
+
+        GET /pools/<poolname>/nas-volumes/<datasetname>/
+            snapshots/<snapshotname>
+        :param dataset_name: NAS volume (dataset) name
+        :param snapshot_name: snapshot name
+        :return: snapshot data
+        """
+
+        req = '/nas-volumes/%(vol)s/snapshots/%(snap)s' % {
+            'vol': dataset_name,
+            'snap': snapshot_name}
+
+        LOG.debug("get snapshot %s for NAS volume %s",
+                  snapshot_name, dataset_name)
+
+        resp = self.rproxy.pool_request('GET', req)
+
+        if not resp["error"] and resp["code"] == 200:
+            return resp["data"]
+
+        if resp['code'] == 500:
+            if 'message' in resp.get('error', {}):
+                if self.resource_dne_msg.match(resp['error']['message']):
+                    raise jexc.JDSSResourceNotFoundException(dataset_name)
+
+        self._general_error(req, resp)
+
+    def get_nas_snapshots(self, dataset_name):
+        """get_nas_snapshots.
+
+        GET /pools/<poolname>/nas-volumes/<datasetname>/snapshots
+        :param dataset_name: NAS volume (dataset) name
+        :return: list of snapshots
+        """
+        req = '/nas-volumes/%s/snapshots' % dataset_name
+
+        LOG.debug("get snapshots for NAS volume %s", dataset_name)
+
+        resp = self.rproxy.pool_request('GET', req)
+
+        if not resp["error"] and resp["code"] == 200:
+            return resp["data"]
+
+        if resp['code'] == 500:
+            if 'message' in resp.get('error', {}):
+                if self.resource_dne_msg.match(resp['error']['message']):
+                    raise jexc.JDSSResourceNotFoundException(dataset_name)
+
+        self._general_error(req, resp)
+
+    def create_nas_clone(self, dataset_name, snapshot_name, clone_name,
+                         **options):
+        """create_nas_clone.
+
+        POST /pools/<poolname>/nas-volumes/<datasetname>/
+            snapshots/<snapshotname>/clones
+        :param dataset_name: NAS volume (dataset) name
+        :param snapshot_name: snapshot name
+        :param clone_name: name for the new clone
+        :param options: optional ZFS properties (compression, copies, etc.)
+        :return:
+        """
+        req = '/nas-volumes/%(vol)s/snapshots/%(snap)s/clones' % {
+            'vol': dataset_name,
+            'snap': snapshot_name}
+
+        jbody = {
+            'name': clone_name
+        }
+
+        # Add optional ZFS properties
+        for key in ['copies', 'compression', 'primarycache', 'logbias',
+                    'atime', 'dedup', 'secondarycache', 'sync']:
+            if key in options:
+                jbody[key] = options[key]
+
+        LOG.info("create clone %(clone)s from snapshot %(snap)s "
+                 "of NAS volume %(vol)s",
+                 {'clone': jcom.idname(clone_name),
+                  'snap': jcom.idname(snapshot_name),
+                  'vol': jcom.idname(dataset_name)})
+
+        resp = self.rproxy.pool_request('POST', req, json_data=jbody)
+
+        if not resp["error"] and resp["code"] in (200, 201, 204):
+            return resp.get("data")
+
+        if resp["code"] == 500:
+            if resp["error"]:
+                if 'message' in resp["error"]:
+                    if self.dataset_exists_msg.match(
+                            resp['error']['message']):
+                        raise jexc.JDSSResourceExistsException(clone_name)
+                    if self.resource_dne_msg.match(
+                            resp['error']['message']):
+                        raise jexc.JDSSResourceNotFoundException(
+                            res="%(vol)s@%(snap)s" % {
+                                'vol': dataset_name,
+                                'snap': snapshot_name})
+                    if self.no_space_left.match(resp["error"]["message"]):
+                        raise jexc.JDSSResourceExhausted
+
+        self._general_error(req, resp)
+
+    def delete_nas_clone(self, dataset_name, snapshot_name, clone_name):
+        """delete_nas_clone.
+
+        DELETE /pools/<poolname>/nas-volumes/<datasetname>/
+            snapshots/<snapshotname>/clones/<clonename>
+        :param dataset_name: NAS volume (dataset) name
+        :param snapshot_name: snapshot name
+        :param clone_name: clone name to delete
+        :return:
+        """
+
+        req = '/nas-volumes/%(vol)s/snapshots/%(snap)s/clones/%(clone)s' % {
+            'vol': dataset_name,
+            'snap': snapshot_name,
+            'clone': clone_name}
+
+        LOG.info("delete clone %(clone)s from snapshot %(snap)s "
+                 "of NAS volume %(vol)s",
+                 {'clone': jcom.idname(clone_name),
+                  'snap': jcom.idname(snapshot_name),
+                  'vol': jcom.idname(dataset_name)})
+
+        resp = self.rproxy.pool_request('DELETE', req)
+
+        if resp["code"] in (200, 201, 204):
+            LOG.debug("clone %s deleted", clone_name)
+            return
+
+        if resp["code"] == 500:
+            if 'message' in resp.get('error', {}):
+                if self.resource_dne_msg.match(resp['error']['message']):
+                    raise jexc.JDSSResourceNotFoundException(clone_name)
+
+        self._general_error(req, resp)
+
+    def get_nas_clones(self, dataset_name, snapshot_name):
+        """get_nas_clones.
+
+        GET /pools/<poolname>/nas-volumes/<datasetname>/
+            snapshots/<snapshotname>/clones
+        :param dataset_name: NAS volume (dataset) name
+        :param snapshot_name: snapshot name
+        :return: list of clones
+        """
+        req = '/nas-volumes/%(vol)s/snapshots/%(snap)s/clones' % {
+            'vol': dataset_name,
+            'snap': snapshot_name}
+
+        LOG.debug("get clones for snapshot %s of NAS volume %s",
+                  snapshot_name, dataset_name)
+
+        resp = self.rproxy.pool_request('GET', req)
+
+        if not resp["error"] and resp["code"] == 200:
+            return resp["data"]
+
+        if resp['code'] == 500:
+            if 'message' in resp.get('error', {}):
+                if self.resource_dne_msg.match(resp['error']['message']):
+                    raise jexc.JDSSResourceNotFoundException(
+                        "%(vol)s@%(snap)s" % {
+                            'vol': dataset_name,
+                            'snap': snapshot_name})
 
         self._general_error(req, resp)
 

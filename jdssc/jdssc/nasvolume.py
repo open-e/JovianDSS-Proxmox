@@ -15,16 +15,20 @@
 
 import argparse
 
-"""NAS volumes related commands."""
+import jdssc.nas_snapshot as nas_snapshot
+import jdssc.nas_snapshots as nas_snapshots
+
+"""NAS volume related commands."""
 
 
-class NASVolumes():
+class NASVolume():
     def __init__(self, args, uargs, jdss):
 
-        self.nvsa = {'create': self.create}
         self.nva = {
             'delete': self.delete,
-            'get': self.get}
+            'get': self.get,
+            'snapshot': self.snapshot,
+            'snapshots': self.snapshots}
 
         self.args = args
         argst = self.__parse(uargs)
@@ -32,44 +36,28 @@ class NASVolumes():
         self.uargs = argst[1]
         self.jdss = jdss
 
-        if 'nas-volumes-action' in self.args:
-            self.nvsa[self.args.pop('nas-volumes-action')]()
-        elif 'nas-volume-action' in self.args:
+        if 'nas-volume-action' in self.args:
             self.nva[self.args.pop('nas-volume-action')]()
 
     def __parse(self, args):
 
-        nas_volumes_parser = argparse.ArgumentParser(prog="NASVolumes")
         nas_volume_parser = argparse.ArgumentParser(prog="NASVolume")
-
-        parsers = nas_volumes_parser.add_subparsers(dest='nas-volumes-action')
-
-        create = parsers.add_parser('create')
-        create.add_argument('nas_volume_name', type=str,
-                            help='New nas volume name')
-        create.add_argument('-s',
-                            '--size',
-                            required=True,
-                            dest='volume_size',
-                            type=str,
-                            default='1G',
-                            help='New volume size in format num + [M G T]')
-        create.add_argument('-d',
-                            dest='direct_mode',
-                            action='store_true',
-                            default=False,
-                            help='Use real volume name')
-        create.add_argument('-n',
-                            required=True,
-                            dest='volume_name',
-                            type=str,
-                            help='New volume name')
+        nas_volume_parser.add_argument('-d',
+                                       dest='nas_volume_direct_mode',
+                                       action='store_true',
+                                       default=False,
+                                       help='Use real nas volume name')
 
         nas_volume_parser.add_argument(
-            'nas_volume_name', help='NSA volume name')
+            'nas_volume_name', help='NAS volume name')
         parsers = nas_volume_parser.add_subparsers(dest='nas-volume-action')
 
         get = parsers.add_parser('get')
+        get.add_argument('-d',
+                         dest='direct_mode',
+                         action='store_true',
+                         default=False,
+                         help='Use real volume name')
         get.add_argument('-s', dest='volume_size', action='store_true',
                          default=False, help='Print volume size')
 
@@ -79,20 +67,14 @@ class NASVolumes():
                             default=False,
                             help='Remove snapshots along side with volume')
 
+        parsers.add_parser('snapshot', add_help=False)
+        parsers.add_parser('snapshots', add_help=False)
+
         if len(args) == 0:
-            nas_volumes_parser.print_help()
-            print("\n")
             nas_volume_parser.print_help()
             exit(0)
 
-        if args[0] in self.nvsa:
-            return nas_volumes_parser.parse_known_args(args)
-        else:
-            return nas_volume_parser.parse_known_args(args)
-
-    def create(self):
-
-        self.jdss.ra.create_nas_volume(self.args['nas_volume_name'])
+        return nas_volume_parser.parse_known_args(args)
 
     def get(self):
 
@@ -108,3 +90,9 @@ class NASVolumes():
     def delete(self):
 
         self.jdss.ra.delete_nas_volume(self.args['nas_volume_name'])
+
+    def snapshot(self):
+        nas_snapshot.NASSnapshot(self.args, self.uargs, self.jdss)
+
+    def snapshots(self):
+        nas_snapshots.NASSnapshots(self.args, self.uargs, self.jdss)
