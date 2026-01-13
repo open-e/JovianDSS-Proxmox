@@ -330,86 +330,222 @@ sub volume_snapshot_needs_fsfreeze {
 }
 
 sub volume_snapshot_rollback {
-    my ($class, $scfg, $storeid, $volname, $snap) = @_;
+    my ( $class, $scfg, $storeid, $volname, $snap ) = @_;
 
     my $path = $scfg->{path};
+    my $pool = $class->get_pool_name( $scfg );
+    my $dataset = $class->get_dataset_name( $scfg );
 
-    OpenEJovianDSS::Common::debugmsg($scfg, "debug",
-        "Rolling back volume ${volname} to snapshot ${snap}\n");
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        "Rolling back volume ${volname} to snapshot ${snap}\n" );
 
-    # Step 1: Activate snapshot by accessing .zfs/snapshot directory
-    # ZFS automatically makes snapshots available at .zfs/snapshot/<snapname>
-    my $snapshot_path = "${path}/.zfs/snapshot/${snap}";
+    # Step 1: Activate snapshot (create clone, create temp share, mount it)
+    my $activation_info = OpenEJovianDSS::Common::nas_volume_activate(
+        $scfg, $storeid, $pool, $dataset, $snap );
 
-    unless (-d $snapshot_path) {
-        die "Snapshot directory ${snapshot_path} does not exist or is not accessible\n";
-    }
+    my $mount_path = $activation_info->{mount_path};
 
-    OpenEJovianDSS::Common::debugmsg($scfg, "debug",
-        "Snapshot ${snap} activated at ${snapshot_path}\n");
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        "Snapshot ${snap} activated at ${mount_path}\n" );
 
-    # Step 2: Physically copy VM/container file from activated snapshot to share
-    my ($vtype, $name, $vmid, $basename, $basevmid, $isBase, $format) =
-        $class->parse_volname($volname);
-
-    # Get the relative path for the volume within the storage
-    my $rel_path = $class->filesystem_path($scfg, $volname);
-    $rel_path =~ s/^\Q$path\E\/?//;  # Remove base path to get relative path
-
-    my $source_file = "${snapshot_path}/${rel_path}";
-    my $dest_file = "${path}/${rel_path}";
-
-    unless (-e $source_file) {
-        die "Source file ${source_file} does not exist in snapshot ${snap}\n";
-    }
-
-    OpenEJovianDSS::Common::debugmsg($scfg, "debug",
-        "Copying ${source_file} to ${dest_file}\n");
-
-    # Use cp command to copy file, preserving attributes
     eval {
-        PVE::Tools::run_command(['cp', '-a', $source_file, $dest_file],
-            errmsg => "rollback copy failed");
+        # Step 2: Physically copy VM/container file from activated snapshot
+        my ( $vtype, $name, $vmid, $basename, $basevmid, $isBase, $format ) =
+            $class->parse_volname( $volname );
+
+        # Get the relative path for the volume within the storage
+        my $rel_path = $class->filesystem_path( $scfg, $volname );
+        $rel_path =~ s/^\Q$path\E\/?//;  # Remove base path
+
+        my $source_file = "${mount_path}/${rel_path}";
+        my $dest_file = "${path}/${rel_path}";
+
+        unless ( -e $source_file ) {
+            die "Source file ${source_file} does not exist in "
+                . "snapshot ${snap}\n";
+        }
+
+        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+            "Copying ${source_file} to ${dest_file}\n" );
+
+        # Use cp command to copy file, preserving attributes
+        PVE::Tools::run_command( [ 'cp', '-a', $source_file, $dest_file ],
+            errmsg => "rollback copy failed" );
+
+        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+            "File copy completed successfully\n" );
     };
-    if (my $err = $@) {
-        die "Failed to copy file from snapshot: ${err}\n";
+    my $err = $@;
+
+    # Step 3: Deactivate snapshot (unmount, delete share, delete clone)
+    eval {
+        OpenEJovianDSS::Common::nas_volume_deactivate(
+            $scfg, $storeid, $pool, $dataset, $snap );
+    };
+    my $deactivate_err = $@;
+
+    if ( $deactivate_err ) {
+        warn "Snapshot deactivation failed: ${deactivate_err}";
     }
 
-    OpenEJovianDSS::Common::debugmsg($scfg, "debug",
-        "Rollback of volume ${volname} to snapshot ${snap} completed\n");
+    if ( $err ) {
+        die "Rollback failed: ${err}\n";
+    }
+
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        "Rollback of volume ${volname} to snapshot ${snap} completed\n" );
 }
 
 sub volume_rollback_is_possible {
-    my ($class, $scfg, $storeid, $volname, $snap, $blockers) = @_;
+    my ( $class, $scfg, $storeid, $volname, $snap, $blockers ) = @_;
+
+    my $pool = $class->get_pool_name( $scfg );
+    my $dataset = $class->get_dataset_name( $scfg );
+
+    # Check if snapshot exists via REST API
+    eval {
+        my $snapshots = OpenEJovianDSS::Common::volume_snapshots_info(
+            $scfg, $storeid, $dataset );
+
+        my $snap_found = 0;
+        foreach my $snapshot ( @$snapshots ) {
+            if ( $snapshot->{name} eq $snap ) {
+                $snap_found = 1;
+                last;
+            }
+        }
+
+        unless ( $snap_found ) {
+            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                "Snapshot ${snap} not found for dataset ${dataset}\n" );
+            return 0;
+        }
+    };
+    if ( $@ ) {
+        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+            "Failed to check snapshot existence: $@\n" );
+        return 0;
+    }
+
+    # For NFS file-based storage, rollback is a copy operation
+    # We use clone-based approach, so no blockers for child snapshots
+    # The parent class handles basic blocker checks (e.g., running VM)
+
+    return 1;
+}
+
+sub activate_volume {
+    my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
+
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        "Activate volume ${volname}"
+        . ( $snapname ? " snapshot ${snapname}" : "" ) . "\n" );
+
+    # Check that main storage (NFS share) is mounted
+    $cache->{mountdata} = PVE::ProcFSTools::parse_proc_mounts()
+        if !$cache->{mountdata};
 
     my $path = $scfg->{path};
+    my $server = $scfg->{server};
+    my $export = $scfg->{export};
 
-    # Check if snapshot directory exists and is accessible
-    my $snapshot_path = "${path}/.zfs/snapshot/${snap}";
-    unless (-d $snapshot_path) {
-        OpenEJovianDSS::Common::debugmsg($scfg, "debug",
-            "Snapshot directory ${snapshot_path} not accessible\n");
-        return 0;
+    unless ( nfs_is_mounted( $server, $export, $path, $cache->{mountdata} ) ) {
+        die "Storage '${storeid}' is not mounted. "
+            . "NFS share ${server}:${export} not mounted at ${path}\n";
     }
 
-    # Check if the volume file exists in the snapshot
-    my ($vtype, $name, $vmid, $basename, $basevmid, $isBase, $format) =
-        $class->parse_volname($volname);
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        "Volume ${volname} activated (storage is mounted)\n" );
 
-    my $rel_path = $class->filesystem_path($scfg, $volname);
-    $rel_path =~ s/^\Q$path\E\/?//;
+    return 1;
+}
 
-    my $source_file = "${snapshot_path}/${rel_path}";
-    unless (-e $source_file) {
-        OpenEJovianDSS::Common::debugmsg($scfg, "debug",
-            "Volume file ${source_file} not found in snapshot ${snap}\n");
-        return 0;
+sub deactivate_volume {
+    my ( $class, $storeid, $scfg, $volname, $snapname, $cache, $hints ) = @_;
+
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        "Deactivate volume ${volname}"
+        . ( $snapname ? " snapshot ${snapname}" : "" ) . "\n" );
+
+    my $pool = $class->get_pool_name( $scfg );
+    my $dataset = $class->get_dataset_name( $scfg );
+    my $path = $scfg->{path};
+
+    # Get list of all snapshots that have published clones
+    my $snapshots_with_clones;
+    eval {
+        my $snap_output = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
+            [ "pool", $pool, "nas_volume", $dataset, "snapshots", "list", "--with-clones" ] );
+
+        # Parse snapshot names from output
+        $snapshots_with_clones = [];
+        for my $line ( split( /\n/, $snap_output ) ) {
+            $line =~ s/^\s+|\s+$//g;
+            push @$snapshots_with_clones, $line if length( $line ) > 0;
+        }
+    };
+    if ( $@ ) {
+        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+            "Failed to get snapshots with clones: $@\n" );
+        return 1;
     }
 
-    # Check for blockers (e.g., child snapshots, clones)
-    # For NFS file-based storage, rollback is a copy operation
-    # so we mainly need to ensure the file is not locked
-    # Parent class handles basic blocker checks
+    my $deactivated_count = 0;
+
+    # For each snapshot with clones, check if it's mounted and deactivate
+    for my $snap ( @$snapshots_with_clones ) {
+        eval {
+            # Get the clone name for this snapshot
+            my $clone_name_output = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
+                [ "pool", $pool, "nas_volume", $dataset, "snapshot", $snap,
+                  "get", "--publish-name" ] );
+
+            my $clone_name;
+            for my $line ( reverse split( /\n/, $clone_name_output ) ) {
+                $line =~ s/^\s+|\s+$//g;
+                if ( length( $line ) > 0 ) {
+                    $clone_name = $line;
+                    last;
+                }
+            }
+
+            if ( $clone_name ) {
+                # Check if this clone is mounted
+                my $mount_path = "${path}/private/snapshots/${clone_name}";
+
+                if ( -d $mount_path ) {
+                    # Check if it's actually mounted
+                    my $is_mounted = 0;
+                    open( my $fh, '<', '/proc/mounts' )
+                        or die "Cannot read /proc/mounts: $!\n";
+                    while ( my $line = <$fh> ) {
+                        if ( $line =~ /\s\Q$mount_path\E\s/ ) {
+                            $is_mounted = 1;
+                            last;
+                        }
+                    }
+                    close( $fh );
+
+                    if ( $is_mounted ) {
+                        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                            "Deactivating mounted snapshot ${snap}\n" );
+
+                        OpenEJovianDSS::Common::nas_volume_deactivate(
+                            $scfg, $storeid, $pool, $dataset, $snap );
+
+                        $deactivated_count++;
+                    }
+                }
+            }
+        };
+        if ( $@ ) {
+            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                "Error processing snapshot ${snap}: $@\n" );
+        }
+    }
+
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        "Deactivated ${deactivated_count} mounted snapshot clones\n" );
 
     return 1;
 }

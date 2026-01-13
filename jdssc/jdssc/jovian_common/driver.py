@@ -1587,6 +1587,84 @@ class JovianDSSDriver(object):
 
         return data
 
+    def get_nas_snapshot_publish_name(self, dataset_name, snapshot_name):
+        """Get the clone name that would be used for publishing a snapshot.
+
+        Returns the clone dataset name without actually creating the clone.
+        This is useful for determining mount paths.
+
+        :param str dataset_name: dataset name
+        :param str snapshot_name: snapshot name
+        :return: clone dataset name (properly formatted with se_ prefix)
+        """
+        # Generate clone name using sname with dataset reference
+        # This creates the se_ prefixed name with base32 encoding
+        clone_name = jcom.sname(snapshot_name, dataset_name)
+        return clone_name
+
+    def publish_nas_snapshot(self, dataset_name, snapshot_name):
+        """Publish NAS snapshot by creating clone and NFS share.
+
+        Creates a snapshot export clone with proper se_ naming and
+        creates an NFS share for it, making it accessible for mounting.
+
+        :param str dataset_name: dataset name
+        :param str snapshot_name: snapshot name
+        :return: clone dataset name (properly formatted with se_ prefix)
+        """
+        LOG.debug('publish snapshot %(snap)s from NAS volume %(vol)s', {
+            'snap': snapshot_name,
+            'vol': dataset_name})
+
+        dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, None)
+        # Generate clone name using sname with dataset reference
+        # This creates the se_ prefixed name with base32 encoding
+        clone_name = jcom.sname(snapshot_name, dataset_name)
+
+        # Create clone from snapshot
+        self.ra.create_nas_clone(dname, sname, clone_name)
+
+        # Create NFS share for the clone
+        path = "{}/{}".format(self._pool, clone_name)
+        self.ra.create_share(clone_name, path,
+                           active=True,
+                           proto='nfs',
+                           insecure_connections=False,
+                           synchronous_data_record=True)
+
+        LOG.debug('published snapshot as clone %(clone)s', {
+            'clone': clone_name})
+
+        return clone_name
+
+    def unpublish_nas_snapshot(self, dataset_name, snapshot_name):
+        """Unpublish NAS snapshot by deleting clone and NFS share.
+
+        Removes the NFS share and deletes the snapshot export clone,
+        cleaning up resources created by publish_nas_snapshot.
+
+        :param str dataset_name: dataset name
+        :param str snapshot_name: snapshot name
+        """
+        LOG.debug('unpublish snapshot %(snap)s from NAS volume %(vol)s', {
+            'snap': snapshot_name,
+            'vol': dataset_name})
+
+        dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, None)
+        # Generate same clone name as in publish
+        clone_name = jcom.sname(snapshot_name, dataset_name)
+
+        # Delete NFS share
+        self.ra.delete_share(clone_name)
+
+        # Delete clone
+        self.ra.delete_nas_clone(dname, sname, clone_name)
+
+        LOG.debug('unpublished snapshot clone %(clone)s', {
+            'clone': clone_name})
+
     def get_snapshot(self, volume_name, snapshot_name,
                      export=False, direct_mode=False):
         """Get volume information.

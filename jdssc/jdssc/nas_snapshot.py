@@ -30,7 +30,9 @@ class NASSnapshot():
 
         self.sa = {'delete': self.delete,
                    'get': self.get,
-                   'clones': self.clones}
+                   'clones': self.clones,
+                   'publish': self.publish,
+                   'unpublish': self.unpublish}
 
         self.args = args
         args, uargs = self.__parse(uargs)
@@ -61,6 +63,11 @@ class NASSnapshot():
         delete = parsers.add_parser('delete')
 
         get = parsers.add_parser('get')
+        get.add_argument('--publish-name',
+                        dest='nas_snapshot_publish_name',
+                        action='store_true',
+                        default=False,
+                        help='Print publish clone name for snapshot')
 
         clones = parsers.add_parser('clones')
         clones_action = clones.add_subparsers(dest='clones_action')
@@ -92,6 +99,10 @@ class NASSnapshot():
 
         clones_list = clones_action.add_parser('list')
 
+        publish = parsers.add_parser('publish')
+
+        unpublish = parsers.add_parser('unpublish')
+
         kargs, ukargs = parser.parse_known_args(args)
 
         if kargs.nas_snapshot_action is None:
@@ -114,11 +125,19 @@ class NASSnapshot():
         snapshot_name = self.args['snapshot_name']
 
         try:
-            d = self.jdss.get_nas_snapshot(dataset_name,
-                                           snapshot_name)
-            # Print snapshot information
-            for key, value in d.items():
-                print(f"{key}: {value}")
+            # Check if --publish-name flag is set
+            if self.args.get('nas_snapshot_publish_name', False):
+                # Get and print the publish clone name
+                clone_name = self.jdss.get_nas_snapshot_publish_name(
+                    dataset_name,
+                    snapshot_name)
+                print(clone_name)
+            else:
+                # Print snapshot information
+                d = self.jdss.get_nas_snapshot(dataset_name,
+                                               snapshot_name)
+                for key, value in d.items():
+                    print(f"{key}: {value}")
 
         except jexc.JDSSCommunicationFailure as jerr:
             LOG.error(("Unable to communicate with JovianDSS over given "
@@ -189,4 +208,33 @@ class NASSnapshot():
                 exit(1)
         else:
             LOG.error("Invalid clones action")
+            exit(1)
+
+    def publish(self):
+        """Publish snapshot by creating clone and share for export."""
+        dataset_name = self.args['nas_volume_name']
+        snapshot_name = self.args['snapshot_name']
+
+        try:
+            clone_name = self.jdss.publish_nas_snapshot(
+                dataset_name,
+                snapshot_name)
+            # Print the clone dataset name so Perl can capture it
+            print(clone_name)
+        except jexc.JDSSException as err:
+            LOG.error("Failed to publish snapshot: %s", err)
+            exit(1)
+
+    def unpublish(self):
+        """Unpublish snapshot by deleting clone and share."""
+        dataset_name = self.args['nas_volume_name']
+        snapshot_name = self.args['snapshot_name']
+
+        try:
+            self.jdss.unpublish_nas_snapshot(
+                dataset_name,
+                snapshot_name)
+            LOG.info("Snapshot unpublished successfully")
+        except jexc.JDSSException as err:
+            LOG.error("Failed to unpublish snapshot: %s", err)
             exit(1)

@@ -59,6 +59,11 @@ class NASSnapshots():
                                  'name exists')
 
         list = parsers.add_parser('list')
+        list.add_argument('--with-clones',
+                         dest='with_clones',
+                         action='store_true',
+                         default=False,
+                         help='List only snapshots that have published clones')
 
         kargs, ukargs = parser.parse_known_args(args)
 
@@ -88,7 +93,24 @@ class NASSnapshots():
         dataset = self.args['nas_volume_name']
 
         data = self.jdss.list_nas_snapshots(dataset)
-        for s in data:
-            line = "{}".format(s['name'])
-            line += "\n"
-            sys.stdout.write(line)
+
+        if self.args.get('with_clones', False):
+            # Filter to only snapshots with clones
+            for s in data:
+                snapshot_name = s['name']
+                try:
+                    # Check if this snapshot has clones
+                    clones = self.jdss.list_nas_clones(dataset, snapshot_name)
+                    if clones and len(clones) > 0:
+                        line = "{}".format(snapshot_name)
+                        line += "\n"
+                        sys.stdout.write(line)
+                except jexc.JDSSException:
+                    # Skip snapshots that can't be checked
+                    pass
+        else:
+            # List all snapshots
+            for s in data:
+                line = "{}".format(s['name'])
+                line += "\n"
+                sys.stdout.write(line)
