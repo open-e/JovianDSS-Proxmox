@@ -64,10 +64,10 @@ class NASSnapshot():
 
         get = parsers.add_parser('get')
         get.add_argument('--publish-name',
-                        dest='nas_snapshot_publish_name',
-                        action='store_true',
-                        default=False,
-                        help='Print publish clone name for snapshot')
+                         dest='nas_snapshot_publish_name',
+                         action='store_true',
+                         default=False,
+                         help='Print publish clone name for snapshot')
 
         clones = parsers.add_parser('clones')
         clones_action = clones.add_subparsers(dest='clones_action')
@@ -112,17 +112,20 @@ class NASSnapshot():
         return kargs, ukargs
 
     def delete(self):
+        nas_volume_direct_mode = self.args.get('nas_volume_direct_mode', False)
 
         try:
             self.jdss.delete_nas_snapshot(
                 self.args['nas_volume_name'],
-                self.args['snapshot_name'])
+                self.args['snapshot_name'],
+                nas_volume_direct_mode=nas_volume_direct_mode)
         except jexc.JDSSSnapshotIsBusyException:
             exit(1)
 
     def get(self):
         dataset_name = self.args['nas_volume_name']
         snapshot_name = self.args['snapshot_name']
+        nas_volume_direct_mode = self.args.get('nas_volume_direct_mode', False)
 
         try:
             # Check if --publish-name flag is set
@@ -130,12 +133,14 @@ class NASSnapshot():
                 # Get and print the publish clone name
                 clone_name = self.jdss.get_nas_snapshot_publish_name(
                     dataset_name,
-                    snapshot_name)
+                    snapshot_name,
+                    nas_volume_direct_mode=nas_volume_direct_mode)
                 print(clone_name)
             else:
                 # Print snapshot information
                 d = self.jdss.get_nas_snapshot(dataset_name,
-                                               snapshot_name)
+                                               snapshot_name,
+                                               nas_volume_direct_mode=nas_volume_direct_mode)
                 for key, value in d.items():
                     print(f"{key}: {value}")
 
@@ -154,6 +159,7 @@ class NASSnapshot():
     def clones(self):
         dataset_name = self.args['nas_volume_name']
         snapshot_name = self.args['snapshot_name']
+        nas_volume_direct_mode = self.args.get('nas_volume_direct_mode', False)
 
         if self.args.get('clones_action') == 'create':
             # Create clone
@@ -172,6 +178,7 @@ class NASSnapshot():
                     dataset_name,
                     snapshot_name,
                     clone_name,
+                    nas_volume_direct_mode=nas_volume_direct_mode,
                     **options)
                 LOG.info("Clone %s created successfully", clone_name)
             except jexc.JDSSException as err:
@@ -186,7 +193,8 @@ class NASSnapshot():
                 self.jdss.delete_nas_clone(
                     dataset_name,
                     snapshot_name,
-                    clone_name)
+                    clone_name,
+                    nas_volume_direct_mode=nas_volume_direct_mode)
                 LOG.info("Clone %s deleted successfully", clone_name)
             except jexc.JDSSException as err:
                 LOG.error(err)
@@ -197,7 +205,8 @@ class NASSnapshot():
             try:
                 clones = self.jdss.list_nas_clones(
                     dataset_name,
-                    snapshot_name)
+                    snapshot_name,
+                    nas_volume_direct_mode=nas_volume_direct_mode)
                 for clone in clones:
                     if isinstance(clone, dict) and 'name' in clone:
                         print(clone['name'])
@@ -214,11 +223,13 @@ class NASSnapshot():
         """Publish snapshot by creating clone and share for export."""
         dataset_name = self.args['nas_volume_name']
         snapshot_name = self.args['snapshot_name']
+        nas_volume_direct_mode = self.args.get('nas_volume_direct_mode', False)
 
         try:
             clone_name = self.jdss.publish_nas_snapshot(
                 dataset_name,
-                snapshot_name)
+                snapshot_name,
+                nas_volume_direct_mode=nas_volume_direct_mode)
             # Print the clone dataset name so Perl can capture it
             print(clone_name)
         except jexc.JDSSException as err:
@@ -229,11 +240,13 @@ class NASSnapshot():
         """Unpublish snapshot by deleting clone and share."""
         dataset_name = self.args['nas_volume_name']
         snapshot_name = self.args['snapshot_name']
+        nas_volume_direct_mode = self.args.get('nas_volume_direct_mode', False)
 
         try:
             self.jdss.unpublish_nas_snapshot(
                 dataset_name,
-                snapshot_name)
+                snapshot_name,
+                nas_volume_direct_mode=nas_volume_direct_mode)
             LOG.info("Snapshot unpublished successfully")
         except jexc.JDSSException as err:
             LOG.error("Failed to unpublish snapshot: %s", err)

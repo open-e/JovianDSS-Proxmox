@@ -25,7 +25,6 @@ class NASVolume():
     def __init__(self, args, uargs, jdss):
 
         self.nva = {
-            'delete': self.delete,
             'get': self.get,
             'snapshot': self.snapshot,
             'snapshots': self.snapshots}
@@ -42,7 +41,7 @@ class NASVolume():
     def __parse(self, args):
 
         nas_volume_parser = argparse.ArgumentParser(prog="NASVolume")
-        nas_volume_parser.add_argument('-d',
+        nas_volume_parser.add_argument('-d', '--direct',
                                        dest='nas_volume_direct_mode',
                                        action='store_true',
                                        default=False,
@@ -54,18 +53,12 @@ class NASVolume():
 
         get = parsers.add_parser('get')
         get.add_argument('-d',
-                         dest='direct_mode',
+                         dest='nas_volume_direct_mode',
                          action='store_true',
                          default=False,
                          help='Use real volume name')
         get.add_argument('-s', dest='volume_size', action='store_true',
                          default=False, help='Print volume size')
-
-        delete = parsers.add_parser('delete')
-        delete.add_argument('-c', '--cascade', dest='cascade',
-                            action='store_true',
-                            default=False,
-                            help='Remove snapshots along side with volume')
 
         parsers.add_parser('snapshot', add_help=False)
         parsers.add_parser('snapshots', add_help=False)
@@ -78,18 +71,14 @@ class NASVolume():
 
     def get(self):
 
-        volume_name = self.args['volume_name']
+        volume_name = self.args['nas_volume_name']
 
-        volume = {'id': volume_name}
-
-        d = self.jdss.get_volume(volume)
+        d = self.jdss.get_nas_volume(
+            volume_name,
+            direct_mode=self.args['nas_volume_direct_mode'])
 
         if self.args['volume_size']:
-            print(d['size'])
-
-    def delete(self):
-
-        self.jdss.ra.delete_nas_volume(self.args['nas_volume_name'])
+            print(d['quota'])
 
     def snapshot(self):
         nas_snapshot.NASSnapshot(self.args, self.uargs, self.jdss)

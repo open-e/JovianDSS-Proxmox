@@ -51,6 +51,18 @@ def is_snapshot(name):
     if name.startswith("se_"):
         return True
 
+    if name.startswith("sn_"):
+        return True
+
+    if name.startswith("sp_"):
+        return True
+
+    if name.startswith("sh_"):
+        return True
+
+    if name.startswith("shv_"):
+        return True
+
     return False
 
 
@@ -130,6 +142,21 @@ def sname_to_id(sname):
     if spl[0] == 'autosnap':
         return ('_'.join(spl[1:]), None)
 
+    if spl[0] == 'shv':
+        vid = JBase32ToStr(spl[-1])
+        sid = JBase32ToStr(spl[-2])
+        return sid, vid
+
+    if spl[0] == 'sh':
+        sid = JBase32ToStr(spl[-1])
+        return sid, None
+
+    if spl[0] == 'sp':
+        vid = JBase32ToStr(spl[-1])
+        sid = JBase32ToStr(spl[-2])
+        proxmox_volume = JBase32ToStr(spl[-3])
+        return sid, vid, proxmox_volume
+
     msg = "Incorrect snapshot name %s" % sname
     raise Exception(msg)
 
@@ -142,7 +169,7 @@ def vid_from_sname(name):
     return sname_to_id(name)[1]
 
 
-def sname(sid, vid):
+def sname(sid, vid, proxmox_volume=None):
     """Convert id into snapshot name
 
     :param: vid: volume id
@@ -151,6 +178,19 @@ def sname(sid, vid):
     # out = ""
     # e for extendent
     # b for based
+
+    if proxmox_volume:
+        sanitized_snapshot_name = re.sub(r'[^A-Za-z0-9_-]', '_', sid)
+        sanitized_proxmox_volume_name = re.sub(r'[^A-Za-z0-9_-]', '_',
+                                               proxmox_volume)
+        return "{prefix}_{spvn}_{spsn}_{pvbased}_{sbased}_{vbased}".format(
+            prefix="sp",
+            spvn=sanitized_proxmox_volume_name,
+            spsn=sanitized_snapshot_name,
+            pvbased=JBase32FromStr(proxmox_volume),
+            sbased=JBase32FromStr(sid),
+            vbased=JBase32FromStr(vid))
+
     if allowedPattern.match(sid):
 
         if vid is None:
@@ -159,9 +199,23 @@ def sname(sid, vid):
             out = 'se_%(sid)s_%(vidb)s' % {'sid': sid,
                                            'vidb': JBase32FromStr(vid)}
     else:
-        out = 'sb_%(sid)s' % {'sid': JBase32FromStr(sid)}
-        if vid is not None and len(vid) > 0:
-            out += '_%(vidb)s' % {'vidb': JBase32FromStr(vid)}
+        if vid:
+            sanitized_name = re.sub(r'[^A-Za-z0-9_-]', '_', sid)
+            return "{prefix}_{sanitized}_{sbased}_{vbased}".format(
+                prefix="shv",
+                sanitized=sanitized_name,
+                sbased=JBase32FromStr(sid),
+                vbased=JBase32FromStr(vid))
+        else:
+            sanitized_name = re.sub(r'[^A-Za-z0-9_-]', '_', sid)
+            return "{prefix}_{sanitized}_{sbased}".format(
+                prefix="sh",
+                sanitized=sanitized_name,
+                sbased=JBase32FromStr(sid))
+
+    #    out = 'sb_%(sid)s' % {'sid': JBase32FromStr(sid)}
+    #    if vid is not None and len(vid) > 0:
+    #        out += '_%(vidb)s' % {'vidb': JBase32FromStr(vid)}
     return out
 
 
@@ -204,7 +258,7 @@ def hidden(name):
         return 't_' + name[2:] + '_' + uuid.uuid4().hex
     if name[:3] == 'se_' or name[:3] == 'sb_' or name[:3] == 'vb_':
         return 't_' + name[:3] + '_' + uuid.uuid4().hex
-    if name[:3] == 'vh_':
+    if name[:3] == 'vh_' or name[:3] == 'sh_' or name[:3] == 'shv_':
         return 't' + '_'.joint(name.split('_')[1:-1]) + uuid.uuid4().hex
     return 't_' + name + '_' + uuid.uuid4().hex
 

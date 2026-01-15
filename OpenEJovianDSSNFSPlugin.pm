@@ -312,8 +312,9 @@ sub volume_snapshot {
 
     # Use JovianDSS REST API to create ZFS snapshot on NAS volume (dataset)
     # REST API path: /pools/{pool}/nas-volumes/{dataset}/snapshots
+    # Use -d flag because dataset name from export property is the exact dataset name on JovianDSS
     OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
-        [ "pool", $pool, "nas_volume", $dataset, "snapshots", "create", $snap ] );
+        [ "pool", $pool, "nas_volume", "-d", $dataset, "snapshots", "create", '--ignoreexists', '--proxmox-volume', ${volname}, "${snap}" ] );
 }
 
 sub volume_snapshot_info {
@@ -321,8 +322,8 @@ sub volume_snapshot_info {
 
     my $dataset = $class->get_dataset_name( $scfg );
 
-    return OpenEJovianDSS::Common::volume_snapshots_info(
-        $scfg, $storeid, $dataset );
+    return OpenEJovianDSS::Common::nas_volume_snapshots_info(
+        $scfg, $storeid, $dataset, $volname );
 }
 
 sub volume_snapshot_needs_fsfreeze {
@@ -404,18 +405,10 @@ sub volume_rollback_is_possible {
 
     # Check if snapshot exists via REST API
     eval {
-        my $snapshots = OpenEJovianDSS::Common::volume_snapshots_info(
+        my $snapshots = OpenEJovianDSS::Common::nas_volume_snapshots_info(
             $scfg, $storeid, $dataset );
 
-        my $snap_found = 0;
-        foreach my $snapshot ( @$snapshots ) {
-            if ( $snapshot->{name} eq $snap ) {
-                $snap_found = 1;
-                last;
-            }
-        }
-
-        unless ( $snap_found ) {
+        unless ( exists $snapshots->{$snap} ) {
             OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
                 "Snapshot ${snap} not found for dataset ${dataset}\n" );
             return 0;
@@ -475,7 +468,8 @@ sub deactivate_volume {
     my $snapshots_with_clones;
     eval {
         my $snap_output = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
-            [ "pool", $pool, "nas_volume", $dataset, "snapshots", "list", "--with-clones" ] );
+            [ "pool", $pool, "nas_volume", "-d", $dataset, "snapshots",
+              "list", "--with-clones" ] );
 
         # Parse snapshot names from output
         $snapshots_with_clones = [];
@@ -497,8 +491,8 @@ sub deactivate_volume {
         eval {
             # Get the clone name for this snapshot
             my $clone_name_output = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
-                [ "pool", $pool, "nas_volume", $dataset, "snapshot", $snap,
-                  "get", "--publish-name" ] );
+                [ "pool", $pool, "nas_volume", "-d", $dataset, "snapshot",
+                  $snap, "get", "--publish-name" ] );
 
             my $clone_name;
             for my $line ( reverse split( /\n/, $clone_name_output ) ) {
@@ -561,7 +555,8 @@ sub volume_snapshot_delete {
 
     # REST API path: /pools/{pool}/nas-volumes/{dataset}/snapshots/{snapshot}
     OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
-        [ "pool", $pool, "nas_volume", $dataset, "snapshot", $snap, "delete" ] );
+        [ "pool", $pool, "nas_volume", "-d", $dataset,
+          "snapshot", $snap, "delete", '--proxmox-volume', $volname ] );
 }
 
 sub volume_snapshot_list {
@@ -572,7 +567,7 @@ sub volume_snapshot_list {
 
     # REST API path: /pools/{pool}/nas-volumes/{dataset}/snapshots
     my $jdssc = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
-        [ "pool", $pool, "nas_volume", $dataset, "snapshots", "list" ] );
+        [ "pool", $pool, "nas_volume", "-d", $dataset, "snapshots", "list" ] );
 
     my $res = [];
     foreach ( split( /\n/, $jdssc ) ) {

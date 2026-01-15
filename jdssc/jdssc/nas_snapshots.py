@@ -57,13 +57,18 @@ class NASSnapshots():
                             default=False,
                             help='Do not fail if snapshot with such '
                                  'name exists')
+        create.add_argument('--proxmox-volume',
+                            dest='proxmox_volume',
+                            default=None,
+                            help='Name of proxmox volume that will be encoded '
+                            'into snapshot name')
 
         list = parsers.add_parser('list')
         list.add_argument('--with-clones',
-                         dest='with_clones',
-                         action='store_true',
-                         default=False,
-                         help='List only snapshots that have published clones')
+                          dest='with_clones',
+                          action='store_true',
+                          default=False,
+                          help='List only snapshots that have published clones')
 
         kargs, ukargs = parser.parse_known_args(args)
 
@@ -74,11 +79,17 @@ class NASSnapshots():
         return kargs, ukargs
 
     def create(self):
+        LOG.debug(self.args)
+        nas_volume_direct_mode = self.args.get(
+            'nas_volume_direct_mode', False)
 
         try:
             self.jdss.create_nas_snapshot(
                 self.args['snapshot_name'],
-                self.args['nas_volume_name'])
+                self.args['nas_volume_name'],
+                nas_volume_direct_mode=nas_volume_direct_mode,
+                proxmox_volume=self.args['proxmox_volume'],
+                ignoreexists=self.args['ignoreexists'])
         except jexc.JDSSSnapshotExistsException as exists:
             if self.args['ignoreexists']:
                 return
@@ -91,8 +102,12 @@ class NASSnapshots():
     def list(self):
 
         dataset = self.args['nas_volume_name']
+        nas_volume_direct_mode = self.args.get(
+            'nas_volume_direct_mode', False)
 
-        data = self.jdss.list_nas_snapshots(dataset)
+        data = self.jdss.list_nas_snapshots(
+            dataset,
+            nas_volume_direct_mode=nas_volume_direct_mode)
 
         if self.args.get('with_clones', False):
             # Filter to only snapshots with clones
@@ -100,7 +115,10 @@ class NASSnapshots():
                 snapshot_name = s['name']
                 try:
                     # Check if this snapshot has clones
-                    clones = self.jdss.list_nas_clones(dataset, snapshot_name)
+                    clones = self.jdss.list_nas_clones(
+                        dataset,
+                        snapshot_name,
+                        nas_volume_direct_mode=nas_volume_direct_mode)
                     if clones and len(clones) > 0:
                         line = "{}".format(snapshot_name)
                         line += "\n"

@@ -67,7 +67,7 @@ class NASVolumes():
                             help=('New NAS volume maximum size in format num '
                                   '+ [M G T]'))
         create.add_argument('-d',
-                            dest='direct_mode',
+                            dest='nas_volume_direct_mode',
                             action='store_true',
                             default=False,
                             help='Use real volume name')
@@ -96,14 +96,14 @@ class NASVolumes():
         quota = self.args['volume_quota'].upper()
 
         name = str(uuid.uuid1())
-        if 'volume_name' in self.args:
-            name = self.args['volume_name']
+        if 'nas_volume_name' in self.args:
+            name = self.args['nas_volume_name']
 
         try:
             self.jdss.create_nas_volume(
                 name,
                 quota,
-                direct_mode=self.args['direct_mode'],
+                direct_mode=self.args['nas_volume_direct_mode'],
                 reservation=self.args['volume_reservation'])
 
         except (jexc.JDSSVolumeExistsException,
@@ -114,17 +114,6 @@ class NASVolumes():
         except jexc.JDSSResourceExhausted:
             LOG.error("No space left on the storage")
             exit(1)
-
-    def get(self):
-
-        volume_name = self.args['volume_name']
-
-        volume = {'id': volume_name}
-
-        d = self.jdss.get_volume(volume)
-
-        if self.args['volume_size']:
-            print(d['size'])
 
     def list(self):
         """List all NAS volumes in the pool."""
@@ -152,7 +141,3 @@ class NASVolumes():
                         print(name)
                 else:
                     print(volume)
-
-    def delete(self):
-
-        self.jdss.ra.delete_nas_volume(self.args['nas_volume_name'])

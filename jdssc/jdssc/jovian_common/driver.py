@@ -1478,39 +1478,73 @@ class JovianDSSDriver(object):
 
         return data
 
-    def create_nas_snapshot(self, snapshot_name, dataset_name):
+    def create_nas_snapshot(self, snapshot_name, dataset_name,
+                            nas_volume_direct_mode=False,
+                            proxmox_volume=None,
+                            ignoreexists=False):
         """Create snapshot of existing NAS volume (dataset).
 
         :param str snapshot_name: new snapshot name
         :param str dataset_name: dataset name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
         """
-        LOG.debug('create snapshot %(snap)s for NAS volume %(vol)s', {
+        LOG.debug(('create snapshot %(snap)s for NAS volume %(vol)s '
+                   'direct mode %(mode)s proxmox volume %(pvol)s'), {
             'snap': snapshot_name,
-            'vol': dataset_name})
+            'vol': dataset_name,
+            'mode': str(nas_volume_direct_mode),
+            'pvol': proxmox_volume})
 
         dname = jcom.vname(dataset_name)
-        sname = jcom.sname(snapshot_name, None)
 
-        self.ra.create_nas_snapshot(dname, sname)
+        if nas_volume_direct_mode:
+            dname = dataset_name
 
-    def delete_nas_snapshot(self, dataset_name, snapshot_name):
+        sname = jcom.sname(snapshot_name, dataset_name,
+                           proxmox_volume=proxmox_volume)
+
+        try:
+            self.ra.create_nas_snapshot(dname, sname)
+        except jexc.JDSSSnapshotExistsException as err:
+            if ignoreexists:
+                pass
+            else:
+                raise err
+
+    def delete_nas_snapshot(self, dataset_name, snapshot_name,
+                            nas_volume_direct_mode=False,
+                            proxmox_volume=None):
         """Delete snapshot of existing NAS volume (dataset).
 
         :param str dataset_name: dataset name
         :param str snapshot_name: snapshot name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
         """
-        dname = jcom.vname(dataset_name)
-        sname = jcom.sname(snapshot_name, None)
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, dataset_name,
+                           proxmox_volume=proxmox_volume)
 
         self.ra.delete_nas_snapshot(dname, sname)
 
-    def list_nas_snapshots(self, dataset_name):
+    def list_nas_snapshots(self, dataset_name, nas_volume_direct_mode=False,
+                           proxmox_volume=None):
         """List snapshots for NAS volume (dataset).
 
         :param str dataset_name: dataset name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
+        :param str proxmox_volume: name of proxmox volume
         :return: list of snapshots
         """
-        dname = jcom.vname(dataset_name)
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
         try:
             data = self.ra.get_nas_snapshots(dname)
         except jexc.JDSSException as ex:
@@ -1520,26 +1554,36 @@ class JovianDSSDriver(object):
 
         return data
 
-    def get_nas_snapshot(self, dataset_name, snapshot_name):
+    def get_nas_snapshot(self, dataset_name, snapshot_name,
+                         nas_volume_direct_mode=False,
+                         proxmox_volume=None):
         """Get NAS snapshot information.
 
         :param str dataset_name: dataset name
         :param str snapshot_name: snapshot name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
         :return: snapshot data
         """
-        dname = jcom.vname(dataset_name)
-        sname = jcom.sname(snapshot_name, None)
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, dataset_name,
+                           proxmox_volume=proxmox_volume)
 
         data = self.ra.get_nas_snapshot(dname, sname)
         return data
 
     def create_nas_clone(self, dataset_name, snapshot_name, clone_name,
-                         **options):
+                         nas_volume_direct_mode=False, **options):
         """Create clone from NAS snapshot.
 
         :param str dataset_name: dataset name
         :param str snapshot_name: snapshot name
         :param str clone_name: clone name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
         :param options: optional ZFS properties
         :return: clone data
         """
@@ -1549,34 +1593,49 @@ class JovianDSSDriver(object):
             'snap': snapshot_name,
             'vol': dataset_name})
 
-        dname = jcom.vname(dataset_name)
-        sname = jcom.sname(snapshot_name, None)
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, dataset_name)
         cname = clone_name
 
         return self.ra.create_nas_clone(dname, sname, cname, **options)
 
-    def delete_nas_clone(self, dataset_name, snapshot_name, clone_name):
+    def delete_nas_clone(self, dataset_name, snapshot_name, clone_name,
+                         nas_volume_direct_mode=False):
         """Delete NAS clone.
 
         :param str dataset_name: dataset name
         :param str snapshot_name: snapshot name
         :param str clone_name: clone name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
         """
-        dname = jcom.vname(dataset_name)
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
         sname = jcom.sname(snapshot_name, None)
         cname = clone_name
 
         self.ra.delete_nas_clone(dname, sname, cname)
 
-    def list_nas_clones(self, dataset_name, snapshot_name):
+    def list_nas_clones(self, dataset_name, snapshot_name,
+                        nas_volume_direct_mode=False):
         """List clones for NAS snapshot.
 
         :param str dataset_name: dataset name
         :param str snapshot_name: snapshot name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
         :return: list of clones
         """
-        dname = jcom.vname(dataset_name)
-        sname = jcom.sname(snapshot_name, None)
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, dataset_name)
 
         try:
             data = self.ra.get_nas_clones(dname, sname)
@@ -1587,7 +1646,8 @@ class JovianDSSDriver(object):
 
         return data
 
-    def get_nas_snapshot_publish_name(self, dataset_name, snapshot_name):
+    def get_nas_snapshot_publish_name(self, dataset_name, snapshot_name,
+                                      nas_volume_direct_mode=False):
         """Get the clone name that would be used for publishing a snapshot.
 
         Returns the clone dataset name without actually creating the clone.
@@ -1595,14 +1655,21 @@ class JovianDSSDriver(object):
 
         :param str dataset_name: dataset name
         :param str snapshot_name: snapshot name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
         :return: clone dataset name (properly formatted with se_ prefix)
         """
         # Generate clone name using sname with dataset reference
         # This creates the se_ prefixed name with base32 encoding
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
         clone_name = jcom.sname(snapshot_name, dataset_name)
         return clone_name
 
-    def publish_nas_snapshot(self, dataset_name, snapshot_name):
+    def publish_nas_snapshot(self, dataset_name, snapshot_name,
+                             nas_volume_direct_mode=False):
         """Publish NAS snapshot by creating clone and NFS share.
 
         Creates a snapshot export clone with proper se_ naming and
@@ -1610,14 +1677,19 @@ class JovianDSSDriver(object):
 
         :param str dataset_name: dataset name
         :param str snapshot_name: snapshot name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
         :return: clone dataset name (properly formatted with se_ prefix)
         """
         LOG.debug('publish snapshot %(snap)s from NAS volume %(vol)s', {
             'snap': snapshot_name,
             'vol': dataset_name})
 
-        dname = jcom.vname(dataset_name)
-        sname = jcom.sname(snapshot_name, None)
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, dataset_name)
         # Generate clone name using sname with dataset reference
         # This creates the se_ prefixed name with base32 encoding
         clone_name = jcom.sname(snapshot_name, dataset_name)
@@ -1638,7 +1710,8 @@ class JovianDSSDriver(object):
 
         return clone_name
 
-    def unpublish_nas_snapshot(self, dataset_name, snapshot_name):
+    def unpublish_nas_snapshot(self, dataset_name, snapshot_name,
+                               nas_volume_direct_mode=False):
         """Unpublish NAS snapshot by deleting clone and NFS share.
 
         Removes the NFS share and deletes the snapshot export clone,
@@ -1646,15 +1719,20 @@ class JovianDSSDriver(object):
 
         :param str dataset_name: dataset name
         :param str snapshot_name: snapshot name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
         """
         LOG.debug('unpublish snapshot %(snap)s from NAS volume %(vol)s', {
             'snap': snapshot_name,
             'vol': dataset_name})
 
-        dname = jcom.vname(dataset_name)
-        sname = jcom.sname(snapshot_name, None)
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, dataset_name)
         # Generate same clone name as in publish
-        clone_name = jcom.sname(snapshot_name, dataset_name)
+        clone_name = jcom.sname(snapshot_name, dname)
 
         # Delete NFS share
         self.ra.delete_share(clone_name)

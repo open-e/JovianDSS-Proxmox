@@ -92,6 +92,7 @@ our @EXPORT_OK = qw(
   debugmsg
   joviandss_cmd
   volume_snapshots_info
+  nas_volume_snapshots_info
   volume_rollback_check
 
   get_iscsi_addresses
@@ -707,6 +708,36 @@ sub volume_snapshots_info {
         $snapshots->{$name} = {
             id        => $guid,
             timestamp => $creation,
+        };
+    }
+
+    return $snapshots;
+}
+
+sub nas_volume_snapshots_info {
+    my ( $scfg, $storeid, $dataset, $volname ) = @_;
+
+    my $pool = get_pool($scfg);
+
+    # Use -d flag because dataset name from export property is the exact dataset name on JovianDSS
+    my $output = joviandss_cmd(
+        $scfg,
+        $storeid,
+        [
+            'pool', $pool, 'nas_volume', '-d', $dataset,
+            'snapshots', 'list'
+        ]
+    );
+
+    my $snapshots = {};
+    my @lines = split( /\n/, $output );
+    for my $line (@lines) {
+        $line =~ s/^\s+|\s+$//g;
+        next unless length($line) > 0;
+        debugmsg( $scfg, "debug",
+            "NAS volume ${dataset} has snapshot ${line}\n" );
+        $snapshots->{$line} = {
+            name => $line,
         };
     }
 
@@ -2566,7 +2597,7 @@ sub nas_volume_activate {
 
         my $cmd_output = joviandss_cmd( $scfg, $storeid,
             [ "pool", $pool,
-              "nas_volume", $dataset,
+              "nas_volume", "-d", $dataset,
               "snapshot", $snapname,
               "publish" ] );
 
@@ -2649,7 +2680,7 @@ sub nas_volume_activate {
                     "Unpublishing snapshot\n" );
                 joviandss_cmd( $scfg, $storeid,
                     [ "pool", $pool,
-                      "nas_volume", $dataset,
+                      "nas_volume", "-d", $dataset,
                       "snapshot", $snapname,
                       "unpublish" ] );
             };
@@ -2688,7 +2719,7 @@ sub nas_volume_deactivate {
     eval {
         my $cmd_output = joviandss_cmd( $scfg, $storeid,
             [ "pool", $pool,
-              "nas_volume", $dataset,
+              "nas_volume", "-d", $dataset,
               "snapshot", $snapname,
               "get", "--publish-name" ] );
 
@@ -2750,7 +2781,7 @@ sub nas_volume_deactivate {
             "Unpublishing snapshot ${snapname}\n" );
         joviandss_cmd( $scfg, $storeid,
             [ "pool", $pool,
-              "nas_volume", $dataset,
+              "nas_volume", "-d", $dataset,
               "snapshot", $snapname,
               "unpublish" ] );
     };
