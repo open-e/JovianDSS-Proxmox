@@ -291,6 +291,20 @@ class JovianDSSDriver(object):
 
         return clist
 
+    def _list_nas_snapshot_clones_names(self, vname, sname):
+        """Lists all snapshot clones
+
+        :return: list of clone names related to given snapshot
+        """
+
+        clist = list()
+
+        clones = self.ra.get_nas_snapshot_clones(vname, sname)
+        for c in clones:
+            clist.append(c['name'])
+
+        return clist
+
     def _list_busy_snapshots(self, vname, snapshots,
                              exclude_dedicated_volumes=False,
                              exclude_dedicated_snapshots=False) -> list:
@@ -462,6 +476,21 @@ class JovianDSSDriver(object):
         else:
             return self._delete_volume(vname, cascade=cascade)
 
+    def _delete_nas_volume(self, vname, cascade=False, detach_target=True):
+        """_delete_volume delete routine containing delete logic
+
+        :param str vname: physical volume id
+        :param bool cascade: flag for cascade volume deletion
+            with its snapshots
+        :param bool delete_target: indicate ifwe have to check for target
+            related to given volume
+
+        :return: None
+        """
+        LOG.debug("Deleting %s", vname)
+
+        self.ra.delete_nas_volume(vname)
+
     def delete_nas_volume(self, volume_name,
                           direct_mode=False,
                           print_and_exit=False):
@@ -470,11 +499,15 @@ class JovianDSSDriver(object):
         :param volume: volume reference
         :param cascade: remove snapshots of a volume as well
         """
+
         vname = jcom.vname(volume_name)
+
+        if direct_mode:
+            vname = volume_name
 
         LOG.info('deleting nas volume %s', vname)
 
-        self.ra.delete_nas_volume(vname)
+        self._delete_nas_volume(vname, cascade=True)
 
     def _list_resources_to_delete(self, vname, cascade=False):
         ret = []
@@ -1512,6 +1545,30 @@ class JovianDSSDriver(object):
             else:
                 raise err
 
+    def _delete_nas_snapshot(self, vname, sname):
+        """Delete snapshot
+
+        This method will delete snapshot mount point and snapshot if possible
+
+        :param str vname: zvol name
+        :param dict snap: snapshot info dictionary
+
+        :return: None
+        """
+
+        clones = self._list_nas_snapshot_clones_names(vname, sname)
+        if len(clones) > 0:
+
+            for cvname in clones:
+                if jcom.is_snapshot(cvname):
+                    self._delete_nas_volume(cvname, cascade=False)
+
+        try:
+            self.ra.delete_nas_snapshot(vname, sname, force_umount=True)
+        except jexc.JDSSSnapshotNotFoundException:
+            LOG.debug('Snapshot %s not found', sname)
+            return
+
     def delete_nas_snapshot(self, dataset_name, snapshot_name,
                             nas_volume_direct_mode=False,
                             proxmox_volume=None):
@@ -1529,7 +1586,7 @@ class JovianDSSDriver(object):
         sname = jcom.sname(snapshot_name, dataset_name,
                            proxmox_volume=proxmox_volume)
 
-        self.ra.delete_nas_snapshot(dname, sname)
+        self._delete_nas_snapshot(dname, sname)
 
     def list_nas_snapshots(self, dataset_name, nas_volume_direct_mode=False,
                            proxmox_volume=None):
@@ -1647,6 +1704,7 @@ class JovianDSSDriver(object):
         return data
 
     def get_nas_snapshot_publish_name(self, dataset_name, snapshot_name,
+                                      proxmox_volume=None,
                                       nas_volume_direct_mode=False):
         """Get the clone name that would be used for publishing a snapshot.
 
@@ -1669,6 +1727,7 @@ class JovianDSSDriver(object):
         return clone_name
 
     def publish_nas_snapshot(self, dataset_name, snapshot_name,
+                             proxmox_volume=None,
                              nas_volume_direct_mode=False):
         """Publish NAS snapshot by creating clone and NFS share.
 
@@ -1689,10 +1748,12 @@ class JovianDSSDriver(object):
             dname = dataset_name
         else:
             dname = jcom.vname(dataset_name)
-        sname = jcom.sname(snapshot_name, dataset_name)
+        sname = jcom.sname(snapshot_name, dataset_name,
+                           proxmox_volume=proxmox_volume)
         # Generate clone name using sname with dataset reference
         # This creates the se_ prefixed name with base32 encoding
-        clone_name = jcom.sname(snapshot_name, dataset_name)
+        clone_name = jcom.sname(snapshot_name, dataset_name,
+                                 proxmox_volume=proxmox_volume)
 
         # Create clone from snapshot
         self.ra.create_nas_clone(dname, sname, clone_name)
@@ -1711,6 +1772,7 @@ class JovianDSSDriver(object):
         return clone_name
 
     def unpublish_nas_snapshot(self, dataset_name, snapshot_name,
+                               proxmox_volume=None,
                                nas_volume_direct_mode=False):
         """Unpublish NAS snapshot by deleting clone and NFS share.
 
@@ -1730,9 +1792,11 @@ class JovianDSSDriver(object):
             dname = dataset_name
         else:
             dname = jcom.vname(dataset_name)
-        sname = jcom.sname(snapshot_name, dataset_name)
+        sname = jcom.sname(snapshot_name, dataset_name,
+                           proxmox_volume=proxmox_volume)
         # Generate same clone name as in publish
-        clone_name = jcom.sname(snapshot_name, dname)
+        clone_name = jcom.sname(snapshot_name, dname,
+                                proxmox_volume=proxmox_volume)
 
         # Delete NFS share
         self.ra.delete_share(clone_name)

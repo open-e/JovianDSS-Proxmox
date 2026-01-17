@@ -56,6 +56,11 @@ class NASSnapshot():
     def __parse(self, args):
 
         parser = argparse.ArgumentParser(prog="NASSnapshot")
+        parser.add_argument('--proxmox-volume',
+                            dest='proxmox_volume',
+                            default=None,
+                            help='Name of proxmox volume that will be encoded '
+                            'into snapshot name')
 
         parser.add_argument('snapshot_name', help='Snapshot name')
         parsers = parser.add_subparsers(dest='nas_snapshot_action')
@@ -118,6 +123,7 @@ class NASSnapshot():
             self.jdss.delete_nas_snapshot(
                 self.args['nas_volume_name'],
                 self.args['snapshot_name'],
+                proxmox_volume=self.args['proxmox_volume'],
                 nas_volume_direct_mode=nas_volume_direct_mode)
         except jexc.JDSSSnapshotIsBusyException:
             exit(1)
@@ -134,12 +140,14 @@ class NASSnapshot():
                 clone_name = self.jdss.get_nas_snapshot_publish_name(
                     dataset_name,
                     snapshot_name,
+                    proxmox_volume=self.args['proxmox_volume'],
                     nas_volume_direct_mode=nas_volume_direct_mode)
                 print(clone_name)
             else:
                 # Print snapshot information
                 d = self.jdss.get_nas_snapshot(dataset_name,
                                                snapshot_name,
+                                               proxmox_volume=self.args['proxmox_volume'],
                                                nas_volume_direct_mode=nas_volume_direct_mode)
                 for key, value in d.items():
                     print(f"{key}: {value}")
@@ -222,6 +230,7 @@ class NASSnapshot():
     def publish(self):
         """Publish snapshot by creating clone and share for export."""
         dataset_name = self.args['nas_volume_name']
+        proxmox_volume = self.args['proxmox_volume']
         snapshot_name = self.args['snapshot_name']
         nas_volume_direct_mode = self.args.get('nas_volume_direct_mode', False)
 
@@ -229,6 +238,7 @@ class NASSnapshot():
             clone_name = self.jdss.publish_nas_snapshot(
                 dataset_name,
                 snapshot_name,
+                proxmox_volume=proxmox_volume,
                 nas_volume_direct_mode=nas_volume_direct_mode)
             # Print the clone dataset name so Perl can capture it
             print(clone_name)

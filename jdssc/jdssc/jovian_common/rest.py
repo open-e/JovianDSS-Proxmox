@@ -1080,6 +1080,45 @@ class JovianRESTAPI(object):
 
         self._general_error(req, resp)
 
+    def get_nas_snapshot_clones(self, volume_name, snapshot_name):
+        """get_nas_snapshot_clones.
+
+        GET
+        /volumes/<string:volumename>/snapshot/<string:snapname>/clones
+
+        :param volume_name: that snapshot belongs to
+        :return:
+        {
+            "data":
+            [
+                {
+                    "name": "se_snap1_OZWS2NBSGAWWI2LTNMWTA---",
+                    "full_name": "Pool-2/se_snap1_OZWS2NBSGAWWI2LTNMWTA---",
+                    "is_clone": true
+                }
+            ],
+            "error": null
+        }
+        """
+        req = "/nas-volumes/%(vol)s/snapshots/%(snap)s/clones" % {
+            "vol": volume_name, "snap": snapshot_name}
+
+        LOG.debug("get nas snapshot %(vol)s clones for dataset %(snap)s",
+                  {'vol': jcom.idname(volume_name),
+                   'snap': jcom.idname(snapshot_name)})
+
+        resp = self.rproxy.pool_request('GET', req)
+
+        if not resp["error"] and resp["code"] == 200:
+            return resp["data"]
+
+        if resp['code'] == 500:
+            if 'message' in resp['error']:
+                if self.resource_dne_msg.match(resp['error']['message']):
+                    raise jexc.JDSSResourceNotFoundException(volume_name)
+
+        self._general_error(req, resp)
+
     def get_snapshots_page(self, page_id):
         """get_snapshots_page
 

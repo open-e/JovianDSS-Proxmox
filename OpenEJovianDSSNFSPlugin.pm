@@ -342,7 +342,7 @@ sub volume_snapshot_rollback {
 
     # Step 1: Activate snapshot (create clone, create temp share, mount it)
     my $activation_info = OpenEJovianDSS::Common::nas_volume_activate(
-        $scfg, $storeid, $pool, $dataset, $snap );
+        $scfg, $storeid, $pool, $dataset, $volname, $snap );
 
     my $mount_path = $activation_info->{mount_path};
 

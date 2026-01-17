@@ -2578,7 +2578,7 @@ sub store_settup {
 # NAS volume activation for NFS snapshot rollback
 # Creates clone, temporary share, and mounts it for file copying
 sub nas_volume_activate {
-    my ( $scfg, $storeid, $pool, $dataset, $snapname ) = @_;
+    my ( $scfg, $storeid, $pool, $dataset, $volname, $snapname ) = @_;
 
     my $published = 0;
     my $share_mounted = 0;
@@ -2588,17 +2588,17 @@ sub nas_volume_activate {
     my $server = $scfg->{server};
 
     debugmsg( $scfg, "debug",
-        "Activating NAS volume snapshot ${pool}/${dataset}@${snapname}\n" );
+        "Activating dataset ${dataset} volume ${volname} snapshots ${snapname}\n" );
 
     eval {
         # Step 1: Publish snapshot (creates clone with proper naming and NFS share)
         debugmsg( $scfg, "debug",
-            "Publishing snapshot ${snapname} from dataset ${dataset}\n" );
+            "Publishing snapshot ${snapname} for proxmox volume ${volname} from dataset ${dataset}\n" );
 
         my $cmd_output = joviandss_cmd( $scfg, $storeid,
             [ "pool", $pool,
               "nas_volume", "-d", $dataset,
-              "snapshot", $snapname,
+              "snapshot", '--proxmox-volume', ${volname} , $snapname,
               "publish" ] );
 
         # Parse clone name from output (last non-empty line)
@@ -2626,7 +2626,7 @@ sub nas_volume_activate {
         my $snapshots_dir = "${path}/private/snapshots";
 
         # Create snapshots directory if it doesn't exist
-        make_path( $snapshots_dir, { owner => 'root', group => 'root' } )
+        make_path( $snapshots_dir )
             unless -d $snapshots_dir;
 
         $mount_path = "${snapshots_dir}/${clone_name}";
@@ -2635,7 +2635,7 @@ sub nas_volume_activate {
             "Creating mount point ${mount_path}\n" );
 
         # Create mount directory
-        make_path( $mount_path, { owner => 'root', group => 'root' } );
+        make_path( $mount_path );
 
         # Mount the NFS share
         # Format: server:/Pools/Pool-0/clone_name
@@ -2710,17 +2710,20 @@ sub nas_volume_deactivate {
     my ( $scfg, $storeid, $pool, $dataset, $snapname ) = @_;
 
     debugmsg( $scfg, "debug",
-        "Deactivating NAS volume snapshot ${pool}/${dataset}@${snapname}\n" );
+        "Deactivating NAS dataset ${dataset} volume ${volname} snapshot ${snapname}\n" );
 
     my $cleanup_errors = 0;
 
     # Step 1: Get the publish clone name to construct mount path
-    my $clone_name;
+    # TODO: so the goal here is to go with share path
+    # acquire share path and if it is a snapshot unmount it
+    # if it is a snapsho remove dedicated share
+    my $share_path;
     eval {
         my $cmd_output = joviandss_cmd( $scfg, $storeid,
             [ "pool", $pool,
               "nas_volume", "-d", $dataset,
-              "snapshot", $snapname,
+              "snapshot", '--proxmox-volume', $volname, $snapname,
               "get", "--publish-name" ] );
 
         # Parse clone name from output (last non-empty line)
