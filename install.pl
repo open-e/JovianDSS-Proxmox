@@ -1421,7 +1421,7 @@ sub main {
 
                 } else {
                     say "Maximal Workers/bulk-action was not changed.";
-                    say "Please consider setting Maximal Workers/bulk-action cluster property to 1 in order to prevent Proxmox malfunction.";
+                    say "Please consider setting 'Maximal Workers/bulk-action' cluster property to 1 in order to prevent malfunctions during bulk VM operations.";
                 }
             }
 
