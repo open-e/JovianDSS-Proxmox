@@ -1314,7 +1314,7 @@ sub main {
             print_operation_nodes("Plugin will be removed from the following nodes:", \@sorted_nodes);
 
             unless ($ASSUME_YES) {
-                my $confirm = simple_readline("Continue? (y/n): ");
+                my $confirm = simple_readline("Continue? (y/N): ");
                 unless ($confirm && $confirm =~ /^y$/i) {
                     say "Operation cancelled.";
                     return 0;
