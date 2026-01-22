@@ -1415,12 +1415,14 @@ sub main {
                         last if $success_setting_max_workers;
                     }
                     unless ( $success_setting_max_workers ) {
+                        say "";
                         say "Failed to set Maximal Workers/bulk-action";
                         say "Please set Maximal Workers/bulk-action cluster property to 1 using Proxmox UI";
                         say "Or through CLI: pvesh set /cluster/options --max_workers 1";
                     }
 
                 } else {
+                    say "";
                     say "Maximal Workers/bulk-action was not changed.";
                     say "Please consider setting 'Maximal Workers/bulk-action' cluster property to 1 in order to prevent malfunctions during bulk VM operations.";
                 }
