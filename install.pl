@@ -50,6 +50,7 @@ my $USE_REINSTALL = 0;  # Default to NOT using --reinstall flag
 my $ALLOW_DOWNGRADES = 0;  # Default to NOT allowing downgrades
 my $VERBOSE = 0;  # Default to non-verbose output
 my $ASSUME_YES = 0;  # Default to interactive confirmation
+my $ASSUME_MAX_WORKERS_ONE_YES = 0;  # Default to interactive confirmation
 my @WARNING_NODES = ();  # Track nodes with warnings
 my @SKIPPED_NODES = ();  # Track nodes where operations were skipped
 
@@ -73,6 +74,7 @@ GetOptions(
     "reinstall"     => \$USE_REINSTALL,
     "allow-downgrades" => \$ALLOW_DOWNGRADES,
     "assume-yes"    => \$ASSUME_YES,
+    "assume-max-workers-one-yes" => \$ASSUME_MAX_WORKERS_ONE_YES,
     "verbose|v"     => \$VERBOSE,
     "help|h"        => \$HELP,
 ) or die "Error parsing options\n";
@@ -452,7 +454,7 @@ sub handle_multipath_config {
         "/etc/multipath.conf",
         "/etc/multipath/multipath.conf"
     ];
-    
+
     # Check individual config files
     for my $config_file (@$multipath_config_files) {
         # Check if config file exists using the same pattern as template check
@@ -1257,6 +1259,32 @@ sub get_local_node_info {
     return ($local_node_short, \@local_ips, $cluster_name);
 }
 
+sub set_max_workers_to_one {
+    my $sudo = maybe_sudo();
+    my @set_max_workers_cmd;
+
+    if ($sudo) {
+        @set_max_workers_cmd = ($sudo, 'pvesh', 'set', '/cluster/options', '--max_workers', '1');
+    } else {
+        @set_max_workers_cmd = ('pvesh', 'set', '/cluster/options', '--max_workers', '1');
+    }
+
+    my $cmd_code = run_cmd(@set_max_workers_cmd, {
+        outfunc => get_output_handler('local'),
+        errfunc => create_context_error_handler("Setting Cluster Max Workers property")
+    });
+    if ($cmd_code) {
+        say "Cluster property Maximal Workers/bulk-action changed to 1.";
+        say "Please do not change Maximum Workers property.";
+        say "As this will lead to incorrect operation of JovianDSS Proxmox Plugin.";
+    } else {
+        say "Failed to change Maximal Workers/bulk-action Cluster property.";
+        say "Please consider setting Maximal Workers/bulk-action cluster property to 1, later to prevent Proxmox malfunction.";
+    }
+
+    return $cmd_code;
+}
+
 sub main {
     # Check prerequisites
     need_cmd("apt-get");
@@ -1407,6 +1435,21 @@ sub main {
         } else {
             say "\n✓ All operations complete: Plugin installed on $total_successful node(s)";
         }
+
+        if ($ASSUME_MAX_WORKERS_ONE_YES) {
+            set_max_workers_to_one();
+        } else {
+            say("Plugin requires Proxmox Cluster property Maximal Workers/bulk-action to be set to 1.");
+            say("Higher concurrent worker count will lead to failure in concurrent operation.");
+            my $confirm = simple_readline("Set Maximal Workers/bulk-action to 1? (Y/n): ");
+            if (!$confirm || $confirm =~ /^y$/i) {
+                set_max_workers_to_one();
+            } else {
+                say "Maximal Workers/bulk-action was not changed.";
+                say "Please consider setting Maximal Workers/bulk-action cluster property to 1, later to prevent Proxmox malfunction.";
+            }
+        }
+        say "";
         print "\nCheck introduction to configuration guide at https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start#configuration\n";
     }
 
