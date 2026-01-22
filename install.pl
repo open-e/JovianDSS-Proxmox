@@ -136,6 +136,7 @@ General:
   --reinstall                Use --reinstall apt flag (default: disabled)
   --allow-downgrades         Allow installing older package versions
   --assume-yes               Automatic yes to prompts (non-interactive mode)
+  --assume-max-workers-one-yes  Set cluster Maximal Workers/bulk-action to 1 without prompting
   -v, --verbose              Show detailed output during installation/removal
   -h, --help                 Show this help
 
@@ -501,9 +502,9 @@ sub handle_multipath_config {
 
                     # Search for SCST vendor entries
                     my $scst_collector = create_output_collector();
-                    if (execute_command($is_local, $ip, "grep", "-i", "vendor.*scst", $full_path, { 
-                        outfunc => $scst_collector->{collector}, 
-                        errfunc => sub {} 
+                    if (execute_command($is_local, $ip, "grep", "-i", "vendor.*scst", $full_path, {
+                        outfunc => $scst_collector->{collector},
+                        errfunc => sub {}
                     })) {
                         my @scst_entries = $scst_collector->{get_lines}();
                         if (@scst_entries) {
@@ -1260,29 +1261,18 @@ sub get_local_node_info {
 }
 
 sub set_max_workers_to_one {
-    my $sudo = maybe_sudo();
-    my @set_max_workers_cmd;
+    my ($is_local, $ip) = @_;
 
-    if ($sudo) {
-        @set_max_workers_cmd = ($sudo, 'pvesh', 'set', '/cluster/options', '--max_workers', '1');
-    } else {
-        @set_max_workers_cmd = ('pvesh', 'set', '/cluster/options', '--max_workers', '1');
-    }
-
-    my $cmd_code = run_cmd(@set_max_workers_cmd, {
-        outfunc => get_output_handler('local'),
-        errfunc => create_context_error_handler("Setting Cluster Max Workers property")
-    });
-    if ($cmd_code) {
-        say "Cluster property Maximal Workers/bulk-action changed to 1.";
-        say "Please do not change Maximum Workers property.";
-        say "As this will lead to incorrect operation of JovianDSS Proxmox Plugin.";
-    } else {
+    unless (execute_command($is_local, $ip, 'pvesh', 'set', '/cluster/options', '--max_workers', '1', { outfunc => undef, errfunc => sub {} })) {
         say "Failed to change Maximal Workers/bulk-action Cluster property.";
-        say "Please consider setting Maximal Workers/bulk-action cluster property to 1, later to prevent Proxmox malfunction.";
-    }
 
-    return $cmd_code;
+        return 0;
+    }
+    say "Cluster property Maximal Workers/bulk-action changed to 1.";
+    say "Please do not change Maximum Workers property.";
+    say "As this will lead to incorrect operation of JovianDSS Proxmox Plugin.";
+
+    return 1;
 }
 
 sub main {
@@ -1401,6 +1391,40 @@ sub main {
                     push @failed_nodes, $node->{ip};
                 }
             }
+
+            # Reduce number of concurrent workers to 1
+            if ($total_successful > 0) {
+                my $success_setting_max_workers = 0;
+                say("Plugin requires Proxmox Cluster property Maximal Workers/bulk-action to be set to 1.");
+                say("High concurrent worker count might lead to Proxmox locking problems.");
+                my $confirm_max_workers = 'n';
+                if ($ASSUME_MAX_WORKERS_ONE_YES) {
+                    $confirm_max_workers = 'y';
+                } else {
+                    $confirm_max_workers = simple_readline("Set Maximal Workers/bulk-action to 1? (Y/n): ");
+                    if (!$confirm_max_workers || $confirm_max_workers =~ /^y$/i) {
+                        $confirm_max_workers = 'y';
+                    }
+                }
+
+                if ($confirm_max_workers eq 'y') {
+
+                    for my $node (@sorted_nodes) {
+                        $success_setting_max_workers = set_max_workers_to_one($node->{is_local}, $node->{ip});
+                        last if $success_setting_max_workers;
+                    }
+                    unless ( $success_setting_max_workers ) {
+                        say "Failed to set Maximal Workers/bulk-action";
+                        say "Please set Maximal Workers/bulk-action cluster property to 1 using Proxmox UI";
+                        say "Or through CLI: pvesh set /cluster/options --max_workers 1";
+                    }
+
+                } else {
+                    say "Maximal Workers/bulk-action was not changed.";
+                    say "Please consider setting Maximal Workers/bulk-action cluster property to 1 in order to prevent Proxmox malfunction.";
+                }
+            }
+
         } else {
             say "None nodes identified for operation";
             say "";
@@ -1436,19 +1460,7 @@ sub main {
             say "\n✓ All operations complete: Plugin installed on $total_successful node(s)";
         }
 
-        if ($ASSUME_MAX_WORKERS_ONE_YES) {
-            set_max_workers_to_one();
-        } else {
-            say("Plugin requires Proxmox Cluster property Maximal Workers/bulk-action to be set to 1.");
-            say("Higher concurrent worker count will lead to failure in concurrent operation.");
-            my $confirm = simple_readline("Set Maximal Workers/bulk-action to 1? (Y/n): ");
-            if (!$confirm || $confirm =~ /^y$/i) {
-                set_max_workers_to_one();
-            } else {
-                say "Maximal Workers/bulk-action was not changed.";
-                say "Please consider setting Maximal Workers/bulk-action cluster property to 1, later to prevent Proxmox malfunction.";
-            }
-        }
+
         say "";
         print "\nCheck introduction to configuration guide at https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start#configuration\n";
     }
