@@ -1268,9 +1268,9 @@ sub set_max_workers_to_one {
 
         return 0;
     }
-    say "Cluster property Maximal Workers/bulk-action changed to 1.";
-    say "Please do not change Maximum Workers property.";
-    say "As this will lead to incorrect operation of JovianDSS Proxmox Plugin.";
+    say "Cluster property Maximal Workers/bulk-action changed to 1.\n";
+    say "Please do not change Maximum Workers property.\n";
+    say "As it will lead to locking problems during bulk VM operations.\n";
 
     return 1;
 }
