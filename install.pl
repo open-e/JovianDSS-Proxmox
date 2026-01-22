@@ -50,6 +50,7 @@ my $USE_REINSTALL = 0;  # Default to NOT using --reinstall flag
 my $ALLOW_DOWNGRADES = 0;  # Default to NOT allowing downgrades
 my $VERBOSE = 0;  # Default to non-verbose output
 my $ASSUME_YES = 0;  # Default to interactive confirmation
+my $ASSUME_MAX_WORKERS_ONE_YES = 0;  # Default to interactive confirmation
 my @WARNING_NODES = ();  # Track nodes with warnings
 my @SKIPPED_NODES = ();  # Track nodes where operations were skipped
 
@@ -73,6 +74,7 @@ GetOptions(
     "reinstall"     => \$USE_REINSTALL,
     "allow-downgrades" => \$ALLOW_DOWNGRADES,
     "assume-yes"    => \$ASSUME_YES,
+    "assume-max-workers-one-yes" => \$ASSUME_MAX_WORKERS_ONE_YES,
     "verbose|v"     => \$VERBOSE,
     "help|h"        => \$HELP,
 ) or die "Error parsing options\n";
@@ -134,6 +136,7 @@ General:
   --reinstall                Use --reinstall apt flag (default: disabled)
   --allow-downgrades         Allow installing older package versions
   --assume-yes               Automatic yes to prompts (non-interactive mode)
+  --assume-max-workers-one-yes  Set cluster Maximal Workers/bulk-action to 1 without prompting
   -v, --verbose              Show detailed output during installation/removal
   -h, --help                 Show this help
 
@@ -452,7 +455,7 @@ sub handle_multipath_config {
         "/etc/multipath.conf",
         "/etc/multipath/multipath.conf"
     ];
-    
+
     # Check individual config files
     for my $config_file (@$multipath_config_files) {
         # Check if config file exists using the same pattern as template check
@@ -499,9 +502,9 @@ sub handle_multipath_config {
 
                     # Search for SCST vendor entries
                     my $scst_collector = create_output_collector();
-                    if (execute_command($is_local, $ip, "grep", "-i", "vendor.*scst", $full_path, { 
-                        outfunc => $scst_collector->{collector}, 
-                        errfunc => sub {} 
+                    if (execute_command($is_local, $ip, "grep", "-i", "vendor.*scst", $full_path, {
+                        outfunc => $scst_collector->{collector},
+                        errfunc => sub {}
                     })) {
                         my @scst_entries = $scst_collector->{get_lines}();
                         if (@scst_entries) {
@@ -1257,6 +1260,22 @@ sub get_local_node_info {
     return ($local_node_short, \@local_ips, $cluster_name);
 }
 
+sub set_max_workers_to_one {
+    my ($is_local, $ip) = @_;
+
+    unless (execute_command($is_local, $ip, 'pvesh', 'set', '/cluster/options', '--max_workers', '1', { outfunc => undef, errfunc => sub {} })) {
+        say "Failed to change Maximal Workers/bulk-action Cluster property.";
+
+        return 0;
+    }
+    say "";
+    say "Cluster property Maximal Workers/bulk-action changed to 1.";
+    say "Please do not change Maximum Workers property.";
+    say "As it will lead to locking problems during bulk VM operations.";
+
+    return 1;
+}
+
 sub main {
     # Check prerequisites
     need_cmd("apt-get");
@@ -1295,7 +1314,7 @@ sub main {
             print_operation_nodes("Plugin will be removed from the following nodes:", \@sorted_nodes);
 
             unless ($ASSUME_YES) {
-                my $confirm = simple_readline("Continue? (y/n): ");
+                my $confirm = simple_readline("Continue? (y/N): ");
                 unless ($confirm && $confirm =~ /^y$/i) {
                     say "Operation cancelled.";
                     return 0;
@@ -1353,7 +1372,7 @@ sub main {
             print_operation_nodes("Plugin $TAG will be installed on the following nodes:", \@sorted_nodes);
 
             unless ($ASSUME_YES) {
-                my $confirm = simple_readline("Continue? (y/n): ");
+                my $confirm = simple_readline("Continue? (y/N): ");
                 unless ($confirm && $confirm =~ /^y$/i) {
                     say "Operation cancelled.";
                     return 0;
@@ -1373,6 +1392,42 @@ sub main {
                     push @failed_nodes, $node->{ip};
                 }
             }
+
+            # Reduce number of concurrent workers to 1
+            if ($total_successful > 0) {
+                my $success_setting_max_workers = 0;
+                say("Plugin requires Proxmox Cluster property Maximal Workers/bulk-action to be set to 1.");
+                say("High concurrent worker count might lead to Proxmox locking problems.");
+                my $confirm_max_workers = 'n';
+                if ($ASSUME_MAX_WORKERS_ONE_YES) {
+                    $confirm_max_workers = 'y';
+                } else {
+                    $confirm_max_workers = simple_readline("Set Maximal Workers/bulk-action to 1? (Y/n): ");
+                    if (!$confirm_max_workers || $confirm_max_workers =~ /^y$/i) {
+                        $confirm_max_workers = 'y';
+                    }
+                }
+
+                if ($confirm_max_workers eq 'y') {
+
+                    for my $node (@sorted_nodes) {
+                        $success_setting_max_workers = set_max_workers_to_one($node->{is_local}, $node->{ip});
+                        last if $success_setting_max_workers;
+                    }
+                    unless ( $success_setting_max_workers ) {
+                        say "";
+                        say "Failed to set Maximal Workers/bulk-action";
+                        say "Please set Maximal Workers/bulk-action cluster property to 1 using Proxmox UI";
+                        say "Or through CLI: pvesh set /cluster/options --max_workers 1";
+                    }
+
+                } else {
+                    say "";
+                    say "Maximal Workers/bulk-action was not changed.";
+                    say "Please consider setting 'Maximal Workers/bulk-action' cluster property to 1 in order to prevent malfunctions during bulk VM operations.";
+                }
+            }
+
         } else {
             say "None nodes identified for operation";
             say "";
@@ -1407,6 +1462,9 @@ sub main {
         } else {
             say "\n✓ All operations complete: Plugin installed on $total_successful node(s)";
         }
+
+
+        say "";
         print "\nCheck introduction to configuration guide at https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start#configuration\n";
     }
 
