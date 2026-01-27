@@ -109,6 +109,11 @@ our @EXPORT_OK = qw(
   volume_deactivate
 
   store_settup
+
+  ha_state_get
+  ha_state_is_defined
+  ha_type_get
+
 );
 
 our %EXPORT_TAGS = ( all => [@EXPORT_OK], );
@@ -1214,6 +1219,104 @@ sub get_device_mapper_name {
         return $1;
     }
     return undef;
+}
+
+sub ha_state_is_defined {
+     my ($scfg, $vmid) = @_;
+
+     my $cmd = [
+         'pvesh', 'get', "/cluster/ha/resources/${vmid}",
+         '--output-format', 'json'
+     ];
+     my $json_out = '';
+     my $err_out  = '';
+     my $outfunc  = sub { $json_out .= "$_[0]\n" };
+     my $errfunc  = sub { $err_out  .= "$_[0]\n" };
+
+     my $exitcode = run_command(
+         $cmd,
+         outfunc => $outfunc,
+         errfunc => $errfunc,
+         noerr   => 1
+     );
+
+     if ($exitcode != 0) {
+         if ($err_out =~ /no such resource/) {
+             debugmsg($scfg, 'debug', "VM ${vmid} is not HA-managed");
+             return 0;
+         }
+         die "Failed to check HA status for ${vmid}: ${err_out}";
+     }
+
+     if ($json_out eq '') {
+         debugmsg($scfg, 'debug', "VM ${vmid} is not HA-managed (empty response)");
+         return 0;
+     }
+
+     my $jdata = eval { decode_json($json_out) };
+     if ($@ || ref($jdata) ne 'HASH') {
+         die "Unexpected HA status response for ${vmid}: ${json_out}";
+     }
+
+     debugmsg($scfg, 'debug', "VM ${vmid} is HA-managed");
+     return 1;
+ }
+
+
+sub ha_state_get {
+    my ($scfg, $vmid) = @_;
+
+    my $cmd = ['pvesh', 'get', "/cluster/ha/resources/${vmid}", '--output-format', 'json'];
+    my $json_out = '';
+    my $outfunc  = sub { $json_out .= "$_[0]\n" };
+
+    run_command(
+        $cmd,
+        outfunc => $outfunc,
+        errfunc => sub {
+            cmd_log_output($scfg, 'error', $cmd, shift);
+        },
+        noerr   => 1
+    );
+    my $jdata = decode_json($json_out);
+    unless (ref($jdata) eq 'HASH') {
+        die "Unexpected HA status content ${json_out}";
+    }
+    if (exists $jdata->{'state'}) {
+        my $state = $jdata->{'state'};
+        debugmsg( $scfg, 'debug', "HA state of ${vmid} is ${state}");
+        return $state;
+    } else {
+        die "Unable to identify state of ${vmid}\n";
+    }
+}
+
+sub ha_type_get {
+    my ($scfg, $vmid) = @_;
+
+    my $cmd = ['pvesh', 'get', "/cluster/ha/resources/${vmid}", '--output-format', 'json'];
+    my $json_out = '';
+    my $outfunc  = sub { $json_out .= "$_[0]\n" };
+
+    run_command(
+        $cmd,
+        outfunc => $outfunc,
+        errfunc => sub {
+            cmd_log_output($scfg, 'error', $cmd, shift);
+        },
+        noerr   => 1
+    );
+    my $jdata = decode_json($json_out);
+    unless (ref($jdata) eq 'HASH') {
+        die "Unexpected HA resource content ${json_out}";
+    }
+    if (exists $jdata->{'type'}) {
+        my $type = $jdata->{'type'};
+        debugmsg( $scfg, 'debug', "HA type of ${vmid} is ${type}");
+        return $type;
+    } else {
+        die "Unable to identify type of ${vmid}\n";
+    }
 }
 
 sub get_multipath_device_name {

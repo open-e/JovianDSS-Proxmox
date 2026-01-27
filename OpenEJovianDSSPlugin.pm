@@ -675,7 +675,7 @@ sub volume_snapshot_rollback {
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "Volume ${volname}"
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snap )
-          . "rollback start" );
+          . " rollback start" );
 
     OpenEJovianDSS::Common::joviandss_cmd(
         $scfg,
@@ -695,6 +695,24 @@ sub volume_snapshot_rollback {
 
 sub volume_rollback_is_possible {
     my ( $class, $scfg, $storeid, $volname, $snap, $blockers ) = @_;
+
+    my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+
+    my $managed_by_ha = OpenEJovianDSS::Common::ha_state_is_defined($scfg, $vmid);
+    if ($managed_by_ha) {
+        my $hastate = OpenEJovianDSS::Common::ha_state_get($scfg, $vmid);
+
+        if (($hastate ne 'ignored')) {
+            my $resource_type = OpenEJovianDSS::Common::ha_type_get($scfg, $vmid);
+            my $msg =
+            "Rollback blocked: ${resource_type}:${vmid} is controlled by High Availability (state: ${hastate}).\n"
+            . "Rollback requires temporary manual control to prevent HA from restarting or moving the resource.\n"
+            . "Disable HA management before retrying:\n"
+            . "Web UI: Datacenter -> HA -> Resources -> set state to ignored\n"
+            . "CLI: ha-manager set ${resource_type}:${vmid} --state ignored\n";
+            die $msg;
+        }
+    }
 
     return OpenEJovianDSS::Common::volume_rollback_check( $scfg,
         $storeid, $volname, $snap, $blockers );
