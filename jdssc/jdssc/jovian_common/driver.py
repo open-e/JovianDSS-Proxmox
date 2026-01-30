@@ -38,7 +38,7 @@ class JovianDSSDriver(object):
 
     def __init__(self, config):
 
-        self.VERSION = "0.10.14"
+        self.VERSION = "0.10.15"
 
         self.configuration = config
         self._pool = self.configuration.get('jovian_pool', 'Pool-0')
@@ -1820,10 +1820,10 @@ class JovianDSSDriver(object):
         :return: { 'snapshots': [<list of snapshots preventing rollback>],
                    'clones':    [<list of clones preventing rollback>]}
         """
-        rsnap={}
+        rsnap = {}
 
         try:
-            rsnap=self.ra.get_snapshot(vname, sname)
+            rsnap = self.ra.get_snapshot(vname, sname)
         except jexc.JDSSResourceNotFoundException as nferr:
             LOG.debug('Volume %s snapshot %s not found',
                       jcom.idname(vname), jcom.idname(sname))
@@ -1837,12 +1837,12 @@ class JovianDSSDriver(object):
                     "err": jerr})
             raise jerr
 
-        dformat="%Y-%m-%d %H:%M:%S"
-        rdate=None
+        dformat = "%Y-%m-%d %H:%M:%S"
+        rdate = None
         if (('creation' in rsnap) and
             (type(rsnap['creation']) is str) and
                 (len(rsnap['creation']) > 0)):
-            rdate=datetime.datetime.strptime(rsnap['creation'], dformat)
+            rdate = datetime.datetime.strptime(rsnap['creation'], dformat)
             LOG.debug('Rollback date of snapshot %s is %s',
                       sname, str(rdate))
 
@@ -1851,17 +1851,18 @@ class JovianDSSDriver(object):
             if snap['name'] == sname:
                 return False
 
-            if (('creation' in snap) and
-                (type(snap['creation']) is str) and
-                    (len(snap['creation']) > 0)):
-
-                date = datetime.datetime.strptime(snap['creation'], dformat)
-                if date >= rdate:
-                    return True
+            if ('properties' in snap):
+                sp = snap['properties']
+                if (('creation' in sp) and
+                        isinstance(sp['creation'], int)):
+                    ts_dt = datetime.datetime.fromtimestamp(
+                                sp['creation'])
+                    if ts_dt >= rdate:
+                        return True
+                    else:
+                        return False
                 else:
-                    return False
-            else:
-                return True
+                    return True
 
         snapshots = self._list_all_volume_snapshots(
             vname, filter_older_snapshots)
@@ -1917,7 +1918,7 @@ class JovianDSSDriver(object):
             else:
                 LOG.debug("rolling back is blocked by resources %s",
                           str(dependency))
-        out=self._list_snapshot_rollback_dependency(vname, sname)
+        out = self._list_snapshot_rollback_dependency(vname, sname)
 
         if len(out['snapshots']) == 0 and dependency['snapshots'] > 0:
             out['snapshots'] = ["Unknown"]
@@ -1927,7 +1928,7 @@ class JovianDSSDriver(object):
 
         return out
 
-    def rollback(self, volume_name, snapshot_name):
+    def rollback(self, volume_name, snapshot_name, force_snapshots=False):
         """Rollback volume to specific snapshot
 
         This function operates around ZFS rollback.
@@ -1975,11 +1976,18 @@ class JovianDSSDriver(object):
                          {'vol': jcom.idname(vname),
                           'snap': jcom.idname(sname)})
                 return
+            elif (force_snapshots):
+                if dependency['clones'] == 0:
+                    self.ra.snapshot_rollback(vname, sname)
+                    return
+                else:
+                    LOG.debug("forced rolling back is blocked by %s clones",
+                              dependency['clones'])
             else:
                 LOG.debug("rolling back is blocked by resources %s",
                           dependency)
 
-        deplist=self._list_snapshot_rollback_dependency(vname, sname)
+        deplist = self._list_snapshot_rollback_dependency(vname, sname)
 
         raise jexc.JDSSRollbackIsBlocked(volume_name,
                                          snapshot_name,
@@ -1988,22 +1996,22 @@ class JovianDSSDriver(object):
                                          dependency['snapshots'],
                                          dependency['clones'])
 
-    @ property
+    @property
     def backend_name(self):
         """Return backend name."""
-        backend_name=None
+        backend_name = None
         if self.configuration:
-            backend_name=self.configuration.get('volume_backend_name',
+            backend_name = self.configuration.get('volume_backend_name',
                                                   'Open-EJovianDSS')
         if not backend_name:
-            backend_name=self.__class__.__name__
+            backend_name = self.__class__.__name__
         return backend_name
 
     def create_share(self, share_name, quota_size,
                      reservation=None,
                      direct_mode=False):
 
-        sharename=share_name if direct_mode else jcom.vname(share_name)
+        sharename = share_name if direct_mode else jcom.vname(share_name)
         # create nas / ensure nas volume is present
         # TODO: rework it so that there will be only one place of
         # sharename generation

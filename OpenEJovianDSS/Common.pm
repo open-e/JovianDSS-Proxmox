@@ -37,6 +37,7 @@ use JSON qw(decode_json from_json to_json);
 
 use Time::HiRes qw(gettimeofday);
 
+use PVE::INotify;
 use PVE::Tools qw(run_command);
 
 our @EXPORT_OK = qw(
@@ -713,11 +714,244 @@ sub volume_snapshots_info {
     return $snapshots;
 }
 
+sub vmid_is_qemu {
+    my ( $scfg, $vmid) = @_;
+
+    my $nodename = PVE::INotify::nodename();
+    my $cmd = [
+        'pvesh', 'get', "/nodes/${nodename}/qemu/${vmid}/status",
+        '--output-format', 'json'
+    ];
+    my $json_out = '';
+    my $err_out  = '';
+    my $outfunc  = sub { $json_out .= "$_[0]\n" };
+    my $errfunc  = sub { $err_out  .= "$_[0]\n" };
+
+    my $exitcode = run_command(
+        $cmd,
+        outfunc => $outfunc,
+        errfunc => $errfunc,
+        noerr   => 1
+    );
+
+    if ($exitcode != 0) {
+        if ($err_out =~ /does not exist/) {
+            debugmsg($scfg, 'debug', "${vmid} is not Qemu");
+            return 0;
+        }
+        debugmsg($scfg, 'debug', "Unable to check if ${vmid} is Qemu: ${err_out}");
+        return 0;
+    }
+    return 1;
+}
+
+sub vmid_is_lxc {
+    my ($scfg, $vmid) = @_;
+
+    my $nodename = PVE::INotify::nodename();
+    my $cmd = [
+        'pvesh', 'get', "/nodes/${nodename}/lxc/${vmid}/status",
+        '--output-format', 'json'
+    ];
+    my $json_out = '';
+    my $err_out  = '';
+    my $outfunc  = sub { $json_out .= "$_[0]\n" };
+    my $errfunc  = sub { $err_out  .= "$_[0]\n" };
+
+    my $exitcode = run_command(
+        $cmd,
+        outfunc => $outfunc,
+        errfunc => $errfunc,
+        noerr   => 1
+    );
+
+    if ($exitcode != 0) {
+        if ($err_out =~ /does not exist/) {
+            debugmsg($scfg, 'debug', "${vmid} is not LXC");
+            return 0;
+        }
+        debugmsg($scfg, 'debug', "Unable to check if ${vmid} is LXC ${err_out}");
+        return 0;
+    }
+    return 1;
+}
+
+sub vmid_identify_virt_type {
+    # Check if there is a qemu config file or lxc config file
+    # If one config file found reply with it
+    # If unable to identify config reply with undef
+    my ($scfg, $vmid) = @_;
+
+    my $is_qemu = vmid_is_qemu($scfg, $vmid);
+
+    my $is_lxc = vmid_is_lxc($scfg, $vmid);
+
+    if ( $is_qemu == 1 && $is_lxc == 0 ) {
+        return 'qemu';
+    }
+    if ( $is_qemu == 0 && $is_lxc == 1) {
+        return 'lxc';
+    }
+    if ($is_qemu == 1 && $is_lxc == 1 ) {
+        debugmsg($scfg, 'debug', "Unable to identify virtualisation type for ${vmid}, seams to be both Qemu and LXC");
+        return undef;
+    }
+    debugmsg($scfg, 'debug', "Unable to identify virtualisation type for ${vmid}, seams neither Qemu nor LXC");
+    return undef;
+}
+
+sub snapshots_list_from_vmid {
+    my ( $scfg, $vmid) = @_;
+
+    my $nodename = PVE::INotify::nodename();
+
+    my $virtualisation = vmid_identify_virt_type( $scfg, $vmid);
+
+    if (!defined($virtualisation)) {
+        die "Unable to identify snapshots belonging to VM/CT. Unable to conduct forced rollback\n";
+    }
+
+    my @names;
+
+    my $cmd = [
+        'pvesh', 'get', "/nodes/${nodename}/${virtualisation}/${vmid}/snapshot",
+        '--output-format', 'json'
+    ];
+    my $json_out = '';
+    my $err_out  = '';
+    my $outfunc  = sub { $json_out .= "$_[0]\n" };
+    my $errfunc  = sub { $err_out  .= "$_[0]\n" };
+
+    my $exitcode = run_command(
+        $cmd,
+        outfunc => $outfunc,
+        errfunc => $errfunc,
+        noerr   => 1
+    );
+
+    if ($exitcode != 0) {
+        die "Unable to acquire snapshots for ${vmid}\n";
+    }
+
+    my $snapshots = eval { decode_json($json_out) };
+    return [] if ref($snapshots) ne 'ARRAY';
+
+    foreach my $snap (@$snapshots) {
+        next if !exists $snap->{name};
+        next if $snap->{name} eq 'current';
+
+        push @names, $snap->{name};
+    }
+
+    return \@names;
+}
+
+sub format_rollback_block_reason {
+    my ($volname, $target_snap, $snapshots, $clones, $unmanaged_snaps, $blockers_unknown) = @_;
+
+    my $msg = '';
+
+    my $has_managed   = $snapshots && @$snapshots;
+    my $has_clones    = $clones && @$clones;
+    my $has_unmanaged = $unmanaged_snaps && @$unmanaged_snaps;
+    my $has_unknown   = $blockers_unknown && @$blockers_unknown;
+
+    $msg .= "Unable to rollback volume '$volname' to snapshot '$target_snap' as\n\n";
+
+    # ------------------------------------------------------------
+    # Special case: ONLY unmanaged snapshots exist
+    # ------------------------------------------------------------
+    if ($has_unmanaged && !$has_managed && !$has_clones && !$has_unknown) {
+
+        my $count = scalar(@$unmanaged_snaps);
+
+        $msg .= "there are $count newer unmanaged snapshots existing :\n";
+
+        foreach my $snap (@$unmanaged_snaps) {
+            $msg .= "$snap\n";
+        }
+
+        $msg .= "\n";
+        $msg .= "!! DANGER !! User can add 'force_rollback' tag to VM/Container in order to conduct rollback.\n";
+        $msg .= "Rolling back with 'force_rollback' tag will result in destruction of unmanaged snapshots.\n";
+
+        return $msg;
+    }
+
+    # ONLY unknown blockers exist
+    if ($has_unknown && !$has_managed && !$has_clones && !$has_unmanaged) {
+
+        my $count = scalar(@$blockers_unknown);
+
+        $msg .= "there are $count newer rollback blockers with unknown origin :\n";
+
+        foreach my $item (@$blockers_unknown) {
+            $msg .= "$item\n";
+        }
+
+        $msg .= "\n";
+        $msg .= "Rollback cannot continue because the ownership or safety of these snapshots cannot be determined.\n";
+        $msg .= "Manual inspection is required before retrying the rollback.\n";
+
+        return $msg;
+    }
+
+    # Normal combined cases
+    if ($has_managed) {
+        my $count = scalar(@$snapshots);
+        $msg .= "there are $count newer Proxmox managed snapshots existing :\n";
+
+        foreach my $snap (@$snapshots) {
+            $msg .= "$snap\n";
+        }
+
+        $msg .= "\n";
+    }
+
+    if ($has_unmanaged) {
+        my $count = scalar(@$unmanaged_snaps);
+        $msg .= "there are $count newer unmanaged snapshots existing :\n";
+
+        foreach my $snap (@$unmanaged_snaps) {
+            $msg .= "$snap\n";
+        }
+
+        $msg .= "\n";
+    }
+
+    if ($has_clones) {
+        my $count = scalar(@$clones);
+        $msg .= "there are $count dependent clones existing :\n";
+
+        foreach my $clone (@$clones) {
+            $msg .= "$clone\n";
+        }
+
+        $msg .= "\n";
+    }
+
+    if ($has_unknown) {
+        my $count = scalar(@$blockers_unknown);
+        $msg .= "there are $count newer rollback blockers with unknown origin :\n";
+
+        foreach my $item (@$blockers_unknown) {
+            $msg .= "$item\n";
+        }
+
+        $msg .= "\n";
+    }
+
+    $msg .= "will be lost in the process\n";
+
+    return $msg;
+}
+
 sub volume_rollback_check {
-    my ( $scfg, $storeid, $volname, $snap, $blockers ) = @_;
+    my ( $scfg, $storeid, $vmid, $volname, $snap, $blockers ) = @_;
 
     my $pool = get_pool($scfg);
 
+    $blockers //= [];
     my $res;
     eval {
         $res = joviandss_cmd(
@@ -735,20 +969,69 @@ sub volume_rollback_check {
 "Unable to rollback volume '${volname}' to snapshot '${snap}' because of: $@";
     }
 
-    my $blocker_found = 0;
-    $blockers //= [];
+    my $blockers_found_flag = 0;
+    my $blockers_found = [];
     foreach my $line ( split( /\n/, $res ) ) {
         foreach my $obj ( split( /\s+/, $line ) ) {
-            push $blockers->@*, $obj;
-            $blocker_found = 1;
+            push $blockers_found->@*, $obj;
+            $blockers_found_flag = 1;
         }
     }
 
-    die
-"Unable to rollback volume '${volname}' to snapshot ${snap}' as resources ${res} will be lost in the process\n"
-      if $blocker_found > 0;
+    if ( ! $blockers_found_flag ) {
+        return 1;
+    }
 
-    return 1;
+    my $blockers_snapshots_untracked = [];
+    my $blockers_snapshots_tracked = [];
+    my $blockers_clones = [];
+    my $blockers_unknown = [];
+
+    my $force_rollback = vm_tag_force_rollback_is_set($scfg, $vmid);
+
+    my $managed_snapshots = snapshots_list_from_vmid($scfg, $vmid);
+    my $force_rollback_possible = 1;
+
+    foreach my $blocker ( $blockers_found->@* ) {
+        if ( $blocker =~ /^snap:(.+)$/ ) {
+            my $snap_blocker = $1;
+            push $blockers->@*, $snap_blocker;
+            my $managed_found = 0;
+            foreach my $snap ( $managed_snapshots->@* ) {
+                if ($snap eq $snap_blocker) {
+                    $force_rollback_possible = 0;
+                    $managed_found = 1;
+                    push $blockers_snapshots_tracked->@*, $snap_blocker;
+                    last;
+                }
+            }
+            if ( ! $managed_found ) {
+                    push $blockers_snapshots_untracked->@*, $snap_blocker;
+            }
+
+        } elsif ($blocker =~ /^clone:(.+)$/) {
+            my $clone_blocker = $1;
+            $force_rollback_possible = 0;
+            push $blockers->@*, $clone_blocker;
+            push $blockers_clones->@*, $clone_blocker;
+        } else {
+            $force_rollback_possible = 0;
+            push $blockers->@*, $blocker;
+            push $blockers_unknown->@*, $blocker;
+        }
+    }
+
+    if ( $force_rollback && $force_rollback_possible) {
+        return 1;
+    }
+
+    my $msg = format_rollback_block_reason($volname, $snap,
+        $blockers_snapshots_tracked,
+        $blockers_clones,
+        $blockers_snapshots_untracked,
+        $blockers_unknown);
+
+    die $msg;
 }
 
 sub get_iscsi_addresses {
@@ -2641,4 +2924,51 @@ sub store_settup {
         make_path $lldir, { owner => 'root', group => 'root' };
     }
 }
+
+sub vm_tag_force_rollback_is_set {
+    my ( $scfg, $vmid ) = @_;
+
+    my $virt_type = vmid_identify_virt_type($scfg, $vmid);
+
+    if ( ! defined($virt_type) ) {
+        return 0;
+    }
+    my $nodename = PVE::INotify::nodename();
+
+    my $cmd = [
+        'pvesh', 'get', "/nodes/${nodename}/${virt_type}/${vmid}/config",
+        '--output-format', 'json'
+    ];
+    my $json_out = '';
+    my $err_out  = '';
+    my $outfunc  = sub { $json_out .= "$_[0]\n" };
+    my $errfunc  = sub { $err_out  .= "$_[0]\n" };
+
+    my $exitcode = run_command(
+        $cmd,
+        outfunc => $outfunc,
+        errfunc => $errfunc,
+        noerr   => 1
+    );
+
+    my $conf;
+    eval {
+        $conf = decode_json($json_out);
+    };
+
+    return 0 if $@ || ref($conf) ne 'HASH';
+
+    return 0 if !defined $conf->{tags};
+
+    my @tags = split(/;/, $conf->{tags});
+
+    foreach my $tag (@tags) {
+        if ($tag eq 'force_rollback') {
+            return 1;
+        }
+    }
+
+    return 0;
+}
+
 1;

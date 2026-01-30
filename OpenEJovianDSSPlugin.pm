@@ -46,7 +46,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.10.14';
+my $PLUGIN_VERSION = '0.10.15';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -672,19 +672,42 @@ sub volume_snapshot_rollback {
 
     my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
+    my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "Volume ${volname}"
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snap )
           . " rollback start" );
 
-    OpenEJovianDSS::Common::joviandss_cmd(
-        $scfg,
-        $storeid,
-        [
-            "pool",     $pool, "volume",   $volname,
-            "snapshot", $snap, "rollback", "do"
-        ]
-    );
+    my $force_rollback = OpenEJovianDSS::Common::vm_tag_force_rollback_is_set($scfg, $vmid);
+
+    if ( $force_rollback ) {
+        # volume rollback check get called 2 times.
+        # It is better to call it 2 times then rely on proxmox logic
+        my $blockers = [];
+        my $rollback_check_ok = OpenEJovianDSS::Common::volume_rollback_check( $scfg,
+             $storeid, $vmid, $volname, $snap, $blockers );
+        if ( $rollback_check_ok ) {
+
+            OpenEJovianDSS::Common::joviandss_cmd(
+                $scfg,
+                $storeid,
+                [
+                    'pool',     $pool, 'volume',   $volname,
+                    'snapshot', $snap, 'rollback', 'do', '--force-snapshots'
+                ]
+            );
+        }
+    } else {
+        OpenEJovianDSS::Common::joviandss_cmd(
+            $scfg,
+            $storeid,
+            [
+                "pool",     $pool, "volume",   $volname,
+                "snapshot", $snap, "rollback", "do"
+            ]
+        );
+    }
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "Volume ${volname}"
@@ -713,9 +736,8 @@ sub volume_rollback_is_possible {
             die $msg;
         }
     }
-
     return OpenEJovianDSS::Common::volume_rollback_check( $scfg,
-        $storeid, $volname, $snap, $blockers );
+            $storeid, $vmid, $volname, $snap, $blockers );
 }
 
 sub volume_snapshot_delete {
