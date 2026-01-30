@@ -1632,21 +1632,23 @@ class JovianDSSDriver(object):
                     LOG.warning("Linked clone present among volumes")
                 continue
 
-            vid = jcom.vid_from_sname(snap['name'])
-            if vid is None or vid == ovolume_name:
-                # That is used in create_snapshot function to provide detailed
-                # info in case volume already have snapshot
-                snap['volume_name'] = vname
+            if jcom.is_snapshot(snap['name']):
+                vid = jcom.vid_from_sname(snap['name'])
+                if vid is None or vid == ovolume_name:
+                    # That is used in create_snapshot function
+                    # to provide detailed
+                    # info in case volume already have snapshot
+                    snap['volume_name'] = vname
 
-                out.append(snap)
-                for clone in self._list_snapshot_clones_names(vname,
-                                                              snap['name']):
+                    out.append(snap)
+                    for clone in self._list_snapshot_clones_names(vname,
+                                                                  snap['name']):
 
-                    LOG.debug(
-                        "List volume recursion step for list_volume_snapshots")
-                    out.extend(self._list_volume_snapshots(ovolume_name,
-                                                           clone))
-                continue
+                        LOG.debug(
+                            "List volume recursion step for list_volume_snapshots")
+                        out.extend(self._list_volume_snapshots(ovolume_name,
+                                                               clone))
+                    continue
             if all:
                 snap['volume_name'] = vname
                 out.append(snap)
@@ -1863,6 +1865,9 @@ class JovianDSSDriver(object):
                         return False
                 else:
                     return True
+            else:
+                raise jexc.JDSSException(
+                    "Unable to identify snapshot properties")
 
         snapshots = self._list_all_volume_snapshots(
             vname, filter_older_snapshots)

@@ -851,12 +851,26 @@ sub format_rollback_block_reason {
 
     my $msg = '';
 
+    my $format_list = sub {
+        my ($items) = @_;
+        return '' if !$items || ref($items) ne 'ARRAY';
+        return '' if @$items == 0;
+
+        my @out;
+        if (@$items > 5) {
+            push @out, $items->[0], $items->[1], '...', $items->[-1];
+        } else {
+            @out = @$items;
+        }
+        return join('; ', @out);
+    };
+
     my $has_managed   = $snapshots && @$snapshots;
     my $has_clones    = $clones && @$clones;
     my $has_unmanaged = $unmanaged_snaps && @$unmanaged_snaps;
     my $has_unknown   = $blockers_unknown && @$blockers_unknown;
 
-    $msg .= "Unable to rollback volume '$volname' to snapshot '$target_snap' as\n\n";
+
 
     # ------------------------------------------------------------
     # Special case: ONLY unmanaged snapshots exist
@@ -865,15 +879,12 @@ sub format_rollback_block_reason {
 
         my $count = scalar(@$unmanaged_snaps);
 
-        $msg .= "there are $count newer unmanaged snapshots existing :\n";
-
-        foreach my $snap (@$unmanaged_snaps) {
-            $msg .= "$snap\n";
-        }
+        $msg .= "There are $count newer storage side snapshots:\n";
+        $msg .= $format_list->($unmanaged_snaps) . "\n";
 
         $msg .= "\n";
-        $msg .= "!! DANGER !! User can add 'force_rollback' tag to VM/Container in order to conduct rollback.\n";
-        $msg .= "Rolling back with 'force_rollback' tag will result in destruction of unmanaged snapshots.\n";
+        $msg .= "Hint: User can add 'force_rollback' tag to VM/Container in order to conduct rollback.\n";
+        $msg .= "!! DANGER !! Rolling back with 'force_rollback' tag will result in destruction of newer storage side snapshots.\n";
 
         return $msg;
     }
@@ -883,65 +894,56 @@ sub format_rollback_block_reason {
 
         my $count = scalar(@$blockers_unknown);
 
-        $msg .= "there are $count newer rollback blockers with unknown origin :\n";
-
-        foreach my $item (@$blockers_unknown) {
-            $msg .= "$item\n";
-        }
+        $msg .= "There are $count newer rollback blockers of unknown origin:\n";
+        $msg .= $format_list->($blockers_unknown) . "\n";
 
         $msg .= "\n";
-        $msg .= "Rollback cannot continue because the ownership or safety of these snapshots cannot be determined.\n";
-        $msg .= "Manual inspection is required before retrying the rollback.\n";
+        $msg .= "Hint: User can add 'force_rollback' tag to VM/Container in order to conduct rollback.\n";
+        $msg .= "!! DANGER !! Rolling back with 'force_rollback' tag will result in destruction of newer storage side resources.\n";
 
         return $msg;
     }
 
+    $msg .= "Rollback is possible to the latest Proxmox managed snapshot only.\n\n";
+
     # Normal combined cases
-    if ($has_managed) {
-        my $count = scalar(@$snapshots);
-        $msg .= "there are $count newer Proxmox managed snapshots existing :\n";
+    my $printed = 0;
+    my $append_section = sub {
+        my ($label, $items) = @_;
+        return if !$items || ref($items) ne 'ARRAY' || !@$items;
+        $msg .= "---\n" if $printed;
+        $msg .= $label . "\n";
+        $msg .= $format_list->($items) . "\n\n";
+        $printed = 1;
+    };
 
-        foreach my $snap (@$snapshots) {
-            $msg .= "$snap\n";
-        }
+    $msg .= "Hint: please remove newer resources:\n";
 
-        $msg .= "\n";
-    }
+    $append_section->(
+          scalar(@$snapshots)
+          . " Proxmox managed snapshots: ",
+        $snapshots
+    ) if $has_managed;
 
-    if ($has_unmanaged) {
-        my $count = scalar(@$unmanaged_snaps);
-        $msg .= "there are $count newer unmanaged snapshots existing :\n";
+    $append_section->(
+        scalar(@$unmanaged_snaps)
+        . " storage side snapshots: ",
+        $unmanaged_snaps
+    ) if $has_unmanaged;
 
-        foreach my $snap (@$unmanaged_snaps) {
-            $msg .= "$snap\n";
-        }
+    $append_section->(
+        scalar(@$clones)
+        . " dependent clones : ",
+        $clones
+    ) if $has_clones;
 
-        $msg .= "\n";
-    }
+    $append_section->(
+        scalar(@$blockers_unknown)
+        . " newer rollback blockers with unknown origin: ",
+        $blockers_unknown
+    ) if $has_unknown;
 
-    if ($has_clones) {
-        my $count = scalar(@$clones);
-        $msg .= "there are $count dependent clones existing :\n";
-
-        foreach my $clone (@$clones) {
-            $msg .= "$clone\n";
-        }
-
-        $msg .= "\n";
-    }
-
-    if ($has_unknown) {
-        my $count = scalar(@$blockers_unknown);
-        $msg .= "there are $count newer rollback blockers with unknown origin :\n";
-
-        foreach my $item (@$blockers_unknown) {
-            $msg .= "$item\n";
-        }
-
-        $msg .= "\n";
-    }
-
-    $msg .= "will be lost in the process\n";
+    $msg .= "\n";
 
     return $msg;
 }
@@ -2960,7 +2962,7 @@ sub vm_tag_force_rollback_is_set {
 
     return 0 if !defined $conf->{tags};
 
-    my @tags = split(/;/, $conf->{tags});
+    my @tags = split(/[,;]/, $conf->{tags});
 
     foreach my $tag (@tags) {
         if ($tag eq 'force_rollback') {
