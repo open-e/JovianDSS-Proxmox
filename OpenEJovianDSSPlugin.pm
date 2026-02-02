@@ -697,6 +697,8 @@ sub volume_snapshot_rollback {
                     'snapshot', $snap, 'rollback', 'do', '--force-snapshots'
                 ]
             );
+        } else {
+            die "Failed to check if volume can be rolled back\n";
         }
     } else {
         OpenEJovianDSS::Common::joviandss_cmd(
@@ -712,7 +714,7 @@ sub volume_snapshot_rollback {
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "Volume ${volname}"
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snap )
-          . "rollback done" );
+          . " rollback done" );
 
 }
 

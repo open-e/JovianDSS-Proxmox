@@ -847,7 +847,7 @@ sub snapshots_list_from_vmid {
 }
 
 sub format_rollback_block_reason {
-    my ($volname, $target_snap, $snapshots, $clones, $unmanaged_snaps, $blockers_unknown) = @_;
+    my ($volname, $target_snap, $snapshots, $clones, $unmanaged_snaps, $blockers_unknown, $force_rollback) = @_;
 
     my $msg = '';
 
@@ -904,8 +904,6 @@ sub format_rollback_block_reason {
         return $msg;
     }
 
-    $msg .= "Rollback is possible to the latest Proxmox managed snapshot only.\n\n";
-
     # Normal combined cases
     my $printed = 0;
     my $append_section = sub {
@@ -916,6 +914,31 @@ sub format_rollback_block_reason {
         $msg .= $format_list->($items) . "\n\n";
         $printed = 1;
     };
+
+    # Force rollback is set with existing clone blockers
+    if ($force_rollback && ($has_managed || $has_clones) ) {
+
+        $msg .= "Unable to rollback.\n";
+        $msg .= "'force_rollback' tag will work only for storage side snapshots.\n";
+
+        $msg .= "Following resources have to be removed first:\n";
+
+        $append_section->(
+              scalar(@$snapshots)
+              . " Proxmox managed snapshots: ",
+            $snapshots
+        ) if $has_managed;
+
+        $append_section->(
+            scalar(@$clones)
+            . " dependent clones : ",
+            $clones
+        ) if $has_clones;
+
+        return $msg;
+    }
+
+    $msg .= "Rollback is possible to the latest Proxmox managed snapshot only.\n\n";
 
     $msg .= "Hint: please remove newer resources:\n";
 
@@ -939,7 +962,7 @@ sub format_rollback_block_reason {
 
     $append_section->(
         scalar(@$blockers_unknown)
-        . " newer rollback blockers with unknown origin: ",
+        . " newer rollback blockers of unknown origin: ",
         $blockers_unknown
     ) if $has_unknown;
 
@@ -977,6 +1000,7 @@ sub volume_rollback_check {
         foreach my $obj ( split( /\s+/, $line ) ) {
             push $blockers_found->@*, $obj;
             $blockers_found_flag = 1;
+            debugmsg($scfg, 'debug', "Rollback blocker found vol ${volname} snap ${snap} blocker ${obj}");
         }
     }
 
@@ -1016,6 +1040,7 @@ sub volume_rollback_check {
             $force_rollback_possible = 0;
             push $blockers->@*, $clone_blocker;
             push $blockers_clones->@*, $clone_blocker;
+            debugmsg($scfg, 'debug', "Rollback blocker clone blocker for vol ${volname} snap ${snap} clone ${clone_blocker}");
         } else {
             $force_rollback_possible = 0;
             push $blockers->@*, $blocker;
@@ -1031,7 +1056,8 @@ sub volume_rollback_check {
         $blockers_snapshots_tracked,
         $blockers_clones,
         $blockers_snapshots_untracked,
-        $blockers_unknown);
+        $blockers_unknown,
+        $force_rollback);
 
     die $msg;
 }
@@ -1555,7 +1581,7 @@ sub ha_state_get {
     my $json_out = '';
     my $outfunc  = sub { $json_out .= "$_[0]\n" };
 
-    run_command(
+    my $errcode = run_command(
         $cmd,
         outfunc => $outfunc,
         errfunc => sub {
@@ -1563,6 +1589,11 @@ sub ha_state_get {
         },
         noerr   => 1
     );
+
+    if ($errcode != 0) {
+        die "Unable to check HA status of ${vmid}\n";
+    }
+
     my $jdata = decode_json($json_out);
     unless (ref($jdata) eq 'HASH') {
         die "Unexpected HA status content ${json_out}";
@@ -1583,7 +1614,7 @@ sub ha_type_get {
     my $json_out = '';
     my $outfunc  = sub { $json_out .= "$_[0]\n" };
 
-    run_command(
+    my $errcode = run_command(
         $cmd,
         outfunc => $outfunc,
         errfunc => sub {
@@ -1591,6 +1622,11 @@ sub ha_type_get {
         },
         noerr   => 1
     );
+
+    if ($errcode != 0) {
+        die "Unable to check HA type of ${vmid}\n";
+    }
+
     my $jdata = decode_json($json_out);
     unless (ref($jdata) eq 'HASH') {
         die "Unexpected HA resource content ${json_out}";
