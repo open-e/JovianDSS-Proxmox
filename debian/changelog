@@ -1,3 +1,12 @@
+open-e-joviandss-proxmox-plugin (0.10.15-0) stable; urgency=medium
+
+  * Add HA status check to rollback to prevent rollback for HA‑managed VMs
+  * Add force rollback via VM tag for storage‑side snapshots (not managed by Proxmox)
+  * Fix snapshot age comparison when creation date is unavailable
+  * Improve rollback error messaging for clone dependencies
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Mon, 02 Feb 2026 08:00:00 +0000
+
 open-e-joviandss-proxmox-plugin (0.10.14-0) stable; urgency=medium
 
   * Fix content type check
