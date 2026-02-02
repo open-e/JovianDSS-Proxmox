@@ -1859,10 +1859,13 @@ class JovianDSSDriver(object):
                         isinstance(sp['creation'], int)):
                     ts_dt = datetime.datetime.fromtimestamp(
                                 sp['creation'])
-                    if ts_dt >= rdate:
-                        return True
+                    if rdate is not None:
+                        if ts_dt >= rdate:
+                            return True
+                        else:
+                            return False
                     else:
-                        return False
+                        return True
                 else:
                     return True
             else:
