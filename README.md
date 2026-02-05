@@ -11,21 +11,6 @@ It provides:
 - Thin Provisioning: On-demand volume allocation to optimize storage usage.
 - Cluster-wide Integration: Treat storage as shared, enabling live migration and HA features in Proxmox VE.
 
-
-
-## Versioning
-
-This package uses a centralized `VERSION` file that contains the authoritative version number (e.g., `0.10.5`).
-
-The Debian package uses format `0.10.5-0` where:
-- `0.10.5` = upstream software version (matches VERSION file)
-- `-0` = Debian revision for packaging-specific changes (dependencies, scripts, metadata)
-
-To see the currently installed version, run:
-```bash
-dpkg-query -W -f='${Version}\n' open-e-joviandss-proxmox-plugin
-```
-
 ## Documentation
 
 * Start using the plugin by going through the [Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start).
