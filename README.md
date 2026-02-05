@@ -2,14 +2,19 @@
 
 ## Overview
 
-The Open-E JovianDSS Proxmox plugin enables Proxmox VE clusters to use Open-E JovianDSS storage pools as backend storage via iSCSI.
+The Open-E JovianDSS Proxmox Plugin integrates Proxmox virtualization environment with high-grade enterprise Open-E JovianDSS storage,
+allowing administrator to manage everything from one place.
 
-It provides:
+Virtual machines and containers gain access to fast, reliable storage with built-in data protection — snapshots take seconds and use minimal space.
 
-- Automated Volume Management: Dynamically attach/detach iSCSI targets and manage multipath devices.
-- High Availability: Support for Open-E JovianDSS failover and multipathing across multiple network interfaces.
-- Thin Provisioning: On-demand volume allocation to optimize storage usage.
-- Cluster-wide Integration: Treat storage as shared, enabling live migration and HA features in Proxmox VE.
+JovianDSS delivers enterprise-class High Availability with redundant storage controllers and automatic failover, ensuring data remains accessible even if hardware fails.
+
+Combined with Proxmox's own HA capabilities for virtual machines, results in comprehensive protection at both the storage and virtualization layers.
+
+Deployment is [simple](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start), a single install script lets you set up the plugin across all nodes in your cluster with minimal effort.
+
+It's actively maintained and continuously improved to work smoothly with the latest Proxmox releases.
+
 
 ## Documentation
 
