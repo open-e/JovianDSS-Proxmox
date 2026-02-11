@@ -34,6 +34,8 @@ use PVE::Storage::Plugin;
 use PVE::JSONSchema qw(get_standard_option);
 
 use OpenEJovianDSS::Common qw(:all);
+use OpenEJovianDSS::NFSCommon qw(:all);
+
 use base qw(PVE::Storage::Plugin);
 
 my $PLUGIN_VERSION = '0.1.0';
@@ -166,6 +168,44 @@ sub options {
         debug              => { optional => 1 },
         log_file           => { optional => 1 },
     };
+}
+
+
+# Editing this function should be done with care
+# As it is used in other places to identify volume and snapshot location
+# within file system
+# Path should not create, delete, attach of detach any resources
+# It returns expected path
+# It does not check if actual object exists
+sub path {
+    my ( $class, $scfg, $volname, $storeid, $snapname ) = @_;
+    OpenEJovianDSS::Common::debugmsg($scfg, 'debug', "Path start for volume ${volname} "
+          . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
+          . "\n");
+
+    my $pool = OpenEJovianDSS::Common::get_pool($scfg);
+    my $storage_path = OpenEJovianDSS::Common::get_path($scfg);
+
+    my $path = undef;
+
+    # There is no need to deactivate volume
+    # Because of that we skip only volume deactivation
+    if ((! defined($snapname)) || ($snapname eq '') {
+        # Volume path
+        # it is simple as it represents same path structure as NFS
+        $path = $class->filesystem_path( $scfg, $volname, $snapname );
+        return $path;
+    } else {
+        # Snapshot path
+        #
+        # Snapshot path is more complicated as each snapshot is a dedicated share
+        #
+        # Storage path/private/mounts/{vmid}/{volname}/{snapname}/{storage root path}
+
+        my $mount_in_path = OpenEJovianDSS::NFSCommon::nas_volume_snapshot_mount_in_path($volname, $snapname);
+        $path = "${storage_path}/${mount_in_path}";
+        return $path;
+    }
 }
 
 sub check_config {
@@ -333,7 +373,6 @@ sub volume_snapshot_needs_fsfreeze {
 sub volume_snapshot_rollback {
     my ( $class, $scfg, $storeid, $volname, $snap ) = @_;
 
-    my $path = $scfg->{path};
     my $pool = $class->get_pool_name( $scfg );
     my $dataset = $class->get_dataset_name( $scfg );
 
@@ -341,36 +380,28 @@ sub volume_snapshot_rollback {
         "Rolling back volume ${volname} to snapshot ${snap}\n" );
 
     # Step 1: Activate snapshot (create clone, create temp share, mount it)
-    my $activation_info = OpenEJovianDSS::Common::nas_volume_activate(
+    OpenEJovianDSS::NFSCommon::nas_volume_snapshot_activate(
         $scfg, $storeid, $pool, $dataset, $volname, $snap );
 
-    my $mount_path = $activation_info->{mount_path};
+    my $vol_path = $class->path($scfg, $volname, $storeid, undef);
+    my $snap_path = $class->path($scfg, $volname, $storeid, $snap);
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
         "Snapshot ${snap} activated at ${mount_path}\n" );
 
     eval {
         # Step 2: Physically copy VM/container file from activated snapshot
-        my ( $vtype, $name, $vmid, $basename, $basevmid, $isBase, $format ) =
-            $class->parse_volname( $volname );
 
-        # Get the relative path for the volume within the storage
-        my $rel_path = $class->filesystem_path( $scfg, $volname );
-        $rel_path =~ s/^\Q$path\E\/?//;  # Remove base path
-
-        my $source_file = "${mount_path}/${rel_path}";
-        my $dest_file = "${path}/${rel_path}";
-
-        unless ( -e $source_file ) {
-            die "Source file ${source_file} does not exist in "
+        unless ( -e $snap_path ) {
+            die "Unable to identify volume ${volname} data within "
                 . "snapshot ${snap}\n";
         }
 
         OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "Copying ${source_file} to ${dest_file}\n" );
+            "Copying ${snap_path} to ${vol_path}\n" );
 
         # Use cp command to copy file, preserving attributes
-        PVE::Tools::run_command( [ 'cp', '-a', $source_file, $dest_file ],
+        PVE::Tools::run_command( [ 'cp', '--sparse=always', '-a', $source_file, $dest_file ],
             errmsg => "rollback copy failed" );
 
         OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
@@ -380,8 +411,8 @@ sub volume_snapshot_rollback {
 
     # Step 3: Deactivate snapshot (unmount, delete share, delete clone)
     eval {
-        OpenEJovianDSS::Common::nas_volume_deactivate(
-            $scfg, $storeid, $pool, $dataset, $snap );
+        OpenEJovianDSS::Common::nas_volume_snapshot_deactivate(
+            $scfg, $storeid, $pool, $dataset, $volname, $snap );
     };
     my $deactivate_err = $@;
 
@@ -424,6 +455,7 @@ sub volume_rollback_is_possible {
     # We use clone-based approach, so no blockers for child snapshots
     # The parent class handles basic blocker checks (e.g., running VM)
 
+    # TODO: consider checking free space
     return 1;
 }
 
@@ -441,6 +473,7 @@ sub activate_volume {
     my $path = $scfg->{path};
     my $server = $scfg->{server};
     my $export = $scfg->{export};
+    my $dataset = $class->get_dataset_name( $scfg );
 
     unless ( nfs_is_mounted( $server, $export, $path, $cache->{mountdata} ) ) {
         die "Storage '${storeid}' is not mounted. "
@@ -449,7 +482,19 @@ sub activate_volume {
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
         "Volume ${volname} activated (storage is mounted)\n" );
+    # There is no need to activate volume
+    # Because of that we skip only volume deactivation
+    if (! defined($snapname) ) {
+        return 1;
+    }
+    if ($snapname eq '') {
+        return 1;
+    }
 
+    my $activation_info = OpenEJovianDSS::Common::nas_volume_snapshot_activate(
+        $scfg, $storeid, $pool, $dataset, $volname, $snap );
+
+    my $mount_path = $activation_info->{mount_path};
     return 1;
 }
 
@@ -460,9 +505,22 @@ sub deactivate_volume {
         "Deactivate volume ${volname}"
         . ( $snapname ? " snapshot ${snapname}" : "" ) . "\n" );
 
+    # There is no need to deactivate volume
+    # Because of that we skip only volume deactivation
+    if (! defined($snapname) ) {
+        return 1;
+    }
+    if ($snapname eq '') {
+        return 1;
+    }
+
     my $pool = $class->get_pool_name( $scfg );
     my $dataset = $class->get_dataset_name( $scfg );
     my $path = $scfg->{path};
+
+    OpenEJovianDSS::Common::nas_volume_deactivate(
+        $scfg, $storeid, $pool, $dataset, $volname, $snapname );
+    return 1;
 
     # Get list of all snapshots that have published clones
     my $snapshots_with_clones;
@@ -525,7 +583,7 @@ sub deactivate_volume {
                             "Deactivating mounted snapshot ${snap}\n" );
 
                         OpenEJovianDSS::Common::nas_volume_deactivate(
-                            $scfg, $storeid, $pool, $dataset, $snap );
+                            $scfg, $storeid, $pool, $dataset, $volname, $snap );
 
                         $deactivated_count++;
                     }

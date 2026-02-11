@@ -151,6 +151,19 @@ Example:
 - Scripted cluster management
 - Remote execution where interactive prompts are not possible
 
+### assume-max-workers-one-yes
+
+**Default**: `False`
+
+
+Automatically set the Proxmox cluster option `Maximal Workers/bulk-action` to `1` without prompting.
+This is recommended to prevent concurrent worker locking issues observed with the plugin.
+
+Example:
+```bash
+./install.pl --all-nodes --assume-max-workers-one-yes
+```
+
 ### verbose
 
 **Default**: `False`
@@ -208,6 +221,12 @@ When using `--add-default-multipath-config`, the installer:
 - Reconfigures multipathd service
 
 **Warning**: The installer warns if existing SCST vendor devices are detected in multipath configuration, as the default config may affect their operation.
+
+### Cluster Max Workers
+
+After a successful installation, the installer may prompt to set the Proxmox cluster option
+`Maximal Workers/bulk-action` to `1`. Higher values can cause locking issues with concurrent
+plugin operations. Use `--assume-max-workers-one-yes` to apply this change automatically.
 
 ### Verification
 

@@ -1215,6 +1215,57 @@ class JovianRESTAPI(object):
 
         self._general_error(req, resp)
 
+    def get_nas_volume_snapshots_page(self, vname, page_id):
+        """get_snapshots_page
+
+        GET
+        /nas-volumes/<nas-vol vname>snapshots?page=<int:page_id>
+
+        :param page_id: page number
+        :return:
+        {
+            "data":
+            [
+                {"results": 1,
+                 "entries": [
+                     ]}
+                {
+                    "referenced": "65536",
+                    "name": "MySnapshot",
+                    "defer_destroy": "off",
+                    "userrefs": "0",
+                    "primarycache": "all",
+                    "type": "snapshot",
+                    "creation": "2015-5-27 16:8:35",
+                    "refcompressratio": "1.00x",
+                    "compressratio": "1.00x",
+                    "written": "65536",
+                    "used": "0",
+                    "clones": "",
+                    "mlslabel": "none",
+                    "secondarycache": "all"
+                }
+            ],
+            "error": null
+        }
+        """
+        req = (('/nas-volumes/%(vname)s/snapshots?page=%(page)s') %
+               {'vname': vname, 'page': str(page_id)})
+
+        LOG.debug("get page %d of volume %s snapshots", page_id, vname)
+
+        resp = self.rproxy.pool_request('GET', req)
+
+        if not resp["error"] and resp["code"] == 200:
+            return resp["data"]["entries"]
+
+        if resp['error']:
+            if 'message' in resp['error']:
+                if self.resource_dne_msg.match(resp['error']['message']):
+                    raise jexc.JDSSResourceNotFoundException(res=vname)
+
+        self._general_error(req, resp)
+
     def get_pool_stats(self):
         """get_pool_stats.
 

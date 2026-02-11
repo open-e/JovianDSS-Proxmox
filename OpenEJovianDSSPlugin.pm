@@ -46,7 +46,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.10.14';
+my $PLUGIN_VERSION = '0.10.15';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -672,32 +672,74 @@ sub volume_snapshot_rollback {
 
     my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "Volume ${volname}"
-          . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snap )
-          . "rollback start" );
-
-    OpenEJovianDSS::Common::joviandss_cmd(
-        $scfg,
-        $storeid,
-        [
-            "pool",     $pool, "volume",   $volname,
-            "snapshot", $snap, "rollback", "do"
-        ]
-    );
+    my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "Volume ${volname}"
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snap )
-          . "rollback done" );
+          . " rollback start" );
+
+    my $force_rollback = OpenEJovianDSS::Common::vm_tag_force_rollback_is_set($scfg, $vmid);
+
+    if ( $force_rollback ) {
+        # volume rollback check get called 2 times.
+        # It is better to call it 2 times then rely on proxmox logic
+        my $blockers = [];
+        my $rollback_check_ok = OpenEJovianDSS::Common::volume_rollback_check( $scfg,
+             $storeid, $vmid, $volname, $snap, $blockers );
+        if ( $rollback_check_ok ) {
+
+            OpenEJovianDSS::Common::joviandss_cmd(
+                $scfg,
+                $storeid,
+                [
+                    'pool',     $pool, 'volume',   $volname,
+                    'snapshot', $snap, 'rollback', 'do', '--force-snapshots'
+                ]
+            );
+        } else {
+            die "Failed to check if volume can be rolled back\n";
+        }
+    } else {
+        OpenEJovianDSS::Common::joviandss_cmd(
+            $scfg,
+            $storeid,
+            [
+                "pool",     $pool, "volume",   $volname,
+                "snapshot", $snap, "rollback", "do"
+            ]
+        );
+    }
+
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+            "Volume ${volname}"
+          . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snap )
+          . " rollback done" );
 
 }
 
 sub volume_rollback_is_possible {
     my ( $class, $scfg, $storeid, $volname, $snap, $blockers ) = @_;
 
+    my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+
+    my $managed_by_ha = OpenEJovianDSS::Common::ha_state_is_defined($scfg, $vmid);
+    if ($managed_by_ha) {
+        my $hastate = OpenEJovianDSS::Common::ha_state_get($scfg, $vmid);
+
+        if (($hastate ne 'ignored')) {
+            my $resource_type = OpenEJovianDSS::Common::ha_type_get($scfg, $vmid);
+            my $msg =
+            "Rollback blocked: ${resource_type}:${vmid} is controlled by High Availability (state: ${hastate}).\n"
+            . "Rollback requires temporary manual control to prevent HA from restarting or moving the resource.\n"
+            . "Disable HA management before retrying:\n"
+            . "Web UI: Datacenter -> HA -> Resources -> set state to ignored\n"
+            . "CLI: ha-manager set ${resource_type}:${vmid} --state ignored\n";
+            die $msg;
+        }
+    }
     return OpenEJovianDSS::Common::volume_rollback_check( $scfg,
-        $storeid, $volname, $snap, $blockers );
+            $storeid, $vmid, $volname, $snap, $blockers );
 }
 
 sub volume_snapshot_delete {

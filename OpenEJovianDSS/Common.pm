@@ -37,6 +37,7 @@ use JSON qw(decode_json from_json to_json);
 
 use Time::HiRes qw(gettimeofday);
 
+use PVE::INotify;
 use PVE::Tools qw(run_command);
 
 our @EXPORT_OK = qw(
@@ -92,7 +93,6 @@ our @EXPORT_OK = qw(
   debugmsg
   joviandss_cmd
   volume_snapshots_info
-  nas_volume_snapshots_info
   volume_rollback_check
 
   get_iscsi_addresses
@@ -108,11 +108,12 @@ our @EXPORT_OK = qw(
 
   volume_activate
   volume_deactivate
-
-  nas_volume_activate
-  nas_volume_deactivate
-
   store_settup
+
+  ha_state_get
+  ha_state_is_defined
+  ha_type_get
+
 );
 
 our %EXPORT_TAGS = ( all => [@EXPORT_OK], );
@@ -714,41 +715,269 @@ sub volume_snapshots_info {
     return $snapshots;
 }
 
-sub nas_volume_snapshots_info {
-    my ( $scfg, $storeid, $dataset, $volname ) = @_;
+sub vmid_is_qemu {
+    my ( $scfg, $vmid) = @_;
 
-    my $pool = get_pool($scfg);
+    my $nodename = PVE::INotify::nodename();
+    my $cmd = [
+        'pvesh', 'get', "/nodes/${nodename}/qemu/${vmid}/status",
+        '--output-format', 'json'
+    ];
+    my $json_out = '';
+    my $err_out  = '';
+    my $outfunc  = sub { $json_out .= "$_[0]\n" };
+    my $errfunc  = sub { $err_out  .= "$_[0]\n" };
 
-    # Use -d flag because dataset name from export property is the exact dataset name on JovianDSS
-    my $output = joviandss_cmd(
-        $scfg,
-        $storeid,
-        [
-            'pool', $pool, 'nas_volume', '-d', $dataset,
-            'snapshots', 'list'
-        ]
+    my $exitcode = run_command(
+        $cmd,
+        outfunc => $outfunc,
+        errfunc => $errfunc,
+        noerr   => 1
     );
 
-    my $snapshots = {};
-    my @lines = split( /\n/, $output );
-    for my $line (@lines) {
-        $line =~ s/^\s+|\s+$//g;
-        next unless length($line) > 0;
-        debugmsg( $scfg, "debug",
-            "NAS volume ${dataset} has snapshot ${line}\n" );
-        $snapshots->{$line} = {
-            name => $line,
-        };
+    if ($exitcode != 0) {
+        if ($err_out =~ /does not exist/) {
+            debugmsg($scfg, 'debug', "${vmid} is not Qemu");
+            return 0;
+        }
+        debugmsg($scfg, 'debug', "Unable to check if ${vmid} is Qemu: ${err_out}");
+        return 0;
+    }
+    return 1;
+}
+
+sub vmid_is_lxc {
+    my ($scfg, $vmid) = @_;
+
+    my $nodename = PVE::INotify::nodename();
+    my $cmd = [
+        'pvesh', 'get', "/nodes/${nodename}/lxc/${vmid}/status",
+        '--output-format', 'json'
+    ];
+    my $json_out = '';
+    my $err_out  = '';
+    my $outfunc  = sub { $json_out .= "$_[0]\n" };
+    my $errfunc  = sub { $err_out  .= "$_[0]\n" };
+
+    my $exitcode = run_command(
+        $cmd,
+        outfunc => $outfunc,
+        errfunc => $errfunc,
+        noerr   => 1
+    );
+
+    if ($exitcode != 0) {
+        if ($err_out =~ /does not exist/) {
+            debugmsg($scfg, 'debug', "${vmid} is not LXC");
+            return 0;
+        }
+        debugmsg($scfg, 'debug', "Unable to check if ${vmid} is LXC ${err_out}");
+        return 0;
+    }
+    return 1;
+}
+
+sub vmid_identify_virt_type {
+    # Check if there is a qemu config file or lxc config file
+    # If one config file found reply with it
+    # If unable to identify config reply with undef
+    my ($scfg, $vmid) = @_;
+
+    my $is_qemu = vmid_is_qemu($scfg, $vmid);
+
+    my $is_lxc = vmid_is_lxc($scfg, $vmid);
+
+    if ( $is_qemu == 1 && $is_lxc == 0 ) {
+        return 'qemu';
+    }
+    if ( $is_qemu == 0 && $is_lxc == 1) {
+        return 'lxc';
+    }
+    if ($is_qemu == 1 && $is_lxc == 1 ) {
+        debugmsg($scfg, 'debug', "Unable to identify virtualisation type for ${vmid}, seams to be both Qemu and LXC");
+        return undef;
+    }
+    debugmsg($scfg, 'debug', "Unable to identify virtualisation type for ${vmid}, seams neither Qemu nor LXC");
+    return undef;
+}
+
+sub snapshots_list_from_vmid {
+    my ( $scfg, $vmid) = @_;
+
+    my $nodename = PVE::INotify::nodename();
+
+    my $virtualisation = vmid_identify_virt_type( $scfg, $vmid);
+
+    if (!defined($virtualisation)) {
+        die "Unable to identify snapshots belonging to VM/CT. Unable to conduct forced rollback\n";
     }
 
-    return $snapshots;
+    my @names;
+
+    my $cmd = [
+        'pvesh', 'get', "/nodes/${nodename}/${virtualisation}/${vmid}/snapshot",
+        '--output-format', 'json'
+    ];
+    my $json_out = '';
+    my $err_out  = '';
+    my $outfunc  = sub { $json_out .= "$_[0]\n" };
+    my $errfunc  = sub { $err_out  .= "$_[0]\n" };
+
+    my $exitcode = run_command(
+        $cmd,
+        outfunc => $outfunc,
+        errfunc => $errfunc,
+        noerr   => 1
+    );
+
+    if ($exitcode != 0) {
+        die "Unable to acquire snapshots for ${vmid}\n";
+    }
+
+    my $snapshots = eval { decode_json($json_out) };
+    return [] if ref($snapshots) ne 'ARRAY';
+
+    foreach my $snap (@$snapshots) {
+        next if !exists $snap->{name};
+        next if $snap->{name} eq 'current';
+
+        push @names, $snap->{name};
+    }
+
+    return \@names;
+}
+
+sub format_rollback_block_reason {
+    my ($volname, $target_snap, $snapshots, $clones, $unmanaged_snaps, $blockers_unknown, $force_rollback) = @_;
+
+    my $msg = '';
+
+    my $format_list = sub {
+        my ($items) = @_;
+        return '' if !$items || ref($items) ne 'ARRAY';
+        return '' if @$items == 0;
+
+        my @out;
+        if (@$items > 5) {
+            push @out, $items->[0], $items->[1], '...', $items->[-1];
+        } else {
+            @out = @$items;
+        }
+        return join('; ', @out);
+    };
+
+    my $has_managed   = $snapshots && @$snapshots;
+    my $has_clones    = $clones && @$clones;
+    my $has_unmanaged = $unmanaged_snaps && @$unmanaged_snaps;
+    my $has_unknown   = $blockers_unknown && @$blockers_unknown;
+
+
+
+    # ------------------------------------------------------------
+    # Special case: ONLY unmanaged snapshots exist
+    # ------------------------------------------------------------
+    if ($has_unmanaged && !$has_managed && !$has_clones && !$has_unknown) {
+
+        my $count = scalar(@$unmanaged_snaps);
+
+        $msg .= "There are $count newer storage side snapshots:\n";
+        $msg .= $format_list->($unmanaged_snaps) . "\n";
+
+        $msg .= "\n";
+        $msg .= "Hint: User can add 'force_rollback' tag to VM/Container in order to conduct rollback.\n";
+        $msg .= "!! DANGER !! Rolling back with 'force_rollback' tag will result in destruction of newer storage side snapshots.\n";
+
+        return $msg;
+    }
+
+    # ONLY unknown blockers exist
+    if ($has_unknown && !$has_managed && !$has_clones && !$has_unmanaged) {
+
+        my $count = scalar(@$blockers_unknown);
+
+        $msg .= "There are $count newer rollback blockers of unknown origin:\n";
+        $msg .= $format_list->($blockers_unknown) . "\n";
+
+        $msg .= "\n";
+        $msg .= "Hint: User can add 'force_rollback' tag to VM/Container in order to conduct rollback.\n";
+        $msg .= "!! DANGER !! Rolling back with 'force_rollback' tag will result in destruction of newer storage side resources.\n";
+
+        return $msg;
+    }
+
+    # Normal combined cases
+    my $printed = 0;
+    my $append_section = sub {
+        my ($label, $items) = @_;
+        return if !$items || ref($items) ne 'ARRAY' || !@$items;
+        $msg .= "---\n" if $printed;
+        $msg .= $label . "\n";
+        $msg .= $format_list->($items) . "\n\n";
+        $printed = 1;
+    };
+
+    # Force rollback is set with existing clone blockers
+    if ($force_rollback && ($has_managed || $has_clones) ) {
+
+        $msg .= "Unable to rollback.\n";
+        $msg .= "'force_rollback' tag will work only for storage side snapshots.\n";
+
+        $msg .= "Following resources have to be removed first:\n";
+
+        $append_section->(
+              scalar(@$snapshots)
+              . " Proxmox managed snapshots: ",
+            $snapshots
+        ) if $has_managed;
+
+        $append_section->(
+            scalar(@$clones)
+            . " dependent clones : ",
+            $clones
+        ) if $has_clones;
+
+        return $msg;
+    }
+
+    $msg .= "Rollback is possible to the latest Proxmox managed snapshot only.\n\n";
+
+    $msg .= "Hint: please remove newer resources:\n";
+
+    $append_section->(
+          scalar(@$snapshots)
+          . " Proxmox managed snapshots: ",
+        $snapshots
+    ) if $has_managed;
+
+    $append_section->(
+        scalar(@$unmanaged_snaps)
+        . " storage side snapshots: ",
+        $unmanaged_snaps
+    ) if $has_unmanaged;
+
+    $append_section->(
+        scalar(@$clones)
+        . " dependent clones : ",
+        $clones
+    ) if $has_clones;
+
+    $append_section->(
+        scalar(@$blockers_unknown)
+        . " newer rollback blockers of unknown origin: ",
+        $blockers_unknown
+    ) if $has_unknown;
+
+    $msg .= "\n";
+
+    return $msg;
 }
 
 sub volume_rollback_check {
-    my ( $scfg, $storeid, $volname, $snap, $blockers ) = @_;
+    my ( $scfg, $storeid, $vmid, $volname, $snap, $blockers ) = @_;
 
     my $pool = get_pool($scfg);
 
+    $blockers //= [];
     my $res;
     eval {
         $res = joviandss_cmd(
@@ -766,20 +995,72 @@ sub volume_rollback_check {
 "Unable to rollback volume '${volname}' to snapshot '${snap}' because of: $@";
     }
 
-    my $blocker_found = 0;
-    $blockers //= [];
+    my $blockers_found_flag = 0;
+    my $blockers_found = [];
     foreach my $line ( split( /\n/, $res ) ) {
         foreach my $obj ( split( /\s+/, $line ) ) {
-            push $blockers->@*, $obj;
-            $blocker_found = 1;
+            push $blockers_found->@*, $obj;
+            $blockers_found_flag = 1;
+            debugmsg($scfg, 'debug', "Rollback blocker found vol ${volname} snap ${snap} blocker ${obj}");
         }
     }
 
-    die
-"Unable to rollback volume '${volname}' to snapshot ${snap}' as resources ${res} will be lost in the process\n"
-      if $blocker_found > 0;
+    if ( ! $blockers_found_flag ) {
+        return 1;
+    }
 
-    return 1;
+    my $blockers_snapshots_untracked = [];
+    my $blockers_snapshots_tracked = [];
+    my $blockers_clones = [];
+    my $blockers_unknown = [];
+
+    my $force_rollback = vm_tag_force_rollback_is_set($scfg, $vmid);
+
+    my $managed_snapshots = snapshots_list_from_vmid($scfg, $vmid);
+    my $force_rollback_possible = 1;
+
+    foreach my $blocker ( $blockers_found->@* ) {
+        if ( $blocker =~ /^snap:(.+)$/ ) {
+            my $snap_blocker = $1;
+            push $blockers->@*, $snap_blocker;
+            my $managed_found = 0;
+            foreach my $snap ( $managed_snapshots->@* ) {
+                if ($snap eq $snap_blocker) {
+                    $force_rollback_possible = 0;
+                    $managed_found = 1;
+                    push $blockers_snapshots_tracked->@*, $snap_blocker;
+                    last;
+                }
+            }
+            if ( ! $managed_found ) {
+                    push $blockers_snapshots_untracked->@*, $snap_blocker;
+            }
+
+        } elsif ($blocker =~ /^clone:(.+)$/) {
+            my $clone_blocker = $1;
+            $force_rollback_possible = 0;
+            push $blockers->@*, $clone_blocker;
+            push $blockers_clones->@*, $clone_blocker;
+            debugmsg($scfg, 'debug', "Rollback blocker clone blocker for vol ${volname} snap ${snap} clone ${clone_blocker}");
+        } else {
+            $force_rollback_possible = 0;
+            push $blockers->@*, $blocker;
+            push $blockers_unknown->@*, $blocker;
+        }
+    }
+
+    if ( $force_rollback && $force_rollback_possible) {
+        return 1;
+    }
+
+    my $msg = format_rollback_block_reason($volname, $snap,
+        $blockers_snapshots_tracked,
+        $blockers_clones,
+        $blockers_snapshots_untracked,
+        $blockers_unknown,
+        $force_rollback);
+
+    die $msg;
 }
 
 sub get_iscsi_addresses {
@@ -1250,6 +1531,114 @@ sub get_device_mapper_name {
         return $1;
     }
     return undef;
+}
+
+sub ha_state_is_defined {
+     my ($scfg, $vmid) = @_;
+
+     my $cmd = [
+         'pvesh', 'get', "/cluster/ha/resources/${vmid}",
+         '--output-format', 'json'
+     ];
+     my $json_out = '';
+     my $err_out  = '';
+     my $outfunc  = sub { $json_out .= "$_[0]\n" };
+     my $errfunc  = sub { $err_out  .= "$_[0]\n" };
+
+     my $exitcode = run_command(
+         $cmd,
+         outfunc => $outfunc,
+         errfunc => $errfunc,
+         noerr   => 1
+     );
+
+     if ($exitcode != 0) {
+         if ($err_out =~ /no such resource/) {
+             debugmsg($scfg, 'debug', "VM ${vmid} is not HA-managed");
+             return 0;
+         }
+         die "Failed to check HA status for ${vmid}: ${err_out}";
+     }
+
+     if ($json_out eq '') {
+         debugmsg($scfg, 'debug', "VM ${vmid} is not HA-managed (empty response)");
+         return 0;
+     }
+
+     my $jdata = eval { decode_json($json_out) };
+     if ($@ || ref($jdata) ne 'HASH') {
+         die "Unexpected HA status response for ${vmid}: ${json_out}";
+     }
+
+     debugmsg($scfg, 'debug', "VM ${vmid} is HA-managed");
+     return 1;
+}
+
+
+sub ha_state_get {
+    my ($scfg, $vmid) = @_;
+
+    my $cmd = ['pvesh', 'get', "/cluster/ha/resources/${vmid}", '--output-format', 'json'];
+    my $json_out = '';
+    my $outfunc  = sub { $json_out .= "$_[0]\n" };
+
+    my $errcode = run_command(
+        $cmd,
+        outfunc => $outfunc,
+        errfunc => sub {
+            cmd_log_output($scfg, 'error', $cmd, shift);
+        },
+        noerr   => 1
+    );
+
+    if ($errcode != 0) {
+        die "Unable to check HA status of ${vmid}\n";
+    }
+
+    my $jdata = decode_json($json_out);
+    unless (ref($jdata) eq 'HASH') {
+        die "Unexpected HA status content ${json_out}";
+    }
+    if (exists $jdata->{'state'}) {
+        my $state = $jdata->{'state'};
+        debugmsg( $scfg, 'debug', "HA state of ${vmid} is ${state}");
+        return $state;
+    } else {
+        die "Unable to identify state of ${vmid}\n";
+    }
+}
+
+sub ha_type_get {
+    my ($scfg, $vmid) = @_;
+
+    my $cmd = ['pvesh', 'get', "/cluster/ha/resources/${vmid}", '--output-format', 'json'];
+    my $json_out = '';
+    my $outfunc  = sub { $json_out .= "$_[0]\n" };
+
+    my $errcode = run_command(
+        $cmd,
+        outfunc => $outfunc,
+        errfunc => sub {
+            cmd_log_output($scfg, 'error', $cmd, shift);
+        },
+        noerr   => 1
+    );
+
+    if ($errcode != 0) {
+        die "Unable to check HA type of ${vmid}\n";
+    }
+
+    my $jdata = decode_json($json_out);
+    unless (ref($jdata) eq 'HASH') {
+        die "Unexpected HA resource content ${json_out}";
+    }
+    if (exists $jdata->{'type'}) {
+        my $type = $jdata->{'type'};
+        debugmsg( $scfg, 'debug', "HA type of ${vmid} is ${type}");
+        return $type;
+    } else {
+        die "Unable to identify type of ${vmid}\n";
+    }
 }
 
 sub get_multipath_device_name {
@@ -2575,232 +2964,50 @@ sub store_settup {
     }
 }
 
-# NAS volume activation for NFS snapshot rollback
-# Creates clone, temporary share, and mounts it for file copying
-sub nas_volume_activate {
-    my ( $scfg, $storeid, $pool, $dataset, $volname, $snapname ) = @_;
+sub vm_tag_force_rollback_is_set {
+    my ( $scfg, $vmid ) = @_;
 
-    my $published = 0;
-    my $share_mounted = 0;
+    my $virt_type = vmid_identify_virt_type($scfg, $vmid);
 
-    my $clone_name;
-    my $mount_path;
-    my $server = $scfg->{server};
+    if ( ! defined($virt_type) ) {
+        return 0;
+    }
+    my $nodename = PVE::INotify::nodename();
 
-    debugmsg( $scfg, "debug",
-        "Activating dataset ${dataset} volume ${volname} snapshots ${snapname}\n" );
+    my $cmd = [
+        'pvesh', 'get', "/nodes/${nodename}/${virt_type}/${vmid}/config",
+        '--output-format', 'json'
+    ];
+    my $json_out = '';
+    my $err_out  = '';
+    my $outfunc  = sub { $json_out .= "$_[0]\n" };
+    my $errfunc  = sub { $err_out  .= "$_[0]\n" };
 
+    my $exitcode = run_command(
+        $cmd,
+        outfunc => $outfunc,
+        errfunc => $errfunc,
+        noerr   => 1
+    );
+
+    my $conf;
     eval {
-        # Step 1: Publish snapshot (creates clone with proper naming and NFS share)
-        debugmsg( $scfg, "debug",
-            "Publishing snapshot ${snapname} for proxmox volume ${volname} from dataset ${dataset}\n" );
-
-        my $cmd_output = joviandss_cmd( $scfg, $storeid,
-            [ "pool", $pool,
-              "nas_volume", "-d", $dataset,
-              "snapshot", '--proxmox-volume', ${volname} , $snapname,
-              "publish" ] );
-
-        # Parse clone name from output (last non-empty line)
-        my @lines = split( /\n/, $cmd_output );
-        for my $line ( reverse @lines ) {
-            $line =~ s/^\s+|\s+$//g;  # trim whitespace
-            if ( length( $line ) > 0 ) {
-                $clone_name = $line;
-                last;
-            }
-        }
-
-        unless ( $clone_name ) {
-            die "Failed to get clone name from publish command output\n";
-        }
-
-        debugmsg( $scfg, "debug",
-            "Snapshot published as clone ${clone_name}\n" );
-
-        $published = 1;
-
-        # Step 2: Mount the snapshot clone to storage private area
-        # Mount point: {storage_path}/private/snapshots/{clone_name}
-        my $path = get_path( $scfg );
-        my $snapshots_dir = "${path}/private/snapshots";
-
-        # Create snapshots directory if it doesn't exist
-        make_path( $snapshots_dir )
-            unless -d $snapshots_dir;
-
-        $mount_path = "${snapshots_dir}/${clone_name}";
-
-        debugmsg( $scfg, "debug",
-            "Creating mount point ${mount_path}\n" );
-
-        # Create mount directory
-        make_path( $mount_path );
-
-        # Mount the NFS share
-        # Format: server:/Pools/Pool-0/clone_name
-        my $nfs_export = "/Pools/${pool}/${clone_name}";
-
-        debugmsg( $scfg, "debug",
-            "Mounting ${server}:${nfs_export} to ${mount_path}\n" );
-
-        my $mount_cmd = [ '/bin/mount', '-o', 'ro', '-t', 'nfs',
-                         "${server}:${nfs_export}", $mount_path ];
-
-        PVE::Tools::run_command( $mount_cmd,
-            errmsg => "Failed to mount NFS share for snapshot clone" );
-
-        $share_mounted = 1;
-
+        $conf = decode_json($json_out);
     };
-    my $err = $@;
 
-    if ( $err ) {
-        warn "NAS volume activation failed: $err";
+    return 0 if $@ || ref($conf) ne 'HASH';
 
-        # Cleanup in reverse order
-        if ( $share_mounted ) {
-            eval {
-                debugmsg( $scfg, "debug",
-                    "Unmounting ${mount_path}\n" );
-                PVE::Tools::run_command( [ '/bin/umount', $mount_path ],
-                    errmsg => "Failed to unmount share" );
-            };
-            warn "Unmount failed during cleanup: $@" if $@;
+    return 0 if !defined $conf->{tags};
 
-            # Remove mount directory (should be empty after unmount)
-            eval {
-                rmdir( $mount_path ) if -d $mount_path;
-            };
-        }
+    my @tags = split(/[,;]/, $conf->{tags});
 
-        if ( $published ) {
-            eval {
-                debugmsg( $scfg, "debug",
-                    "Unpublishing snapshot\n" );
-                joviandss_cmd( $scfg, $storeid,
-                    [ "pool", $pool,
-                      "nas_volume", "-d", $dataset,
-                      "snapshot", $snapname,
-                      "unpublish" ] );
-            };
-            warn "Unpublish failed during cleanup: $@" if $@;
-        }
-
-        die $err;
-    }
-
-    unless ( defined( $mount_path ) && -d $mount_path ) {
-        die "Unable to provide mount path for NAS volume "
-            . "${pool}/${dataset} snapshot ${snapname} after activation\n";
-    }
-
-    debugmsg( $scfg, "debug",
-        "NAS volume snapshot activated at ${mount_path}\n" );
-
-    return {
-        mount_path  => $mount_path,
-        clone_name  => $clone_name,
-    };
-}
-
-# NAS volume deactivation for NFS snapshot rollback cleanup
-# Unmounts share and unpublishes snapshot (deletes share and clone)
-sub nas_volume_deactivate {
-    my ( $scfg, $storeid, $pool, $dataset, $snapname ) = @_;
-
-    debugmsg( $scfg, "debug",
-        "Deactivating NAS dataset ${dataset} volume ${volname} snapshot ${snapname}\n" );
-
-    my $cleanup_errors = 0;
-
-    # Step 1: Get the publish clone name to construct mount path
-    # TODO: so the goal here is to go with share path
-    # acquire share path and if it is a snapshot unmount it
-    # if it is a snapsho remove dedicated share
-    my $share_path;
-    eval {
-        my $cmd_output = joviandss_cmd( $scfg, $storeid,
-            [ "pool", $pool,
-              "nas_volume", "-d", $dataset,
-              "snapshot", '--proxmox-volume', $volname, $snapname,
-              "get", "--publish-name" ] );
-
-        # Parse clone name from output (last non-empty line)
-        my @lines = split( /\n/, $cmd_output );
-        for my $line ( reverse @lines ) {
-            $line =~ s/^\s+|\s+$//g;  # trim whitespace
-            if ( length( $line ) > 0 ) {
-                $clone_name = $line;
-                last;
-            }
-        }
-    };
-    if ( $@ ) {
-        warn "Failed to get clone name: $@";
-        $cleanup_errors++;
-    }
-
-    # Step 2: Unmount the snapshot clone
-    my $mount_path;
-    if ( $clone_name ) {
-        my $path = get_path( $scfg );
-        $mount_path = "${path}/private/snapshots/${clone_name}";
-    }
-    if ( defined( $mount_path ) && -d $mount_path ) {
-        eval {
-            debugmsg( $scfg, "debug",
-                "Unmounting ${mount_path}\n" );
-
-            # Check if it's actually mounted
-            my $is_mounted = 0;
-            open( my $fh, '<', '/proc/mounts' )
-                or die "Cannot read /proc/mounts: $!\n";
-            while ( my $line = <$fh> ) {
-                if ( $line =~ /\s\Q$mount_path\E\s/ ) {
-                    $is_mounted = 1;
-                    last;
-                }
-            }
-            close( $fh );
-
-            if ( $is_mounted ) {
-                PVE::Tools::run_command( [ '/bin/umount', $mount_path ],
-                    errmsg => "Failed to unmount ${mount_path}" );
-            }
-
-            # Remove mount directory (should be empty after unmount)
-            rmdir( $mount_path ) if -d $mount_path;
-        };
-        if ( $@ ) {
-            warn "Failed to unmount: $@";
-            $cleanup_errors++;
+    foreach my $tag (@tags) {
+        if ($tag eq 'force_rollback') {
+            return 1;
         }
     }
 
-    # Step 3: Unpublish snapshot (deletes NFS share and clone)
-    eval {
-        debugmsg( $scfg, "debug",
-            "Unpublishing snapshot ${snapname}\n" );
-        joviandss_cmd( $scfg, $storeid,
-            [ "pool", $pool,
-              "nas_volume", "-d", $dataset,
-              "snapshot", $snapname,
-              "unpublish" ] );
-    };
-    if ( $@ ) {
-        warn "Failed to unpublish snapshot: $@";
-        $cleanup_errors++;
-    }
-
-    if ( $cleanup_errors > 0 ) {
-        warn "NAS volume deactivation completed with ${cleanup_errors} errors\n";
-    } else {
-        debugmsg( $scfg, "debug",
-            "NAS volume snapshot deactivated successfully\n" );
-    }
-
-    return 1;
+    return 0;
 }
 
 1;

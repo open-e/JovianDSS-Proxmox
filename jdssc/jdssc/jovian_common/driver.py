@@ -38,7 +38,7 @@ class JovianDSSDriver(object):
 
     def __init__(self, config):
 
-        self.VERSION = "0.10.14"
+        self.VERSION = "0.10.15"
 
         self.configuration = config
         self._pool = self.configuration.get('jovian_pool', 'Pool-0')
@@ -1603,7 +1603,7 @@ class JovianDSSDriver(object):
         else:
             dname = jcom.vname(dataset_name)
         try:
-            data = self.ra.get_nas_snapshots(dname)
+            data = self._list_nas_volume_snapshots(dname, dname)
         except jexc.JDSSException as ex:
             LOG.error("List NAS snapshots error. Because %(err)s",
                       {"err": ex})
@@ -1972,21 +1972,76 @@ class JovianDSSDriver(object):
                     LOG.warning("Linked clone present among volumes")
                 continue
 
-            vid = jcom.vid_from_sname(snap['name'])
-            if vid is None or vid == ovolume_name:
-                # That is used in create_snapshot function to provide detailed
-                # info in case volume already have snapshot
+            if jcom.is_snapshot(snap['name']):
+                vid = jcom.vid_from_sname(snap['name'])
+                if vid is None or vid == ovolume_name:
+                    # That is used in create_snapshot function
+                    # to provide detailed
+                    # info in case volume already have snapshot
+                    snap['volume_name'] = vname
+
+                    out.append(snap)
+                    for clone in self._list_snapshot_clones_names(vname,
+                                                                  snap['name']):
+
+                        LOG.debug(
+                            "List volume recursion step for list_volume_snapshots")
+                        out.extend(self._list_volume_snapshots(ovolume_name,
+                                                               clone))
+                    continue
+            if all:
                 snap['volume_name'] = vname
-
                 out.append(snap)
-                for clone in self._list_snapshot_clones_names(vname,
-                                                              snap['name']):
 
-                    LOG.debug(
-                        "List volume recursion step for list_volume_snapshots")
-                    out.extend(self._list_volume_snapshots(ovolume_name,
-                                                           clone))
+        return out
+
+    def _list_nas_volume_snapshots(self, ovolume_name, vname):
+        """List volume snapshots
+
+        :return: list of volume related snapshots
+        """
+        out = []
+        snapshots = []
+        i = 0
+        # First we list all volume snapshots page by page
+        try:
+            while True:
+                spage = self.ra.get_nas_volume_snapshots_page(vname, i)
+
+                if len(spage) > 0:
+                    LOG.debug("Page: %s", str(spage))
+
+                    snapshots.extend(spage)
+                    i += 1
+                else:
+                    break
+
+        except jexc.JDSSException as ex:
+            LOG.error("List snapshots error. Because %(err)s",
+                      {"err": ex})
+
+        # Each snapshot we check
+        for snap in snapshots:
+            # if that is a linked clone one we might not
+            # want to list it for specific volume
+            if jcom.is_volume(snap['name']):
+                if all:
+                    snap['volume_name'] = vname
+                    out.append(snap)
+                else:
+                    LOG.warning("Linked clone present among volumes")
                 continue
+
+            if jcom.is_snapshot(snap['name']):
+                vid = jcom.vid_from_sname(snap['name'])
+                if vid is None or vid == ovolume_name:
+                    # That is used in create_snapshot function
+                    # to provide detailed
+                    # info in case volume already have snapshot
+                    snap['volume_name'] = vname
+
+                    out.append(snap)
+                    continue
             if all:
                 snap['volume_name'] = vname
                 out.append(snap)
@@ -2160,10 +2215,10 @@ class JovianDSSDriver(object):
         :return: { 'snapshots': [<list of snapshots preventing rollback>],
                    'clones':    [<list of clones preventing rollback>]}
         """
-        rsnap={}
+        rsnap = {}
 
         try:
-            rsnap=self.ra.get_snapshot(vname, sname)
+            rsnap = self.ra.get_snapshot(vname, sname)
         except jexc.JDSSResourceNotFoundException as nferr:
             LOG.debug('Volume %s snapshot %s not found',
                       jcom.idname(vname), jcom.idname(sname))
@@ -2177,12 +2232,12 @@ class JovianDSSDriver(object):
                     "err": jerr})
             raise jerr
 
-        dformat="%Y-%m-%d %H:%M:%S"
-        rdate=None
+        dformat = "%Y-%m-%d %H:%M:%S"
+        rdate = None
         if (('creation' in rsnap) and
             (type(rsnap['creation']) is str) and
                 (len(rsnap['creation']) > 0)):
-            rdate=datetime.datetime.strptime(rsnap['creation'], dformat)
+            rdate = datetime.datetime.strptime(rsnap['creation'], dformat)
             LOG.debug('Rollback date of snapshot %s is %s',
                       sname, str(rdate))
 
@@ -2191,17 +2246,24 @@ class JovianDSSDriver(object):
             if snap['name'] == sname:
                 return False
 
-            if (('creation' in snap) and
-                (type(snap['creation']) is str) and
-                    (len(snap['creation']) > 0)):
-
-                date = datetime.datetime.strptime(snap['creation'], dformat)
-                if date >= rdate:
-                    return True
+            if ('properties' in snap):
+                sp = snap['properties']
+                if (('creation' in sp) and
+                        isinstance(sp['creation'], int)):
+                    ts_dt = datetime.datetime.fromtimestamp(
+                                sp['creation'])
+                    if rdate is not None:
+                        if ts_dt >= rdate:
+                            return True
+                        else:
+                            return False
+                    else:
+                        return True
                 else:
-                    return False
+                    return True
             else:
-                return True
+                raise jexc.JDSSException(
+                    "Unable to identify snapshot properties")
 
         snapshots = self._list_all_volume_snapshots(
             vname, filter_older_snapshots)
@@ -2257,7 +2319,7 @@ class JovianDSSDriver(object):
             else:
                 LOG.debug("rolling back is blocked by resources %s",
                           str(dependency))
-        out=self._list_snapshot_rollback_dependency(vname, sname)
+        out = self._list_snapshot_rollback_dependency(vname, sname)
 
         if len(out['snapshots']) == 0 and dependency['snapshots'] > 0:
             out['snapshots'] = ["Unknown"]
@@ -2267,7 +2329,7 @@ class JovianDSSDriver(object):
 
         return out
 
-    def rollback(self, volume_name, snapshot_name):
+    def rollback(self, volume_name, snapshot_name, force_snapshots=False):
         """Rollback volume to specific snapshot
 
         This function operates around ZFS rollback.
@@ -2315,11 +2377,18 @@ class JovianDSSDriver(object):
                          {'vol': jcom.idname(vname),
                           'snap': jcom.idname(sname)})
                 return
+            elif (force_snapshots):
+                if dependency['clones'] == 0:
+                    self.ra.snapshot_rollback(vname, sname)
+                    return
+                else:
+                    LOG.debug("forced rolling back is blocked by %s clones",
+                              dependency['clones'])
             else:
                 LOG.debug("rolling back is blocked by resources %s",
                           dependency)
 
-        deplist=self._list_snapshot_rollback_dependency(vname, sname)
+        deplist = self._list_snapshot_rollback_dependency(vname, sname)
 
         raise jexc.JDSSRollbackIsBlocked(volume_name,
                                          snapshot_name,
@@ -2328,22 +2397,22 @@ class JovianDSSDriver(object):
                                          dependency['snapshots'],
                                          dependency['clones'])
 
-    @ property
+    @property
     def backend_name(self):
         """Return backend name."""
-        backend_name=None
+        backend_name = None
         if self.configuration:
-            backend_name=self.configuration.get('volume_backend_name',
+            backend_name = self.configuration.get('volume_backend_name',
                                                   'Open-EJovianDSS')
         if not backend_name:
-            backend_name=self.__class__.__name__
+            backend_name = self.__class__.__name__
         return backend_name
 
     def create_share(self, share_name, quota_size,
                      reservation=None,
                      direct_mode=False):
 
-        sharename=share_name if direct_mode else jcom.vname(share_name)
+        sharename = share_name if direct_mode else jcom.vname(share_name)
         # create nas / ensure nas volume is present
         # TODO: rework it so that there will be only one place of
         # sharename generation

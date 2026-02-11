@@ -55,7 +55,12 @@ class Rollback():
                            action='store_true',
                            default=False,
                            help='Print only resources that will be affected')
-        parsers.add_parser('do')
+        do = parsers.add_parser('do')
+        do.add_argument('--force-snapshots',
+                        dest='force_snapshots',
+                        action='store_true',
+                        default=False,
+                        help='Force volume rollback with loss of data')
         kargs, ukargs = parser.parse_known_args(args)
 
         if kargs.rollback_action is None:
@@ -76,7 +81,8 @@ class Rollback():
                 if ('snapshots' in dependency and
                         len(dependency['snapshots']) > 0):
                     if self.args['concise']:
-                        print(' '.join(dependency['snapshots']))
+                        sl = ['snap:' + s for s in dependency['snapshots']]
+                        print(' '.join(sl))
                     else:
                         msg += ("by snapshots: %(dependency)s\n" %
                                 {'dependency': ' '.join(dependency['snapshots'])})
@@ -86,7 +92,8 @@ class Rollback():
                 if ('clones' in dependency and
                         len(dependency['clones']) > 0):
                     if self.args['concise']:
-                        print(' '.join(dependency['clones']))
+                        cl = ['clone:' + c for c in dependency['clones']]
+                        print(' '.join(cl))
                     else:
                         msg += ("by clones: %(dependency)s\n" %
                                 {'dependency': ' '.join(dependency['clones'])})
@@ -114,7 +121,8 @@ class Rollback():
 
         try:
             self.jdss.rollback(
-                self.args['volume_name'], self.args['snapshot_name'])
+                self.args['volume_name'], self.args['snapshot_name'],
+                force_snapshots=self.args['force_snapshots'])
             return
         except jexc.JDSSResourceIsBusyException as berr:
             LOG.error(berr)

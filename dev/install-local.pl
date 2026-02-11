@@ -7,7 +7,6 @@ use File::Basename;
 
 # Always load required modules
 use JSON;
-use LWP::UserAgent;
 
 
 # Try to use PVE modules if available
@@ -26,8 +25,6 @@ BEGIN {
 }
 
 # Configuration
-my $REPO = "open-e/JovianDSS-Proxmox";
-my $API_BASE = "https://api.github.com/repos/$REPO/releases";
 my $SSH_FLAGS = "-o BatchMode=yes -o StrictHostKeyChecking=accept-new";
 my $REMOTE_TMP = "/tmp/joviandss-plugin.deb";
 
@@ -36,8 +33,6 @@ my $TMPDIR = tempdir(CLEANUP => 1);
 chmod 0755, $TMPDIR;
 my $DEB_PATH = "";
 my $USE_SUDO = 0;
-my $CHANNEL = "stable";
-my $PINNED_TAG = "";
 my $NEED_RESTART = 0;
 my $DRY_RUN = 0;
 my $ALL_NODES_OPERATION = 0;
@@ -46,22 +41,18 @@ my $REMOVE_PLUGIN = 0;
 my $HELP = 0;
 my $ADD_DEFAULT_MULTIPATH_CONFIG = 0;
 my $FORCE_MULTIPATH_CONFIG = 0;
-my $USE_REINSTALL = 0;  # Default to NOT using --reinstall flag
-my $ALLOW_DOWNGRADES = 0;  # Default to NOT allowing downgrades
-my $VERBOSE = 0;  # Default to non-verbose output
-my $ASSUME_YES = 0;  # Default to interactive confirmation
-my $ASSUME_MAX_WORKERS_ONE_YES = 0;  # Default to interactive confirmation
-my @WARNING_NODES = ();  # Track nodes with warnings
-my @SKIPPED_NODES = ();  # Track nodes where operations were skipped
-
-# Variables for install operations
-my $TAG = "";
-my ($DEB_URL, $SHA_URL);
+my $USE_REINSTALL = 0;
+my $ALLOW_DOWNGRADES = 0;
+my $VERBOSE = 0;
+my $ASSUME_YES = 0;
+my $ASSUME_MAX_WORKERS_ONE_YES = 0;
+my @WARNING_NODES = ();
+my @SKIPPED_NODES = ();
+my $PACKAGE_PATH = "";
 
 # Parse command line options
 GetOptions(
-    "pre"           => sub { $CHANNEL = "pre" },
-    "version=s"     => \$PINNED_TAG,
+    "package=s"     => \$PACKAGE_PATH,
     "sudo"          => sub { $USE_SUDO = 1 },
     "restart"       => \$NEED_RESTART,
     "dry-run"       => \$DRY_RUN,
@@ -120,13 +111,13 @@ sub simple_readline {
 sub print_usage {
     my $prog = basename($0);
     print <<EOF;
-JovianDSS Proxmox plugin installer
+JovianDSS Proxmox plugin local installer
 
-Usage: $prog [options]
+Usage: $prog --package <path> [options]
+       $prog --remove [options]
 
 General:
-  --pre                      Use latest pre-release (instead of latest stable)
-  --version <tag>            Install a specific release tag (e.g. v0.9.9-3)
+  --package <path>           Path to local .deb file (required for install)
   --remove                   Remove/uninstall the plugin instead of installing
   --sudo                     Use sudo for commands (default: run without sudo)
   --restart                  Restart pvedaemon after install/remove
@@ -146,22 +137,17 @@ Cluster:
   --ssh-flags "<flags>"      Extra SSH flags (default: $SSH_FLAGS)
 
 Examples:
-  # Install latest stable on this node only
-  $prog
+  # Install from local .deb on this node only
+  $prog --package ./open-e-joviandss-proxmox-plugin.deb
 
-
-  # Install pre-release on all nodes (automatically uses cluster IPs)
-  $prog --pre --all-nodes
-
+  # Install on all cluster nodes
+  $prog --package ./open-e-joviandss-proxmox-plugin.deb --all-nodes
 
   # Install using sudo (when not running as root)
-  $prog --sudo
+  $prog --package ./plugin.deb --sudo
 
   # Install with default multipath config on all nodes
-  $prog --all-nodes --add-default-multipath-config
-
-  # Force overwrite existing multipath configs
-  $prog --all-nodes --add-default-multipath-config --force-multipath-config
+  $prog --package ./plugin.deb --all-nodes --add-default-multipath-config
 
   # Remove plugin from local node only
   $prog --remove
@@ -219,15 +205,6 @@ sub create_context_error_handler {
         my $error_line = $_[0];
         chomp $error_line if $error_line;
         warn "[$node_name] $context error: $error_line\n" if $error_line;
-    };
-}
-
-sub create_checksum_error_handler {
-    my ($file) = @_;
-    return sub {
-        my $error_line = $_[0];
-        chomp $error_line if $error_line;
-        warn "Checksum calculation failed for $file: $error_line\n" if $error_line;
     };
 }
 
@@ -290,11 +267,7 @@ sub run_cmd {
         print "[dry-run] " . join(" ", @cmd) . "\n";
         # In dry-run mode, call outfunc with fake output if provided
         if ($outfunc) {
-            if ($cmd[0] eq 'sha256sum') {
-                $outfunc->("09a5d9de16e9356342613dfd588fb3f30db181ee01dac845fbd4f65764b4c210  $cmd[1]");
-            } else {
-                $outfunc->("[dry-run output]");
-            }
+            $outfunc->("[dry-run output]");
         }
         return 1;
     }
@@ -436,7 +409,7 @@ sub handle_multipath_config {
 
     # Check if template exists
     unless (execute_command($is_local, $ip, "test", "-f", $template_file, { outfunc => undef, errfunc => sub {} })) {
-        warn "[$node_name] ✗ Multipath template not found: $template_file (older package version?)\n";
+        warn "[$node_name] Multipath template not found: $template_file (older package version?)\n";
         return 0;
     }
 
@@ -445,7 +418,7 @@ sub handle_multipath_config {
 
     if ($target_exists && !$FORCE_MULTIPATH_CONFIG) {
         push @WARNING_NODES, "$node_name: Multipath config already exists, use --force-multipath-config to overwrite";
-        say "⚠ Warning on $node_name: Multipath config file already exists, skipping";
+        say "Warning on $node_name: Multipath config file already exists, skipping";
         return 1;  # Not an error, just skipped
     }
 
@@ -462,13 +435,13 @@ sub handle_multipath_config {
         if (execute_command($is_local, $ip, "test", "-f", $config_file, { outfunc => undef, errfunc => sub {} })) {
             # Search for SCST vendor entries in the config file
             my $scst_collector = create_output_collector();
-            if (execute_command($is_local, $ip, "grep", "-i", "vendor.*scst", $config_file, { 
-                outfunc => $scst_collector->{collector}, 
-                errfunc => sub {} 
+            if (execute_command($is_local, $ip, "grep", "-i", "vendor.*scst", $config_file, {
+                outfunc => $scst_collector->{collector},
+                errfunc => sub {}
             })) {
                 my @scst_entries = $scst_collector->{get_lines}();
                 if (@scst_entries && !$scst_warning_shown) {
-                    say "⚠ Warning on $node_name: Found existing SCST vendor device configurations in multipath config";
+                    say "Warning on $node_name: Found existing SCST vendor device configurations in multipath config";
                     say "  Installing default multipath config may affect operation of existing SCST devices";
                     say "  Consider reviewing multipath configuration after installation";
                     push @WARNING_NODES, "$node_name: SCST vendor devices found in multipath config, review after installation";
@@ -485,9 +458,9 @@ sub handle_multipath_config {
         if (execute_command($is_local, $ip, "test", "-d", "/etc/multipath/conf.d", { outfunc => undef, errfunc => sub {} })) {
             # List .conf files in the directory using ls instead of find
             my $conf_collector = create_output_collector();
-            if (execute_command($is_local, $ip, "ls", "/etc/multipath/conf.d/", { 
-                outfunc => $conf_collector->{collector}, 
-                errfunc => sub {} 
+            if (execute_command($is_local, $ip, "ls", "/etc/multipath/conf.d/", {
+                outfunc => $conf_collector->{collector},
+                errfunc => sub {}
             })) {
                 my @all_files = $conf_collector->{get_lines}();
 
@@ -508,7 +481,7 @@ sub handle_multipath_config {
                     })) {
                         my @scst_entries = $scst_collector->{get_lines}();
                         if (@scst_entries) {
-                            say "⚠ Warning on $node_name: Found existing SCST vendor device configurations in multipath config";
+                            say "Warning on $node_name: Found existing SCST vendor device configurations in multipath config";
                             say "  Installing default multipath config may affect operation of existing SCST devices";
                             say "  Consider reviewing multipath configuration after installation";
                             push @WARNING_NODES, "$node_name: SCST vendor devices found in multipath config, review after installation";
@@ -522,21 +495,21 @@ sub handle_multipath_config {
 
     # Create target directory and copy file
     unless (execute_command($is_local, $ip, "mkdir", "-p", "/etc/multipath/conf.d", { outfunc => undef })) {
-        warn "[$node_name] ✗ Failed to create multipath config directory\n";
+        warn "[$node_name] Failed to create multipath config directory\n";
         return 0;
     }
 
     unless (execute_command($is_local, $ip, "cp", $template_file, $target_file, { outfunc => undef })) {
-        warn "[$node_name] ✗ Failed to copy multipath config\n";
+        warn "[$node_name] Failed to copy multipath config\n";
         return 0;
     }
 
     # Reconfigure multipathd
     unless (execute_command($is_local, $ip, "multipathd", "-k", "reconfigure")) {
-        say "[$node_name] ⚠ Warning: Failed to reconfigure multipathd (may not be running)";
+        say "[$node_name] Warning: Failed to reconfigure multipathd (may not be running)";
     }
 
-    say "[$node_name] ✓ Multipath configuration installed";
+    say "[$node_name] Multipath configuration installed";
     return 1;
 }
 
@@ -546,181 +519,6 @@ sub remote_sudo_prefix {
         return "sudo ";
     }
     return "";
-}
-
-sub fetch_release_metadata {
-    my ($CHANNEL, $PINNED_TAG) = @_;
-
-    # Resolve release
-    if ($PINNED_TAG) {
-        say "Fetching release: $PINNED_TAG";
-    } else {
-        say "Fetching latest $CHANNEL release";
-    }
-
-    my $ua = LWP::UserAgent->new(timeout => 30);
-    my $url;
-
-    if ($PINNED_TAG) {
-        $url = $API_BASE;
-    } else {
-        if ($CHANNEL eq "stable") {
-            $url = "$API_BASE/latest";
-        } else {
-            $url = $API_BASE;
-        }
-    }
-
-    my $response = $ua->get($url);
-    unless ($response->is_success) {
-        say "✗ Error: Could not fetch release metadata from GitHub: " . $response->status_line;
-        return ();
-    }
-
-    my $rel_json;
-    eval {
-        # Use PVE::JSONSchema::from_json if available for better error handling
-        if (defined &PVE::JSONSchema::from_json) {
-            $rel_json = PVE::JSONSchema::from_json($response->content);
-        } else {
-            $rel_json = decode_json($response->content);
-        }
-    };
-    if ($@) {
-        say "✗ Error: Invalid JSON response from GitHub API";
-        return ();
-    }
-
-    # Extract tag and URLs
-    my $TAG;
-    if ($PINNED_TAG) {
-        $TAG = $PINNED_TAG;
-        # Find the matching release
-        my $matching_release;
-        if (ref($rel_json) eq 'ARRAY') {
-            for my $release (@$rel_json) {
-                if ($release->{tag_name} eq $PINNED_TAG) {
-                    $matching_release = $release;
-                    last;
-                }
-            }
-        }
-        unless ($matching_release) {
-            say "✗ Error: Release tag not found: $PINNED_TAG";
-            return ();
-        }
-        $rel_json = $matching_release;
-    } else {
-        if ($CHANNEL eq "pre" && ref($rel_json) eq 'ARRAY') {
-            $rel_json = $rel_json->[0];
-        }
-        $TAG = $rel_json->{tag_name};
-    }
-
-    # Extract download URLs and checksum
-    my ($DEB_URL, $SHA_URL, $expected_sha256);
-    for my $asset (@{$rel_json->{assets}}) {
-        my $url = $asset->{browser_download_url};
-        if ($url =~ /\.deb$/) {
-            $DEB_URL = $url;
-
-            # Check for sha256 field
-            if ($asset->{sha256}) {
-                $expected_sha256 = $asset->{sha256};
-            }
-
-            # Check for digest field (format: "sha256:hash")
-            if ($asset->{digest} && $asset->{digest} =~ /^sha256:([a-f0-9]{64})$/) {
-                $expected_sha256 = $1;
-            }
-        }
-        # Still check for separate checksum files as fallback
-        if ($url =~ /(sha256sum|sha256\.txt|\.sha256|hashsum|checksums?\.txt|\.checksums?)$/i) {
-            $SHA_URL = $url;
-        }
-    }
-
-    unless ($DEB_URL) {
-        say "✗ Error: Could not locate a .deb asset in $TAG";
-        return ();
-    }
-
-    return ($TAG, $DEB_URL, $expected_sha256, $SHA_URL);
-}
-
-sub download_package {
-    my ($DEB_URL, $TMPDIR) = @_;
-
-    say "Downloading package...";
-
-    my $ua = LWP::UserAgent->new(timeout => 30);
-    my $DEB_PATH = "$TMPDIR/plugin.deb";
-    my $deb_response = $ua->get($DEB_URL, ':content_file' => $DEB_PATH);
-
-    unless ($deb_response->is_success) {
-        say "✗ Error downloading .deb file: " . $deb_response->status_line;
-        return "";
-    }
-
-    return $DEB_PATH;
-}
-
-sub verify_package_checksum {
-    my ($DEB_PATH, $expected_sha256, $SHA_URL, $DEB_URL) = @_;
-
-    # Skip verification if no checksum available
-    unless ($expected_sha256 || $SHA_URL) {
-        say "⚠ Checksum verification skipped (no checksum available).";
-        return 1;
-    }
-
-    # Skip verification if sha256sum not available
-    unless (need_cmd("sha256sum", 1)) {
-        say "⚠ Checksum verification skipped (sha256sum command not available).";
-        return 1;
-    }
-
-    say "Verifying package checksum...";
-    my $collector = create_output_collector(create_hash_filter(qr/^([a-f0-9]{64})/));
-    run_cmd("sha256sum", $DEB_PATH, {
-        outfunc => $collector->{collector},
-        errfunc => create_checksum_error_handler($DEB_PATH)
-    });
-    my $file_sum = ($collector->{get_lines}())[0] || "";
-
-    my $ref_sum;
-
-    if ($expected_sha256) {
-        # Use SHA256 from GitHub API response
-        $ref_sum = $expected_sha256;
-    } elsif ($SHA_URL) {
-        # Fallback: download and parse separate checksum file
-        my $ua = LWP::UserAgent->new(timeout => 30);
-        my $checksum_file = "$TMPDIR/checksums.txt";
-        my $sha_response = $ua->get($SHA_URL, ':content_file' => $checksum_file);
-
-        if ($sha_response->is_success) {
-            my $deb_basename = basename($DEB_URL);
-            my $collector = create_output_collector(create_hash_filter(qr/^([a-f0-9]{64})/));
-            run_cmd("sh", "-c", "grep -E '$deb_basename' '$checksum_file' 2>/dev/null | grep -Eo '^[a-f0-9]{64}' | head -n1", { outfunc => $collector->{collector} });
-            $ref_sum = ($collector->{get_lines}())[0] || "";
-        }
-    }
-
-    if ($ref_sum) {
-        if ($file_sum ne $ref_sum) {
-            say "✗ Checksum verification failed!";
-            say "Expected: $ref_sum";
-            say "Got:      $file_sum";
-            return 0;
-        } else {
-            say "✓ Package verified.";
-            return 1;
-        }
-    } else {
-        say "⚠ Checksum verification skipped (no valid checksum found).";
-        return 1;
-    }
 }
 
 # Generate unified apt install command
@@ -761,7 +559,7 @@ sub restart_services {
 
         $restart_success = $restart_success && $cmd_code;
         unless ($cmd_code) {
-            warn "[local] ✗ Failed to restart local pvedaemon\n";
+            warn "[local] Failed to restart local pvedaemon\n";
         }
 
         if ($sudo) {
@@ -776,7 +574,7 @@ sub restart_services {
 
         $restart_success = $restart_success && $cmd_code;
         unless ($cmd_code) {
-            warn "[local] ✗ Failed to restart local pve-ha-lrm\n";
+            warn "[local] Failed to restart local pve-ha-lrm\n";
         }
 
         if ($sudo) {
@@ -791,7 +589,7 @@ sub restart_services {
 
         $restart_success = $restart_success && $cmd_code;
         unless ($cmd_code) {
-            warn "[local] ✗ Failed to restart local pve-ha-crm\n";
+            warn "[local] Failed to restart local pve-ha-crm\n";
         }
     } else {
         my $ssh_tgt = "$SSH_USER\@$ip";
@@ -803,7 +601,7 @@ sub restart_services {
 
         $restart_success = $restart_success && $cmd_code;
         unless ($cmd_code) {
-            warn "[$ip] ✗ Failed to restart pvedaemon\n";
+            warn "[$ip] Failed to restart pvedaemon\n";
         }
 
         $cmd_code = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pve-ha-lrm.service", {
@@ -813,7 +611,7 @@ sub restart_services {
 
         $restart_success = $restart_success && $cmd_code;
         unless ($cmd_code) {
-            warn "[$ip] ✗ Failed to restart pve-ha-lrm\n";
+            warn "[$ip] Failed to restart pve-ha-lrm\n";
         }
 
         $cmd_code = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pve-ha-crm.service", {
@@ -823,7 +621,7 @@ sub restart_services {
 
         $restart_success = $restart_success && $cmd_code;
         unless ($cmd_code) {
-            warn "[$ip] ✗ Failed to restart pve-ha-crm\n";
+            warn "[$ip] Failed to restart pve-ha-crm\n";
         }
     }
 
@@ -883,17 +681,17 @@ sub remove_node {
     # Handle removal failure (but treat "package not installed" as success)
     unless ($removal_success || $package_not_installed) {
         if ($is_local) {
-            warn "✗ Failed to remove package from local node\n";
+            warn "Failed to remove package from local node\n";
             return 0;
         } else {
-            warn "[$ip] ✗ Failed to remove package\n";
+            warn "[$ip] Failed to remove package\n";
             return 0;
         }
     }
 
     # Inform user if package wasn't installed
     if ($package_not_installed) {
-        say "ℹ Package was not installed on node $display_name (skipping removal)";
+        say "Package was not installed on node $display_name (skipping removal)";
         push @SKIPPED_NODES, $display_name;
     }
 
@@ -901,14 +699,14 @@ sub remove_node {
         my $restart_success = restart_services($is_local, $ip, $display_name);
         unless ($restart_success) {
             if ($is_local) {
-                warn "✗ Failed to restart some services, that might affect operation\n";
+                warn "Failed to restart some services, that might affect operation\n";
             } else {
-                warn "[$ip] ✗ Failed to restart some services, that might affect operation\n";
+                warn "[$ip] Failed to restart some services, that might affect operation\n";
             }
         }
     }
 
-    say "✓ Removal completed successfully on node $display_name\n";
+    say "Removal completed successfully on node $display_name\n";
     return 1;
 }
 
@@ -961,7 +759,7 @@ sub install_node {
             outfunc => undef,
             errfunc => create_context_error_handler("Remote file transfer", $display_name)
         })) {
-            warn "[$ip] ✗ Failed to copy package\n";
+            warn "[$ip] Failed to copy package\n";
             return 0;
         }
 
@@ -976,10 +774,10 @@ sub install_node {
     # Handle installation failure
     unless ($install_success) {
         if ($is_local) {
-            warn "✗ Failed to install package on local node\n";
+            warn "Failed to install package on local node\n";
             return 0;
         } else {
-            warn "[$ip] ✗ Failed to install package\n";
+            warn "[$ip] Failed to install package\n";
             return 0;
         }
     }
@@ -990,7 +788,7 @@ sub install_node {
             if ($is_local) {
                 die "Error: Multipath configuration failed on local node\n";
             } else {
-                warn "[$ip] ✗ Multipath configuration failed\n";
+                warn "[$ip] Multipath configuration failed\n";
                 return 0;
             }
         }
@@ -1000,16 +798,16 @@ sub install_node {
         my $restart_success = restart_services($is_local, $ip, $display_name);
         unless ($restart_success) {
             if ($is_local) {
-                warn "✗ Failed to restart some services, that might affect plugin operation\n";
+                warn "Failed to restart some services, that might affect plugin operation\n";
                 return 0;
             } else {
-                warn "[$ip] ✗ Failed to restart some services; this might affect plugin operation\n";
+                warn "[$ip] Failed to restart some services; this might affect plugin operation\n";
                 return 0;
             }
         }
     }
 
-    say "✓ Installation completed successfully on node $display_name\n";
+    say "Installation completed successfully on node $display_name\n";
     return 1;
 }
 
@@ -1058,7 +856,7 @@ sub add_node_if_applicable {
 }
 
 # Discover cluster nodes with their IP addresses
-sub acquire_target_nodes_info{
+sub acquire_target_nodes_info {
     my @node_info;  # Array of {name => 'hostname', ip => 'ip', is_local => 0|1} hashes
 
     # Get local node information
@@ -1180,7 +978,7 @@ sub get_local_node_info {
         my $hostname_collector = create_output_collector();
         if (run_cmd("hostname", "-s", {
             outfunc => $hostname_collector->{collector},
-            errfunc => sub {} 
+            errfunc => sub {}
         })) {
             my @hostname_lines = $hostname_collector->{get_lines}();
             $local_node_short = $hostname_lines[0] if @hostname_lines;
@@ -1189,9 +987,9 @@ sub get_local_node_info {
         # Try regular hostname if -s failed
         unless ($local_node_short) {
             my $hostname_collector2 = create_output_collector();
-            if (run_cmd("hostname", { 
-                outfunc => $hostname_collector2->{collector}, 
-                errfunc => sub {} 
+            if (run_cmd("hostname", {
+                outfunc => $hostname_collector2->{collector},
+                errfunc => sub {}
             })) {
                 my @hostname_lines = $hostname_collector2->{get_lines}();
                 $local_node_short = $hostname_lines[0] if @hostname_lines;
@@ -1242,9 +1040,9 @@ sub get_local_node_info {
     my $cluster_name;
     if (need_cmd("pvecm", 1)) {
         my $pvecm_collector = create_output_collector();
-        if (run_cmd("pvecm", "status", { 
-            outfunc => $pvecm_collector->{collector}, 
-            errfunc => sub {} 
+        if (run_cmd("pvecm", "status", {
+            outfunc => $pvecm_collector->{collector},
+            errfunc => sub {}
         })) {
             my @pvecm_lines = $pvecm_collector->{get_lines}();
             for my $line (@pvecm_lines) {
@@ -1282,7 +1080,6 @@ sub main {
     need_cmd("awk");
     need_cmd("sed");
     need_cmd("grep");
-    need_cmd("sha256sum", 1);
 
     if ($ALL_NODES_OPERATION) {
         need_cmd("ssh");
@@ -1292,6 +1089,18 @@ sub main {
     # Detect Proxmox (optional check)
     if (!need_cmd("pveversion", 1)) {
         say "Warning: 'pveversion' not found. Proceeding anyway (Debian-based install assumed).";
+    }
+
+    # Validate --package option for install operations
+    if (!$REMOVE_PLUGIN) {
+        unless ($PACKAGE_PATH) {
+            die "Error: --package <path> is required for installation.\nUse --help for usage information.\n";
+        }
+        unless (-f $PACKAGE_PATH) {
+            die "Error: Package file not found: $PACKAGE_PATH\n";
+        }
+        $DEB_PATH = $PACKAGE_PATH;
+        say "Using local package: $DEB_PATH";
     }
 
     # Get local node information
@@ -1340,36 +1149,20 @@ sub main {
                 }
             }
         } else {
-                say "None nodes identified for operation";
+                say "No nodes identified for operation";
                 say "";
         }
 
     } else {
         # INSTALLATION OPERATIONS
 
-        # Fetch release metadata and download package
-        my ($TAG, $DEB_URL, $expected_sha256, $SHA_URL) = fetch_release_metadata($CHANNEL, $PINNED_TAG);
-        unless ($TAG) {
-            return 0;  # fetch_release_metadata already printed error
-        }
-
-        # Download package
-        $DEB_PATH = download_package($DEB_URL, $TMPDIR);
-        unless ($DEB_PATH) {
-            return 0;  # download_package already printed error
-        }
-
-        # Verify package checksum
-        unless (verify_package_checksum($DEB_PATH, $expected_sha256, $SHA_URL, $DEB_URL)) {
-            return 0;  # verify_package_checksum already printed error
-        }
         say "Identifying nodes belonging to cluster $cluster_name";
         my @nodes = acquire_target_nodes_info();
 
         if (@nodes) {
             # Show confirmation for ALL operations (sorted alphabetically)
             my @sorted_nodes = sort { $a->{name} cmp $b->{name} } @nodes;
-            print_operation_nodes("Plugin $TAG will be installed on the following nodes:", \@sorted_nodes);
+            print_operation_nodes("Plugin will be installed on the following nodes:", \@sorted_nodes);
 
             unless ($ASSUME_YES) {
                 my $confirm = simple_readline("Continue? (y/N): ");
@@ -1429,7 +1222,7 @@ sub main {
             }
 
         } else {
-            say "None nodes identified for operation";
+            say "No nodes identified for operation";
             say "";
         }
     }
@@ -1440,15 +1233,15 @@ sub main {
         if ($skipped_count > 0) {
             my $actual_removed = $total_successful - $skipped_count;
             if ($failed_count > 0) {
-                say "\n✗ Operations completed with failures: Plugin removed from $actual_removed node(s), skipped $skipped_count node(s) (not installed), failed on $failed_count node(s)";
+                say "\nOperations completed with failures: Plugin removed from $actual_removed node(s), skipped $skipped_count node(s) (not installed), failed on $failed_count node(s)";
             } else {
-                say "\n✓ All operations complete: Plugin removed from $actual_removed node(s), skipped $skipped_count node(s) (not installed)";
+                say "\nAll operations complete: Plugin removed from $actual_removed node(s), skipped $skipped_count node(s) (not installed)";
             }
         } else {
             if ($failed_count > 0) {
-                say "\n✗ Operations completed with failures: Plugin removed from $total_successful node(s), failed on $failed_count node(s)";
+                say "\nOperations completed with failures: Plugin removed from $total_successful node(s), failed on $failed_count node(s)";
             } else {
-                say "\n✓ All operations complete: Plugin removed from $total_successful node(s)";
+                say "\nAll operations complete: Plugin removed from $total_successful node(s)";
             }
         }
         if ($failed_count > 0) {
@@ -1457,10 +1250,10 @@ sub main {
     } else {
         my $failed_count = scalar(@failed_nodes);
         if ($failed_count > 0) {
-            say "\n✗ Operations completed with failures: Plugin installed on $total_successful node(s), failed on $failed_count node(s)";
+            say "\nOperations completed with failures: Plugin installed on $total_successful node(s), failed on $failed_count node(s)";
             say "Failed nodes: " . join(", ", @failed_nodes);
         } else {
-            say "\n✓ All operations complete: Plugin installed on $total_successful node(s)";
+            say "\nAll operations complete: Plugin installed on $total_successful node(s)";
         }
 
 
@@ -1469,7 +1262,7 @@ sub main {
     }
 
     if (@WARNING_NODES) {
-        say "\n⚠ Warnings encountered on " . scalar(@WARNING_NODES) . " node(s):";
+        say "\nWarnings encountered on " . scalar(@WARNING_NODES) . " node(s):";
         for my $warning (@WARNING_NODES) {
             my ($node, $msg) = split(': ', $warning, 2);
             $msg =~ s/JOVIANDSS_WARNING:\s*//;

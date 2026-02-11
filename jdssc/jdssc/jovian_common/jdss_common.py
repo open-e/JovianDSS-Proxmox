@@ -43,7 +43,7 @@ def is_volume(name):
 
 
 def is_snapshot(name):
-    """Return True if volume"""
+    """Return True if snapshot"""
 
     if name.startswith("s_"):
         return True
@@ -77,13 +77,19 @@ def idname(name):
 
     if name.startswith('te_'):
         ns = name.split("_")
-        "_".join(ns[1:-1])
+        return "_".join(ns[1:-1])
 
     if name.startswith('s'):
-        return sname_to_id(name)[0]
+        try:
+            return sname_to_id(name)[0]
+        except Exception:
+            pass
 
     if name.startswith('v'):
-        return vname_to_id(name)
+        try:
+            return vname_to_id(name)
+        except Exception:
+            pass
 
     # LOG.warn("Unable to identify name type %s", name)
     return name

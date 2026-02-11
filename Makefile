@@ -28,6 +28,7 @@ install:
 	install -D -m 0644 ./OpenEJovianDSSNFSPlugin.pm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSNFSPlugin.pm
 	install -D -m 0644 ./OpenEJovianDSSPlugin.pm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
 	install -D -m 0644 ./OpenEJovianDSS/Common.pm $(DESTDIR)/usr/share/perl5/OpenEJovianDSS/Common.pm
+	install -D -m 0644 ./OpenEJovianDSS/NFSCommon.pm $(DESTDIR)/usr/share/perl5/OpenEJovianDSS/NFSCommon.pm
 
 	install -D -m 0644 ./configs/multipath/open-e-joviandss.conf $(DESTDIR)/etc/joviandss/multipath-open-e-joviandss.conf.example
 	$(MAKE) -C jdssc install DESTDIR=$(DESTDIR)
@@ -37,6 +38,7 @@ uninstall:
 	rm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSNFSPlugin.pm
 	rm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
 	rm $(DESTDIR)/usr/share/perl5/OpenEJovianDSS/Common.pm
+	rm $(DESTDIR)/usr/share/perl5/OpenEJovianDSS/NFSCommon.pm
 	rm $(DESTDIR)/etc/joviandss/multipath-open-e-joviandss.conf.example
 
 	$(MAKE) -C jdssc uninstall DESTDIR=$(DESTDIR)

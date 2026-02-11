@@ -129,6 +129,7 @@ class NASSnapshots():
         else:
             # List all snapshots
             for s in data:
+                LOG.debug(s)
                 line = "{}".format(s['name'])
                 line += "\n"
                 sys.stdout.write(line)
