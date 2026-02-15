@@ -75,6 +75,7 @@ our @EXPORT_OK = qw(
   get_block_size_bytes
   get_thin_provisioning
   get_log_file
+  get_options
   get_content
   get_content_volume_name
   get_content_volume_type
@@ -145,7 +146,7 @@ my $default_pool             = 'Pool-0';
 my $default_log_file         = '/var/log/joviandss/joviandss.log';
 my $default_luns_per_target  = 8;
 my $default_multipath        = 0;
-my $default_path             = '/mnt/joviandss';
+my $default_path             = '/mnt/pve/joviandss';
 my $default_shared           = 0;
 my $default_target_prefix    = 'iqn.2025-04.proxmox.joviandss.iscsi:';
 my $default_user_name        = 'admin';
@@ -159,7 +160,7 @@ sub get_default_pool             { return $default_pool }
 sub get_default_debug            { return $default_debug }
 sub get_default_multipath        { return $default_multipath }
 sub get_default_content_size     { return $default_content_size }
-sub get_default_path             { return $default_path }
+sub get_default_path             { die "Please set up path property in storage.cfg\n"; }
 sub get_default_target_prefix    { return $default_target_prefix }
 sub get_default_log_file         { return $default_log_file }
 sub get_default_luns_per_target  { return $default_luns_per_target }
@@ -386,6 +387,11 @@ sub get_thin_provisioning {
 sub get_log_file {
     my ($scfg) = @_;
     return $scfg->{log_file} || $default_log_file;
+}
+
+sub get_options {
+    my ($scfg) = @_;
+    return $scfg->{options};
 }
 
 sub get_content {

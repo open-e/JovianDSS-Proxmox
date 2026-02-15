@@ -49,21 +49,6 @@ my $PLUGIN_VERSION = '0.1.0';
 
 # NFS helper functions
 
-sub nfs_is_mounted {
-    my ($server, $export, $mountpoint, $mountdata) = @_;
-
-    $server = "[$server]" if Net::IP::ip_is_ipv6($server);
-    my $source = "$server:$export";
-
-    $mountdata = PVE::ProcFSTools::parse_proc_mounts() if !$mountdata;
-    return $mountpoint if grep {
-        $_->[2] =~ /^nfs/
-            && $_->[0] =~ m|^\Q$source\E/?$|
-            && $_->[1] eq $mountpoint
-    } @$mountdata;
-    return undef;
-}
-
 sub nfs_mount {
     my ($server, $export, $mountpoint, $options) = @_;
 
@@ -75,7 +60,7 @@ sub nfs_mount {
         push @$cmd, '-o', $options;
     }
 
-    run_command($cmd, errmsg => "mount error");
+    OpenEJovianDSS::Common::run_command($cmd, errmsg => "mount error");
 }
 
 # Helper function to parse export path
@@ -190,7 +175,7 @@ sub path {
 
     # There is no need to deactivate volume
     # Because of that we skip only volume deactivation
-    if ((! defined($snapname)) || ($snapname eq '') {
+    if ((! defined($snapname)) || ($snapname eq '')) {
         # Volume path
         # it is simple as it represents same path structure as NFS
         $path = $class->filesystem_path( $scfg, $volname, $snapname );
@@ -202,7 +187,10 @@ sub path {
         #
         # Storage path/private/mounts/{vmid}/{volname}/{snapname}/{storage root path}
 
-        my $mount_in_path = OpenEJovianDSS::NFSCommon::nas_volume_snapshot_mount_in_path($volname, $snapname);
+        my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+
+        my $mount_in_path = OpenEJovianDSS::NFSCommon::nas_volume_snapshot_mount_in_path(
+            $scfg, $vtype, $name, $vmid, $volname, $snapname);
         $path = "${storage_path}/${mount_in_path}";
         return $path;
     }
@@ -231,7 +219,7 @@ sub status {
     my $export = $scfg->{export};
 
     return undef
-      if !nfs_is_mounted($server, $export, $path, $cache->{mountdata});
+      if !OpenEJovianDSS::NFSCommon::path_is_nfs($scfg, $path );
 
     return $class->SUPER::status($storeid, $scfg, $cache);
 }
@@ -251,7 +239,7 @@ sub activate_storage {
     my $server = $scfg->{server};
     my $export = $scfg->{export};
 
-    if ( !nfs_is_mounted( $server, $export, $path, $cache->{mountdata} ) ) {
+    if ( !OpenEJovianDSS::NFSCommon::path_is_nfs( $scfg, $path ) ) {
         $class->config_aware_base_mkdir( $scfg, $path );
 
         die "unable to activate storage '$storeid' - "
@@ -277,7 +265,7 @@ sub deactivate_storage {
     my $server = $scfg->{server};
     my $export = $scfg->{export};
 
-    if (nfs_is_mounted($server, $export, $path, $cache->{mountdata})) {
+    if (OpenEJovianDSS::NFSCommon::path_is_nfs( $scfg, $path )) {
         my $cmd = ['/bin/umount', $path];
         run_command($cmd, errmsg => 'umount error');
     }
@@ -379,9 +367,31 @@ sub volume_snapshot_rollback {
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
         "Rolling back volume ${volname} to snapshot ${snap}\n" );
 
-    # Step 1: Activate snapshot (create clone, create temp share, mount it)
-    OpenEJovianDSS::NFSCommon::nas_volume_snapshot_activate(
-        $scfg, $storeid, $pool, $dataset, $volname, $snap );
+    my $sharepath = OpenEJovianDSS::NFSCommon::snapshot_publish($scfg, $storeid,
+            $datname, $volume_dir, $snapshot_dir );
+    my $published = 1;
+
+    # Activate snapshot and mount it
+    eval {
+        OpenEJovianDSS::NFSCommon::snapshot_activate($scfg, $storeid,
+            $pool, $dataset, $volname, $snap );
+    };
+    my $err = $@;
+    if ( $err ) {
+        eval{
+           OpenEJovianDSS::NFSCommon::snapshot_unpublish( $scfg, $storeid,
+               $datname, $volname, $snapname );
+           );
+        };
+        my $errup = $@;
+        if ($@) {
+            die "Fail to unpublish: ${errup} after failed activation ${err}\n";
+        } else {
+            die "Failed to activate: $err\n";
+        }
+    }
+
+    # Here we have share active and mounted
 
     my $vol_path = $class->path($scfg, $volname, $storeid, undef);
     my $snap_path = $class->path($scfg, $volname, $storeid, $snap);
@@ -404,14 +414,14 @@ sub volume_snapshot_rollback {
         PVE::Tools::run_command( [ 'cp', '--sparse=always', '-a', $source_file, $dest_file ],
             errmsg => "rollback copy failed" );
 
-        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        OpenEJovianDSS::NFSCommon::debugmsg( $scfg, "debug",
             "File copy completed successfully\n" );
     };
     my $err = $@;
 
     # Step 3: Deactivate snapshot (unmount, delete share, delete clone)
     eval {
-        OpenEJovianDSS::Common::nas_volume_snapshot_deactivate(
+        OpenEJovianDSS::NFSCommon::snapshot_deactivate(
             $scfg, $storeid, $pool, $dataset, $volname, $snap );
     };
     my $deactivate_err = $@;
@@ -436,7 +446,7 @@ sub volume_rollback_is_possible {
 
     # Check if snapshot exists via REST API
     eval {
-        my $snapshots = OpenEJovianDSS::Common::nas_volume_snapshots_info(
+        my $snapshots = OpenEJovianDSS::NFSCommon::nas_volume_snapshots_info(
             $scfg, $storeid, $dataset );
 
         unless ( exists $snapshots->{$snap} ) {
@@ -475,7 +485,7 @@ sub activate_volume {
     my $export = $scfg->{export};
     my $dataset = $class->get_dataset_name( $scfg );
 
-    unless ( nfs_is_mounted( $server, $export, $path, $cache->{mountdata} ) ) {
+    unless ( OpenEJovianDSS::NFSCommon::path_is_nfs( $scfg, $path, $eport, $server ) ) {
         die "Storage '${storeid}' is not mounted. "
             . "NFS share ${server}:${export} not mounted at ${path}\n";
     }
@@ -491,10 +501,29 @@ sub activate_volume {
         return 1;
     }
 
-    my $activation_info = OpenEJovianDSS::Common::nas_volume_snapshot_activate(
-        $scfg, $storeid, $pool, $dataset, $volname, $snap );
+    my $sharepath = OpenEJovianDSS::NFSCommon::snapshot_publish( $scfg, $storeid,
+                        $dataset, $volname, $snapname );
+    eval {
+        OpenEJovianDSS::NFSCommon::snapshot_activate( $scfg, $storeid,
+            $pool, $dataset, $volname, $snap, $sharepath );
+    };
 
-    my $mount_path = $activation_info->{mount_path};
+    my $err = $@;
+
+    if ( $err ) {
+        warn "NAS volume activation failed: $err";
+        eval {
+            OpenEJovianDSS::NFSCommon::snapshot_unpublish( $scfg, $storeid,
+                $dataset, $volname, $snapname );
+        };
+        my $errdeactivate = $@;
+
+        if ( $errdeactivate ) {
+            die "Failed to attach ${volname} snapshot ${snapname} error: ${err}\n"
+                . "Recovery failed: ${errdeactivate}\n"
+                . "Remove share ${sharepath} manualy\n";
+        }
+    }
     return 1;
 }
 
@@ -505,99 +534,23 @@ sub deactivate_volume {
         "Deactivate volume ${volname}"
         . ( $snapname ? " snapshot ${snapname}" : "" ) . "\n" );
 
-    # There is no need to deactivate volume
-    # Because of that we skip only volume deactivation
-    if (! defined($snapname) ) {
-        return 1;
-    }
-    if ($snapname eq '') {
-        return 1;
-    }
-
     my $pool = $class->get_pool_name( $scfg );
     my $dataset = $class->get_dataset_name( $scfg );
     my $path = $scfg->{path};
 
-    OpenEJovianDSS::Common::nas_volume_deactivate(
-        $scfg, $storeid, $pool, $dataset, $volname, $snapname );
-    return 1;
-
-    # Get list of all snapshots that have published clones
-    my $snapshots_with_clones;
-    eval {
-        my $snap_output = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
-            [ "pool", $pool, "nas_volume", "-d", $dataset, "snapshots",
-              "list", "--with-clones" ] );
-
-        # Parse snapshot names from output
-        $snapshots_with_clones = [];
-        for my $line ( split( /\n/, $snap_output ) ) {
-            $line =~ s/^\s+|\s+$//g;
-            push @$snapshots_with_clones, $line if length( $line ) > 0;
+    if ( defined($snapname) && ($snapname ne '') ) {
+        if ($snapname ne '') {
+            OpenEJovianDSS::NFSCommon::snapshot_deactivate(
+                $scfg, $storeid, $dataset, $volname, $snapname );
+            OpenEJovianDSS::NFSCommon::snapshot_unpublish(
+                $scfg, $storeid, $dataset, $volname, $snapname );
+            return 1;
         }
-    };
-    if ( $@ ) {
         OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "Failed to get snapshots with clones: $@\n" );
-        return 1;
+            "Proceed to volume ${volname} deactivation as snapname is empty");
     }
-
-    my $deactivated_count = 0;
-
-    # For each snapshot with clones, check if it's mounted and deactivate
-    for my $snap ( @$snapshots_with_clones ) {
-        eval {
-            # Get the clone name for this snapshot
-            my $clone_name_output = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
-                [ "pool", $pool, "nas_volume", "-d", $dataset, "snapshot",
-                  $snap, "get", "--publish-name" ] );
-
-            my $clone_name;
-            for my $line ( reverse split( /\n/, $clone_name_output ) ) {
-                $line =~ s/^\s+|\s+$//g;
-                if ( length( $line ) > 0 ) {
-                    $clone_name = $line;
-                    last;
-                }
-            }
-
-            if ( $clone_name ) {
-                # Check if this clone is mounted
-                my $mount_path = "${path}/private/snapshots/${clone_name}";
-
-                if ( -d $mount_path ) {
-                    # Check if it's actually mounted
-                    my $is_mounted = 0;
-                    open( my $fh, '<', '/proc/mounts' )
-                        or die "Cannot read /proc/mounts: $!\n";
-                    while ( my $line = <$fh> ) {
-                        if ( $line =~ /\s\Q$mount_path\E\s/ ) {
-                            $is_mounted = 1;
-                            last;
-                        }
-                    }
-                    close( $fh );
-
-                    if ( $is_mounted ) {
-                        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-                            "Deactivating mounted snapshot ${snap}\n" );
-
-                        OpenEJovianDSS::Common::nas_volume_deactivate(
-                            $scfg, $storeid, $pool, $dataset, $volname, $snap );
-
-                        $deactivated_count++;
-                    }
-                }
-            }
-        };
-        if ( $@ ) {
-            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-                "Error processing snapshot ${snap}: $@\n" );
-        }
-    }
-
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-        "Deactivated ${deactivated_count} mounted snapshot clones\n" );
+    OpenEJovianDSS::NFSCommon::all_snapshots_deactivate_unpublish(
+        $scfg, $storeid, $dataset, $volname );
 
     return 1;
 }
@@ -609,12 +562,24 @@ sub volume_snapshot_delete {
     my $dataset = $class->get_dataset_name( $scfg );
 
     OpenEJovianDSS::Common::debugmsg( $scfg, 'debug',
-        "Deleting snapshot ${snap} from dataset ${dataset}\n" );
+        "Deleting snapshot ${snap} of volume ${volname} from dataset ${dataset}\n" );
+
+    eval {
+        OpenEJovianDSS::NFSCommon::snapshot_deactivate(
+            $scfg, $storeid, $dataset, $volname, $snapname );
+    };
+    eval {
+        OpenEJovianDSS::NFSCommon::snapshot_unpublish(
+            $scfg, $storeid, $dataset, $volname, $snapname );
+    };
 
     # REST API path: /pools/{pool}/nas-volumes/{dataset}/snapshots/{snapshot}
     OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool, "nas_volume", "-d", $dataset,
           "snapshot", $snap, "delete", '--proxmox-volume', $volname ] );
+
+    OpenEJovianDSS::Common::debugmsg( $scfg, 'debug',
+        "Deleting snapshot ${snap} of volume ${volname} from dataset ${dataset} done.\n" );
 }
 
 sub volume_snapshot_list {
@@ -626,6 +591,9 @@ sub volume_snapshot_list {
     # REST API path: /pools/{pool}/nas-volumes/{dataset}/snapshots
     my $jdssc = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool, "nas_volume", "-d", $dataset, "snapshots", "list" ] );
+
+    #TODO: should provide list of proxmox volume snapshots
+    #not all snapshots at once
 
     my $res = [];
     foreach ( split( /\n/, $jdssc ) ) {
@@ -661,18 +629,16 @@ sub volume_has_feature {
     my $features = {
         snapshot => {
             current => 1,
-            snap    => 1,
+            snap    => 0,
         },
         clone => {
-            base    => 1,
-            current => 1,
-            snap    => 1,
+            current => 0,
+            snap    => 0,
         },
         template => {
-            current => 1,
+            current => 0,
         },
         copy => {
-            base    => 1,
             current => 1,
             snap    => 1,
         },

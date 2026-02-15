@@ -1759,7 +1759,7 @@ class JovianDSSDriver(object):
         self.ra.create_nas_clone(dname, sname, clone_name)
 
         # Create NFS share for the clone
-        path = "{}/{}".format(self._pool, clone_name)
+        path = "Pools/{}/{}".format(self._pool, clone_name)
         self.ra.create_share(clone_name, path,
                            active=True,
                            proto='nfs',
@@ -1769,7 +1769,7 @@ class JovianDSSDriver(object):
         LOG.debug('published snapshot as clone %(clone)s', {
             'clone': clone_name})
 
-        return clone_name
+        return path
 
     def unpublish_nas_snapshot(self, dataset_name, snapshot_name,
                                proxmox_volume=None,
