@@ -45,7 +45,7 @@ our @EXPORT_OK = qw(
     dataset_name_get
     pool_name_get
 
-    volume_snapshot_info
+    snapshot_info
 
     volume_snapshot_mount_private_path
     path_is_nfs
@@ -54,6 +54,8 @@ our @EXPORT_OK = qw(
     snapshot_deactivate
 
 );
+
+our %EXPORT_TAGS = ( all => [@EXPORT_OK], );
 
 sub volume_snapshot_mount_private_path {
     my ( $scfg, $vtype, $name, $vmid, $volname, $snapname ) = @_;
@@ -64,8 +66,7 @@ sub volume_snapshot_mount_private_path {
 
     my $subdir = $scfg->{"content-dirs"}->{$vtype} // $vtype_subdirs->{$vtype};
 
-    my $pmv = nas_private_mounts_volname($vmid, $volname);
-    my $pmvs = nas_private_mounts_volname_snapname($pmv, $snapname);
+    my $pmvs = nas_private_mounts_volname_snapname($vmid, $volname, $snapname);
 
     my $path = "${pmvs}/${subdir}/${name}";
 
@@ -81,14 +82,16 @@ sub nas_private_mounts_volname {
 }
 
 sub nas_private_mounts_volname_snapname {
-    my ($pmv, $snapname ) = @_;
+    my ($vmid, $volname, $snapname ) = @_;
+
+    my $pmv = nas_private_mounts_volname($vmid, $volname );
 
     my $pmvs = "${pmv}/${snapname}";
 
     return $pmvs;
 }
 
-sub volume_snapshot_info {
+sub snapshot_info {
     my ( $scfg, $storeid, $dataset, $volname ) = @_;
 
     my $pool = pool_name_get( $scfg );
@@ -96,7 +99,7 @@ sub volume_snapshot_info {
     # Use -d flag because dataset name from export property is the exact dataset name on JovianDSS
     # TODO: consider improving this function as with huge number of snapshots
     # philtering should be done inside jdssc tool
-    my $output = joviandss_cmd(
+    my $output = OpenEJovianDSS::Common::joviandss_cmd(
         $scfg,
         $storeid,
         [
@@ -110,7 +113,7 @@ sub volume_snapshot_info {
     for my $line (@lines) {
         $line =~ s/^\s+|\s+$//g;
         next unless length($line) > 0;
-        debugmsg( $scfg, "debug",
+        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "NAS volume ${dataset} has snapshot ${line}\n" );
         $snapshots->{$line} = {
             name => $line,
@@ -123,7 +126,7 @@ sub volume_snapshot_info {
 # NAS volume activation for NFS snapshot rollback
 # Creates clone, temporary share, and mounts it for file copying
 sub snapshot_activate {
-    my ( $scfg, $storeid, $pool, $dataset, $volname, $snapname, $sharepath ) = @_;
+    my ( $scfg, $storeid, $pool, $dataset, $vmid, $volname, $snapname, $sharepath ) = @_;
 
     # TODO: Make sure that clone is mounted as READONLY
     my $published = 0;
@@ -133,32 +136,32 @@ sub snapshot_activate {
     my $mount_path;
     my $server = $scfg->{server};
 
-    debugmsg( $scfg, "debug",
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
         "Activating dataset ${dataset} volume ${volname} snapshot ${snapname}\n" );
 
     my $snapmntpath;
 
     my $path = get_path( $scfg );
-    my $pmvs = nas_private_mounts_volname_snapname($volname, $snapname);
+    my $pmvs = nas_private_mounts_volname_snapname($vmid, $volname, $snapname);
 
     $snapmntpath = "${path}/${pmvs}";
 
     # Create snapshots directory if it doesn't exist
 
     if (-d $snapmntpath) {
-        if ( path_is_mnt( $scfg, $snapmntpath ) {
-            if ( path_is_nfs( $scfg,  $snapmntpath, $sharepath ) ) {
+        if ( path_is_mnt( $scfg, $snapmntpath ) ){
+            if ( path_is_nfs( $scfg,  $snapmntpath, $sharepath, $server ) ) {
                 return $snapmntpath;
             } else {
-                umount( $scfg, $stireid, $snapmntpath );
+                umount( $scfg, $storeid, $snapmntpath );
             }
         }
     } else {
         make_path( $snapmntpath );
     }
 
-    debugmsg( $scfg, "debug",
-        "Mounting ${server}:${nfs_export} to ${snapmntpath}\n" );
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        "Mounting ${server}:${sharepath} to ${snapmntpath}\n" );
 
     my $nfs_mount_cmd = [ '/bin/mount', '-t', 'nfs'];
 
@@ -170,7 +173,7 @@ sub snapshot_activate {
 
     run_command( $nfs_mount_cmd,
                 outfunc => sub {},
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                errfunc => sub { cmd_log_output($scfg, 'error', $nfs_mount_cmd, shift); }
             );
     return $snapmntpath;
 }
@@ -178,17 +181,17 @@ sub snapshot_activate {
 # NAS volume deactivation for NFS snapshot rollback cleanup
 # Unmounts share and unpublishes snapshot (deletes share and clone)
 sub snapshot_deactivate {
-    my ( $scfg, $storeid, $dataset, $volname, $snapname ) = @_;
+    my ( $scfg, $storeid, $dataset, $vmid, $volname, $snapname ) = @_;
 
-    debugmsg( $scfg, "debug",
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
         "Deactivating NAS dataset ${dataset} volume ${volname} snapshot ${snapname}\n" );
 
     my $snapshot_dir = File::Spec->catdir(
             get_path($scfg),
-            nas_private_mounts_volname_snapname($volname, $snapname)
+            nas_private_mounts_volname_snapname($vmid, $volname, $snapname)
         );
 
-    nfs_safe_unmount ( $scfg, $storeid, $snapshot_dir );
+    umount ( $scfg, $storeid, $snapshot_dir );
 
     return 1;
 }
@@ -196,12 +199,12 @@ sub snapshot_deactivate {
 # NAS volume deactivation for NFS snapshot rollback cleanup
 # Unmounts share and unpublishes snapshot (deletes share and clone)
 sub all_snapshots_deactivate_unpublish {
-    my ( $scfg, $storeid, $datname, $volname ) = @_;
+    my ( $scfg, $storeid, $datname, $vmid, $volname ) = @_;
 
-    debugmsg( $scfg, "debug",
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
         "Deactivating all snapshots for NAS dataset ${datname} volume ${volname}\n" );
 
-    my $pmv = nas_private_mounts_volname($volname);
+    my $pmv = nas_private_mounts_volname($vmid, $volname);
 
     my $volume_dir = get_path($scfg) . "/$pmv";
 
@@ -220,7 +223,7 @@ sub all_snapshots_deactivate_unpublish {
 
         next if !-d $snapshot_dir;
 
-        nfs_safe_unmount ( $scfg, $storeid, $snapshot_dir );
+        umount ( $scfg, $storeid, $snapshot_dir );
 
         snapshot_unpublish( $scfg, $storeid, $datname, $volname, $snapname );
 
@@ -234,7 +237,7 @@ sub path_is_mnt {
     my ( $scfg,  $mntpath) = @_;
 
     my $dir_is_mounted = [ '/usr/bin/findmnt', '-M', $mntpath ];
-
+    my $json_out = '';
     my $rc = run_command(
         $dir_is_mounted,
         outfunc => sub { $json_out .= "$_[0]\n"; },
@@ -250,8 +253,20 @@ sub path_is_mnt {
     return 0;
 }
 
+sub address_normalize {
+      my ($addr) = @_;
+      return undef if !defined $addr;
+
+      # If host is bracketed IPv6, remove [ and ].
+      if ($addr =~ /^\[(.+)\]$/) {
+          return $1;
+      }
+
+      return $addr;
+};
+
 sub path_is_nfs {
-    my ( $scfg,  $snapshot_dir, $sharepath, $shareip ) = @_;
+    my ( $scfg,  $snapmntpath, $sharepath, $shareip ) = @_;
     # sharepath and shareip are optional
     # they will be checked if they are not undef
     # sharepath is a path of form <pool name>/<share name>
@@ -260,13 +275,13 @@ sub path_is_nfs {
     # and share name
     my $json_out = '';
 
-    my $snapshot_dir_is_mounted = [ '/usr/bin/findmnt', '-J', '-M', $dir, '-o', 'TARGET,SOURCE,FSTYPE' ];
+    my $cmd = [ '/usr/bin/findmnt', '-J', '-M', $snapmntpath, '-o', 'TARGET,SOURCE,FSTYPE' ];
 
     my $rc = run_command(
-        $snapshot_dir_is_mounted,
+        $cmd,
         outfunc => sub { $json_out .= "$_[0]\n"; },
         errfunc => sub {
-            cmd_log_output($scfg, 'error', $snapshot_dir_is_mounted, shift);
+            cmd_log_output($scfg, 'error', $cmd, shift);
         },
         noerr   => 1,
     );
@@ -276,14 +291,38 @@ sub path_is_nfs {
     }
 
     my $j = eval { decode_json($json_out) };
+
     return 0 if ( $@ || ref($j) ne 'HASH' || ref($j->{filesystems}) ne 'ARRAY' );
-
     return 0 if ( !@{ $j->{filesystems} } );
-
     my $fs = $j->{filesystems}[0];
-    return 0 if ( !defined($fs->{target}) || $fs->{target} ne $snapshot_dir_is_mounted);
     return 0 if ( !defined($fs->{fstype}) || $fs->{fstype} !~ /^nfs/ );
 
+    if ( defined( $sharepath ) || defined( $shareip ) ) {
+        my ($mntip, $mntpath);
+
+        if ($fs->{source} =~ /^\[([^\]]+)\]:(\/.*)$/) {
+            # Bracketed IPv6: [2001:db8::1]:/export
+            ($mntip, $mntpath) = ($1, $2);
+        } elsif ($fs->{source} =~ /^(.+):(\/.*)$/) {
+            # Hostname, IPv4, or unbracketed IPv6 ending before :/path
+            ($mntip, $mntpath) = ($1, $2);
+        } else {
+            return 0;
+        }
+
+        if (defined( $shareip)) {
+            my $actual_ip   = address_normalize($mntip);
+            my $expected_ip = address_normalize($shareip);
+
+            return 0 if !defined $actual_ip;
+            return 0 if !defined $expected_ip;
+            return 0 if $actual_ip ne $expected_ip;
+        }
+
+        if (defined($sharepath) ) {
+            return 0 if($sharepath ne $mntpath);
+        }
+    }
     return 1;
 }
 
@@ -298,7 +337,7 @@ sub mount {
         push @$cmd, '-o', $options;
     }
 
-    OpenEJovianDSS::Common::run_command($cmd, errmsg => "mount error");
+    run_command($cmd, errmsg => "mount error");
 }
 
 sub umount {
@@ -315,14 +354,14 @@ sub umount {
         noerr   => 1,
     );
 
-    if $rc == 0 {
-        warn "Empty snapshot dir found ${snapshot_dir}\n";
-        debugmsg( $scfg, "warn", "Empty snapshot dir found ${snapshot_dir}" );
+    if ($rc != 0) {
+        warn "No share mounted to ${snapshot_dir}\n";
+        OpenEJovianDSS::Common::debugmsg( $scfg, "warn", "No share mounted to ${snapshot_dir}" );
         rmdir($snapshot_dir);
         return ;
     }
 
-    debugmsg( $scfg, "debug",
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "Unmounting ${snapshot_dir}\n" );
 
     for (my $i = 0; $i < 3; $i++) {
@@ -351,7 +390,7 @@ sub umount {
         noerr   => 1
     );
 
-    my $rc = run_command(
+    $rc = run_command(
         $snapshot_dir_is_mounted,
         outfunc => sub {},
         errfunc => sub {
@@ -360,7 +399,7 @@ sub umount {
         noerr   => 1,
     );
 
-    if $rc == 0 {
+    if ($rc != 0) {
         rmdir($snapshot_dir);
         return ;
     }
@@ -371,14 +410,14 @@ sub umount {
 sub snapshot_publish {
     my ( $scfg, $storeid, $datname, $volname, $snapname ) = @_;
 
-    my $pool = get_pool( $scfg );
+    my $pool = pool_name_get( $scfg );
     # Step 1: Publish snapshot (creates clone with proper naming and NFS share)
-    debugmsg( $scfg, "debug",
-        "Publishing snapshot ${snapname} for proxmox volume ${volname} from dataset ${dataset}\n" );
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        "Publishing snapshot ${snapname} for proxmox volume ${volname} from dataset ${datname}\n" );
 
-    my $cmd_output = joviandss_cmd( $scfg, $storeid,
+    my $cmd_output = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool,
-          "nas_volume", "-d", $dataset,
+          "nas_volume", "-d", $datname,
           "snapshot", '--proxmox-volume', ${volname} , $snapname,
           "publish" ] );
 
@@ -400,18 +439,18 @@ sub snapshot_publish {
         . "dataset ${datname} "
         . "volume ${volname} "
         . "snapshot ${snapname} "
-        . "contains forbiden symbols: ${share_name}\n";
+        . "contains forbidden symbols: ${sharepath}\n";
 };
 
 
 sub snapshot_unpublish {
     my ( $scfg, $storeid, $datname, $volname, $snapname ) = @_;
 
-    my $pool = get_pool( $scfg );
+    my $pool = pool_name_get( $scfg );
 
-    debugmsg( $scfg, "debug",
-        "Unpublishing snapshot ${snapname} for dataset ${dataset_name} of volume ${volname}\n" );
-    joviandss_cmd(
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        "Unpublishing snapshot ${snapname} for dataset ${datname} of volume ${volname}\n" );
+    OpenEJovianDSS::Common::joviandss_cmd(
         $scfg, $storeid,
         [ 'pool', $pool,
           'nas_volume', '-d', $datname,
