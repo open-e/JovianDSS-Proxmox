@@ -42,8 +42,12 @@ use PVE::Tools qw(run_command);
 
 our @EXPORT_OK = qw(
 
-    nas_volume_snapshots_info
+    dataset_name_get
+    pool_name_get
 
+    volume_snapshot_info
+
+    volume_snapshot_mount_private_path
     path_is_nfs
 
     snapshot_activate
@@ -51,7 +55,7 @@ our @EXPORT_OK = qw(
 
 );
 
-sub nas_volume_snapshot_mount_in_path {
+sub volume_snapshot_mount_private_path {
     my ( $scfg, $vtype, $name, $vmid, $volname, $snapname ) = @_;
 
     my $vtype_subdirs = get_vtype_subdirs();
@@ -63,9 +67,9 @@ sub nas_volume_snapshot_mount_in_path {
     my $pmv = nas_private_mounts_volname($vmid, $volname);
     my $pmvs = nas_private_mounts_volname_snapname($pmv, $snapname);
 
-    my $mount_in_path = "${pmvs}/${subdir}/${name}";
+    my $path = "${pmvs}/${subdir}/${name}";
 
-    return $mount_in_path;
+    return $path;
 }
 
 sub nas_private_mounts_volname {
@@ -84,12 +88,14 @@ sub nas_private_mounts_volname_snapname {
     return $pmvs;
 }
 
-sub nas_volume_snapshots_info {
+sub volume_snapshot_info {
     my ( $scfg, $storeid, $dataset, $volname ) = @_;
 
-    my $pool = get_pool($scfg);
+    my $pool = pool_name_get( $scfg );
 
     # Use -d flag because dataset name from export property is the exact dataset name on JovianDSS
+    # TODO: consider improving this function as with huge number of snapshots
+    # philtering should be done inside jdssc tool
     my $output = joviandss_cmd(
         $scfg,
         $storeid,
@@ -281,6 +287,20 @@ sub path_is_nfs {
     return 1;
 }
 
+sub mount {
+    my ( $scfg, $storeid, $data_address, $sharepath, $sharemntpath, $options) = @_;
+
+    $data_address = "[$data_address]" if Net::IP::ip_is_ipv6($data_address);
+    my $source = "$data_address:$sharepath";
+
+    my $cmd = ['/bin/mount', '-t', 'nfs', $source, $sharemntpath];
+    if ($options) {
+        push @$cmd, '-o', $options;
+    }
+
+    OpenEJovianDSS::Common::run_command($cmd, errmsg => "mount error");
+}
+
 sub umount {
     my ( $scfg, $storeid, $snapshot_dir ) = @_;
 
@@ -400,5 +420,38 @@ sub snapshot_unpublish {
     );
     return 1;
 };
+
+
+# Helper function to parse export path
+
+# Export format: /Pools/Pool-2/test1 or /Pools/Pool-0/Dataset-0/Subdataset
+# Returns: (pool_name, dataset_name)
+# Example: "/Pools/Pool-2/test1" -> ("Pool-2", "test1")
+# Example: "/Pools/Pool-0/Dataset-0/Sub" -> ("Pool-0", "Dataset-0/Sub")
+sub parse_export_path {
+    my ( $export ) = @_;
+
+    # Export should start with /Pools/
+    unless ( $export =~ m|^/Pools/([^/]+)/(.+)$| ) {
+        die "Invalid export path format. Expected /Pools/<pool>/<dataset>, got: $export\n";
+    }
+
+    my $pool_name = $1;
+    my $dataset_name = $2;  # Everything after pool name: test1 or Dataset-0/Sub
+
+    return ( $pool_name, $dataset_name );
+}
+
+sub pool_name_get {
+    my ( $scfg ) = @_;
+    my ( $pool_name, $dataset_name ) = parse_export_path( $scfg->{export} );
+    return $pool_name;
+}
+
+sub dataset_name_get {
+    my ( $scfg ) = @_;
+    my ( $pool_name, $dataset_name ) = parse_export_path( $scfg->{export} );
+    return $dataset_name;
+}
 
 1;
