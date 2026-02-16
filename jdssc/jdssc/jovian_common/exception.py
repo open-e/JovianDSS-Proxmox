@@ -237,7 +237,7 @@ class JDSSRollbackIsBlocked(JDSSException):
 class JDSSSnapshotIsBusyException(JDSSResourceIsBusyException):
     """Snapshot have dependent clones"""
 
-    def __init__(self, res):
+    def __init__(self, snapshot):
         self.message = ("snapshot %(snapshot)s")
         super().__init__(self.message)
 

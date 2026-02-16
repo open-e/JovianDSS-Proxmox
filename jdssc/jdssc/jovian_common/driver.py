@@ -852,7 +852,7 @@ class JovianDSSDriver(object):
 
                     if len(dsnaps) > 0:
                         msg = ("Snapshot is busy, delete dependent snapshots "
-                               "firs")
+                               "first")
                         dsnames = [jcom.sid_from_sname(
                             s['name']) for s in dsnaps]
                         jcom.dependency_error(msg, dsnames)
@@ -861,6 +861,15 @@ class JovianDSSDriver(object):
                             jcom.sid_from_sname(sname))
                     else:
                         self._delete_volume(cvname, cascade=False)
+
+                if jcom.is_volume(cvname):
+                    msg = ("Snapshot is busy, delete dependent clone "
+                           "first")
+                    dcnames = [jcom.idname(cvname)]
+                    jcom.dependency_error(msg, dcnames)
+
+                    raise jexc.JDSSSnapshotIsBusyException(
+                        jcom.sid_from_sname(sname))
 
                 if jcom.is_snapshot(cvname):
                     self._delete_volume(cvname, cascade=False)
