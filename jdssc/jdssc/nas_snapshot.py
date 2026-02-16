@@ -250,6 +250,7 @@ class NASSnapshot():
     def unpublish(self):
         """Unpublish snapshot by deleting clone and share."""
         dataset_name = self.args['nas_volume_name']
+        proxmox_volume = self.args['proxmox_volume']
         snapshot_name = self.args['snapshot_name']
         nas_volume_direct_mode = self.args.get('nas_volume_direct_mode', False)
 
@@ -257,6 +258,7 @@ class NASSnapshot():
             self.jdss.unpublish_nas_snapshot(
                 dataset_name,
                 snapshot_name,
+                proxmox_volume=proxmox_volume,
                 nas_volume_direct_mode=nas_volume_direct_mode)
             LOG.info("Snapshot unpublished successfully")
         except jexc.JDSSException as err:

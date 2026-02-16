@@ -154,11 +154,27 @@ sub path {
 
         my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
-        my $mount_in_path = OpenEJovianDSS::NFSCommon::volume_snapshot_mount_private_path( $scfg, $vtype,
+        my $mount_in_path = $class->volume_snapshot_mount_private_path( $scfg, $vtype,
                                 $name, $vmid, $volname, $snapname);
         $path = "${storage_path}/${mount_in_path}";
         return $path;
     }
+}
+
+sub volume_snapshot_mount_private_path {
+    my ( $class, $scfg, $vtype, $name, $vmid, $volname, $snapname ) = @_;
+
+    my $vtype_subdirs = $class->get_vtype_subdirs();
+
+    die "unknown vtype '$vtype'\n" if !exists($vtype_subdirs->{$vtype});
+
+    my $subdir = $scfg->{"content-dirs"}->{$vtype} // $vtype_subdirs->{$vtype};
+
+    my $pmvs = OpenEJovianDSS::NFSCommon::nas_private_mounts_volname_snapname($vmid, $volname, $snapname);
+
+    my $path = "${pmvs}/${subdir}/${name}";
+
+    return $path;
 }
 
 sub check_config {
@@ -333,7 +349,7 @@ sub volume_snapshot_rollback {
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-        "Rolling back volume ${volname} to snapshot ${snapname}\n" );
+        "Rolling back volume ${name} volname ${volname} to snapshot ${snapname}\n" );
 
     my $sharepath = OpenEJovianDSS::NFSCommon::snapshot_publish($scfg, $storeid,
             $datname, $volname, $snapname );
@@ -434,7 +450,7 @@ sub volume_rollback_is_possible {
     # Check if snapshot exists via REST API
     # TODO: have to be rewrittent to better handle many snapshots
     eval {
-        my $snapshots = OpenEJovianDSS::NFSCommon::volume_snapshot_info(
+        my $snapshots = OpenEJovianDSS::NFSCommon::snapshot_info(
             $scfg, $storeid, $datname );
 
         unless ( exists $snapshots->{$snap} ) {
@@ -509,7 +525,7 @@ sub activate_volume {
         if ( $errdeactivate ) {
             die "Failed to attach ${volname} snapshot ${snapname} error: ${err}\n"
                 . "Recovery failed: ${errdeactivate}\n"
-                . "Remove share ${sharepath} manualy\n";
+                . "Remove share ${sharepath} manually\n";
         }
     }
     return 1;

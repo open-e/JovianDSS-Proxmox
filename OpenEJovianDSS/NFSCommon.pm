@@ -47,7 +47,6 @@ our @EXPORT_OK = qw(
 
     snapshot_info
 
-    volume_snapshot_mount_private_path
     path_is_nfs
 
     snapshot_activate
@@ -57,21 +56,6 @@ our @EXPORT_OK = qw(
 
 our %EXPORT_TAGS = ( all => [@EXPORT_OK], );
 
-sub volume_snapshot_mount_private_path {
-    my ( $scfg, $vtype, $name, $vmid, $volname, $snapname ) = @_;
-
-    my $vtype_subdirs = get_vtype_subdirs();
-
-    die "unknown vtype '$vtype'\n" if !exists($vtype_subdirs->{$vtype});
-
-    my $subdir = $scfg->{"content-dirs"}->{$vtype} // $vtype_subdirs->{$vtype};
-
-    my $pmvs = nas_private_mounts_volname_snapname($vmid, $volname, $snapname);
-
-    my $path = "${pmvs}/${subdir}/${name}";
-
-    return $path;
-}
 
 sub nas_private_mounts_volname {
     my ($vmid, $volname ) = @_;
@@ -141,7 +125,7 @@ sub snapshot_activate {
 
     my $snapmntpath;
 
-    my $path = get_path( $scfg );
+    my $path = OpenEJovianDSS::Common::get_path( $scfg );
     my $pmvs = nas_private_mounts_volname_snapname($vmid, $volname, $snapname);
 
     $snapmntpath = "${path}/${pmvs}";
@@ -187,7 +171,7 @@ sub snapshot_deactivate {
         "Deactivating NAS dataset ${dataset} volume ${volname} snapshot ${snapname}\n" );
 
     my $snapshot_dir = File::Spec->catdir(
-            get_path($scfg),
+            OpenEJovianDSS::Common::get_path($scfg),
             nas_private_mounts_volname_snapname($vmid, $volname, $snapname)
         );
 
@@ -206,7 +190,7 @@ sub all_snapshots_deactivate_unpublish {
 
     my $pmv = nas_private_mounts_volname($vmid, $volname);
 
-    my $volume_dir = get_path($scfg) . "/$pmv";
+    my $volume_dir = OpenEJovianDSS::Common::get_path($scfg) . "/$pmv";
 
     my %datasets_to_unpublish;
 

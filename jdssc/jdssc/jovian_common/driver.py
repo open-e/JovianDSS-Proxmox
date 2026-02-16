@@ -19,6 +19,7 @@ from oslo_utils import units as o_units
 import math
 import re
 import string
+import time
 import hashlib
 
 from jdssc.jovian_common import exception as jexc
@@ -1764,21 +1765,42 @@ class JovianDSSDriver(object):
         clone_name = jcom.sname(snapshot_name, dataset_name,
                                  proxmox_volume=proxmox_volume)
 
+        #self.ra.get_nas_snapshot_clone(dname, sname, clone_name)
         # Create clone from snapshot
-        self.ra.create_nas_clone(dname, sname, clone_name)
-
+        try:
+            self.ra.create_nas_clone(dname, sname, clone_name)
+        except jexc.JDSSResourceExistsException:
+            pass
         # Create NFS share for the clone
-        path = "Pools/{}/{}".format(self._pool, clone_name)
-        self.ra.create_share(clone_name, path,
-                           active=True,
-                           proto='nfs',
-                           insecure_connections=False,
-                           synchronous_data_record=True)
+        path = "{}/{}".format(self._pool, clone_name)
+        try:
+            self.ra.create_share(clone_name, path,
+                                 active=True,
+                                 proto='nfs',
+                                 insecure_connections=False,
+                                 synchronous_data_record=True)
+        except jexc.JDSSResourceExistsException:
+            pass
 
         LOG.debug('published snapshot as clone %(clone)s', {
             'clone': clone_name})
 
-        return path
+        for i in range(3):
+            try:
+                share_data = self.ra.get_share(clone_name)
+                if "real_path" in share_data:
+                    return share_data['real_path']
+                else:
+                    time.sleep(1)
+                    continue
+            except Exception:
+                time.sleep(1)
+                continue
+
+        self.ra.delete_share(clone_name)
+        self.ra.delete_nas_clone(dname, sname, clone_name)
+        raise jexc.JDSSException("Unable to create share %(share)s",
+                                 {'share': clone_name})
 
     def unpublish_nas_snapshot(self, dataset_name, snapshot_name,
                                proxmox_volume=None,
@@ -1808,10 +1830,16 @@ class JovianDSSDriver(object):
                                 proxmox_volume=proxmox_volume)
 
         # Delete NFS share
-        self.ra.delete_share(clone_name)
+        try:
+            self.ra.delete_share(clone_name)
+        except jexc.JDSSResourceNotFoundException:
+            pass
 
         # Delete clone
-        self.ra.delete_nas_clone(dname, sname, clone_name)
+        try:
+            self.ra.delete_nas_clone(dname, sname, clone_name)
+        except jexc.JDSSResourceNotFoundException:
+            pass
 
         LOG.debug('unpublished snapshot clone %(clone)s', {
             'clone': clone_name})

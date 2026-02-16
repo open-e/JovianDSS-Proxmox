@@ -51,8 +51,12 @@ class JovianRESTAPI(object):
         self.resource_has_snapshots_msg = (
             re.compile(r"^cannot destroy '.*/.*': volume has children\nuse "
                        r"'-r' to destroy the following datasets:\n.*"))
+
         self.zfs_cmd_error_class = (
             re.compile(r'^zfslib.wrap.zfs.ZfsCmdError$'))
+
+        self.class_werkzeug_notfound = (
+            re.compile(r'werkzeug.exceptions.NotFound'))
 
         self.class_zfsresourceerror = (
             re.compile(r'^zfslib.zfsapi.resources.ZfsResourceError$'))
@@ -71,6 +75,15 @@ class JovianRESTAPI(object):
 
         self.resource_already_exists_msg = (
             re.compile(r"^Resource .* already exists.$"))
+
+        self.message_share_already_exists_msg = (
+            re.compile(r"^Share .* already exists.$"))
+
+        self.message_share_not_exists_msg = (
+            re.compile(r"^Share .* not exists.$"))
+
+        self.message_clone_not_exists_msg = (
+            re.compile(r"^Clone .* not exists$"))
 
         self.dataset_exists_msg = (
             re.compile(r"^cannot create '.*': dataset already exists$"))
@@ -1080,6 +1093,74 @@ class JovianRESTAPI(object):
 
         self._general_error(req, resp)
 
+    def get_nas_snapshot_clone(self, volume_name, snapshot_name, clone_name):
+        """get_nas_snapshot_clones.
+
+        GET
+        /volumes/<string:volumename>/snapshot/<string:snapname>/clones/<string:clone_name>
+
+        :param volume_name: that snapshot belongs to
+        :return:
+        {
+                "name": "sp_102_vm-102-disk-0_raw_snap1_GEYDEL3WNUWTCMBSFVSGS43LFUYC44TBO4------_ONXGC4BR_ORSXG5BS",
+                "full_name": "Pool-2/sp_102_vm-102-disk-0_raw_snap1_GEYDEL3WNUWTCMBSFVSGS43LFUYC44TBO4------_ONXGC4BR_ORSXG5BS",
+                "origin": "Pool-2/test2@sp_102_vm-102-disk-0_raw_snap1_GEYDEL3WNUWTCMBSFVSGS43LFUYC44TBO4------_ONXGC4BR_ORSXG5BS",
+                "quota": null,
+                "refquota": null,
+                "dedup": "off",
+                "compression": "off",
+                "sync": "standard",
+                "logbias": "latency",
+                "primarycache": "all",
+                "secondarycache": "all",
+                "atime": "on",
+                "copies": "1",
+                "reservation": null,
+                "refreservation": null,
+                "recordsize": "131072",
+                "used": "8192",
+                "special_small_blocks": "0",
+                "available": "265688629248",
+                "usedbysnapshots": "0",
+                "usedbydataset": "8192",
+                "usedbychildren": "0",
+                "logicalused": "4096",
+                "logicalreferenced": "22001085952",
+                "snapshot_count": 0,
+                "clones": null,
+                "creation": "1771223618",
+                "readonly": "off",
+                "canmount": "on",
+                "property_source": {
+                  "special_small_blocks": {
+                    "is_local": false,
+                    "inherited_from": null
+                  }
+                }
+              },
+              "error": null
+        }
+        """
+        req = "/nas-volumes/%(vol)s/snapshots/%(snap)s/clones/%(clone)s" % {
+            "vol": volume_name, "snap": snapshot_name, "clone": clone_name}
+
+        LOG.debug("get nas-volume %(vol)s snapshot %(snap)s clone %(clone)s",
+                  {'vol': jcom.idname(volume_name),
+                   'snap': jcom.idname(snapshot_name),
+                   'clone': jcom.idname(clone_name)})
+
+        resp = self.rproxy.pool_request('GET', req)
+
+        if not resp["error"] and resp["code"] == 200:
+            return resp["data"]
+
+        if resp['code'] == 500:
+            if 'message' in resp['error']:
+                if self.resource_dne_msg.match(resp['error']['message']):
+                    raise jexc.JDSSResourceNotFoundException(volume_name)
+
+        self._general_error(req, resp)
+
     def get_nas_snapshot_clones(self, volume_name, snapshot_name):
         """get_nas_snapshot_clones.
 
@@ -1543,6 +1624,11 @@ class JovianRESTAPI(object):
 
         resp = self.rproxy.request('POST', req, json_data=json_data)
 
+        if resp["code"] == 409:
+            if resp["error"]:
+                if resp["error"].get("errno") == 1:
+                    raise jexc.JDSSResourceExistsException(
+                        res=share_name)
         if resp['code'] == 201:
             return
 
@@ -1557,6 +1643,11 @@ class JovianRESTAPI(object):
 
         if resp['code'] == 204:
             return
+        if (('class' in resp.get('error', {})) and
+                ('message' in resp.get('error', {}))):
+            if (self.class_werkzeug_notfound.match(resp['error']['class']) and
+                    self.message_share_not_exists_msg.match(resp['error']['message'])):
+                raise jexc.JDSSResourceNotFoundException(sharename)
 
         self._general_error(req, resp)
 
@@ -1751,13 +1842,20 @@ class JovianRESTAPI(object):
             'snap': snapshot_name,
             'clone': clone_name}
 
+        req.strip()
         LOG.info("delete clone %(clone)s from snapshot %(snap)s "
-                 "of NAS volume %(vol)s",
+                 "of NAS volume %(vol)s\n"
+                 "clone repr: %(clone_repr)s\n"
+                 "snap  repr: %(snap_repr)s\n",
                  {'clone': jcom.idname(clone_name),
                   'snap': jcom.idname(snapshot_name),
-                  'vol': jcom.idname(dataset_name)})
+                  'vol': jcom.idname(dataset_name),
+                  'clone_repr': repr(clone_name),
+                  'snap_repr': repr(snapshot_name)})
 
-        resp = self.rproxy.pool_request('DELETE', req)
+        LOG.info("req url: %(url)s",
+                 {'url': repr(req)})
+        resp = self.rproxy.pool_request('DELETE', req, json_data={})
 
         if resp["code"] in (200, 201, 204):
             LOG.debug("clone %s deleted", clone_name)
@@ -1767,7 +1865,11 @@ class JovianRESTAPI(object):
             if 'message' in resp.get('error', {}):
                 if self.resource_dne_msg.match(resp['error']['message']):
                     raise jexc.JDSSResourceNotFoundException(clone_name)
-
+        if (('class' in resp.get('error', {})) and
+                ('message' in resp.get('error', {}))):
+            if (self.class_werkzeug_notfound.match(resp['error']['class']) and
+                    self.message_clone_not_exists_msg.match(resp['error']['message'])):
+                raise jexc.JDSSResourceNotFoundException(clone_name)
         self._general_error(req, resp)
 
     def get_nas_clones(self, dataset_name, snapshot_name):
