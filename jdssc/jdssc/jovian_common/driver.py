@@ -1566,18 +1566,33 @@ class JovianDSSDriver(object):
         :return: None
         """
 
-        clones = self._list_nas_snapshot_clones_names(vname, sname)
-        if len(clones) > 0:
+        clones = []
 
+        try:
+            clones = self._list_nas_snapshot_clones_names(vname, sname)
+        except jexc.JDSSSnapshotNotFoundException:
+            LOG.debug('Snapshot %s not found', sname)
+            pass
+        except jexc.JDSSResourceNotFoundException:
+            LOG.debug(('Resource related to nas-volume %s snapshot %s'
+                       'not found'), vname, sname)
+            pass
+
+        if len(clones) > 0:
             for cvname in clones:
                 if jcom.is_snapshot(cvname):
                     self._delete_nas_volume(cvname, cascade=False)
 
         try:
-            self.ra.delete_nas_snapshot(vname, sname, force_umount=True)
+            self.ra.delete_nas_snapshot(vname, sname)
         except jexc.JDSSSnapshotNotFoundException:
             LOG.debug('Snapshot %s not found', sname)
-            return
+            pass
+        except jexc.JDSSResourceNotFoundException:
+            LOG.debug(('Resource related to nas-volume %s snapshot %s'
+                       'not found'), vname, sname)
+            pass
+
 
     def delete_nas_snapshot(self, dataset_name, snapshot_name,
                             nas_volume_direct_mode=False,
@@ -1762,19 +1777,19 @@ class JovianDSSDriver(object):
                            proxmox_volume=proxmox_volume)
         # Generate clone name using sname with dataset reference
         # This creates the se_ prefixed name with base32 encoding
-        clone_name = jcom.sname(snapshot_name, dataset_name,
-                                 proxmox_volume=proxmox_volume)
+        #clone_name = jcom.sname(snapshot_name, dataset_name,
+        #                         proxmox_volume=proxmox_volume)
 
         #self.ra.get_nas_snapshot_clone(dname, sname, clone_name)
         # Create clone from snapshot
         try:
-            self.ra.create_nas_clone(dname, sname, clone_name)
+            self.ra.create_nas_clone(dname, sname, sname)
         except jexc.JDSSResourceExistsException:
             pass
         # Create NFS share for the clone
-        path = "{}/{}".format(self._pool, clone_name)
+        path = "{}/{}".format(self._pool, sname)
         try:
-            self.ra.create_share(clone_name, path,
+            self.ra.create_share(sname, path,
                                  active=True,
                                  proto='nfs',
                                  insecure_connections=False,
@@ -1783,11 +1798,11 @@ class JovianDSSDriver(object):
             pass
 
         LOG.debug('published snapshot as clone %(clone)s', {
-            'clone': clone_name})
+            'clone': sname})
 
         for i in range(3):
             try:
-                share_data = self.ra.get_share(clone_name)
+                share_data = self.ra.get_share(sname)
                 if "real_path" in share_data:
                     return share_data['real_path']
                 else:
@@ -1797,10 +1812,10 @@ class JovianDSSDriver(object):
                 time.sleep(1)
                 continue
 
-        self.ra.delete_share(clone_name)
-        self.ra.delete_nas_clone(dname, sname, clone_name)
+        self.ra.delete_share(sname)
+        self.ra.delete_nas_clone(dname, sname, sname)
         raise jexc.JDSSException("Unable to create share %(share)s",
-                                 {'share': clone_name})
+                                 {'share': sname})
 
     def unpublish_nas_snapshot(self, dataset_name, snapshot_name,
                                proxmox_volume=None,
@@ -1825,24 +1840,21 @@ class JovianDSSDriver(object):
             dname = jcom.vname(dataset_name)
         sname = jcom.sname(snapshot_name, dataset_name,
                            proxmox_volume=proxmox_volume)
-        # Generate same clone name as in publish
-        clone_name = jcom.sname(snapshot_name, dname,
-                                proxmox_volume=proxmox_volume)
 
         # Delete NFS share
         try:
-            self.ra.delete_share(clone_name)
+            self.ra.delete_share(sname)
         except jexc.JDSSResourceNotFoundException:
             pass
 
         # Delete clone
         try:
-            self.ra.delete_nas_clone(dname, sname, clone_name)
+            self.ra.delete_nas_clone(dname, sname, sname)
         except jexc.JDSSResourceNotFoundException:
             pass
 
         LOG.debug('unpublished snapshot clone %(clone)s', {
-            'clone': clone_name})
+            'clone': sname})
 
     def get_snapshot(self, volume_name, snapshot_name,
                      export=False, direct_mode=False):

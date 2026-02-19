@@ -1564,7 +1564,7 @@ class JovianRESTAPI(object):
 
         LOG.info("delete nas-volume %s", volume_name)
 
-        resp = self.rproxy.pool_request('DELETE', req)
+        resp = self.rproxy.pool_request('DELETE', req, json_data={})
 
         if resp["code"] in (200, 201, 204):
             LOG.debug(
@@ -1703,7 +1703,7 @@ class JovianRESTAPI(object):
                  {'vol': jcom.idname(dataset_name),
                   'snap': jcom.idname(snapshot_name)})
 
-        resp = self.rproxy.pool_request('DELETE', req)
+        resp = self.rproxy.pool_request('DELETE', req, json_data={})
 
         if resp["code"] in (200, 201, 204):
             LOG.debug("snapshot %s deleted", snapshot_name)
@@ -1842,7 +1842,6 @@ class JovianRESTAPI(object):
             'snap': snapshot_name,
             'clone': clone_name}
 
-        req.strip()
         LOG.info("delete clone %(clone)s from snapshot %(snap)s "
                  "of NAS volume %(vol)s\n"
                  "clone repr: %(clone_repr)s\n"

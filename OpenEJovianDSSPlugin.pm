@@ -1187,4 +1187,26 @@ sub on_update_hook_full {
     return $class->on_update_hook($storeid, $update, $sensitive->%*);
 }
 
+sub cluster_lock_storage {
+    my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
+
+    if( ! defined($timeout)) {
+        $timeout = int(rand(40));
+    }
+
+    my $random_timeout = int(rand(20)) + (2 * $timeout);
+    my $res;
+    if (!$shared) {
+        my $lockid = "pve-storage-$storeid";
+        my $lockdir = "/var/lock/pve-manager";
+        mkdir $lockdir;
+        $res = PVE::Tools::lock_file("$lockdir/$lockid", $random_timeout, $func, @param);
+        die $@ if $@;
+    } else {
+        $res = PVE::Cluster::cfs_lock_storage($storeid, $random_timeout, $func, @param);
+        die $@ if $@;
+    }
+    return $res;
+}
+
 1;

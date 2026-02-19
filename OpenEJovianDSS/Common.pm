@@ -46,6 +46,8 @@ our @EXPORT_OK = qw(
   block_device_path_from_rest
 
   clean_word
+  safe_ford
+  cmd_log_output
 
   get_default_control_port
   get_default_content_size
@@ -257,12 +259,33 @@ sub get_control_port {
     return int( clean_word($port) + 0);
 }
 
+sub get_data_address {
+    my ($scfg) = @_;
+
+    # We do not not do traditional check, because address might be ipv6
+    # with [] around it
+    if (defined( $scfg->{server} ) ) {
+        return clean_word($scfg->{server});
+    }
+
+    if (defined( $scfg->{data_addresses} )) {
+        my $da = clean_word($scfg->{data_addresses});
+        my @iplist = split( /\s*,\s*/, $da );
+        return $iplist[0];
+    }
+    die "JovianDSS data addresses are not provided.\n";
+}
+
 sub get_data_addresses {
     my ($scfg) = @_;
 
     if ( defined( $scfg->{data_addresses} ) ) {
         return clean_word($scfg->{data_addresses});
     } else {
+        my $data_address = get_data_address($scfg);
+        if ( defined($data_address) ) {
+            return $data_address;
+        }
         die "JovianDSS data addresses are not provided.\n";
     }
 }
@@ -391,7 +414,16 @@ sub get_log_file {
 
 sub get_options {
     my ($scfg) = @_;
-    return $scfg->{options};
+    my $options = $scfg->{options};
+    if (defined($options)) {
+        if ( $options =~ /^([\:\-\@\w.\/]+)$/ ) {
+            return $1;
+        } else {
+            die "Options property contains forbiden symbols: ${options}\n";
+        }
+    } else {
+        return undef;
+    }
 }
 
 sub get_content {
@@ -470,6 +502,16 @@ sub clean_word {
     $word =~ s/[^[:ascii:]]//;
 
     return $word;
+}
+
+sub safe_word{
+    my ($word, $word_desc) = @_;
+
+    if ( $word =~ /^([\:\-\@\w.\/]+)$/ ) {
+        return $1;
+    } else {
+        die "${word_desc} contains forbidden symbols: ${word}\n";
+    }
 }
 
 my $log_file_path = undef;
@@ -653,7 +695,7 @@ sub joviandss_cmd {
                 timeout => $timeout,
                 noerr   => 1
             );
-            cmd_log_output( $scfg, 'debug' , $jcmd, $output );
+            #cmd_log_output( $scfg, 'debug' , $jcmd, $output );
 
         };
         my $rerr = $@;
@@ -1747,7 +1789,15 @@ sub id_serial_from_rest {
 sub volume_unstage_iscsi_device {
     my ( $scfg, $storeid, $targetname, $lunid, $hosts ) = @_;
 
-    debugmsg( $scfg, "debug", "Volume unstage iscsi device ${targetname} with lun ${lunid}\n" );
+    if (! defined($targetname) || ! defined($lunid) ) {
+        my $msg = "Failed to identify";
+        $msg .= " target name" if (! defined($targetname));
+        $msg .= " lun id" if (! defined($lunid));
+        my $trace = longmess($msg);
+        debugmsg( $scfg, "error", "${msg}" );
+        die "${msg}\n";
+    }
+    debugmsg( $scfg, "debug", "Volume unstage iscsi device ${targetname} with lun ${lunid}" );
     my $block_devs = block_device_iscsi_paths ( $scfg, $targetname, $lunid, $hosts );
 
     foreach my $idp (@$block_devs) {

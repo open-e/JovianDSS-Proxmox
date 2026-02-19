@@ -38,7 +38,7 @@ use OpenEJovianDSS::NFSCommon qw(:all);
 
 use base qw(PVE::Storage::Plugin);
 
-my $PLUGIN_VERSION = '0.1.0';
+my $PLUGIN_VERSION = '0.7.0';
 
 #    Open-E JovianDSS NFS Proxmox plugin
 #
@@ -92,31 +92,31 @@ sub properties {
 
 sub options {
     return {
-        server             => { fixed    => 1 },
-        export             => { fixed    => 1 },
-        path               => { fixed    => 1 },
-        'content-dirs'     => { optional => 1 },
-        nodes              => { optional => 1 },
-        disable            => { optional => 1 },
-        'prune-backups'    => { optional => 1 },
+        server                  => { fixed    => 1 },
+        export                  => { fixed    => 1 },
+        path                    => { fixed    => 1 },
+        'content-dirs'          => { optional => 1 },
+        nodes                   => { optional => 1 },
+        disable                 => { optional => 1 },
+        'prune-backups'         => { optional => 1 },
         'max-protected-backups' => { optional => 1 },
-        options            => { optional => 1 },
-        content            => { optional => 1 },
-        shared             => { optional => 1 },
-        format             => { optional => 1 },
-        mkdir              => { optional => 1 },
-        'create-base-path' => { optional => 1 },
-        'create-subdirs'   => { optional => 1 },
-        bwlimit            => { optional => 1 },
-        preallocation      => { optional => 1 },
-        user_name          => { optional => 1 },
-        user_password      => { optional => 1 },
-        control_addresses  => { optional => 1 },
-        control_port       => { optional => 1 },
-        data_addresses     => { },
-        ssl_cert_verify    => { optional => 1 },
-        debug              => { optional => 1 },
-        log_file           => { optional => 1 },
+        options                 => { optional => 1 },
+        content                 => { optional => 1 },
+        shared                  => { optional => 1 },
+        format                  => { optional => 1 },
+        mkdir                   => { optional => 1 },
+        'create-base-path'      => { optional => 1 },
+        'create-subdirs'        => { optional => 1 },
+        bwlimit                 => { optional => 1 },
+        preallocation           => { optional => 1 },
+        user_name               => { optional => 1 },
+        user_password           => { optional => 1 },
+        control_addresses       => { optional => 1 },
+        control_port            => { optional => 1 },
+        data_addresses          => { optional => 1 },
+        ssl_cert_verify         => { optional => 1 },
+        debug                   => { optional => 1 },
+        log_file                => { optional => 1 },
     };
 }
 
@@ -144,7 +144,7 @@ sub path {
         # Volume path
         # it is simple as it represents same path structure as NFS
         $path = $class->filesystem_path( $scfg, $volname, $snapname );
-        return $path;
+        return OpenEJovianDSS::Common::safe_word($path, 'Volume path');
     } else {
         # Snapshot path
         #
@@ -155,14 +155,14 @@ sub path {
         my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
         my $mount_in_path = $class->volume_snapshot_mount_private_path( $scfg, $vtype,
-                                $name, $vmid, $volname, $snapname);
+                                $vmid, $name, $snapname);
         $path = "${storage_path}/${mount_in_path}";
-        return $path;
+        return OpenEJovianDSS::Common::safe_word($path, 'Snapshot path');
     }
 }
 
 sub volume_snapshot_mount_private_path {
-    my ( $class, $scfg, $vtype, $name, $vmid, $volname, $snapname ) = @_;
+    my ( $class, $scfg, $vtype, $vmid, $name, $snapname ) = @_;
 
     my $vtype_subdirs = $class->get_vtype_subdirs();
 
@@ -170,9 +170,9 @@ sub volume_snapshot_mount_private_path {
 
     my $subdir = $scfg->{"content-dirs"}->{$vtype} // $vtype_subdirs->{$vtype};
 
-    my $pmvs = OpenEJovianDSS::NFSCommon::nas_private_mounts_volname_snapname($vmid, $volname, $snapname);
+    my $pmvs = OpenEJovianDSS::NFSCommon::nas_private_mounts_volname_snapname($vmid, $name, $snapname);
 
-    my $path = "${pmvs}/${subdir}/${name}";
+    my $path = "${pmvs}/${subdir}/${vmid}/${name}";
 
     return $path;
 }
@@ -197,7 +197,7 @@ sub status {
         if !$cache->{mountdata};
 
     my $path = $scfg->{path};
-    my $server = $scfg->{server};
+    my $server = OpenEJovianDSS::Common::get_data_address($scfg);
     my $export = $scfg->{export};
 
     return undef
@@ -212,8 +212,8 @@ sub activate_storage {
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
         "Activate NFS storage ${storeid}\n" );
 
-    my $sharemntpath = $scfg->{path};
-    my $data_address = $scfg->{server};
+    my $sharemntpath = OpenEJovianDSS::Common::get_path($scfg);
+    my $data_address = OpenEJovianDSS::Common::get_data_address($scfg);
     my $sharepath = $scfg->{export};
 
     #my $timeout = 2;
@@ -230,7 +230,7 @@ sub activate_storage {
     if ( OpenEJovianDSS::NFSCommon::path_is_mnt( $scfg, $sharemntpath ) ) {
         if ( OpenEJovianDSS::NFSCommon::path_is_nfs( $scfg,
                 $sharemntpath, $sharepath, $data_address ) ) {
-            debugmsg( $scfg, "debug", "Storage ${storeid} share ${sharepath} already mounted at ${sharemntpath}" );
+            OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Storage ${storeid} share ${sharepath} already mounted at ${sharemntpath}" );
         } else {
             die "Unable to activate storage at path ${sharemntpath}, as other resource is mounted."
                 . " Please unmount resources at path ${sharemntpath} or assign different 'path' in config.\n";
@@ -247,7 +247,7 @@ sub deactivate_storage {
     my ($class, $storeid, $scfg, $cache) = @_;
 
     my $sharemntpath = $scfg->{path};
-    my $data_address = $scfg->{server};
+    my $data_address = OpenEJovianDSS::Common::get_data_address($scfg);
     my $sharepath = $scfg->{export};
 
     OpenEJovianDSS::Common::debugmsg($scfg, "debug",
@@ -262,7 +262,7 @@ sub deactivate_storage {
     }
 
     OpenEJovianDSS::Common::debugmsg($scfg, "debug",
-        "Deactivate NFS storage ${storeid} at path ${sharemntpath} done nothing."
+        "Deactivate NFS storage ${storeid} at path ${sharemntpath} done nothing. "
         . "As path is not a mountpoint.\n");
     return 1;
 }
@@ -270,9 +270,10 @@ sub deactivate_storage {
 sub check_connection {
     my ($class, $storeid, $scfg) = @_;
 
-    my $server = $scfg->{server};
+    my $server = OpenEJovianDSS::Common::get_data_address($scfg);
     my $opts = $scfg->{options};
 
+    $server = OpenEJovianDSS::Common::safe_word($server, 'Server address');
     my $cmd;
 
     my $is_v4 = defined($opts) && $opts =~ /vers=4.*/;
@@ -318,14 +319,24 @@ sub volume_snapshot {
     my $pool = OpenEJovianDSS::NFSCommon::pool_name_get( $scfg );
     my $datname = OpenEJovianDSS::NFSCommon::dataset_name_get( $scfg );
 
+    my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+
     OpenEJovianDSS::Common::debugmsg( $scfg, 'debug',
         "Creating snapshot ${snap} for dataset ${datname}\n" );
 
+    my $vol_path = $class->path($scfg, $volname, $storeid, undef);
+    my $sync_cmd = ['/usr/bin/sync', $vol_path];
+    eval {
+        run_command($sync_cmd,
+          timeout => 10,
+          outfunc => sub { },
+          errfunc => sub { cmd_log_output($scfg, 'error', $sync_cmd, shift) });
+    };
     # Use JovianDSS REST API to create ZFS snapshot on NAS volume (dataset)
     # REST API path: /pools/{pool}/nas-volumes/{dataset}/snapshots
     # Use -d flag because dataset name from export property is the exact dataset name on JovianDSS
     OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
-        [ "pool", $pool, "nas_volume", "-d", $datname, "snapshots", "create", '--ignoreexists', '--proxmox-volume', ${volname}, "${snap}" ] );
+        [ "pool", $pool, "nas_volume", "-d", $datname, "snapshots", "create", '--ignoreexists', '--proxmox-volume', ${name}, "${snap}" ] );
 }
 
 sub volume_snapshot_info {
@@ -333,8 +344,10 @@ sub volume_snapshot_info {
 
     my $datname = OpenEJovianDSS::NFSCommon::dataset_name_get( $scfg );
 
+    my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+
     return OpenEJovianDSS::NFSCommon::snapshot_info(
-        $scfg, $storeid, $datname, $volname );
+        $scfg, $storeid, $datname, $name );
 }
 
 sub volume_snapshot_needs_fsfreeze {
@@ -352,20 +365,19 @@ sub volume_snapshot_rollback {
         "Rolling back volume ${name} volname ${volname} to snapshot ${snapname}\n" );
 
     my $sharepath = OpenEJovianDSS::NFSCommon::snapshot_publish($scfg, $storeid,
-            $datname, $volname, $snapname );
-    my $published = 1;
+            $datname, $name, $snapname );
 
     # Activate snapshot and mount it
     my $snapmntpath;
     eval {
         $snapmntpath = OpenEJovianDSS::NFSCommon::snapshot_activate($scfg, $storeid,
-            $pool, $datname, $vmid, $volname, $snapname, $sharepath );
+            $pool, $datname, $vmid, $name, $snapname, $sharepath );
     };
     my $err = $@;
     if ( $err ) {
         eval{
            OpenEJovianDSS::NFSCommon::snapshot_unpublish( $scfg, $storeid,
-               $datname, $volname, $snapname );
+               $datname, $name, $snapname );
         };
         my $errup = $@;
         if ($@) {
@@ -394,36 +406,38 @@ sub volume_snapshot_rollback {
         OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "Copying ${snap_path} to ${vol_path}\n" );
 
+        print("\nStart volume ${volname} copy\n");
         # Use cp command to copy file, preserving attributes
-        PVE::Tools::run_command( [ 'cp', '--sparse=always', '-a', $snap_path, $vol_path ],
+        PVE::Tools::run_command( [ '/usr/bin/rsync', '--stats', '--info=progress2', '--sparse', '-vahHAX',  $snap_path, $vol_path ],
             errmsg => "rollback copy failed" );
+        print("\nComplete volume ${volname} copy\n");
 
-        OpenEJovianDSS::NFSCommon::debugmsg( $scfg, "debug",
+        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "File copy completed successfully\n" );
     };
     my $copy_err = $@;
 
     eval {
         OpenEJovianDSS::NFSCommon::snapshot_deactivate( $scfg, $storeid,
-                $datname, $vmid, $volname, $snapname );
+                $datname, $vmid, $name, $snapname );
     };
     my $deactivate_err = $@;
 
     if ($deactivate_err) {
         if ($copy_err) {
-            die "Failed to umount volume ${volname} snapshot ${snapname} from ${snapmntpath} err: ${deactivate_err}"
-                . "After failed volume rollback: ${copy_err}."
-                . "Please conduct manual unmounting of folder ${snapmntpath}"
-                . "Please conduct manual share ${sharepath} removal on the side JovianDSS storage.";
+            die "Failed to umount volume ${volname} snapshot ${snapname} from ${snapmntpath} err: ${deactivate_err} "
+                . "After failed volume rollback: ${copy_err}. "
+                . "Please conduct manual unmounting of folder ${snapmntpath} "
+                . "Please conduct manual share ${sharepath} removal on the side JovianDSS storage.\n";
         } else {
-            die "Failed to umount volume ${volname} snapshot ${snapname} from ${snapmntpath}"
-                . "Please conduct manual unmounting of folder ${snapmntpath}."
-                . "Please conduct manual share ${sharepath} removal on the side JovianDSS storage.";
+            die "Failed to umount volume ${volname} snapshot ${snapname} from ${snapmntpath} "
+                . "Please conduct manual unmounting of folder ${snapmntpath}. "
+                . "Please conduct manual share ${sharepath} removal on the side JovianDSS storage.\n";
         }
     }
     eval{
        OpenEJovianDSS::NFSCommon::snapshot_unpublish( $scfg, $storeid,
-           $datname, $volname, $snapname );
+           $datname, $name, $snapname );
     };
     my $errup = $@;
     if ($errup) {
@@ -437,6 +451,9 @@ sub volume_snapshot_rollback {
         }
     }
 
+    if ($copy_err) {
+        die "Volume rollback Failed: ${copy_err}.\n";
+    }
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
         "Rollback of volume ${volname} to snapshot ${snapname} done\n" );
 }
@@ -446,17 +463,21 @@ sub volume_rollback_is_possible {
 
     my $pool = OpenEJovianDSS::NFSCommon::pool_name_get( $scfg );
     my $datname = OpenEJovianDSS::NFSCommon::dataset_name_get( $scfg );
+    my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
     # Check if snapshot exists via REST API
     # TODO: have to be rewrittent to better handle many snapshots
+    my $found = 0;
     eval {
         my $snapshots = OpenEJovianDSS::NFSCommon::snapshot_info(
-            $scfg, $storeid, $datname );
+            $scfg, $storeid, $datname, $name );
 
-        unless ( exists $snapshots->{$snap} ) {
+        if ( exists $snapshots->{$snap} ) {
+            $found = 1;
+        } else {
             OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
                 "Snapshot ${snap} not found for dataset ${datname}\n" );
-            return 0;
+            $found = 0;
         }
     };
     if ( $@ ) {
@@ -470,7 +491,7 @@ sub volume_rollback_is_possible {
     # The parent class handles basic blocker checks (e.g., running VM)
 
     # TODO: consider checking free space
-    return 1;
+    return $found;
 }
 
 sub activate_volume {
@@ -480,8 +501,8 @@ sub activate_volume {
         "Activate volume ${volname}"
         . ( $snapname ? " snapshot ${snapname}" : "" ) . "\n" );
 
-    my $path = $scfg->{path};
-    my $server = $scfg->{server};
+    my $path = OpenEJovianDSS::Common::get_path($scfg);
+    my $server = OpenEJovianDSS::Common::get_data_address($scfg);
     my $export = $scfg->{export};
 
     my $pool = OpenEJovianDSS::NFSCommon::pool_name_get( $scfg );
@@ -506,10 +527,10 @@ sub activate_volume {
     }
 
     my $sharepath = OpenEJovianDSS::NFSCommon::snapshot_publish( $scfg, $storeid,
-                        $datname, $volname, $snapname );
+                        $datname, $name, $snapname );
     eval {
         OpenEJovianDSS::NFSCommon::snapshot_activate( $scfg, $storeid,
-            $pool, $datname, $vmid, $volname, $snapname, $sharepath );
+            $pool, $datname, $vmid, $name, $snapname, $sharepath );
     };
 
     my $err = $@;
@@ -518,7 +539,7 @@ sub activate_volume {
         warn "NAS volume activation failed: $err";
         eval {
             OpenEJovianDSS::NFSCommon::snapshot_unpublish( $scfg, $storeid,
-                $datname, $volname, $snapname );
+                $datname, $name, $snapname );
         };
         my $errdeactivate = $@;
 
@@ -527,6 +548,7 @@ sub activate_volume {
                 . "Recovery failed: ${errdeactivate}\n"
                 . "Remove share ${sharepath} manually\n";
         }
+        die "Failed to publish ${volname} snapshot ${snapname} error: ${err}\n";
     }
     return 1;
 }
@@ -543,20 +565,28 @@ sub deactivate_volume {
     my $path = $scfg->{path};
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
-    if ( defined($snapname) && ($snapname ne '') ) {
+    if ( defined($snapname) ) {
         if ($snapname ne '') {
             OpenEJovianDSS::NFSCommon::snapshot_deactivate( $scfg, $storeid,
-                $datname, $vmid, $volname, $snapname );
+                $datname, $vmid, $name, $snapname );
             OpenEJovianDSS::NFSCommon::snapshot_unpublish( $scfg, $storeid,
-                $datname, $volname, $snapname );
+                $datname, $name, $snapname );
             return 1;
         }
         OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "Proceed to volume ${volname} deactivation as snapname is empty");
     }
+    my $vol_path = $class->path($scfg, $volname, $storeid, undef);
 
+    my $sync_cmd = ['/usr/bin/sync', $vol_path];
+    eval {
+        run_command($sync_cmd,
+          timeout => 10,
+          outfunc => sub { },
+          errfunc => sub { cmd_log_output($scfg, 'error', $sync_cmd, shift) });
+    };
     OpenEJovianDSS::NFSCommon::all_snapshots_deactivate_unpublish(
-        $scfg, $storeid, $datname, $vmid, $volname );
+        $scfg, $storeid, $datname, $vmid, $name );
 
     return 1;
 }
@@ -573,20 +603,28 @@ sub volume_snapshot_delete {
 
     eval {
         OpenEJovianDSS::NFSCommon::snapshot_deactivate(
-            $scfg, $storeid, $datname, $vmid, $volname, $snapname );
+            $scfg, $storeid, $datname, $vmid, $name, $snapname );
     };
+    my $errdeactivate = $@;
+
+    if ( $errdeactivate ) {
+        die "Failed to detach ${volname} snapshot ${snapname} error: ${errdeactivate}\n";
+    }
     eval {
         OpenEJovianDSS::NFSCommon::snapshot_unpublish(
-            $scfg, $storeid, $datname, $volname, $snapname );
+            $scfg, $storeid, $datname, $name, $snapname );
     };
-
+    my $errunpublish = $@;
+    if ($errunpublish) {
+        die "Failed to unpublish ${volname} snapshot ${snapname} error:${errunpublish}\n";
+    }
     # REST API path: /pools/{pool}/nas-volumes/{dataset}/snapshots/{snapshot}
     OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool, "nas_volume", "-d", $datname,
-          "snapshot", $snapname, "delete", '--proxmox-volume', $volname ] );
+          "snapshot", $snapname, "delete", '--proxmox-volume', $name ] );
 
     OpenEJovianDSS::Common::debugmsg( $scfg, 'debug',
-        "Deleting snapshot ${snapname} of volume ${volname} from dataset $$datname} done.\n" );
+        "Deleting snapshot ${snapname} of volume ${volname} from dataset ${datname} done.\n" );
 }
 
 # TODO: delete this code
@@ -627,10 +665,6 @@ sub get_import_metadata {
     return PVE::Storage::DirPlugin::get_import_metadata(@_);
 }
 
-sub volume_qemu_snapshot_method {
-    return PVE::Storage::DirPlugin::volume_qemu_snapshot_method(@_);
-}
-
 sub volume_has_feature {
     my ($class, $scfg, $feature, $storeid,
         $volname, $snapname, $running, $opts) = @_;
@@ -663,8 +697,7 @@ sub volume_has_feature {
         $key = $isBase ? 'base' : 'current';
     }
 
-    return 1 if defined($features->{$feature}->{$key});
-
+    return 1 if $features->{$feature}->{$key};
     return undef;
 }
 
@@ -705,6 +738,34 @@ sub on_update_hook_full {
     my ($class, $storeid, $scfg, $update, $delete, $sensitive) = @_;
 
     return $class->on_update_hook($storeid, $update, $sensitive->%*);
+}
+
+sub volume_qemu_snapshot_method {
+    my ($class, $storeid, $scfg, $volname) = @_;
+    return 'storage';
+}
+
+
+sub cluster_lock_storage {
+    my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
+
+    if( ! defined($timeout)) {
+        $timeout = int(rand(40));
+    }
+
+    my $random_timeout = int(rand(20)) + (2 * $timeout);
+    my $res;
+    if (!$shared) {
+        my $lockid = "pve-storage-$storeid";
+        my $lockdir = "/var/lock/pve-manager";
+        mkdir $lockdir;
+        $res = PVE::Tools::lock_file("$lockdir/$lockid", $random_timeout, $func, @param);
+        die $@ if $@;
+    } else {
+        $res = PVE::Cluster::cfs_lock_storage($storeid, $random_timeout, $func, @param);
+        die $@ if $@;
+    }
+    return $res;
 }
 
 1;
