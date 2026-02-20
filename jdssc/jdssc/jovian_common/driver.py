@@ -1634,7 +1634,16 @@ class JovianDSSDriver(object):
                       {"err": ex})
             raise
 
-        return data
+        out = []
+        for d in data:
+            r = {'snapshot_name': jcom.idname(d['name']),
+                 'volume_name': jcom.idname(d['volume_name'])}
+            if proxmox_volume:
+                if proxmox_volume == jcom.proxid_from_sname(d['name']):
+                    out.append(r)
+            else:
+                out.append(r)
+        return out
 
     def get_nas_snapshot(self, dataset_name, snapshot_name,
                          nas_volume_direct_mode=False,

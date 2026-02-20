@@ -250,9 +250,17 @@ class NASSnapshot():
     def unpublish(self):
         """Unpublish snapshot by deleting clone and share."""
         dataset_name = self.args['nas_volume_name']
-        proxmox_volume = self.args['proxmox_volume']
+        proxmox_volume = self.args.get('proxmox_volume', None)
         snapshot_name = self.args['snapshot_name']
         nas_volume_direct_mode = self.args.get('nas_volume_direct_mode', False)
+        LOG.info(("Unpublish dataset %(dat)s "
+                  "snapshot %(snap)s "
+                  "prox_volume %(pv)s "
+                  "direct %(direct)s"),
+                 {'dat': dataset_name,
+                  'snap': snapshot_name,
+                  'pv': str(proxmox_volume),
+                  'direct': str(nas_volume_direct_mode)})
 
         try:
             self.jdss.unpublish_nas_snapshot(

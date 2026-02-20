@@ -45,6 +45,12 @@ class NASSnapshots():
 
         parser = argparse.ArgumentParser(prog="NASSnapshots")
 
+        parser.add_argument('--proxmox-volume',
+                            dest='proxmox_volume',
+                            default=None,
+                            help='Name of proxmox volume that is encoded '
+                            'into snapshot name')
+
         parsers = parser.add_subparsers(dest='nas_snapshots_action')
 
         create = parsers.add_parser('create')
@@ -57,11 +63,6 @@ class NASSnapshots():
                             default=False,
                             help='Do not fail if snapshot with such '
                                  'name exists')
-        create.add_argument('--proxmox-volume',
-                            dest='proxmox_volume',
-                            default=None,
-                            help='Name of proxmox volume that will be encoded '
-                            'into snapshot name')
 
         list = parsers.add_parser('list')
         list.add_argument('--with-clones',
@@ -104,10 +105,12 @@ class NASSnapshots():
         dataset = self.args['nas_volume_name']
         nas_volume_direct_mode = self.args.get(
             'nas_volume_direct_mode', False)
+        proxmox_volume = self.args.get('proxmox_volume', None)
 
         data = self.jdss.list_nas_snapshots(
             dataset,
-            nas_volume_direct_mode=nas_volume_direct_mode)
+            nas_volume_direct_mode=nas_volume_direct_mode,
+            proxmox_volume=proxmox_volume)
 
         if self.args.get('with_clones', False):
             # Filter to only snapshots with clones
@@ -130,6 +133,6 @@ class NASSnapshots():
             # List all snapshots
             for s in data:
                 LOG.debug(s)
-                line = "{}".format(s['name'])
+                line = "{}".format(s['snapshot_name'])
                 line += "\n"
                 sys.stdout.write(line)

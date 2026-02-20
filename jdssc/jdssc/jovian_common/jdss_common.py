@@ -161,7 +161,7 @@ def sname_to_id(sname):
         vid = JBase32ToStr(spl[-1])
         sid = JBase32ToStr(spl[-2])
         proxmox_volume = JBase32ToStr(spl[-3])
-        return sid, vid, proxmox_volume
+        return sid, vid
 
     msg = "Incorrect snapshot name %s" % sname
     raise Exception(msg)
@@ -173,6 +173,16 @@ def sid_from_sname(name):
 
 def vid_from_sname(name):
     return sname_to_id(name)[1]
+
+
+def proxid_from_sname(sname):
+
+    spl = sname.split('_')
+
+    if spl[0] == 'sp':
+        return JBase32ToStr(spl[-3])
+    else:
+        return None
 
 
 def sname(sid, vid, proxmox_volume=None):

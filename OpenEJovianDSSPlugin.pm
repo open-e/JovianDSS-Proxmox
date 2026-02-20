@@ -1194,16 +1194,16 @@ sub cluster_lock_storage {
         $timeout = int(rand(40));
     }
 
-    my $random_timeout = int(rand(20)) + (2 * $timeout);
+    $timeout = int(rand(20)) + (2 * $timeout);
     my $res;
     if (!$shared) {
         my $lockid = "pve-storage-$storeid";
         my $lockdir = "/var/lock/pve-manager";
         mkdir $lockdir;
-        $res = PVE::Tools::lock_file("$lockdir/$lockid", $random_timeout, $func, @param);
+        $res = PVE::Tools::lock_file("$lockdir/$lockid", $timeout, $func, @param);
         die $@ if $@;
     } else {
-        $res = PVE::Cluster::cfs_lock_storage($storeid, $random_timeout, $func, @param);
+        $res = PVE::Cluster::cfs_lock_storage($storeid, $timeout, $func, @param);
         die $@ if $@;
     }
     return $res;

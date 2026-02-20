@@ -91,7 +91,7 @@ sub snapshot_info {
         $storeid,
         [
             'pool', $pool, 'nas_volume', '-d', $dataset,
-            'snapshots', 'list'
+            'snapshots', '--proxmox-volume', $volname, 'list'
         ]
     );
 
@@ -176,9 +176,10 @@ sub snapshot_deactivate {
             OpenEJovianDSS::Common::get_path($scfg),
             nas_private_mounts_volname_snapname($vmid, $volname, $snapname)
         );
-
-    umount ( $scfg, $storeid, $snapshot_dir );
-
+    return 1 if ( !-d $snapshot_dir);
+    if ( path_is_mnt( $scfg, $snapshot_dir ) ){
+        umount ( $scfg, $storeid, $snapshot_dir );
+    }
     return 1;
 }
 
@@ -202,6 +203,50 @@ sub path_is_empty {
 
     closedir($dh);
     return 1;      # Empty
+}
+
+sub snapshot_deactivate_unpublish {
+    my ( $scfg, $storeid, $datname, $vmid, $volname, $snapname ) = @_;
+
+    my $dir = File::Spec->catdir(
+            OpenEJovianDSS::Common::get_path($scfg),
+            nas_private_mounts_volname_snapname($vmid, $volname, $snapname)
+        );
+    my $snapshot_dir = OpenEJovianDSS::Common::safe_word($dir, "Snapshot dir");
+    my $no_error = 0;
+    my $err;
+    for my $attempt ( 1 .. 10) {
+        eval {
+
+            if ( -d $snapshot_dir) {
+                OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                    "Deactivating volume ${volname} snapshot entry ${snapname} with path ${snapshot_dir}" );
+                snapshot_deactivate( $scfg, $storeid, $datname, $vmid, $volname, $snapname );
+            }
+            snapshot_unpublish( $scfg, $storeid, $datname, $volname, $snapname );
+            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                    "Unpublishing ${volname} snapshot entry ${snapname} done" );
+
+            if (! path_is_mnt($scfg, $snapshot_dir) && path_is_empty($scfg, $snapshot_dir)) {
+                OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                    "Removing ${snapshot_dir}" );
+                rmdir($snapshot_dir);
+            }
+        };
+        $err = $@;
+        if ($err) {
+            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                "Deactivating volume ${volname} snapshot entry ${snapname} with path ${snapshot_dir} failed attempt ${attempt}: ${err}\n" );
+            sleep 1;
+        } else {
+            $no_error = 1;
+            last;
+        }
+    }
+    if ($no_error == 1) {
+        return 1;
+    }
+    die "Failed to detach deactivate snapshot: ${err}\n";
 }
 
 # NAS volume deactivation for NFS snapshot rollback cleanup
@@ -228,29 +273,35 @@ sub all_snapshots_deactivate_unpublish {
     } else {
         die "Unable to open volume ${volname} snapshots dir ${volume_dir}\n";
     }
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+            "Entries to deactivate: " . join(" ", @entries) );
 
+    my $no_error = 1;
+    my $last_error = undef;
     for my $entry (@entries) {
         next if $entry eq '.' || $entry eq '..';
 
         my $snapname = $entry;
         my $snapshot_dir = File::Spec->catdir($volume_dir, $snapname);
 
-        next if !-d $snapshot_dir;
+        $snapshot_dir = OpenEJovianDSS::Common::safe_word($snapshot_dir, "Snapshot directory");
 
-        if ( path_is_mnt($scfg, $snapshot_dir) ) {
-            umount ( $scfg, $storeid, $snapshot_dir );
+        eval {
+            snapshot_deactivate_unpublish( $scfg, $storeid, $datname, $vmid, $volname, $snapname );
+        };
+        if ($@) {
+            $last_error = $@;
+            $no_error = 0;
         }
-        if (! path_is_mnt($scfg, $snapshot_dir) && path_is_empty($scfg, $snapshot_dir)) {
-            rmdir($snapshot_dir);
-        }
-        snapshot_unpublish( $scfg, $storeid, $datname, $volname, $snapname );
     };
 
-    if( path_is_empty($scfg, $volume_dir)) {
-        rmdir($volume_dir);
+    if ( $no_error ) {
+        if( path_is_empty($scfg, $volume_dir)) {
+            rmdir($volume_dir);
+        }
+        return 1;
     }
-
-    return 1;
+    die "Failure during snapshot mountpoint detachment for ${volname} because of: ${last_error}\n";
 }
 
 
@@ -347,6 +398,7 @@ sub path_is_nfs {
             cmd_log_output($scfg, 'error', $cmd, shift);
         },
         noerr   => 1,
+        timeout => 10,
     );
 
     if ( $rc != 0 || $json_out eq '') {
@@ -544,12 +596,18 @@ sub snapshot_unpublish {
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
         "Unpublishing snapshot ${snapname} for dataset ${datname} of volume ${volname}\n" );
+    $pool = OpenEJovianDSS::Common::safe_word($pool, 'Pool name'); 
+    $datname = OpenEJovianDSS::Common::safe_word($datname, 'Dataset name'); 
+    $volname = OpenEJovianDSS::Common::safe_word($volname, 'Volume name'); 
+    $snapname = OpenEJovianDSS::Common::safe_word($snapname, 'Snapshot name'); 
     OpenEJovianDSS::Common::joviandss_cmd(
         $scfg, $storeid,
         [ 'pool', $pool,
           'nas_volume', '-d', $datname,
           'snapshot', '--proxmox-volume', $volname, $snapname,
-          'unpublish' ]
+          'unpublish' ],
+      120,
+      10
     );
     return 1;
 }

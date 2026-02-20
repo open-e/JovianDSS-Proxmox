@@ -336,7 +336,7 @@ sub volume_snapshot {
     # REST API path: /pools/{pool}/nas-volumes/{dataset}/snapshots
     # Use -d flag because dataset name from export property is the exact dataset name on JovianDSS
     OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
-        [ "pool", $pool, "nas_volume", "-d", $datname, "snapshots", "create", '--ignoreexists', '--proxmox-volume', ${name}, "${snap}" ] );
+        [ "pool", $pool, "nas_volume", "-d", $datname, "snapshots", '--proxmox-volume', ${name}, "create", '--ignoreexists', "${snap}" ] );
 }
 
 sub volume_snapshot_info {
@@ -406,14 +406,19 @@ sub volume_snapshot_rollback {
         OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "Copying ${snap_path} to ${vol_path}\n" );
 
-        print("\nStart volume ${volname} copy\n");
+        my $start = time();
+        print("\nStart volume rollback ${volname}\n");
         # Use cp command to copy file, preserving attributes
-        PVE::Tools::run_command( [ '/usr/bin/rsync', '--stats', '--info=progress2', '--sparse', '-vahHAX',  $snap_path, $vol_path ],
+        my $dd_M_cmd = [ 'dd', "if=${snap_path}", "of=${vol_path}", 'bs=1M', 'conv=sparse', 'oflag=direct', 'status=progress'];
+        # my $rsync_cmd = [ '/usr/bin/rsync', '--stats', '--info=progress2', '--sparse', '-vahHAX',  $snap_path, $vol_path ];
+        PVE::Tools::run_command( $dd_M_cmd ,
             errmsg => "rollback copy failed" );
-        print("\nComplete volume ${volname} copy\n");
+        my $end = time();
+        my $passed = $end - $start;
+        print("\nVolume rollback ${volname} took ${passed} seconds\n");
 
         OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "File copy completed successfully\n" );
+            "File copy completed successfully, took : ${passed} seconds" );
     };
     my $copy_err = $@;
 
@@ -567,10 +572,7 @@ sub deactivate_volume {
 
     if ( defined($snapname) ) {
         if ($snapname ne '') {
-            OpenEJovianDSS::NFSCommon::snapshot_deactivate( $scfg, $storeid,
-                $datname, $vmid, $name, $snapname );
-            OpenEJovianDSS::NFSCommon::snapshot_unpublish( $scfg, $storeid,
-                $datname, $name, $snapname );
+            OpenEJovianDSS::NFSCommon::snapshot_deactivate_unpublish( $scfg, $storeid, $datname, $vmid, $name, $snapname );
             return 1;
         }
         OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
@@ -601,23 +603,8 @@ sub volume_snapshot_delete {
     OpenEJovianDSS::Common::debugmsg( $scfg, 'debug',
         "Deleting snapshot ${snapname} of volume ${volname} from dataset ${datname}\n" );
 
-    eval {
-        OpenEJovianDSS::NFSCommon::snapshot_deactivate(
-            $scfg, $storeid, $datname, $vmid, $name, $snapname );
-    };
-    my $errdeactivate = $@;
+    snapshot_deactivate_unpublish( $scfg, $storeid, $datname, $vmid, $name, $snapname );
 
-    if ( $errdeactivate ) {
-        die "Failed to detach ${volname} snapshot ${snapname} error: ${errdeactivate}\n";
-    }
-    eval {
-        OpenEJovianDSS::NFSCommon::snapshot_unpublish(
-            $scfg, $storeid, $datname, $name, $snapname );
-    };
-    my $errunpublish = $@;
-    if ($errunpublish) {
-        die "Failed to unpublish ${volname} snapshot ${snapname} error:${errunpublish}\n";
-    }
     # REST API path: /pools/{pool}/nas-volumes/{dataset}/snapshots/{snapshot}
     OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool, "nas_volume", "-d", $datname,
@@ -750,19 +737,19 @@ sub cluster_lock_storage {
     my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
 
     if( ! defined($timeout)) {
-        $timeout = int(rand(40));
+        $timeout = int(360);
     }
 
-    my $random_timeout = int(rand(20)) + (2 * $timeout);
+    $timeout = (2 * $timeout);
     my $res;
     if (!$shared) {
         my $lockid = "pve-storage-$storeid";
         my $lockdir = "/var/lock/pve-manager";
         mkdir $lockdir;
-        $res = PVE::Tools::lock_file("$lockdir/$lockid", $random_timeout, $func, @param);
+        $res = PVE::Tools::lock_file("$lockdir/$lockid", $timeout, $func, @param);
         die $@ if $@;
     } else {
-        $res = PVE::Cluster::cfs_lock_storage($storeid, $random_timeout, $func, @param);
+        $res = PVE::Cluster::cfs_lock_storage($storeid, $timeout, $func, @param);
         die $@ if $@;
     }
     return $res;

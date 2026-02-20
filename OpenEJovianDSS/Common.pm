@@ -605,21 +605,21 @@ sub safe_var_print {
 }
 
 sub joviandss_cmd {
-    my ( $scfg, $storeid, $cmd, $timeout, $retries, $force_debub_level ) = @_;
+    my ( $scfg, $storeid, $cmd, $timeout, $retries, $force_debug_level ) = @_;
 
     my $msg = '';
     my $err = undef;
     my $target;
     my $retry_count = 0;
 
-    $timeout = 40 if !$timeout;
-    $retries = 0  if !$retries;
+    $timeout = 40 if ! defined($timeout);
+    $retries = 0  if ! defined($retries);
     my $connection_options = [];
 
     my $debug_level = map_log_level_to_number('debug');
 
-    if ( defined($force_debub_level) ) {
-        push @$connection_options, '--loglvl', $force_debub_level;
+    if ( defined($force_debug_level) ) {
+        push @$connection_options, '--loglvl', $force_debug_level;
     } else {
         my $config_level = get_log_level($scfg);
         if ( $config_level >= $debug_level ) {
@@ -695,10 +695,11 @@ sub joviandss_cmd {
                 timeout => $timeout,
                 noerr   => 1
             );
-            #cmd_log_output( $scfg, 'debug' , $jcmd, $output );
-
+            #cmd_log_output( $scfg, 'debug' , $jcmd, "code ${exitcode} msg " . safe_var_print('msg', $msg) . ' ' . safe_var_print('err', $err) );
+            #warn "Insecure plugin usage! Disable DEBUG\n";
         };
         my $rerr = $@;
+        #debugmsg( $scfg, 'debug' , "CMD: code ${exitcode} retry ${retry_count} " . safe_var_print('msg', $msg) . ' ' . safe_var_print('err', $err));
 
         if ( $exitcode == 0 ) {
             return $msg;
