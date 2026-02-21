@@ -46,7 +46,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.10.15';
+my $PLUGIN_VERSION = '0.11.0-alpha';
 
 #    Open-E JovianDSS Proxmox plugin
 #
