@@ -48,6 +48,7 @@ our @EXPORT_OK = qw(
     snapshot_deactivate
     snapshot_publish
     snapshot_unpublish
+    snapshot_deactivate_unpublish
     all_snapshots_deactivate_unpublish
 
     mount

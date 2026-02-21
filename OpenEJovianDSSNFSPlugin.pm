@@ -603,12 +603,12 @@ sub volume_snapshot_delete {
     OpenEJovianDSS::Common::debugmsg( $scfg, 'debug',
         "Deleting snapshot ${snapname} of volume ${volname} from dataset ${datname}\n" );
 
-    snapshot_deactivate_unpublish( $scfg, $storeid, $datname, $vmid, $name, $snapname );
+    OpenEJovianDSS::NFSCommon::snapshot_deactivate_unpublish( $scfg, $storeid, $datname, $vmid, $name, $snapname );
 
     # REST API path: /pools/{pool}/nas-volumes/{dataset}/snapshots/{snapshot}
     OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool, "nas_volume", "-d", $datname,
-          "snapshot", $snapname, "delete", '--proxmox-volume', $name ] );
+          "snapshot", '--proxmox-volume', $name, $snapname, "delete" ] );
 
     OpenEJovianDSS::Common::debugmsg( $scfg, 'debug',
         "Deleting snapshot ${snapname} of volume ${volname} from dataset ${datname} done.\n" );
