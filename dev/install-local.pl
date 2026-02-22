@@ -45,14 +45,12 @@ my $USE_REINSTALL = 0;
 my $ALLOW_DOWNGRADES = 0;
 my $VERBOSE = 0;
 my $ASSUME_YES = 0;
-my $ASSUME_MAX_WORKERS_ONE_YES = 0;
 my @WARNING_NODES = ();
 my @SKIPPED_NODES = ();
 my $PACKAGE_PATH = "";
 
 # Parse command line options
 GetOptions(
-    "package=s"     => \$PACKAGE_PATH,
     "sudo"          => sub { $USE_SUDO = 1 },
     "restart"       => \$NEED_RESTART,
     "dry-run"       => \$DRY_RUN,
@@ -72,6 +70,15 @@ GetOptions(
 if ($HELP) {
     print_usage();
     exit 0;
+}
+
+# Accept .deb path as positional argument (first non-option arg)
+if (@ARGV) {
+    $PACKAGE_PATH = shift @ARGV;
+}
+
+if (@ARGV) {
+    die "Error: unexpected arguments: " . join(' ', @ARGV) . "\nUse --help for usage information.\n";
 }
 
 
@@ -112,11 +119,10 @@ sub print_usage {
     print <<EOF;
 JovianDSS Proxmox plugin local installer
 
-Usage: $prog --package <path> [options]
+Usage: $prog <path-to-deb> [options]
        $prog --remove [options]
 
 General:
-  --package <path>           Path to local .deb file (required for install)
   --remove                   Remove/uninstall the plugin instead of installing
   --sudo                     Use sudo for commands (default: run without sudo)
   --restart                  Restart pvedaemon after install/remove
@@ -137,16 +143,16 @@ Cluster:
 
 Examples:
   # Install from local .deb on this node only
-  $prog --package ./open-e-joviandss-proxmox-plugin.deb
+  $prog ./open-e-joviandss-proxmox-plugin.deb
 
   # Install on all cluster nodes
-  $prog --package ./open-e-joviandss-proxmox-plugin.deb --all-nodes
+  $prog ./open-e-joviandss-proxmox-plugin.deb --all-nodes
 
   # Install using sudo (when not running as root)
-  $prog --package ./plugin.deb --sudo
+  $prog ./plugin.deb --sudo
 
   # Install with default multipath config on all nodes
-  $prog --package ./plugin.deb --all-nodes --add-default-multipath-config
+  $prog ./plugin.deb --all-nodes --add-default-multipath-config
 
   # Remove plugin from local node only
   $prog --remove
@@ -732,6 +738,16 @@ sub install_node {
 
     # Install package
     my $install_success;
+    my $already_installed = 0;
+    my $output_handler = get_output_handler($is_local ? "local" : $display_name);
+    my $install_outfunc = sub {
+        my $line = $_[0];
+        if ($line && $line =~ /already the newest version|is already the most recent version/i) {
+            $already_installed = 1;
+        }
+        $output_handler->($line);
+    };
+
     if ($is_local) {
         # Local installation - set environment variable for non-interactive mode
         local $ENV{DEBIAN_FRONTEND} = 'noninteractive';
@@ -745,7 +761,7 @@ sub install_node {
         }
 
         $install_success = run_cmd(@cmd, {
-            outfunc => get_output_handler("local"),
+            outfunc => $install_outfunc,
             errfunc => create_context_error_handler("Package installation")
         });
     } else {
@@ -765,9 +781,15 @@ sub install_node {
         # Install package
         my $apt_cmd = get_apt_install_command($REMOTE_TMP);
         $install_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "DEBIAN_FRONTEND=noninteractive ${r_sudo}${apt_cmd}", {
-            outfunc => get_output_handler($display_name),
+            outfunc => $install_outfunc,
             errfunc => create_context_error_handler("Remote package installation", $display_name)
         });
+    }
+
+    if ($already_installed) {
+        say "Warning: Package is already installed at the same version on node $display_name.";
+        say "  No changes were made. Use --reinstall flag to force reinstallation.";
+        push @WARNING_NODES, "$display_name: package already at same version, use --reinstall to force";
     }
 
     # Handle installation failure
@@ -1078,7 +1100,7 @@ sub main {
     # Validate --package option for install operations
     if (!$REMOVE_PLUGIN) {
         unless ($PACKAGE_PATH) {
-            die "Error: --package <path> is required for installation.\nUse --help for usage information.\n";
+            die "Error: path to .deb file is required for installation.\nUse --help for usage information.\n";
         }
         unless (-f $PACKAGE_PATH) {
             die "Error: Package file not found: $PACKAGE_PATH\n";
