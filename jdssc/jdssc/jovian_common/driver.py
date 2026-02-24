@@ -730,6 +730,9 @@ class JovianDSSDriver(object):
             LOG.warning(("Abandon detaching as volume %(volume)s does not "
                         "exist"),
                         {'volume': volume_name})
+            # Volume is already gone but its target may still be alive
+            # (e.g. interrupted prior delete). Clean up any orphaned targets.
+            self._delete_zombie_targets(target_prefix, target_name)
             return
 
         tvld = self._acquire_taget_volume_lun(target_prefix,
@@ -743,8 +746,7 @@ class JovianDSSDriver(object):
             except jexc.JDSSException as jerr:
                 LOG.warning(jerr)
 
-        if not new_target_flag:
-            self._delete_zombie_targets(target_prefix, target_name)
+        self._delete_zombie_targets(target_prefix, target_name)
 
     def remove_export_snapshot(self,
                                target_prefix,
@@ -948,11 +950,15 @@ class JovianDSSDriver(object):
                     return
 
     def _delete_zombie_targets(self, target_prefix, target_name):
-        """Delete any empty (zombie) targets for a given target group.
+        """Delete any empty or orphaned targets for a given target group.
 
-        Targets can be left empty if a prior delete_target REST call was
-        interrupted mid-flight (e.g., by a client timeout). Such zombie targets
-        still hold SCST device handlers that block subsequent volume deletion.
+        Handles two classes of zombie targets:
+        - Empty targets: all LUNs were detached (interrupted delete_target
+          REST call leaves SCST device handlers that block future deletes).
+        - Orphaned-LUN targets: one or more LUNs reference ZFS volumes that
+          no longer exist (e.g., aborted restore left a partial volume behind).
+          These LUNs are detached first; if the target becomes empty it is
+          then deleted.
 
         :param str target_prefix: IQN prefix
         :param str target_name: target group name (e.g. 'vm-101')
@@ -973,6 +979,23 @@ class JovianDSSDriver(object):
             if not target_re.match(target):
                 continue
             try:
+                luns = self.ra.get_target_luns(target)
+
+                # Detach any LUNs whose backing ZFS volume no longer exists.
+                for lun in luns:
+                    lun_name = lun.get('name')
+                    if lun_name and not self.ra.is_lun(lun_name):
+                        LOG.warning("Detaching orphaned LUN %s from target %s"
+                                    " (volume no longer exists)",
+                                    lun_name, target)
+                        try:
+                            self.ra.detach_target_vol(target, lun_name)
+                        except jexc.JDSSException as jerr:
+                            LOG.warning("Could not detach orphaned LUN %s "
+                                        "from target %s: %s",
+                                        lun_name, target, jerr)
+
+                # Re-fetch after potential orphan cleanup.
                 luns = self.ra.get_target_luns(target)
                 if len(luns) == 0:
                     LOG.warning("Deleting zombie empty target %s", target)

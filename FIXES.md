@@ -320,6 +320,74 @@ run_command($cmd, noerr => 1, timeout => 30);
 
 ---
 
+## Fix 11 — Orphaned iSCSI Targets After VM Removal
+
+**File:** `jdssc/jdssc/jovian_common/driver.py`
+
+**Problem:** After deleting VMs via Proxmox GUI, iSCSI targets were left on JovianDSS with
+one or two zvols still attached. Two code paths contributed:
+
+**Cause A — `remove_export` skipped zombie cleanup on missing volume:**
+`remove_export` checked `is_lun(vname)` before proceeding. If the ZFS volume was already
+gone (e.g., deleted by a prior aborted operation), it returned early — but did *not* call
+`_delete_zombie_targets`. Any empty or orphaned target for that VM's target group was left
+behind.
+
+**Cause B — `_delete_zombie_targets` only handled fully-empty targets:**
+If a prior failed restore left an orphaned zvol attached as a LUN on the target, `_delete_zombie_targets`
+would see `len(luns) > 0` and skip the target entirely — even if every LUN's backing ZFS
+volume had since been deleted.
+
+**Fix A:** Call `_delete_zombie_targets` unconditionally in `remove_export`, including on
+the early-return path when the volume is already gone:
+
+```python
+# Before — early return without cleanup:
+if not self.ra.is_lun(vname):
+    LOG.warning(...)
+    return                        # ← zombie targets left behind
+
+# After — run cleanup before returning:
+if not self.ra.is_lun(vname):
+    LOG.warning(...)
+    self._delete_zombie_targets(target_prefix, target_name)   # ← added
+    return
+```
+
+Also removed the `if not new_target_flag:` guard on the final `_delete_zombie_targets`
+call so it always runs (previously it was skipped when no related target existed at all).
+
+**Fix B:** Extended `_delete_zombie_targets` to also detach LUNs whose backing ZFS
+volume no longer exists before checking whether the target is empty:
+
+```python
+luns = self.ra.get_target_luns(target)
+
+# Detach any LUNs whose backing ZFS volume no longer exists.
+for lun in luns:
+    lun_name = lun.get('name')
+    if lun_name and not self.ra.is_lun(lun_name):
+        LOG.warning("Detaching orphaned LUN %s from target %s"
+                    " (volume no longer exists)", lun_name, target)
+        try:
+            self.ra.detach_target_vol(target, lun_name)
+        except jexc.JDSSException as jerr:
+            LOG.warning("Could not detach orphaned LUN %s "
+                        "from target %s: %s", lun_name, target, jerr)
+
+# Re-fetch after potential orphan cleanup.
+luns = self.ra.get_target_luns(target)
+if len(luns) == 0:
+    LOG.warning("Deleting zombie empty target %s", target)
+    self.ra.delete_target(target)
+```
+
+Together these two fixes ensure that after any volume is freed via `pvesm free` (or the
+Proxmox GUI with disk purge), the entire VM target group is inspected and any lingering
+targets — whether empty or holding orphaned LUNs — are cleaned up.
+
+---
+
 ## Test Results
 
 ### Fixes 1–9: Concurrent Restore and Destroy

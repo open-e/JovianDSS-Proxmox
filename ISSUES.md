@@ -185,3 +185,48 @@ Files changed: `OpenEJovianDSS/Common.pm` lines 1373, 2000, 2034.
 The `timeout => 30` ensures `run_command` sends SIGTERM (not SIGKILL) to `multipath` on
 timeout. SIGTERM triggers `multipath`'s signal handler which releases the semaphore before
 exiting. Only SIGKILL bypasses this, which is what caused the original stuck semaphore.
+
+---
+
+## Issue 3: iSCSI Targets Not Deleted After VM Removal
+
+### Summary
+
+After deleting VMs via Proxmox GUI, iSCSI targets remained on JovianDSS with one or two
+zvols still attached. The expected behavior is that removing a VM (with disk purge) removes
+all iSCSI targets and volumes for that VM from JovianDSS.
+
+**Status: Fixed** — see Fix 11 in `FIXES.md`.
+
+### Observed Behavior
+
+After removing VMs via Proxmox GUI with "purge disk images":
+
+```
+iqn.2026-02.proxmox.pool-1:vm-357-0  ← 2 zvols attached
+iqn.2026-02.proxmox.pool-1:vm-356-0  ← 1 zvol attached
+iqn.2026-02.proxmox.pool-1:vm-355-0  ← 1 zvol attached
+...
+```
+
+### Root Cause
+
+Two bugs in `remove_export` / `_delete_zombie_targets` in `driver.py`:
+
+1. **Early return skipped zombie cleanup**: `remove_export` returned early when the ZFS
+   volume was already gone (`is_lun` returned False) without calling `_delete_zombie_targets`.
+   If a prior aborted operation had already deleted the volume but left the target alive,
+   the target was never cleaned up by subsequent `free_image` calls.
+
+2. **Orphaned LUNs not cleaned up**: `_delete_zombie_targets` only deleted *empty* targets
+   (`len(luns) == 0`). If a target still had LUNs referencing volumes that no longer existed
+   on ZFS (e.g., from an aborted restore), the target was silently skipped and left behind
+   indefinitely.
+
+### Note on Removal Procedure
+
+All Proxmox VE-managed volumes must be removed using Proxmox VE tools (GUI with "purge disk
+images" checked, or CLI `pvesm free <storeid>:<volname>`). Volumes or targets left behind
+by failed operations can also be cleaned up by running `pvesm free` for each orphaned
+volume — this now triggers the extended zombie cleanup which also detaches orphaned LUNs
+and deletes the empty target.
