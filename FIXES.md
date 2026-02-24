@@ -463,11 +463,11 @@ acquired the VM lock, with the multipath IPC semaphore stuck at value=1.
 
 ### Fix 12: Silent success on non-existent volume free
 
-| Test | Result |
-|------|--------|
-| `pvesm free jdss-Pool-1:vm-357-0` (target-group name, not a disk) | ✅ Shows error, no "Removed volume" |
-| `pvesm free jdss-Pool-1:vm-357-111` (completely non-existent volume) | ✅ Shows error, no "Removed volume" |
+| # | Command | Scenario | Output before fix | Output after fix |
+|---|---------|----------|-------------------|-----------------|
+| 1 | `pvesm free jdss-Pool-0:vm-999-disk-99` | Volume exists — **regression / positive case** | `Removed volume '...'` ✅ | `Removed volume '...'` ✅ |
+| 2 | `pvesm free jdss-Pool-1:vm-357-0` | Target-group name used instead of disk name | `Removed volume '...'` ❌ | `JDSS resource volume vm-357-0 DNE.` ✅ |
+| 3 | `pvesm free jdss-Pool-1:vm-357-111` | Volume never existed on JovianDSS | `Removed volume '...'` ❌ | `JDSS resource volume vm-357-111 DNE.` ✅ |
+| 4 | `pvesm free jdss-Pool-0:vm-999-disk-99` | Volume already deleted (double-free) | `Removed volume '...'` ❌ | `JDSS resource volume vm-999-disk-99 DNE.` ✅ |
 
-Previously both commands printed `Removed volume 'jdss-Pool-1:vm-357-0'` with exit 0.
-Now they print `JDSS resource volume vm-357-0 DNE.` (no "Removed volume").
-Exit code remains 0 due to Proxmox `fork_worker` architecture (documented in fix above).
+Shell exit code is 0 in all cases — Proxmox `fork_worker` architectural limitation (documented above).
