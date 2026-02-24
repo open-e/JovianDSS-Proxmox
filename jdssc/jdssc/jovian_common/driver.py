@@ -386,8 +386,9 @@ class JovianDSSDriver(object):
         if detach_target:
             try:
                 self._detach_volume(vname)
-            except jexc.JDSSResourceNotFoundException:
-                LOG.debug('target for volume %s does not exist', vname)
+            except jexc.JDSSException as jerr:
+                LOG.warning('Could not detach volume %s from target: %s',
+                            vname, jerr)
 
         try:
             # First we try to delete lun, if it has no snapshots deletion will
@@ -742,6 +743,9 @@ class JovianDSSDriver(object):
             except jexc.JDSSException as jerr:
                 LOG.warning(jerr)
 
+        if not new_target_flag:
+            self._delete_zombie_targets(target_prefix, target_name)
+
     def remove_export_snapshot(self,
                                target_prefix,
                                target_name,
@@ -928,7 +932,13 @@ class JovianDSSDriver(object):
 
         targets = self.ra.get_targets()
         for t in [target['name'] for target in targets]:
-            luns = self.ra.get_target_luns(t)
+            try:
+                luns = self.ra.get_target_luns(t)
+            except jexc.JDSSResourceNotFoundException:
+                # Target disappeared between get_targets() and get_target_luns()
+                # (concurrent deletion). Skip it.
+                LOG.debug("Target %s vanished during detach scan, skipping", t)
+                continue
             for lun in luns:
                 if 'name' in lun and lun['name'] == vname:
                     if len(luns) == 1:
@@ -936,6 +946,42 @@ class JovianDSSDriver(object):
                     else:
                         self.ra.detach_target_vol(t, vname)
                     return
+
+    def _delete_zombie_targets(self, target_prefix, target_name):
+        """Delete any empty (zombie) targets for a given target group.
+
+        Targets can be left empty if a prior delete_target REST call was
+        interrupted mid-flight (e.g., by a client timeout). Such zombie targets
+        still hold SCST device handlers that block subsequent volume deletion.
+
+        :param str target_prefix: IQN prefix
+        :param str target_name: target group name (e.g. 'vm-101')
+        """
+        tname = target_prefix + target_name
+        if target_prefix[-1] != ':':
+            tname = target_prefix + ':' + target_name
+
+        target_re = re.compile(fr'^{re.escape(tname)}-(?P<id>\d+)$')
+
+        try:
+            tlist = self.list_targets()
+        except jexc.JDSSException as jerr:
+            LOG.warning("Could not list targets to check for zombies: %s", jerr)
+            return
+
+        for target in tlist:
+            if not target_re.match(target):
+                continue
+            try:
+                luns = self.ra.get_target_luns(target)
+                if len(luns) == 0:
+                    LOG.warning("Deleting zombie empty target %s", target)
+                    self.ra.delete_target(target)
+            except jexc.JDSSResourceNotFoundException:
+                pass
+            except jexc.JDSSException as jerr:
+                LOG.warning("Could not delete zombie target %s: %s",
+                            target, jerr)
 
     def _detach_target_volume(self, tname, vname):
         """detach_target_volume
@@ -1024,50 +1070,56 @@ class JovianDSSDriver(object):
                                                   tname,
                                                   lid,
                                                   provider_auth)
-        volume_publication_info['target'] = tname
+        try:
+            volume_publication_info['target'] = tname
 
-        # Here expected vips is a set of vip by name
-        expected_vips = self._get_conforming_vips()
-        if (('vip_allowed_portals' in target_data) and
-                (set(target_data['vip_allowed_portals']['assigned_vips']) ==
-                 set(expected_vips.keys()))):
-            pass
-        else:
-            self.ra.set_target_assigned_vips(tname,
-                                             list(expected_vips.keys()))
+            # Here expected vips is a set of vip by name
+            expected_vips = self._get_conforming_vips()
+            if (('vip_allowed_portals' in target_data) and
+                    (set(target_data['vip_allowed_portals']['assigned_vips']) ==
+                     set(expected_vips.keys()))):
+                pass
+            else:
+                self.ra.set_target_assigned_vips(tname,
+                                                 list(expected_vips.keys()))
 
-        volume_publication_info['vips'] = list(expected_vips.values())
-        if not self.ra.is_target_lun(tname, vname, lid):
-            self._attach_target_volume_lun(tname, vname, lid)
+            volume_publication_info['vips'] = list(expected_vips.values())
+            if not self.ra.is_target_lun(tname, vname, lid):
+                self._attach_target_volume_lun(tname, vname, lid)
 
-        volume_publication_info['lun'] = lid
+            volume_publication_info['lun'] = lid
 
-        if provider_auth is not None:
+            if provider_auth is not None:
 
-            (__, auth_username, auth_secret) = provider_auth.split()
-            volume_publication_info['username'] = auth_username
-            volume_publication_info['password'] = auth_secret
+                (__, auth_username, auth_secret) = provider_auth.split()
+                volume_publication_info['username'] = auth_username
+                volume_publication_info['password'] = auth_secret
 
-            chap_cred = {"name": auth_username,
-                         "password": auth_secret}
+                chap_cred = {"name": auth_username,
+                             "password": auth_secret}
 
-            try:
-                users = self.ra.get_target_user(tname)
-                if len(users) == 1:
-                    if users[0]['name'] == chap_cred['name']:
-                        return volume_publication_info
-                    self.ra.delete_target_user(
-                        tname,
-                        users[0]['name'])
-                for user in users:
-                    self.ra.delete_target_user(
-                        tname,
-                        user['name'])
-                self._set_target_credentials(tname, chap_cred)
+                try:
+                    users = self.ra.get_target_user(tname)
+                    if len(users) == 1:
+                        if users[0]['name'] == chap_cred['name']:
+                            return volume_publication_info
+                        self.ra.delete_target_user(
+                            tname,
+                            users[0]['name'])
+                    for user in users:
+                        self.ra.delete_target_user(
+                            tname,
+                            user['name'])
+                    self._set_target_credentials(tname, chap_cred)
 
-            except jexc.JDSSException as jerr:
-                self.ra.delete_target(tname)
-                raise jerr
+                except jexc.JDSSException as jerr:
+                    self.ra.delete_target(tname)
+                    raise jerr
+
+        except jexc.JDSSResourceNotFoundException:
+            LOG.debug("Target %s vanished during ensure, recreating", tname)
+            return self._create_target_volume_lun(tname, vname, lid,
+                                                  provider_auth)
 
         return volume_publication_info
 
@@ -1121,7 +1173,14 @@ class JovianDSSDriver(object):
         if related_targets is not None:
             related_targets.sort()
         for target in related_targets:
-            luns = self.ra.get_target_luns(target)
+            try:
+                luns = self.ra.get_target_luns(target)
+            except jexc.JDSSResourceNotFoundException:
+                # Target disappeared between list_targets() and get_target_luns()
+                # (concurrent deletion). Skip it and continue scanning.
+                LOG.debug("Target %s vanished during acquisition scan, skipping",
+                          target)
+                continue
             taken_luns = []
             # For each target we check if it has volume of interest
             # already attached
