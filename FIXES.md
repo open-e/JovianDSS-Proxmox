@@ -1,8 +1,7 @@
 # JovianDSS Proxmox Plugin — Concurrency & Robustness Fixes
 
-**Date:** 2026-02-23
 **Plugin version:** 0.10.15
-**Problem:** Concurrent VM restore (`qmrestore`) and VM destroy (`qm destroy --purge`) failures under load.
+**Problem:** Concurrent VM restore, destroy, and live migration failures under load.
 
 ---
 
@@ -284,8 +283,6 @@ if ($clean_error =~ /^JDSS resource .+ DNE\.$/) {
 
 ### Fixes 1–9: Concurrent Restore and Destroy
 
-Deployed to Proxmox VE 9.1.1 with JovianDSS storage `jdss1` (Pool-4).
-
 Tests used the Proxmox API path (`pvesh create /nodes/pve/qemu --force 1`, `max_workers=4`),
 which routes through the task worker pool and exposes plugin concurrency issues that direct
 CLI `qmrestore` does not (see `ISSUES.md` for the distinction).
@@ -293,21 +290,19 @@ CLI `qmrestore` does not (see `ISSUES.md` for the distinction).
 | Test | Result |
 |------|--------|
 | `qm destroy --purge` on VM whose backend volume was already deleted | ✅ OK |
-| Concurrent API restore of VMs 101, 102, 103, 104 (run 1) | ✅ All 4 OK |
-| Sequential `qm destroy --purge` of VMs 101–104 | ✅ All 4 OK |
-| Concurrent API restore of VMs 101, 102, 103, 104 (run 2) | ✅ All 4 OK |
+| Concurrent API restore of 4 VMs (run 1) | ✅ All 4 OK |
+| Sequential `qm destroy --purge` of 4 VMs | ✅ All 4 OK |
+| Concurrent API restore of 4 VMs (run 2) | ✅ All 4 OK |
 
 Previously, at least 1 of the 4 concurrent API restores would fail on every run.
 
 ### Fix 10: Live Migration Hang (multipath semaphore)
 
-Deployed to Proxmox VE 9.1.1, 3-node cluster (pve1/pve2/pve3), JovianDSS storage
-`jdss-Pool-1` with `multipath 1`.
+Tested with `multipath 1` storage on a multi-node cluster.
 
 | Test | Result |
 |------|--------|
-| Live migration of VM 305 (Windows, 8 GiB RAM, jdss-Pool-1 multipath) pve1 → pve2 | ✅ OK |
+| Live online migration of a running VM with multipath-enabled JovianDSS storage | ✅ OK |
 
-Migration completed in 37 seconds, 2.0 GiB/s average transfer speed, 56 ms downtime.
-Previously this migration hung indefinitely after `[pve2] OK` with the multipath semaphore
-stuck at value=1.
+Migration completed successfully. Previously this hung indefinitely after the destination node
+acquired the VM lock, with the multipath IPC semaphore stuck at value=1.
