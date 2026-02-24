@@ -433,6 +433,58 @@ message and displaying an error — is correct.
 
 ---
 
+## Fix 13 — Slow Volume Deletion Due to Pool-Wide iSCSI Target Scan
+
+**Files:** `jdssc/jdssc/volume.py`, `jdssc/jdssc/jovian_common/driver.py`
+
+**Problem:** `pvesm free jdss-Pool-1:vm-NNN-disk-N` took ~15 seconds per volume on pools with
+many iSCSI targets (~60). The bottleneck was `_detach_volume()`, which iterated over **all**
+targets in the pool and called `GET /san/iscsi/targets/<name>/luns` for each one (~163 ms per
+request × 60 targets ≈ **10 seconds** just for the scan).
+
+With the Proxmox CFS lock acquisition timeout defaulting to **10 seconds** (`vdisk_free` passes
+`undef` → `cfs_lock` uses 10 s), concurrent VM deletions from the Proxmox GUI failed:
+
+- Each deletion held the `storage-jdss-Pool-1` lock for ~15 s (> 10 s timeout)
+- All other concurrent deletions timed out waiting for the lock
+- Result: orphaned volumes and iSCSI targets on JovianDSS
+
+**Root cause:** The Perl plugin already passed `--target-group-name <vm-NNN>` to `jdssc volume
+delete`, but `volume.py`'s `delete` argument parser did not define that option. Python's
+`parse_known_args` silently discarded it, so `_detach_volume` always fell back to the
+full pool-wide scan.
+
+**Fix:** Three-part change:
+
+1. **`volume.py`** — Add `--target-group-name` to the `delete` subparser and forward it to
+   `delete_volume()` as `target_name`:
+
+   ```python
+   delete.add_argument('--target-group-name',
+                       dest='target_group_name',
+                       default=None,
+                       help='Target group name hint (e.g. "vm-999"). ...')
+   ```
+
+2. **`driver.py`** — Thread `target_name` through `delete_volume()` → `_delete_volume()` →
+   `_detach_volume()`.
+
+3. **`driver.py` — `_detach_volume`** — When `target_name` is provided, build a regex and
+   filter the target list **before** scanning LUNs:
+
+   ```python
+   if target_name is not None:
+       tname = tprefix + ':' + target_name   # e.g. "iqn.2026-02.proxmox.pool-1:vm-999"
+       target_re = re.compile(fr'^{re.escape(tname)}-\d+$')
+       candidates = [t for t in all_targets if target_re.match(t['name'])]
+       # typically 0–2 targets instead of 60+
+   ```
+
+**Result:** `_detach_volume` now scans 0–2 targets (the VM's own targets) instead of all 60+.
+Total deletion time drops from **~15 s to ~6 s**, well below the 10 s CFS lock timeout.
+
+---
+
 ## Test Results
 
 ### Fixes 1–9: Concurrent Restore and Destroy
@@ -471,3 +523,20 @@ acquired the VM lock, with the multipath IPC semaphore stuck at value=1.
 | 4 | `pvesm free jdss-Pool-0:vm-999-disk-99` | Volume already deleted (double-free) | `Removed volume '...'` ❌ | `JDSS resource volume vm-999-disk-99 does not exist.` ✅ |
 
 Shell exit code is 0 in all cases — Proxmox `fork_worker` architectural limitation (documented above).
+
+### Fix 13: Volume deletion performance (pool-wide target scan eliminated)
+
+Test system: Pool-1, 42 active iSCSI targets, pve1 (10.15.0.141).
+
+| # | Command | Scenario | Time before fix | Time after fix |
+|---|---------|----------|-----------------|----------------|
+| 1 | `pvesm free jdss-Pool-1:vm-888-disk-0` | Newly allocated volume, no target | ~15 s | ~11 s (old code deployed) |
+| 2 | `pvesm free jdss-Pool-1:vm-777-disk-0` | Newly allocated volume, no target | — | **~6 s** ✅ |
+
+Log confirmation for test 2:
+```
+driver - DEBUG - detach volume v_vm-777-disk-0 (target_name hint: vm-777)
+driver - DEBUG - Filtered detach scan to 0/42 targets matching iqn.2026-02.proxmox.pool-1:vm-777
+```
+The 10-second pool-wide LUN scan is eliminated. Total time now fits within the 10 s CFS lock
+acquisition timeout, allowing concurrent VM deletions to succeed without orphaning volumes.
