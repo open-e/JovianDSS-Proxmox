@@ -460,8 +460,11 @@ class JovianDSSDriver(object):
         if print_and_exit:
             LOG.debug("Print only deletion")
             return self._list_resources_to_delete(vname, cascade=True)
-        else:
-            return self._delete_volume(vname, cascade=cascade)
+
+        if not self.ra.is_lun(vname):
+            raise jexc.JDSSVolumeNotFoundException(volume=volume_name)
+
+        return self._delete_volume(vname, cascade=cascade)
 
     def delete_nas_volume(self, volume_name,
                           direct_mode=False,

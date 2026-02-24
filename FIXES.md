@@ -388,6 +388,51 @@ targets — whether empty or holding orphaned LUNs — are cleaned up.
 
 ---
 
+---
+
+## Fix 12 — `pvesm free` Silently Succeeds for Non-Existent Volumes
+
+**File:** `jdssc/jdssc/jovian_common/driver.py`
+
+**Problem:** `pvesm free jdss-Pool-0:vm-100-disk-0` printed `Removed volume 'jdss-Pool-0:vm-100-disk-0'`
+and exited 0 even when the volume did not exist on JovianDSS — either because the name was
+wrong (e.g. `vm-357-0` instead of `vm-357-disk-0`) or because the volume had already been
+deleted by a prior operation.
+
+The cause was that `_delete_volume()` internally caught `JDSSResourceNotFoundException` and
+returned `None` silently. The jdssc process exited 0, Proxmox saw success, and printed the
+misleading "Removed volume" message.
+
+**Fix:** Added an explicit `is_lun` pre-check at the start of `delete_volume()` (non-print
+path). If the volume does not exist, `JDSSVolumeNotFoundException` is raised immediately:
+
+```python
+def delete_volume(self, volume_name, cascade=False, print_and_exit=False):
+    vname = jcom.vname(volume_name)
+    LOG.debug('deleting volume %s', vname)
+    if print_and_exit:
+        LOG.debug("Print only deletion")
+        return self._list_resources_to_delete(vname, cascade=True)
+
+    if not self.ra.is_lun(vname):
+        raise jexc.JDSSVolumeNotFoundException(volume=volume_name)
+
+    return self._delete_volume(vname, cascade=cascade)
+```
+
+This causes jdssc to log an error (`JDSS resource volume <name> DNE.`) and exit 1. The Perl
+layer (`joviandss_cmd`) detects the non-zero exit and calls `die`, which propagates through
+the `fork_worker` child, preventing the "Removed volume" message from being printed.
+
+**Note on exit code:** `pvesm free` submits deletion as a background worker via `fork_worker`
+(scalar context — exit code discarded) and `run_cli_handler` always calls `exit 0`. This
+means the shell exit code of `pvesm free` remains 0 even when the volume was not found.
+This is a Proxmox architectural limitation that cannot be fixed without patching Proxmox
+source files. The important user-visible behavior — suppressing the false "Removed volume"
+message and displaying an error — is correct.
+
+---
+
 ## Test Results
 
 ### Fixes 1–9: Concurrent Restore and Destroy
@@ -415,3 +460,14 @@ Tested with `multipath 1` storage on a multi-node cluster.
 
 Migration completed successfully. Previously this hung indefinitely after the destination node
 acquired the VM lock, with the multipath IPC semaphore stuck at value=1.
+
+### Fix 12: Silent success on non-existent volume free
+
+| Test | Result |
+|------|--------|
+| `pvesm free jdss-Pool-1:vm-357-0` (target-group name, not a disk) | ✅ Shows error, no "Removed volume" |
+| `pvesm free jdss-Pool-1:vm-357-111` (completely non-existent volume) | ✅ Shows error, no "Removed volume" |
+
+Previously both commands printed `Removed volume 'jdss-Pool-1:vm-357-0'` with exit 0.
+Now they print `JDSS resource volume vm-357-0 DNE.` (no "Removed volume").
+Exit code remains 0 due to Proxmox `fork_worker` architecture (documented in fix above).
