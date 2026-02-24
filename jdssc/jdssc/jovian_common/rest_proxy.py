@@ -64,6 +64,7 @@ class JovianDSSRESTProxy(object):
         self.password = config.get('san_password', 'admin')
         self.verify = config.get('driver_ssl_cert_verify', True)
         self.cert = config.get('driver_ssl_cert_path', None)
+        self.request_timeout = config.get('jovian_request_timeout', 570)
 
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -187,7 +188,7 @@ class JovianDSSRESTProxy(object):
         """
         ret = {}
 
-        response_obj = self.session.send(pr)
+        response_obj = self.session.send(pr, timeout=self.request_timeout)
 
         ret['code'] = response_obj.status_code
         if ret['code'] == 204:
