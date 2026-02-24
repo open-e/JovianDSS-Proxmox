@@ -304,7 +304,7 @@ sub path {
                 # Handle specific "volume does not exist" error
                 my $clean_error = $error;
                 $clean_error =~ s/\s+$//;
-                if ($clean_error =~ /^JDSS resource .+ DNE\.$/) {
+                if ($clean_error =~ /^JDSS resource .+ does not exist\.$/) {
                     OpenEJovianDSS::Common::debugmsg($scfg, "debug", "Volume $volname does not exist: ${clean_error}");
                     return wantarray ? ( undef, $vmid, $vtype ) : undef;
                 }

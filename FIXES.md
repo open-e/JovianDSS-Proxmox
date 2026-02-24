@@ -247,7 +247,7 @@ self._general_error(req, resp)
 
 **Problem:** The `path()` function (which returns a volume's block device path) called
 `block_device_path_from_rest()` inside an `eval {}` block, expecting that if the volume
-doesn't exist it would get a `JDSS resource ... DNE.` error and silently return `undef`.
+doesn't exist it would get a `JDSS resource ... does not exist.` error and silently return `undef`.
 
 However, the regex used to detect this condition was:
 ```perl
@@ -271,10 +271,10 @@ Unable to identify expected block device path for volume activation error: ...
 
 ```perl
 # Before (wrong):
-if ($clean_error =~ /^JDSS resource volume .+ DNE\.$/) {
+if ($clean_error =~ /^JDSS resource volume .+ does not exist\.$/) {
 
 # After (correct):
-if ($clean_error =~ /^JDSS resource .+ DNE\.$/) {
+if ($clean_error =~ /^JDSS resource .+ does not exist\.$/) {
 ```
 
 ---
@@ -420,7 +420,7 @@ def delete_volume(self, volume_name, cascade=False, print_and_exit=False):
     return self._delete_volume(vname, cascade=cascade)
 ```
 
-This causes jdssc to log an error (`JDSS resource volume <name> DNE.`) and exit 1. The Perl
+This causes jdssc to log an error (`JDSS resource volume <name> does not exist.`) and exit 1. The Perl
 layer (`joviandss_cmd`) detects the non-zero exit and calls `die`, which propagates through
 the `fork_worker` child, preventing the "Removed volume" message from being printed.
 
@@ -466,8 +466,8 @@ acquired the VM lock, with the multipath IPC semaphore stuck at value=1.
 | # | Command | Scenario | Output before fix | Output after fix |
 |---|---------|----------|-------------------|-----------------|
 | 1 | `pvesm free jdss-Pool-0:vm-999-disk-99` | Volume exists — **regression / positive case** | `Removed volume '...'` ✅ | `Removed volume '...'` ✅ |
-| 2 | `pvesm free jdss-Pool-1:vm-357-0` | Target-group name used instead of disk name | `Removed volume '...'` ❌ | `JDSS resource volume vm-357-0 DNE.` ✅ |
-| 3 | `pvesm free jdss-Pool-1:vm-357-111` | Volume never existed on JovianDSS | `Removed volume '...'` ❌ | `JDSS resource volume vm-357-111 DNE.` ✅ |
-| 4 | `pvesm free jdss-Pool-0:vm-999-disk-99` | Volume already deleted (double-free) | `Removed volume '...'` ❌ | `JDSS resource volume vm-999-disk-99 DNE.` ✅ |
+| 2 | `pvesm free jdss-Pool-1:vm-357-0` | Target-group name used instead of disk name | `Removed volume '...'` ❌ | `JDSS resource volume vm-357-0 does not exist.` ✅ |
+| 3 | `pvesm free jdss-Pool-1:vm-357-111` | Volume never existed on JovianDSS | `Removed volume '...'` ❌ | `JDSS resource volume vm-357-111 does not exist.` ✅ |
+| 4 | `pvesm free jdss-Pool-0:vm-999-disk-99` | Volume already deleted (double-free) | `Removed volume '...'` ❌ | `JDSS resource volume vm-999-disk-99 does not exist.` ✅ |
 
 Shell exit code is 0 in all cases — Proxmox `fork_worker` architectural limitation (documented above).

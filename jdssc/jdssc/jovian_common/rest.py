@@ -406,7 +406,7 @@ class JovianRESTAPI(object):
                 "volume %s deleted", volume_name)
             return
 
-        # Handle DNE case
+        # Handle "does not exist" case
         if resp["code"] == 500:
             if 'message' in resp['error']:
                 if self.resource_dne_msg.match(resp['error']['message']):
