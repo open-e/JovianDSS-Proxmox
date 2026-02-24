@@ -485,6 +485,53 @@ Total deletion time drops from **~15 s to ~6 s**, well below the 10 s CFS lock t
 
 ---
 
+## Fix 14 — Unnecessary `_detach_target_volume` Call in `remove_export`
+
+**File:** `jdssc/jdssc/jovian_common/driver.py`
+
+**Problem:** `remove_export` (called by `jdssc targets delete -v`) called
+`_detach_target_volume(tname, vname)` even when `new_target_flag=True`, meaning no related
+iSCSI target existed on the storage array. This resulted in ~1.3 s of wasted REST calls:
+
+- `GET /san/iscsi/targets/<candidate>` → ~880 ms (target doesn't exist)
+- `DELETE /san/iscsi/targets/<candidate>/luns/<vname>` → 404
+- `GET /san/iscsi/targets/<candidate>/luns` → 404 (raises `JDSSResourceNotFoundException`)
+
+All three calls fail because the target was never created. The exception was silently caught by
+the `except jexc.JDSSException` wrapper in `remove_export`, so no error was surfaced — just
+wasted time.
+
+**Root cause:** The original condition:
+
+```python
+if (volume_attached_flag or (new_target_flag is True)):
+    self._detach_target_volume(tname, vname)
+```
+
+The `new_target_flag is True` branch was intended as a safety net, but
+`_acquire_taget_volume_lun` returns `new_target_flag=True` **only** when no related targets
+exist. The volume therefore cannot be attached to any target, so `_detach_target_volume` is a
+no-op that wastes ~1.3 s.
+
+**Fix:** Remove the `new_target_flag` branch — only call `_detach_target_volume` when the
+volume is actually attached:
+
+```python
+# Before:
+if (volume_attached_flag or (new_target_flag is True)):
+    self._detach_target_volume(tname, vname)
+
+# After:
+if volume_attached_flag:
+    self._detach_target_volume(tname, vname)
+```
+
+**Result:** ~1.3 s saved per deletion when the volume has no associated iSCSI target
+(the common path for newly allocated volumes that were never published). Combined with Fix 13,
+total deletion time is now ~4–5 s, comfortably within the 10 s CFS lock timeout for 2 concurrent deletions.
+
+---
+
 ## Test Results
 
 ### Fixes 1–9: Concurrent Restore and Destroy

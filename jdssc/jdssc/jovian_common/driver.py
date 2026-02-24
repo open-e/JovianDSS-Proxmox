@@ -748,7 +748,7 @@ class JovianDSSDriver(object):
                                               vname)
         (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
 
-        if (volume_attached_flag or (new_target_flag is True)):
+        if volume_attached_flag:
             try:
                 self._detach_target_volume(tname, vname)
             except jexc.JDSSException as jerr:
