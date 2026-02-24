@@ -279,6 +279,47 @@ if ($clean_error =~ /^JDSS resource .+ DNE\.$/) {
 
 ---
 
+## Fix 10 — Bare `multipath` Call Causes Live Migration Hang
+
+**File:** `OpenEJovianDSS/Common.pm`
+**Lines:** 1373, 2000, 2034
+
+**Root cause:**
+
+`volume_stage_multipath` calls bare `multipath` (no arguments) in a retry loop during
+`activate_volume` on the destination node. The failure chain:
+
+1. Bare `multipath` (no args) scans **all** paths on the system and holds the Linux IPC
+   semaphore for the entire duration
+2. Under concurrent migrations, multiple bare `multipath` calls compete for the same semaphore
+3. When one gets SIGKILL'd (by a timeout) while holding it — the semaphore stays locked at
+   value=1 forever, because SIGKILL bypasses signal handlers that would normally release it
+4. All subsequent `multipath` calls block on `semtimedop(..., NULL)` — with no timeout —
+   hanging forever
+5. The `qm start --migratedfrom` on the destination never returns → migration hangs at
+   `[pve2] OK`
+
+**Why SIGKILL and not SIGTERM?** Proxmox's `joviandss_cmd` had a 40-second timeout that sent
+SIGKILL directly to jdssc, which in turn left child processes (including `multipath`) getting
+SIGKILL'd without cleanup.
+
+**Fix:** Replace bare `multipath` with `multipath $id` (processes only the specific WWID,
+much faster, holds semaphore briefly) and add `timeout => 30` to `run_command` so timeouts
+send SIGTERM first — allowing `multipath`'s signal handler to release the semaphore before
+dying.
+
+```perl
+# Before — scans all paths, holds semaphore indefinitely, no timeout:
+my $cmd = [ $MULTIPATH ];
+run_command($cmd, noerr => 1);
+
+# After — only processes this WWID, 30s timeout allows clean semaphore release:
+my $cmd = [ $MULTIPATH, $id ];
+run_command($cmd, noerr => 1, timeout => 30);
+```
+
+---
+
 ## Test Results
 
 ### Fixes 1–9: Concurrent Restore and Destroy
