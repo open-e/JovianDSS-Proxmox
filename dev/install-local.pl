@@ -141,7 +141,6 @@ General:
   --reinstall                Use --reinstall apt flag (default: disabled)
   --allow-downgrades         Allow installing older package versions
   --assume-yes               Automatic yes to prompts (non-interactive mode)
-  --assume-max-workers-one-yes  Set cluster Maximal Workers/bulk-action to 1 without prompting
   -v, --verbose              Show detailed output during installation/removal
   --debug                    Show commands, exit codes, and all output (implies --verbose)
   --no-timeout               Disable default 30s timeout on all commands
@@ -1128,7 +1127,6 @@ sub get_local_node_info {
 
     return ($local_node_short, \@local_ips, $cluster_name);
 }
-
 
 sub main {
     # Check prerequisites

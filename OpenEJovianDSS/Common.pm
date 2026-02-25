@@ -242,6 +242,12 @@ sub get_ssl_cert_verify {
     return $scfg->{ssl_cert_verify};
 }
 
+sub get_delete_timeout {
+    my ($scfg) = @_;
+
+    return $scfg->{delete_timeout} || 600;
+}
+
 sub get_control_addresses {
     my ($scfg) = @_;
     if ( defined( $scfg->{control_addresses} ) ) {
@@ -1414,12 +1420,13 @@ sub volume_stage_multipath {
 
         for my $attempt ( 1 .. 10) {
             eval {
-                my $cmd = [ $MULTIPATH ];
+                my $cmd = [ $MULTIPATH, $id ];
                 run_command(
                     $cmd,
                     outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
                     errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
-                    noerr   => 1
+                    noerr   => 1,
+                    timeout => 30
                 );
             };
 
@@ -2049,12 +2056,13 @@ sub _volume_unstage_multipath_remove_device {
 
         # Step 3: Refresh multipath state
         eval {
-            my $cmd = [ $MULTIPATH ];
+            my $cmd = [ $MULTIPATH, $scsiid ];
             run_command(
                 $cmd,
                 outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
                 errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
-                noerr   => 1
+                noerr   => 1,
+                timeout => 30
             );
         };
 
@@ -2083,12 +2091,13 @@ sub _volume_unstage_multipath_remove_device {
 
         # Step 5: Final multipath refresh and check
         eval {
-            my $cmd = [ $MULTIPATH ];
+            my $cmd = [ $MULTIPATH, $scsiid ];
             run_command(
                 $cmd,
                 outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
                 errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
-                noerr   => 1
+                noerr   => 1,
+                timeout => 30
             );
         };
 

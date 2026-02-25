@@ -93,7 +93,7 @@ class JDSSResourceNotFoundException(JDSSException):
 
     def __init__(self, res):
 
-        self.message = "JDSS resource %(res)s DNE." % {'res': res}
+        self.message = "JDSS resource %(res)s does not exist." % {'res': res}
         super().__init__(self.message)
         self.errcode = 7
 

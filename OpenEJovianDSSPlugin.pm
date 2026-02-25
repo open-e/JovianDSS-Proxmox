@@ -180,6 +180,14 @@ sub properties {
               "Enforce certificate verification for REST over SSL/TLS",
             type => 'boolean',
         },
+        delete_timeout => {
+            description =>
+              "Timeout in seconds for volume delete operations (default 600). "
+              . "Increase this if the JovianDSS pool has many snapshots and "
+              . "volume deletion takes longer than the default.",
+            type    => 'int',
+            default => 600,
+        },
         control_addresses => {
             description =>
 "Coma separated list of ip addresses, that will be used to send control REST requests to JovianDSS storage",
@@ -240,6 +248,7 @@ sub options {
         target_prefix      => { optional => 1 },
         luns_per_target    => { optional => 1 },
         ssl_cert_verify    => { optional => 1 },
+        delete_timeout     => { optional => 1 },
         user_name          => { },
         user_password      => { optional => 1 },
         control_addresses  => { optional => 1 },
@@ -295,7 +304,7 @@ sub path {
                 # Handle specific "volume does not exist" error
                 my $clean_error = $error;
                 $clean_error =~ s/\s+$//;
-                if ($clean_error =~ /^JDSS resource volume .+ DNE\.$/) {
+                if ($clean_error =~ /^JDSS resource .+ does not exist\.$/) {
                     OpenEJovianDSS::Common::debugmsg($scfg, "debug", "Volume $volname does not exist: ${clean_error}");
                     return wantarray ? ( undef, $vmid, $vtype ) : undef;
                 }
@@ -581,7 +590,8 @@ sub free_image {
             "pool",   $pool, "volume",          $volname,
             "delete", "-c",  '--target-prefix', $prefix,
             '--target-group-name', $tgname
-        ]
+        ],
+        OpenEJovianDSS::Common::get_delete_timeout($scfg)
     );
     return undef;
 }
@@ -882,7 +892,6 @@ sub activate_storage {
         }
     }
 
-    $class->SUPER::activate_storage($storeid, $scfg, $cache);
     return 1;
 }
 
