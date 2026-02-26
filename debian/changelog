@@ -1,3 +1,15 @@
+open-e-joviandss-proxmox-plugin (0.10.17-0) stable; urgency=medium
+
+  * Perf: Add dynamic CFS lock timeout scaling with concurrent workers (10s base + 5s/worker, capped at 120s)
+  * Perf: Remove redundant volume_unpublish from free_image, cutting deletion time from ~22s to ~9s
+  * Perf: Add --target-group-name filtering in detach_volume to eliminate pool-wide iSCSI target scan
+  * Fix: Skip unnecessary detach call in remove_export when volume has no associated iSCSI target
+  * Config: Set no_path_retry to 24 in multipath configuration (was queue)
+  * Remove --assume-max-workers-one-yes option from install.pl
+  * Remove dev install script and associated documentation
+
+ -- Miroslaw Franek, Claude Code (Anthropic AI)  Thu, 26 Feb 2026 12:00:00 +0000
+
 open-e-joviandss-proxmox-plugin (0.10.16-0) stable; urgency=medium
 
   * Fix concurrency issues in concurrent restore, destroy and live migration

@@ -18,7 +18,7 @@ from setuptools import setup
 
 setup(
     name='OpenEJovianDSSProxmoxCLI',
-    version='0.10.16',
+    version='0.10.17',
     author='Andrei Perepiolkin',
     author_email='andrei.perepiolkin@open-e.com',
     packages=['jdssc'],
