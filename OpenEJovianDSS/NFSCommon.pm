@@ -93,21 +93,21 @@ sub nas_sname {
 
     # Replace chars not allowed in JovianDSS names (only [-\w] are allowed)
     (my $safe_snap = $snapname) =~ s/[^-\w]/_/g;
-    return "sv_${vmid}_${safe_snap}";
+    return "${vmid}_${safe_snap}";
 }
 
 sub nas_vmid_from_sname {
     my ($sname) = @_;
 
-    return undef unless $sname =~ /^sv_(\d+)_/;
-    return $1;
+    return $1 if $sname =~ /^(\d+)_/;
+    return undef;
 }
 
 sub nas_snapid_from_sname {
     my ($sname) = @_;
 
-    return undef unless $sname =~ /^sv_\d+_(.+)$/s;
-    return $1;
+    return $1 if $sname =~ /^\d+_(.+)$/s;
+    return undef;
 }
 
 # Extract vmid from a Proxmox disk volume name (e.g. "vm-102-disk-0" -> "102")
@@ -130,7 +130,7 @@ sub snapshot_info {
         $storeid,
         [
             'pool', $pool, 'nas_volume', '-d', $dataset,
-            'snapshots', 'list'
+            'snapshots', 'list', '--creation'
         ]
     );
 
@@ -139,18 +139,20 @@ sub snapshot_info {
     for my $line (@lines) {
         $line =~ s/^\s+|\s+$//g;
         next unless length($line) > 0;
-        # Only include sv_<vmid>_<snapname> entries belonging to this volume
+        my ( $sname_field, $creation ) = split( /\s+/, $line, 2 );
+        # Only include {vmid}_{snapname} entries belonging to this volume
         if ( defined($vmid) ) {
-            my $snap_vmid = nas_vmid_from_sname($line);
+            my $snap_vmid = nas_vmid_from_sname($sname_field);
             next unless defined($snap_vmid) && $snap_vmid eq $vmid;
         }
-        my $snap_name = nas_snapid_from_sname($line);
+        my $snap_name = nas_snapid_from_sname($sname_field);
         next unless defined($snap_name);
         OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "NAS volume ${dataset} volume ${volname} has snapshot ${snap_name}\n" );
-        $snapshots->{$snap_name} = {
-            name => $snap_name,
-        };
+        my $entry = { name => $snap_name };
+        $entry->{timestamp} = int($creation)
+            if defined($creation) && $creation =~ /^\d+$/;
+        $snapshots->{$snap_name} = $entry;
     }
 
     return $snapshots;

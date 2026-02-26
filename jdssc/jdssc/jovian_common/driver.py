@@ -1722,7 +1722,8 @@ class JovianDSSDriver(object):
         out = []
         for d in data:
             r = {'snapshot_name': jcom.idname(d['name']),
-                 'volume_name': jcom.idname(d['volume_name'])}
+                 'volume_name': jcom.idname(d['volume_name']),
+                 'creation': d.get('properties', {}).get('creation')}
             if proxmox_volume:
                 if proxmox_volume == jcom.proxid_from_sname(d['name']):
                     out.append(r)

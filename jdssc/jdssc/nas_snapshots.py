@@ -70,6 +70,11 @@ class NASSnapshots():
                           action='store_true',
                           default=False,
                           help='List only snapshots that have published clones')
+        list.add_argument('--creation',
+                          dest='creation',
+                          action='store_true',
+                          default=False,
+                          help='Add creation time (seconds since epoch) to output')
 
         kargs, ukargs = parser.parse_known_args(args)
 
@@ -134,5 +139,7 @@ class NASSnapshots():
             for s in data:
                 LOG.debug(s)
                 line = "{}".format(s['snapshot_name'])
+                if self.args.get('creation') and s.get('creation'):
+                    line += " {}".format(s['creation'])
                 line += "\n"
                 sys.stdout.write(line)

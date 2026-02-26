@@ -87,6 +87,10 @@ sub plugindata {
 }
 
 sub properties {
+    # All JovianDSS-specific properties (user_name, control_addresses, etc.)
+    # are already registered globally by OpenEJovianDSSPlugin (iSCSI plugin).
+    # Re-declaring them here causes a duplicate property error in
+    # PVE::SectionConfig when both plugins are loaded together.
     return {};
 }
 
@@ -337,7 +341,7 @@ sub volume_snapshot {
     # Use -d flag because dataset name from export property is the exact dataset name on JovianDSS
     # Encode vmid into snapshot name so list/delete can filter per volume
     my $internal_snap = OpenEJovianDSS::NFSCommon::nas_sname($snap, $vmid);
-    OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
+    OpenEJovianDSS::NFSCommon::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool, "nas_volume", "-d", $datname, "snapshots", "create", '--ignoreexists', $internal_snap ] );
 }
 
@@ -361,7 +365,8 @@ sub volume_snapshot_rollback {
 
     my $pool = OpenEJovianDSS::NFSCommon::pool_name_get( $scfg );
     my $datname = OpenEJovianDSS::NFSCommon::dataset_name_get( $scfg );
-    my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+    my ( $vtype, $name, $vmid, undef, undef, undef, $format ) =
+        $class->parse_volname($volname);
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
         "Rolling back volume ${name} volname ${volname} to snapshot ${snapname}\n" );
@@ -410,10 +415,24 @@ sub volume_snapshot_rollback {
 
         my $start = time();
         print("\nStart volume rollback ${volname}\n");
-        # Use cp command to copy file, preserving attributes
-        my $dd_M_cmd = [ 'dd', "if=${snap_path}", "of=${vol_path}", 'bs=1M', 'conv=sparse', 'oflag=direct', 'status=progress'];
-        # my $rsync_cmd = [ '/usr/bin/rsync', '--stats', '--info=progress2', '--sparse', '-vahHAX',  $snap_path, $vol_path ];
-        PVE::Tools::run_command( $dd_M_cmd ,
+
+        my $copy_cmd;
+        if ( !defined($format) || $format eq 'raw' ) {
+            # Raw image: block-level sparse copy
+            $copy_cmd = [
+                'dd', "if=${snap_path}", "of=${vol_path}",
+                'bs=1M', 'conv=sparse', 'status=progress',
+            ];
+        } else {
+            # Structured format (qcow2, vmdk): use qemu-img to preserve
+            # internal metadata
+            $copy_cmd = [
+                'qemu-img', 'convert', '-p',
+                '-f', $format, '-O', $format,
+                $snap_path, $vol_path,
+            ];
+        }
+        PVE::Tools::run_command( $copy_cmd,
             errmsg => "rollback copy failed" );
         my $end = time();
         my $passed = $end - $start;
@@ -609,7 +628,7 @@ sub volume_snapshot_delete {
 
     # REST API path: /pools/{pool}/nas-volumes/{dataset}/snapshots/{snapshot}
     my $internal_snap = OpenEJovianDSS::NFSCommon::nas_sname($snapname, $vmid);
-    OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
+    OpenEJovianDSS::NFSCommon::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool, "nas_volume", "-d", $datname,
           "snapshot", $internal_snap, "delete" ] );
 
