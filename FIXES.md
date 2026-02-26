@@ -678,10 +678,28 @@ The timeout adjusts to `10 + (N × 5)` seconds where N is the number of concurre
 The per-worker multiplier of 5 s accounts for volumes with published snapshots, where
 each published snapshot adds ~7 s of multipath unstage time during `volume_deactivate`.
 
-The 120 s hard cap prevents runaway timeouts in pathological situations (e.g., hundreds
-of queued tasks). At 120 s, the formula covers up to 22 concurrent workers. Beyond that
-threshold, the system is likely overloaded and further extending timeouts would only
-cause cascading delays; it is better to let excess tasks fail-fast and retry.
+### Why 120 s hard cap?
+
+The 120 s ceiling is a pragmatic choice balancing three concerns:
+
+1. **CFS lock is cluster-wide.** While a node waits to acquire `storage-$storeid`, *all*
+   other storage operations on that storeid across *all* cluster nodes are blocked. An
+   excessively long timeout on one stuck operation cascades cluster-wide.
+
+2. **22 concurrent workers is already extreme.** At 120 s / 5 s per worker the formula
+   covers 22 simultaneous deletes on the same storage. Beyond that the system is
+   genuinely overloaded; it is better to fail-fast and retry than queue everything behind
+   a multi-minute timeout.
+
+3. **Proxmox task-level error handling.** `QemuServer.pm` wraps `vdisk_free` in
+   `eval {}` and only warns on failure — the VM destroy still succeeds. If the CFS lock
+   wait grows excessively long, the parent task may time out first, leaving the lock in
+   a messy state.
+
+There is no hard Proxmox constraint that dictates exactly 120 s. The value could be
+raised to 180 s or 300 s if real-world workloads require it, but the tradeoff is clear:
+too low and legitimate concurrent operations fail unnecessarily; too high and a
+stuck/dead operation blocks the entire storage for minutes.
 
 This means:
 - 1 concurrent operation: 15 s timeout (barely over default — fast failure when stuck)
