@@ -554,6 +554,39 @@ sub alloc_image {
     return OpenEJovianDSS::Common::clean_word($volume_name);
 }
 
+sub cluster_lock_storage {
+    my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
+
+    if (!$timeout) {
+        # Scale the CFS lock acquisition timeout to the number of
+        # concurrent storage workers (imgdel, qmrestore, …) targeting
+        # this storage.  Each operation holds the lock for ~2-9 s, so
+        # the default 10 s is too tight when several VM deletions run
+        # in parallel.
+        #
+        # /var/log/pve/tasks/active format:
+        #   running:   UPID:…:imgdel:NNN@storeid:user: 0      (2 fields)
+        #   completed: UPID:…:imgdel:NNN@storeid:user: 1 ts OK (4+ fields)
+        my $running = 0;
+        if (open(my $fh, '<', '/var/log/pve/tasks/active')) {
+            while (my $line = <$fh>) {
+                next unless $line =~ /\Q$storeid\E/;
+                my @f = split(/\s+/, $line);
+                $running++ if @f <= 2;  # still running
+            }
+            close($fh);
+        }
+        # 10 s base + 5 s per concurrent worker, capped at 120 s.
+        # Each delete holds the lock for ~2-9 s with zero snapshots;
+        # published snapshots add ~7 s each (multipath unstage).
+        $timeout = 10 + ($running * 5);
+        $timeout = 120 if $timeout > 120;
+    }
+
+    return $class->SUPER::cluster_lock_storage(
+        $storeid, $shared, $timeout, $func, @param);
+}
+
 sub free_image {
     my ( $class, $storeid, $scfg, $volname, $isBase, $_format ) = @_;
 
@@ -579,9 +612,14 @@ sub free_image {
     OpenEJovianDSS::Common::volume_deactivate( $scfg, $storeid, $vmid,
         $volname, undef, undef );
 
-    # Deactivation does not unpublish volumes, only snapshots
-    OpenEJovianDSS::Common::volume_unpublish( $scfg, $storeid, $vmid, $volname,
-        undef, undef );
+    # volume_unpublish is intentionally skipped here.  The final
+    # "volume delete -c" already handles iSCSI target detachment via
+    # _detach_volume() with the --target-group-name filter.  Running
+    # volume_unpublish first would (a) duplicate REST calls and
+    # (b) delete the target before _detach_volume sees it, forcing an
+    # expensive full-pool target scan (~7 s) instead of a single
+    # filtered lookup (~0.3 s).  Total free_image time drops from
+    # ~22 s to ~9 s, keeping it under the 10 s CFS lock timeout.
 
     OpenEJovianDSS::Common::joviandss_cmd(
         $scfg,

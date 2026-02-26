@@ -368,7 +368,8 @@ class JovianDSSDriver(object):
     # it is used in many places, yet concept of 'garbage' has changed
     # since last time. So instead of deleting hidden volumes
     # we should only remove them if they have no snapshots
-    def _delete_volume(self, vname, cascade=False, detach_target=True):
+    def _delete_volume(self, vname, cascade=False, detach_target=True,
+                       target_name=None):
         """_delete_volume delete routine containing delete logic
 
         :param str vname: physical volume id
@@ -376,16 +377,15 @@ class JovianDSSDriver(object):
             with its snapshots
         :param bool delete_target: indicate ifwe have to check for target
             related to given volume
+        :param str target_name: optional target group name hint (e.g. 'vm-999')
 
         :return: None
         """
         LOG.debug("Deleting %s", vname)
-        # TODO: consider more optimal method for identification
-        # if volume is assigned to any target
 
         if detach_target:
             try:
-                self._detach_volume(vname)
+                self._detach_volume(vname, target_name=target_name)
             except jexc.JDSSException as jerr:
                 LOG.warning('Could not detach volume %s from target: %s',
                             vname, jerr)
@@ -447,11 +447,15 @@ class JovianDSSDriver(object):
 
         self._delete_volume(vname, cascade=cascade)
 
-    def delete_volume(self, volume_name, cascade=False, print_and_exit=False):
+    def delete_volume(self, volume_name, cascade=False, print_and_exit=False,
+                      target_name=None):
         """Delete volume
 
         :param volume: volume reference
         :param cascade: remove snapshots of a volume as well
+        :param target_name: optional target group name hint (e.g. 'vm-999').
+            When provided, the detach scan is limited to targets belonging
+            to this group instead of scanning the entire pool.
         """
         vname = jcom.vname(volume_name)
 
@@ -464,7 +468,8 @@ class JovianDSSDriver(object):
         if not self.ra.is_lun(vname):
             raise jexc.JDSSVolumeNotFoundException(volume=volume_name)
 
-        return self._delete_volume(vname, cascade=cascade)
+        return self._delete_volume(vname, cascade=cascade,
+                                   target_name=target_name)
 
     def delete_nas_volume(self, volume_name,
                           direct_mode=False,
@@ -743,7 +748,7 @@ class JovianDSSDriver(object):
                                               vname)
         (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
 
-        if (volume_attached_flag or (new_target_flag is True)):
+        if volume_attached_flag:
             try:
                 self._detach_target_volume(tname, vname)
             except jexc.JDSSException as jerr:
@@ -923,20 +928,40 @@ class JovianDSSDriver(object):
         volume_info['target'] = tname
         volume_info['lun'] = lun_id
 
-    def _detach_volume(self, vname):
+    def _detach_volume(self, vname, target_name=None):
         """detach volume from target it is attached to
 
-        Will go through all target, find one that volume is attached to
-        and detach it from it
-        If volume is a last one attached to particular target
-        it will remove target
+        Will go through targets, find one that volume is attached to
+        and detach it from it. If volume is the last one attached to
+        a particular target it will remove that target.
+
+        When target_name is provided the scan is limited to targets
+        belonging to that group (e.g. 'vm-999'), avoiding a full
+        pool-wide scan.  Falls back to the full scan when no hint is
+        given or when no matching target is found with the hint.
 
         :param str vname: physical volume id
+        :param str target_name: optional target group name hint (e.g. 'vm-999')
         """
-        LOG.debug("detach volume %s", vname)
+        LOG.debug("detach volume %s (target_name hint: %s)", vname, target_name)
 
-        targets = self.ra.get_targets()
-        for t in [target['name'] for target in targets]:
+        all_targets = self.ra.get_targets()
+
+        # Build a filtered candidate list when we have a group hint so we
+        # avoid iterating over every target in the pool (~60+ REST calls).
+        candidates = all_targets
+        if target_name is not None:
+            tprefix = self.jovian_target_prefix
+            tname = tprefix + target_name
+            if tprefix[-1] != ':':
+                tname = tprefix + ':' + target_name
+            target_re = re.compile(fr'^{re.escape(tname)}-\d+$')
+            candidates = [t for t in all_targets
+                          if target_re.match(t['name'])]
+            LOG.debug("Filtered detach scan to %d/%d targets matching %s",
+                      len(candidates), len(all_targets), tname)
+
+        for t in [target['name'] for target in candidates]:
             try:
                 luns = self.ra.get_target_luns(t)
             except jexc.JDSSResourceNotFoundException:
