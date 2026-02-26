@@ -587,3 +587,159 @@ driver - DEBUG - Filtered detach scan to 0/42 targets matching iqn.2026-02.proxm
 ```
 The 10-second pool-wide LUN scan is eliminated. Total time now fits within the 10 s CFS lock
 acquisition timeout, allowing concurrent VM deletions to succeed without orphaning volumes.
+
+---
+
+## Fix 15 — Redundant `volume_unpublish` in `free_image` Causes CFS Lock Timeout
+
+**File:** `OpenEJovianDSSPlugin.pm`
+**Symptom:** Concurrent VM destructions (4+) on the same JovianDSS storage leave orphaned
+volumes. The Proxmox GUI shows "Destroy OK" but volumes remain on JovianDSS, with task
+logs reporting `cfs-lock 'storage-jdss-Pool-0' error: got lock request timeout`.
+
+**Root cause:** `free_image()` held the CFS lock for ~22 seconds, far exceeding the 10 s
+timeout. The time was spent on three phases, two of which were redundant:
+
+| Phase | Duration | What it does |
+|-------|----------|-------------|
+| `volume_deactivate` | ~7.2 s | Host-local: multipath remove + iSCSI logout |
+| `volume_unpublish` | ~5.6 s | REST: detach LUN + delete iSCSI target — **REDUNDANT** |
+| `volume delete -c` | ~8.9 s | REST: scan all targets + ZFS destroy |
+| **Total** | **~22 s** | CFS lock timeout is 10 s |
+
+`volume_unpublish` detaches the volume's iSCSI target via REST API. But `volume delete -c`
+does the exact same thing again via `_detach_volume()`. Worse, because `volume_unpublish`
+already deleted the target, `_detach_volume()`'s target-group filter (Fix 13) finds no match
+and falls through to scanning ALL targets (~20+ REST calls, ~7.6 s).
+
+**Fix:** Remove the `volume_unpublish` call from `free_image`. The final `volume delete -c`
+with `--target-group-name` already handles target detachment, and with the target still
+present (not pre-deleted by `volume_unpublish`), the filter finds it directly.
+
+```perl
+# BEFORE (3 steps under CFS lock, ~22 s):
+volume_deactivate(...)     # host-local cleanup
+volume_unpublish(...)      # REST target detach (REDUNDANT)
+jdssc volume delete -c     # REST target scan + ZFS destroy
+
+# AFTER (2 steps under CFS lock, ~2 s):
+volume_deactivate(...)     # host-local cleanup
+jdssc volume delete -c     # REST filtered target detach + ZFS destroy
+```
+
+### Test results
+
+**Environment:** pve1 (10.15.0.141), Pool-0, JovianDSS 10.15.20.142 (with r66567 fix).
+
+**4 concurrent deletes** (user's scenario — 4 VMs destroyed simultaneously):
+
+| VM | Time | CFS lock retries | Result |
+|----|------|-------------------|--------|
+| 203 | 2.3 s | 0 | OK |
+| 201 | 4.3 s | 2 | OK |
+| 204 | 6.3 s | 4 | OK |
+| 202 | 8.3 s | 6 | OK |
+
+All 4 succeeded. Zero orphaned volumes.
+
+**8 concurrent deletes** (stress test):
+
+5 of 8 succeeded within the 10 s CFS lock window. Each volume holds the lock for ~2 s,
+so the theoretical maximum is ~5 concurrent deletes per 10 s window.
+
+**Before vs After:**
+
+| Metric | Before | After |
+|--------|--------|-------|
+| `free_image` lock hold time | ~22 s | ~2 s |
+| Max concurrent deletes (10 s CFS) | 1 | ~5 |
+| 4 concurrent VM destroy | 2 succeed, 2 orphan | All 4 succeed |
+
+---
+
+## Fix 16 — CFS Lock Acquisition Timeout Too Short for Concurrent Operations
+
+**File:** `OpenEJovianDSSPlugin.pm`
+**Symptom:** With 6+ concurrent VM deletions on the same JovianDSS storage, later
+operations time out waiting for the CFS lock even though each `free_image` only holds
+the lock for ~2 s (after Fix 15).
+
+**Root cause:** `PVE::Storage::vdisk_free` calls `$plugin->cluster_lock_storage()` with
+`undef` as timeout. Inside `PVE::Cluster::$cfs_lock`, `$timeout = 10 if !$timeout` sets
+the default to 10 s. With 8 concurrent 2 s operations serializing on the lock, the last
+one waits ~16 s and exceeds the 10 s limit.
+
+**Fix:** Override `cluster_lock_storage` in `OpenEJovianDSSPlugin.pm` to dynamically
+scale the CFS lock acquisition timeout based on the number of running storage workers.
+The timeout adjusts to `10 + (N × 5)` seconds where N is the number of concurrent
+`imgdel`/`qmrestore`/etc. workers targeting this storage (read from
+`/var/log/pve/tasks/active`), capped at 120 s.
+
+The per-worker multiplier of 5 s accounts for volumes with published snapshots, where
+each published snapshot adds ~7 s of multipath unstage time during `volume_deactivate`.
+
+The 120 s hard cap prevents runaway timeouts in pathological situations (e.g., hundreds
+of queued tasks). At 120 s, the formula covers up to 22 concurrent workers. Beyond that
+threshold, the system is likely overloaded and further extending timeouts would only
+cause cascading delays; it is better to let excess tasks fail-fast and retry.
+
+This means:
+- 1 concurrent operation: 15 s timeout (barely over default — fast failure when stuck)
+- 4 concurrent: 30 s (covers 4 × ~2-5 s serialized deletes)
+- 8 concurrent: 50 s (covers 8 × ~2-5 s, with room for snapshot overhead)
+- 22+ concurrent: 120 s (hard cap)
+- Solo operations with no contention: 10 s (same as Proxmox default)
+
+```perl
+sub cluster_lock_storage {
+    my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
+    if (!$timeout) {
+        # Count running workers for this storage from PVE active tasks.
+        # Running tasks: "UPID:…:storeid:… 0" (2 fields)
+        # Completed:     "UPID:…:storeid:… 1 ts OK" (4+ fields)
+        my $running = 0;
+        if (open(my $fh, '<', '/var/log/pve/tasks/active')) {
+            while (my $line = <$fh>) {
+                next unless $line =~ /\Q$storeid\E/;
+                my @f = split(/\s+/, $line);
+                $running++ if @f <= 2;
+            }
+            close($fh);
+        }
+        # 10 s base + 5 s per concurrent worker, capped at 120 s.
+        # Each delete holds the lock for ~2-9 s with zero snapshots;
+        # published snapshots add ~7 s each (multipath unstage).
+        $timeout = 10 + ($running * 5);
+        $timeout = 120 if $timeout > 120;
+    }
+    return $class->SUPER::cluster_lock_storage(
+        $storeid, $shared, $timeout, $func, @param);
+}
+```
+
+### Test results
+
+**8 concurrent deletes** (stress test, pve1, Pool-0):
+
+| VM | Time | Result |
+|----|------|--------|
+| 242 | 2.4 s | OK |
+| 246 | 4.4 s | OK |
+| 244 | 6.5 s | OK |
+| 247 | 8.4 s | OK |
+| 245 | 10.4 s | OK |
+| 241 | 12.4 s | OK |
+| 243 | 14.4 s | OK |
+| 240 | 16.4 s | OK |
+
+All 8 succeeded. Dynamic timeout was `10 + (8 × 5) = 50 s`, sufficient for the 16.4 s
+max wait. Zero orphaned volumes.
+
+**Combined effect of Fixes 15 + 16:**
+
+| Metric | Before | After Fix 15 | After Fix 15+16 |
+|--------|--------|-------------|-----------------|
+| `free_image` lock hold time | ~22 s | ~2 s | ~2 s |
+| CFS lock acquisition timeout | 10 s (fixed) | 10 s (fixed) | 10 + N×5 s (dynamic, max 120 s) |
+| Max concurrent deletes | 1 | ~5 | scales with N (up to ~22 before cap) |
+| 8 concurrent VM destroy | 1-2 succeed | 5 succeed | All 8 succeed |
