@@ -30,7 +30,7 @@ use Net::IP;
 use JSON qw(decode_json);
 #use PVE::SafeSyslog;
 
-use PVE::Tools qw(run_command);
+use PVE::Tools qw(run_command file_get_contents file_set_contents);
 
 use OpenEJovianDSS::Common qw(cmd_log_output) ;
 
@@ -56,6 +56,15 @@ our @EXPORT_OK = qw(
     path_is_mnt
     parse_export_path
     nas_private_mounts_volname_snapname
+
+    get_password_file_name
+    get_user_password
+    password_file_set_password
+    password_file_delete
+
+    nas_sname
+    nas_vmid_from_sname
+    nas_snapid_from_sname
 );
 
 our %EXPORT_TAGS = ( all => [@EXPORT_OK], );
@@ -79,20 +88,49 @@ sub nas_private_mounts_volname_snapname {
     return $pmvs;
 }
 
+sub nas_sname {
+    my ($snapname, $vmid) = @_;
+
+    # Replace chars not allowed in JovianDSS names (only [-\w] are allowed)
+    (my $safe_snap = $snapname) =~ s/[^-\w]/_/g;
+    return "sv_${vmid}_${safe_snap}";
+}
+
+sub nas_vmid_from_sname {
+    my ($sname) = @_;
+
+    return undef unless $sname =~ /^sv_(\d+)_/;
+    return $1;
+}
+
+sub nas_snapid_from_sname {
+    my ($sname) = @_;
+
+    return undef unless $sname =~ /^sv_\d+_(.+)$/s;
+    return $1;
+}
+
+# Extract vmid from a Proxmox disk volume name (e.g. "vm-102-disk-0" -> "102")
+sub _vmid_from_volname {
+    my ($volname) = @_;
+
+    return undef unless $volname =~ /^(?:vm|subvol|base)-(\d+)-/;
+    return $1;
+}
+
 sub snapshot_info {
     my ( $scfg, $storeid, $dataset, $volname ) = @_;
 
+    my $vmid = _vmid_from_volname($volname);
     my $pool = pool_name_get( $scfg );
 
     # Use -d flag because dataset name from export property is the exact dataset name on JovianDSS
-    # TODO: consider improving this function as with huge number of snapshots
-    # philtering should be done inside jdssc tool
-    my $output = OpenEJovianDSS::Common::joviandss_cmd(
+    my $output = joviandss_cmd(
         $scfg,
         $storeid,
         [
             'pool', $pool, 'nas_volume', '-d', $dataset,
-            'snapshots', '--proxmox-volume', $volname, 'list'
+            'snapshots', 'list'
         ]
     );
 
@@ -101,10 +139,17 @@ sub snapshot_info {
     for my $line (@lines) {
         $line =~ s/^\s+|\s+$//g;
         next unless length($line) > 0;
+        # Only include sv_<vmid>_<snapname> entries belonging to this volume
+        if ( defined($vmid) ) {
+            my $snap_vmid = nas_vmid_from_sname($line);
+            next unless defined($snap_vmid) && $snap_vmid eq $vmid;
+        }
+        my $snap_name = nas_snapid_from_sname($line);
+        next unless defined($snap_name);
         OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "NAS volume ${dataset} has snapshot ${line}\n" );
-        $snapshots->{$line} = {
-            name => $line,
+            "NAS volume ${dataset} volume ${volname} has snapshot ${snap_name}\n" );
+        $snapshots->{$snap_name} = {
+            name => $snap_name,
         };
     }
 
@@ -558,14 +603,16 @@ sub snapshot_publish {
     my ( $scfg, $storeid, $datname, $volname, $snapname ) = @_;
 
     my $pool = pool_name_get( $scfg );
-    # Step 1: Publish snapshot (creates clone with proper naming and NFS share)
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-        "Publishing snapshot ${snapname} for proxmox volume ${volname} from dataset ${datname}\n" );
+    my $vmid = _vmid_from_volname($volname);
+    my $internal_snap = nas_sname($snapname, $vmid);
 
-    my $cmd_output = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        "Publishing snapshot ${snapname} (${internal_snap}) for volume ${volname} from dataset ${datname}\n" );
+
+    my $cmd_output = joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool,
           "nas_volume", "-d", $datname,
-          "snapshot", '--proxmox-volume', ${volname} , $snapname,
+          "snapshot", $internal_snap,
           "publish" ] );
 
    my $sharepath;
@@ -594,18 +641,19 @@ sub snapshot_unpublish {
     my ( $scfg, $storeid, $datname, $volname, $snapname ) = @_;
 
     my $pool = pool_name_get( $scfg );
+    my $vmid = _vmid_from_volname($volname);
+    my $internal_snap = nas_sname($snapname, $vmid);
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-        "Unpublishing snapshot ${snapname} for dataset ${datname} of volume ${volname}\n" );
-    $pool = OpenEJovianDSS::Common::safe_word($pool, 'Pool name'); 
-    $datname = OpenEJovianDSS::Common::safe_word($datname, 'Dataset name'); 
-    $volname = OpenEJovianDSS::Common::safe_word($volname, 'Volume name'); 
-    $snapname = OpenEJovianDSS::Common::safe_word($snapname, 'Snapshot name'); 
-    OpenEJovianDSS::Common::joviandss_cmd(
+        "Unpublishing snapshot ${snapname} (${internal_snap}) for dataset ${datname} of volume ${volname}\n" );
+    $pool = OpenEJovianDSS::Common::safe_word($pool, 'Pool name');
+    $datname = OpenEJovianDSS::Common::safe_word($datname, 'Dataset name');
+    $internal_snap = OpenEJovianDSS::Common::safe_word($internal_snap, 'Snapshot name');
+    joviandss_cmd(
         $scfg, $storeid,
         [ 'pool', $pool,
           'nas_volume', '-d', $datname,
-          'snapshot', '--proxmox-volume', $volname, $snapname,
+          'snapshot', $internal_snap,
           'unpublish' ],
       120,
       10
@@ -644,6 +692,56 @@ sub dataset_name_get {
     my ( $scfg ) = @_;
     my ( $pool_name, $dataset_name ) = parse_export_path( $scfg->{export} );
     return $dataset_name;
+}
+
+# Password management — NFS-specific path: joviandss-nfs/<storeid>.pw
+
+my $NFS_PASSWORD_DIR = '/etc/pve/priv/storage/joviandss-nfs';
+
+sub get_password_file_name {
+    my ($storeid) = @_;
+    return "${NFS_PASSWORD_DIR}/${storeid}.pw";
+}
+
+sub get_user_password {
+    my ($storeid) = @_;
+
+    my $pwfile = get_password_file_name($storeid);
+    return undef if ! -f $pwfile;
+
+    my $content = file_get_contents($pwfile);
+    my $config = {};
+    foreach my $line (split /\n/, $content) {
+        $line =~ s/^\s+|\s+$//g;
+        next if $line =~ /^#/ || $line eq '';
+        if ($line =~ /^(\S+)\s+(.+)$/) {
+            $config->{$1} = $2;
+        }
+    }
+    return $config->{user_password};
+}
+
+sub password_file_set_password {
+    my ($password, $storeid) = @_;
+
+    my $pwfile = get_password_file_name($storeid);
+    if (! -d $NFS_PASSWORD_DIR) {
+        File::Path::make_path($NFS_PASSWORD_DIR, { mode => 0700 });
+    }
+    file_set_contents($pwfile, "user_password $password\n", 0600, 1);
+}
+
+sub password_file_delete {
+    my ($storeid) = @_;
+    my $pwfile = get_password_file_name($storeid);
+    unlink $pwfile;
+}
+
+sub joviandss_cmd {
+    my ( $scfg, $storeid, $cmd, $timeout, $retries, $force_debug_level ) = @_;
+    my $password = get_user_password($storeid);
+    return OpenEJovianDSS::Common::joviandss_cmd(
+        $scfg, $storeid, $cmd, $timeout, $retries, $force_debug_level, $password);
 }
 
 1;

@@ -2078,7 +2078,7 @@ class JovianDSSDriver(object):
 
         return snaps
 
-    def _list_volume_snapshots(self, ovolume_name, vname):
+    def _list_volume_snapshots(self, ovolume_name, vname, all=False):
         """List volume snapshots
 
         :return: list of volume related snapshots
@@ -2130,7 +2130,8 @@ class JovianDSSDriver(object):
                         LOG.debug(
                             "List volume recursion step for list_volume_snapshots")
                         out.extend(self._list_volume_snapshots(ovolume_name,
-                                                               clone))
+                                                               clone,
+                                                               all=all))
                     continue
             if all:
                 snap['volume_name'] = vname
@@ -2138,7 +2139,7 @@ class JovianDSSDriver(object):
 
         return out
 
-    def _list_nas_volume_snapshots(self, ovolume_name, vname):
+    def _list_nas_volume_snapshots(self, ovolume_name, vname, all=False):
         """List volume snapshots
 
         :return: list of volume related snapshots

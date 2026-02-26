@@ -611,7 +611,7 @@ sub safe_var_print {
 }
 
 sub joviandss_cmd {
-    my ( $scfg, $storeid, $cmd, $timeout, $retries, $force_debug_level ) = @_;
+    my ( $scfg, $storeid, $cmd, $timeout, $retries, $force_debug_level, $password ) = @_;
 
     my $msg = '';
     my $err = undef;
@@ -665,7 +665,7 @@ sub joviandss_cmd {
         die "JovianDSS REST user name is not provided.\n";
     }
 
-    my $user_password = get_user_password($storeid);
+    my $user_password = defined($password) ? $password : get_user_password($storeid);
     if ( defined($user_password) ) {
         push @$connection_options, '--user-password', $user_password;
     } else {

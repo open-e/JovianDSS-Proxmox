@@ -335,8 +335,10 @@ sub volume_snapshot {
     # Use JovianDSS REST API to create ZFS snapshot on NAS volume (dataset)
     # REST API path: /pools/{pool}/nas-volumes/{dataset}/snapshots
     # Use -d flag because dataset name from export property is the exact dataset name on JovianDSS
+    # Encode vmid into snapshot name so list/delete can filter per volume
+    my $internal_snap = OpenEJovianDSS::NFSCommon::nas_sname($snap, $vmid);
     OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
-        [ "pool", $pool, "nas_volume", "-d", $datname, "snapshots", '--proxmox-volume', ${name}, "create", '--ignoreexists', "${snap}" ] );
+        [ "pool", $pool, "nas_volume", "-d", $datname, "snapshots", "create", '--ignoreexists', $internal_snap ] );
 }
 
 sub volume_snapshot_info {
@@ -606,9 +608,10 @@ sub volume_snapshot_delete {
     OpenEJovianDSS::NFSCommon::snapshot_deactivate_unpublish( $scfg, $storeid, $datname, $vmid, $name, $snapname );
 
     # REST API path: /pools/{pool}/nas-volumes/{dataset}/snapshots/{snapshot}
+    my $internal_snap = OpenEJovianDSS::NFSCommon::nas_sname($snapname, $vmid);
     OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool, "nas_volume", "-d", $datname,
-          "snapshot", '--proxmox-volume', $name, $snapname, "delete" ] );
+          "snapshot", $internal_snap, "delete" ] );
 
     OpenEJovianDSS::Common::debugmsg( $scfg, 'debug',
         "Deleting snapshot ${snapname} of volume ${volname} from dataset ${datname} done.\n" );
@@ -702,7 +705,7 @@ sub on_add_hook {
         }
     }
     if (exists($sensitive{user_password})) {
-        OpenEJovianDSS::Common::password_file_set_password(
+        OpenEJovianDSS::NFSCommon::password_file_set_password(
             $sensitive{user_password}, $storeid);
     }
 }
@@ -712,10 +715,10 @@ sub on_update_hook {
 
     if (exists($sensitive{user_password})) {
         if (defined($sensitive{user_password})) {
-            OpenEJovianDSS::Common::password_file_set_password(
+            OpenEJovianDSS::NFSCommon::password_file_set_password(
                 $sensitive{user_password}, $storeid);
         } else {
-            OpenEJovianDSS::Common::password_file_delete($storeid);
+            OpenEJovianDSS::NFSCommon::password_file_delete($storeid);
         }
     }
     return undef;

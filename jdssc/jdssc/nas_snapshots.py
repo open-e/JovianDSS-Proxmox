@@ -115,7 +115,7 @@ class NASSnapshots():
         if self.args.get('with_clones', False):
             # Filter to only snapshots with clones
             for s in data:
-                snapshot_name = s['name']
+                snapshot_name = s['snapshot_name']
                 try:
                     # Check if this snapshot has clones
                     clones = self.jdss.list_nas_clones(
