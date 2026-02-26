@@ -1,3 +1,15 @@
+open-e-joviandss-proxmox-plugin (0.10.16-0) stable; urgency=medium
+
+  * Fix concurrency issues in concurrent restore, destroy and live migration
+  * Fix live migration hang caused by bare multipath IPC semaphore deadlock
+  * Fix orphaned iSCSI targets not deleted after VM removal
+  * Fix silent success on pvesm free of non-existent volume
+  * Fix ItemNotFoundError handling in snapshot page retrieval
+  * Replace "DNE" with "does not exist" in error messages
+  * Add draft of local installation script
+
+ -- Miroslaw Franek, Claude Code (Anthropic AI)  Mon, 24 Feb 2026 12:00:00 +0000
+
 open-e-joviandss-proxmox-plugin (0.10.15-0) stable; urgency=medium
 
   * Add HA status check to rollback to prevent rollback for HA‑managed VMs
