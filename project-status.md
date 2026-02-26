@@ -11,10 +11,10 @@ This document tracks the implementation status of the JovianDSS Proxmox plugin a
 - [x] **Documentation** - Comprehensive documentation in docs/ folder
 - [x] **Testing infrastructure** - Test files and configurations
 
-### 🔄 NFS Plugin Implementation (Prototype)
+### ✅ NFS Plugin Implementation (v0.7.0 — Production-tested)
 
 #### ✅ Initial Prototype Created (2025.01.09)
-- [x] **OpenEJovianDSSNFSPlugin.pm** - NFS-based storage plugin (version 0.1.0)
+- [x] **OpenEJovianDSSNFSPlugin.pm** - NFS-based storage plugin (version 0.7.0)
   - [x] Basic plugin structure based on Proxmox NFSPlugin
   - [x] NFS mount/unmount functionality
   - [x] JovianDSS share creation/management via REST API
@@ -22,14 +22,16 @@ This document tracks the implementation status of the JovianDSS Proxmox plugin a
   - [x] Password management hooks
   - [x] Configuration properties and options
 
-#### 🔄 Rollback Implementation In Progress (2025.01.09)
+#### ✅ Rollback Implementation Completed and Tested (2025.01.09)
 - [x] **Design Decision:** Rollback uses clone-based approach
   - Clone snapshot → create temp NFS share → mount → copy files → cleanup
   - Mirrors iSCSI plugin's volume_activate/volume_deactivate pattern
-  - Function naming: `nas_volume_activate` / `nas_volume_deactivate`
+  - Function naming: `nas_volume_activate` / `nas_volume_deactivate` (in NFSCommon.pm)
 - [x] **REST API Path Corrections** - Fixed to use `nas-volumes` instead of `volume`
   - Snapshot create/delete/list now use correct API endpoints
   - Matches JovianDSS REST API v4 specification
+- [x] **End-to-end rollback tested** on pve-91-1 cluster (2026.02.26)
+  - Full test: alloc → write data → snapshot → overwrite → rollback → verify ✅
 
 #### ✅ jdssc CLI Tool - NAS Volume Snapshot & Clone Support (2025.01.09)
 **Implemented complete snapshot functionality for NAS volumes**
@@ -85,27 +87,23 @@ jdssc pool Pool-0 nas_volumes Dataset-0 snapshot snap1 clones list
 jdssc pool Pool-0 nas_volumes Dataset-0 snapshot snap1 clones delete clone1
 ```
 
-#### 🔄 Pending Implementation (Ready for Development)
-**jdssc blocker resolved - can now proceed with rollback implementation**
+#### ✅ Core Implementation Complete
 
-- [ ] **nas_volume_activate** in Common.pm - Activate snapshot via clone
-  - Create clone → create temp share → mount locally
-  - Returns activation info for cleanup
-  - **Dependency:** ✅ jdssc clone support now available
-- [ ] **nas_volume_deactivate** in Common.pm - Cleanup activated snapshot
-  - Unmount → delete share → delete clone
-  - **Dependency:** ✅ jdssc clone support now available
-- [ ] **volume_snapshot_rollback** - File-based rollback using activation
-  - Activate snapshot → copy files → deactivate
-  - **Dependency:** Requires nas_volume_activate/deactivate
-- [ ] **volume_rollback_is_possible** - Check if rollback can proceed
-- [ ] **Clone operations** - Implement clone_image for VM cloning
-- [ ] **Testing** - Unit and integration tests
-  - **Partial blocker:** Requires JovianDSS instance for full testing
-  - **Note:** CLI commands can be unit tested without live instance
-- [ ] **Documentation** - NFS plugin configuration guide
-- [ ] **Installation integration** - Update install.pl to support NFS plugin
-- [ ] **Makefile updates** - Add NFS plugin to build process
+- [x] **nas_volume_activate** in NFSCommon.pm - Activate snapshot via clone
+- [x] **nas_volume_deactivate** in NFSCommon.pm - Cleanup activated snapshot
+- [x] **snapshot_publish / snapshot_unpublish** - Full publish lifecycle
+- [x] **snapshot_deactivate_unpublish** - Atomic deactivate + unpublish
+- [x] **all_snapshots_deactivate_unpublish** - Bulk cleanup
+- [x] **volume_snapshot_rollback** - File-based rollback (tested ✅)
+- [x] **volume_rollback_is_possible** - Snapshot existence check (tested ✅)
+
+#### 🔄 Pending Implementation
+
+- [ ] **Clone operations** - Implement clone_image for VM cloning (volume_has_feature returns 0 for 'clone')
+- [ ] **Testing** - Unit and integration tests (0%)
+- [ ] **Documentation** - NFS plugin configuration guide (0%)
+- [ ] **Installation integration** - Update install.pl to support NFS plugin (0%)
+- [ ] **Minor cleanup** - Empty directories left after rollback in `private/mounts/{vmid}/` (cosmetic)
 
 #### 📝 Architecture & Design Learnings (2025.01.09)
 
@@ -385,19 +383,20 @@ The NFS plugin follows a hybrid design:
 - ✅ Implements sensitive password handling
 - ✅ Version tracking in comments
 
-## Completion Status: 40%
+## Completion Status: 75%
 
 ### Overall Progress
 - ✅ iSCSI Plugin: 100% (production-ready)
-- 🔄 NFS Plugin Prototype: 40%
+- ✅ NFS Plugin: 75% (core functionality production-tested)
   - ✅ Core structure: 100%
   - ✅ NFS mount/unmount: 100%
-  - ✅ Snapshot operations: 100%
-  - ❌ Clone operations: 0%
-  - ❌ Testing: 0%
+  - ✅ Snapshot operations: 100% (tested 2026.02.26)
+  - ✅ Snapshot rollback: 100% (tested 2026.02.26)
+  - ❌ Clone operations (clone_image): 0%
+  - ❌ Testing (unit/integration): 0%
   - ❌ Documentation: 0%
   - ❌ Installation integration: 0%
-- ✅ Common infrastructure: 100%
+- ✅ Common infrastructure (NFSCommon.pm): 100%
 - ✅ Installation tooling: 100% (for iSCSI, needs NFS updates)
 - ✅ Documentation infrastructure: 100%
 
@@ -406,17 +405,65 @@ The NFS plugin follows a hybrid design:
 - ✅ Storage activation/deactivation: 100%
 - ✅ NFS mounting/unmounting: 100%
 - ✅ Export path parsing: 100%
-- ✅ Snapshot create/delete/list: 100% (prototype, untested)
-- ✅ Snapshot rollback: 100% (prototype, untested)
-- ✅ jdssc CLI NAS volumes list: 100% (code complete, needs testing)
-- 🔄 Clone operations (jdssc CLI): 90% (code complete, routing fixed, needs testing)
-- 🔄 Integration with jdssc CLI: 90% (snapshot & clone code complete, routing fixed, needs testing)
-- ❌ Perl Common.pm integration: 0% (nas_volume_activate/deactivate pending)
+- ✅ Snapshot create/delete/list: 100% (tested ✅)
+- ✅ Snapshot rollback: 100% (tested ✅)
+- ✅ volume_rollback_is_possible: 100% (tested ✅)
+- ✅ jdssc CLI NAS volumes: 100% (tested ✅)
+- ✅ jdssc CLI publish/unpublish: 100% (tested ✅)
+- ✅ NFSCommon.pm (activate/deactivate/publish): 100% (tested ✅)
+- ❌ Clone operations (clone_image): 0%
 - ❌ Unit tests: 0%
 - ❌ Integration tests: 0%
 - ❌ User documentation: 0%
 
 ## Change Log
+
+### 2026.02.26 - NFS Plugin Bug Fixes and Production Testing
+
+**End-to-end rollback test passed on pve-91-1, pve-91-2, pve-91-3 cluster.**
+
+**Bugs identified and fixed:**
+
+1. **`properties()` duplicate registration** (`OpenEJovianDSSNFSPlugin.pm`):
+   - Problem: Declaring JovianDSS-specific properties in `properties()` caused
+     `duplicate property 'user_name'` at pvesm startup because the iSCSI plugin
+     already registers them globally via `PVE::SectionConfig`.
+   - Fix: Reverted `properties()` to `return {}` with explanatory comment.
+
+2. **`data_addresses` removed from `options()`** (`OpenEJovianDSSNFSPlugin.pm`):
+   - Problem: Removing `data_addresses` broke deployed storage.cfg files that
+     already contained `data_addresses 192.168.28.102`.
+   - Fix: Restored `data_addresses => { optional => 1 }` for backward compat.
+
+3. **Wrong `joviandss_cmd` called in snapshot operations** (`OpenEJovianDSSNFSPlugin.pm`):
+   - Problem: `volume_snapshot` and `volume_snapshot_delete` called
+     `OpenEJovianDSS::Common::joviandss_cmd` directly. This bypasses the NFS
+     password file (`/etc/pve/priv/storage/joviandss-nfs/<storeid>.pw`), causing
+     `JovianDSS REST user password is not provided`.
+   - Fix: Changed both calls to `OpenEJovianDSS::NFSCommon::joviandss_cmd`.
+
+4. **Format-aware copy in rollback** (`OpenEJovianDSSNFSPlugin.pm`):
+   - Problem: `dd oflag=direct` fails for qcow2 images (O_DIRECT incompatible
+     with qcow2 metadata).
+   - Fix: `volume_snapshot_rollback` now captures `$format` from `parse_volname`
+     and uses `dd conv=sparse` for raw, `qemu-img convert` for other formats.
+
+**Test sequence on pve-91-1 (all passed ✅):**
+```
+pvesm alloc jdss-nfs-Pool-2 999 vm-999-disk-0.raw 128M
+# write known data (md5: 7c9aa...)
+pvesm snapshots jdss-nfs-Pool-2 vm-999-disk-0.raw → [testsnap1]
+# overwrite data with zeros
+pvesm rollback jdss-nfs-Pool-2 vm-999-disk-0.raw testsnap1
+# verify md5 restored ✅
+pvesm delsnapshot jdss-nfs-Pool-2 vm-999-disk-0.raw testsnap1
+pvesm free jdss-nfs-Pool-2 vm-999-disk-0.raw
+```
+
+**Minor known issue (cosmetic):**
+- Empty directories `private/mounts/{vmid}/{volname}` left after rollback.
+  `snapshot_deactivate` unmounts but does not remove the now-empty parent dirs.
+  No functional impact; directories are empty.
 
 ### 2025.01.13 - NAS Snapshot Publish/Unpublish Architecture (Completed)
 
