@@ -113,6 +113,15 @@ class Volume():
                             in python strftime format.
                             Default is "iqn.2025-04.iscsi:"
                             ''')
+        delete.add_argument('--target-group-name',
+                            dest='target_group_name',
+                            default=None,
+                            help='''
+                            Target group name hint (e.g. "vm-999").
+                            When provided, the detach scan is limited to
+                            targets belonging to this group, avoiding a
+                            full pool-wide target scan.
+                            ''')
         delete.add_argument('-c', '--cascade', dest='cascade',
                             action='store_true',
                             default=False,
@@ -247,7 +256,8 @@ class Volume():
 
             res = self.jdss.delete_volume(self.args['volume_name'],
                                           cascade=self.args['cascade'],
-                                          print_and_exit=self.args['print'])
+                                          print_and_exit=self.args['print'],
+                                          target_name=self.args.get('target_group_name'))
         except jexc.JDSSException as err:
             LOG.error(err.message)
             exit(1)
