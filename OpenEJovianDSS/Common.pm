@@ -2563,6 +2563,12 @@ sub volume_activate {
         my $local_cleanup = 0;
 
 
+        # Logout iSCSI BEFORE removing multipath — same rationale as
+        # in the normal deactivation path (see volume_deactivate).
+        if ( $iscsi_staged ) {
+            volume_unstage_iscsi_device( $scfg, $storeid, $targetname, $lunid, $hosts );
+        }
+
         if ($multipath_staged) {
             eval {
                 volume_unstage_multipath( $scfg, $scsiid );
@@ -2572,10 +2578,6 @@ sub volume_activate {
                 $local_cleanup = 1;
                 warn "volume_unstage_multipath failed: $@" if $@;
             }
-        }
-
-        if ( $iscsi_staged ) {
-            volume_unstage_iscsi_device( $scfg, $storeid, $targetname, $lunid, $hosts );
         }
 
         # volume_unstage_iscsi call is moved to lun_record_local_delete
@@ -2746,6 +2748,13 @@ sub volume_deactivate {
         return 1;
     }
 
+    # Logout iSCSI BEFORE removing multipath.  If we remove multipath
+    # first, the `multipath $scsiid` refresh commands in the removal
+    # function recreate the device because iSCSI paths are still active.
+    # By logging out iSCSI first, the underlying paths disappear and
+    # multipath removal succeeds cleanly.
+    volume_unstage_iscsi_device ( $scfg, $storeid, $targetname, $lunid, $lunrecord->{hosts} );
+
     if ( $lunrecord->{multipath} ) {
         eval {
             volume_unstage_multipath( $scfg, $lunrecord->{scsiid} );
@@ -2756,8 +2765,6 @@ sub volume_deactivate {
             warn "volume_unstage_multipath failed: $@" if $@;
         }
     }
-
-    volume_unstage_iscsi_device ( $scfg, $storeid, $targetname, $lunid, $lunrecord->{hosts} );
 
     my $cerr;
     if ( $snapname ) {
