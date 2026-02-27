@@ -46,7 +46,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.11.0-alpha';
+my $PLUGIN_VERSION = '0.10.16';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -554,6 +554,39 @@ sub alloc_image {
     return OpenEJovianDSS::Common::clean_word($volume_name);
 }
 
+sub cluster_lock_storage {
+    my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
+
+    if (!$timeout) {
+        # Scale the CFS lock acquisition timeout to the number of
+        # concurrent storage workers (imgdel, qmrestore, …) targeting
+        # this storage.  Each operation holds the lock for ~2-9 s, so
+        # the default 10 s is too tight when several VM deletions run
+        # in parallel.
+        #
+        # /var/log/pve/tasks/active format:
+        #   running:   UPID:…:imgdel:NNN@storeid:user: 0      (2 fields)
+        #   completed: UPID:…:imgdel:NNN@storeid:user: 1 ts OK (4+ fields)
+        my $running = 0;
+        if (open(my $fh, '<', '/var/log/pve/tasks/active')) {
+            while (my $line = <$fh>) {
+                next unless $line =~ /\Q$storeid\E/;
+                my @f = split(/\s+/, $line);
+                $running++ if @f <= 2;  # still running
+            }
+            close($fh);
+        }
+        # 10 s base + 5 s per concurrent worker, capped at 120 s.
+        # Each delete holds the lock for ~2-9 s with zero snapshots;
+        # published snapshots add ~7 s each (multipath unstage).
+        $timeout = 10 + ($running * 5);
+        $timeout = 120 if $timeout > 120;
+    }
+
+    return $class->SUPER::cluster_lock_storage(
+        $storeid, $shared, $timeout, $func, @param);
+}
+
 sub free_image {
     my ( $class, $storeid, $scfg, $volname, $isBase, $_format ) = @_;
 
@@ -579,9 +612,14 @@ sub free_image {
     OpenEJovianDSS::Common::volume_deactivate( $scfg, $storeid, $vmid,
         $volname, undef, undef );
 
-    # Deactivation does not unpublish volumes, only snapshots
-    OpenEJovianDSS::Common::volume_unpublish( $scfg, $storeid, $vmid, $volname,
-        undef, undef );
+    # volume_unpublish is intentionally skipped here.  The final
+    # "volume delete -c" already handles iSCSI target detachment via
+    # _detach_volume() with the --target-group-name filter.  Running
+    # volume_unpublish first would (a) duplicate REST calls and
+    # (b) delete the target before _detach_volume sees it, forcing an
+    # expensive full-pool target scan (~7 s) instead of a single
+    # filtered lookup (~0.3 s).  Total free_image time drops from
+    # ~22 s to ~9 s, keeping it under the 10 s CFS lock timeout.
 
     OpenEJovianDSS::Common::joviandss_cmd(
         $scfg,
@@ -698,44 +736,13 @@ sub volume_snapshot_rollback {
         my $rollback_check_ok = OpenEJovianDSS::Common::volume_rollback_check( $scfg,
              $storeid, $vmid, $volname, $snap, $blockers );
         if ( $rollback_check_ok ) {
-            my $prefix = OpenEJovianDSS::Common::get_target_prefix($scfg);
-            my $tgname = OpenEJovianDSS::Common::get_vm_target_group_name(
-                $scfg, $vmid );
-
-            my $virt_type =
-                OpenEJovianDSS::Common::vmid_identify_virt_type($scfg, $vmid);
-            my $man_snaps = OpenEJovianDSS::Common::snapshots_list_from_vmid(
-                $scfg, $vmid);
-            my %managed_set = map { $_ => 1 } @$man_snaps;
-
-            foreach my $blocker ( $blockers->@* ) {
-                OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-                    "Force rollback: deleting blocking snapshot ${blocker}"
-                    . " of volume ${volname}\n" );
-                OpenEJovianDSS::Common::volume_deactivate( $scfg,
-                    $storeid, $vmid, $volname, $blocker, undef );
-                OpenEJovianDSS::Common::joviandss_cmd(
-                    $scfg,
-                    $storeid,
-                    [
-                        'pool',     $pool,   'volume',   $volname,
-                        'snapshot', $blocker, 'delete',
-                        '--target-prefix',    $prefix,
-                        '--target-group-name', $tgname
-                    ]
-                );
-                if ( $managed_set{$blocker} && defined($virt_type) ) {
-                    OpenEJovianDSS::Common::remove_vm_snapshot_config(
-                        $scfg, $vmid, $virt_type, $blocker);
-                }
-            }
 
             OpenEJovianDSS::Common::joviandss_cmd(
                 $scfg,
                 $storeid,
                 [
                     'pool',     $pool, 'volume',   $volname,
-                    'snapshot', $snap, 'rollback', 'do'
+                    'snapshot', $snap, 'rollback', 'do', '--force-snapshots'
                 ]
             );
         } else {
@@ -1225,28 +1232,6 @@ sub on_update_hook_full {
     my ($class, $storeid, $scfg, $update, $delete, $sensitive) = @_;
 
     return $class->on_update_hook($storeid, $update, $sensitive->%*);
-}
-
-sub cluster_lock_storage {
-    my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
-
-    if( ! defined($timeout)) {
-        $timeout = int(rand(40));
-    }
-
-    $timeout = int(rand(20)) + (2 * $timeout);
-    my $res;
-    if (!$shared) {
-        my $lockid = "pve-storage-$storeid";
-        my $lockdir = "/var/lock/pve-manager";
-        mkdir $lockdir;
-        $res = PVE::Tools::lock_file("$lockdir/$lockid", $timeout, $func, @param);
-        die $@ if $@;
-    } else {
-        $res = PVE::Cluster::cfs_lock_storage($storeid, $timeout, $func, @param);
-        die $@ if $@;
-    }
-    return $res;
 }
 
 1;

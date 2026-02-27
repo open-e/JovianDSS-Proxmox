@@ -491,6 +491,25 @@ sub volume_rollback_is_possible {
     my $datname = OpenEJovianDSS::NFSCommon::dataset_name_get( $scfg );
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
+    my $managed_by_ha =
+        OpenEJovianDSS::Common::ha_state_is_defined($scfg, $vmid);
+    if ($managed_by_ha) {
+        my $hastate = OpenEJovianDSS::Common::ha_state_get($scfg, $vmid);
+        if ($hastate ne 'ignored') {
+            my $resource_type =
+                OpenEJovianDSS::Common::ha_type_get($scfg, $vmid);
+            die "Rollback blocked: ${resource_type}:${vmid} is controlled"
+                . " by High Availability (state: ${hastate}).\n"
+                . "Rollback requires temporary manual control to prevent"
+                . " HA from restarting or moving the resource.\n"
+                . "Disable HA management before retrying:\n"
+                . "Web UI: Datacenter -> HA -> Resources ->"
+                . " set state to ignored\n"
+                . "CLI: ha-manager set ${resource_type}:${vmid}"
+                . " --state ignored\n";
+        }
+    }
+
     # Check if snapshot exists via REST API
     # TODO: have to be rewrittent to better handle many snapshots
     my $found = 0;

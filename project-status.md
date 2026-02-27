@@ -392,6 +392,10 @@ The NFS plugin follows a hybrid design:
   - ✅ NFS mount/unmount: 100%
   - ✅ Snapshot operations: 100% (tested 2026.02.26)
   - ✅ Snapshot rollback: 100% (tested 2026.02.26)
+  - ✅ Snapshot timestamp in info: 100% (tested 2026.02.26)
+  - ✅ iSCSI force_rollback per-blocker deletion: 100% (2026.02.26)
+  - ✅ iSCSI force_rollback config file cleanup: 100% (tested 2026.02.26)
+  - ✅ iSCSI rollback error messages: 100% (tested 2026.02.26)
   - ❌ Clone operations (clone_image): 0%
   - ❌ Testing (unit/integration): 0%
   - ❌ Documentation: 0%
@@ -411,12 +415,108 @@ The NFS plugin follows a hybrid design:
 - ✅ jdssc CLI NAS volumes: 100% (tested ✅)
 - ✅ jdssc CLI publish/unpublish: 100% (tested ✅)
 - ✅ NFSCommon.pm (activate/deactivate/publish): 100% (tested ✅)
+- ✅ NFS snapshot timestamp in info: 100% (tested 2026.02.26)
+- ✅ NFS snapshot naming (sv_ removed): 100% (tested 2026.02.26)
+- ✅ iSCSI force_rollback per-blocker deletion: 100% (2026.02.26)
 - ❌ Clone operations (clone_image): 0%
 - ❌ Unit tests: 0%
 - ❌ Integration tests: 0%
 - ❌ User documentation: 0%
 
 ## Change Log
+
+### 2026.02.26 - iSCSI Force-Rollback: config file editing + message fixes (tested ✅)
+
+**`remove_vm_snapshot_config` — new function (`Common.pm`):**
+- Replaces `qm delsnapshot` / `pct delsnapshot` external command calls.
+- Directly edits `/etc/pve/qemu-server/<vmid>.conf` or
+  `/etc/pve/lxc/<vmid>.conf` to remove the `[snapname]` section.
+- Parser: reads file line by line; on encountering `[target]` header, sets
+  `$skip=1` and pops trailing blank separator line(s) from output; other
+  sections pass through unchanged.
+- Idempotent: silently no-ops if the section is not found.
+- Exported from `Common.pm`; `file_set_contents` added to PVE::Tools import.
+
+**`volume_snapshot_rollback` — managed blocker path rewritten
+(`OpenEJovianDSSPlugin.pm`):**
+- Removed `run_command([qm/pct, 'delsnapshot', ...])` call.
+- All blockers (managed and unmanaged) now use the same JovianDSS deletion
+  path: `volume_deactivate` + `joviandss_cmd snapshot delete`.
+- Managed blockers additionally call `remove_vm_snapshot_config` to clean
+  the Proxmox config file.
+
+**`format_rollback_block_reason` — full rewrite (`Common.pm`):**
+- Replaced two ad-hoc "special case" early returns with three clean branches:
+  1. `force_rollback=1`: shows only clones/unknown that need manual removal;
+     managed/unmanaged snapshots not listed (auto-handled).
+  2. No clones, no unknown (force_rollback=0): shows blocker list +
+     `force_rollback` hint for ALL snapshot-only cases (managed, unmanaged,
+     mixed) — previously only unmanaged-only got this hint.
+  3. Clones or unknown present: "Rollback blocked. Remove these first." —
+     no misleading force_rollback suggestion.
+- Fixed old bug: unknown-only case previously showed a `force_rollback` hint
+  even though `force_rollback` cannot handle unknown blockers.
+- Removed stale "Rollback is possible to the latest Proxmox managed snapshot
+  only" generic message (was misleading for clone cases).
+
+**`volume_rollback_check` — dead variable removed (`Common.pm`):**
+- `$managed_snapshot_blocker` was initialised to 0 and set to 0 again when
+  a managed blocker was found; never set to 1, never read. Removed.
+
+**Integration test — 16/16 passed on pve-91-1:**
+- Config file manipulation: snap2 removed, snap1 preserved, no double blank
+  lines, idempotent on missing snapshot.
+- Error message (no force_rollback): "Rollback blocked by newer snapshots …
+  Hint: add 'force_rollback' tag" — correct wording confirmed.
+- Force rollback with managed blocker: data restored (md5 match), `[snap2]`
+  removed from config, `[snap1]` preserved.
+
+### 2026.02.26 - iSCSI Force-Rollback Enhancements (superseded above)
+
+**Snapshot naming for NFS volumes (NFSCommon.pm):**
+- Removed `sv_` prefix from internal snapshot names — was a redundant namespace
+  marker; vmid is still present and sufficient for per-VM filtering.
+- New format: `{vmid}_{snapname}` (e.g., `999_testsnap1`)
+- `nas_sname()`, `nas_vmid_from_sname()`, `nas_snapid_from_sname()` updated;
+  no backward-compatibility fallbacks (clean break).
+- Tested on pve-91-1: full alloc → snapshot → rollback → verify cycle ✅
+
+**Creation timestamp in NFS snapshot info:**
+- `driver.py list_nas_snapshots()`: extracts integer Unix epoch from
+  `properties.creation` in REST response (was already an integer, no parsing
+  needed).
+- `nas_snapshots.py list`: added `--creation` flag; outputs
+  `{name} {epoch}` space-separated.
+- `NFSCommon.pm snapshot_info()`: passes `--creation` to jdssc, parses two
+  columns, stores result as `timestamp` (integer) in the returned hash.
+- Live test confirmed: `{'testsnap1' => {'name' => 'testsnap1', 'timestamp' =>
+  1772134706}}`
+
+**iSCSI `volume_snapshot_rollback` — per-blocker deletion
+(`OpenEJovianDSSPlugin.pm`):**
+- Replaced `--force-snapshots` flag (bulk atomic) with explicit loop that
+  deletes each blocker individually so different blocker types can be handled
+  differently.
+- For **Proxmox-managed** blockers: calls `qm delsnapshot` (qemu) or
+  `pct delsnapshot` (lxc) — lets Proxmox handle full cleanup including disk
+  snapshot deletion and VM config update.
+- For **unmanaged/storage-side** blockers: keeps existing `volume_deactivate`
+  + `joviandss_cmd snapshot delete` path.
+- Virt type determined via `vmid_identify_virt_type()` (returns 'qemu'/'lxc').
+- Managed snapshot set built from `snapshots_list_from_vmid()` at rollback time.
+
+**`volume_rollback_check` — tracked snapshots no longer block force rollback
+(`Common.pm`):**
+- Commented-out `$force_rollback_possible = 0` for Proxmox-managed snapshot
+  blockers (user change). Only clone and unknown blockers now prevent forced
+  rollback.
+
+**`format_rollback_block_reason` message fix (`Common.pm`):**
+- Condition changed: `($has_managed || $has_clones)` → `$has_clones`.
+- Updated message: "force_rollback handles managed snapshots automatically,
+  but clones must be removed manually first" — accurately reflects new behavior.
+- Removed managed-snapshot section from the force_rollback error path (they
+  are auto-deleted now).
 
 ### 2026.02.26 - NFS Plugin Bug Fixes and Production Testing
 
