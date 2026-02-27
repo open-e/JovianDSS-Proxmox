@@ -589,7 +589,7 @@ sub cluster_lock_storage {
         #
         # Task types that hold the storage lock:
         #   imgdel    — UPID contains storeid in the id field
-        #   qmrestore, qmstart, qmmigrate, qmclone, vzdump
+        #   qmrestore, qmstart, qmmigrate, qmclone, vzdump, qmdestroy
         #             — UPID contains only VMID, not storeid
         #
         # We count tasks with storeid in the UPID (imgdel) plus tasks
@@ -601,7 +601,7 @@ sub cluster_lock_storage {
                 my @f = split(/\s+/, $line);
                 next unless @f <= 2;  # only running tasks
                 if ($line =~ /\Q$storeid\E/ ||
-                    $line =~ /:(?:qmrestore|qmstart|qmmigrate|qmclone|vzdump):/) {
+                    $line =~ /:(?:qmrestore|qmstart|qmmigrate|qmclone|vzdump|qmdestroy):/) {
                     $running++;
                 }
             }
