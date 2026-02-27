@@ -657,20 +657,30 @@ sub joviandss_cmd {
         };
         my $rerr = $@;
 
-        if ( $exitcode == 0 ) {
-            return $msg;
+        # Check for timeout BEFORE checking exitcode.  When run_command
+        # dies with a timeout inside eval, $exitcode keeps its initial
+        # value of 0, so the "exitcode == 0" check would incorrectly
+        # return the (empty) output as success.
+        if ( $rerr && $rerr =~ /got timeout/ ) {
+            $retry_count++;
+            $msg = '';
+            $err = undef;
+            sleep( 3 + int( rand( 5 ) ) );
+            next;
         }
 
-        if ( $rerr =~ /got timeout/ ) {
-            $retry_count++;
-            sleep( int( rand( $timeout + 1 ) ) );
-            next;
+        if ( $rerr ) {
+            die "$rerr\n";
+        }
+
+        if ( $exitcode == 0 ) {
+            return $msg;
         }
 
         if ($err) {
             die "${err}\n";
         }
-        die "$rerr\n";
+        die "jdssc exited with code $exitcode\n";
     }
 
     die "Unhandled state during running JovianDSS command\n";
@@ -1316,15 +1326,19 @@ sub volume_stage_iscsi {
         debugmsg( $scfg, "debug", "Staging target ${targetname} of host ${host} done\n" );
     } # end of for loop over all addresses
 
-    for ( my $i = 1 ; $i <= 5 ; $i++ ) {
+    for ( my $i = 1 ; $i <= 10 ; $i++ ) {
         sleep(1);
 
         $targets_block_devices = block_device_iscsi_paths( $scfg, $targetname, $lunid, $hosts );
 
-        if (@$targets_block_devices) {
+        if ( @$targets_block_devices == @$hosts ) {
             debugmsg( $scfg, "debug", "Stage iSCSI block devices @{ $targets_block_devices }\n" );
             return $targets_block_devices;
         }
+
+        debugmsg( $scfg, "debug", "Waiting for block devices: got "
+            . scalar(@$targets_block_devices) . " of " . scalar(@$hosts)
+            . " (attempt ${i}/10)\n" );
 
         if ( $lunid =~ /^\A\d+\z$/ ) {
             my $cmd = [ '/usr/bin/rescan-scsi-bus.sh', '--sparselun', '--reportlun2', '--largelun', "--luns=${lunid}", '-a'];

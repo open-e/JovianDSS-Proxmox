@@ -20,6 +20,7 @@ import math
 import re
 import string
 import hashlib
+import time
 
 from jdssc.jovian_common import exception as jexc
 # from jdssc.jovian_common import cexception as exception
@@ -1339,7 +1340,6 @@ class JovianDSSDriver(object):
         :return: dictionary of vip name as key and ip as value
         """
 
-        conforming_vips=dict()
         iscsi_addresses=[]
 
         if len(self.jovian_iscsi_vip_addresses) == 0:
@@ -1347,16 +1347,33 @@ class JovianDSSDriver(object):
         else:
             iscsi_addresses.extend(self.jovian_iscsi_vip_addresses)
 
-        vip_data=self.ra.get_pool_vips()
+        retries = 3
+        for attempt in range(retries):
+            try:
+                conforming_vips=dict()
+                vip_data=self.ra.get_pool_vips()
 
-        for vip in vip_data:
-            if vip['address'] in iscsi_addresses:
-                conforming_vips[vip['name']]=vip['address']
+                for vip in vip_data:
+                    if vip['address'] in iscsi_addresses:
+                        conforming_vips[vip['name']]=vip['address']
 
-        if len(conforming_vips) == 0:
-            raise jexc.JDSSVIPNotFoundException(iscsi_addresses)
+                if len(conforming_vips) > 0:
+                    return conforming_vips
 
-        return conforming_vips
+                reason = ("no match for %s" %
+                          ','.join(iscsi_addresses))
+            except jexc.JDSSException as err:
+                reason = str(err)
+
+            if attempt < retries - 1:
+                LOG.warning("VIP lookup failed: %s "
+                            "(attempt %d/%d, retrying in %ds)",
+                            reason,
+                            attempt + 1, retries,
+                            (attempt + 1) * 2)
+                time.sleep((attempt + 1) * 2)
+
+        raise jexc.JDSSVIPNotFoundException(iscsi_addresses)
 
     def _create_target_volume_lun(self, target_name, vid, lid, provider_auth):
         """Creates target and attach volume to it
