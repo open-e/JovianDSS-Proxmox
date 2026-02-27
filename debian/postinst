@@ -8,4 +8,22 @@ if [ -f /usr/local/bin/jdssc ]; then
     chmod +x /usr/local/bin/jdssc
 fi
 
+# Prevent LVM (vgs/pvscan) from scanning JovianDSS multipath devices.
+# Without this filter, concurrent storage operations cause vgs to hold
+# multipath devices open for 60+ seconds, blocking deactivation.
+# Our multipath mapper names are numeric WWIDs (e.g. /dev/mapper/23834...).
+LVM_CONF="/etc/lvm/lvm.conf"
+if [ -f "$LVM_CONF" ]; then
+    if ! grep -q '/dev/mapper/\[0-9\]' "$LVM_CONF" 2>/dev/null; then
+        if grep -q '^[[:space:]]*global_filter' "$LVM_CONF" 2>/dev/null; then
+            # Append our filter to existing global_filter list
+            sed -i 's%\(global_filter=\[.*\)\]%\1,"r|/dev/mapper/[0-9]|"]%' "$LVM_CONF"
+        else
+            # No global_filter set — add one in the devices section
+            sed -i '/^devices {/a\     global_filter=["r|/dev/mapper/[0-9]|"]' "$LVM_CONF"
+        fi
+        echo "JovianDSS: Added LVM global_filter to exclude multipath devices"
+    fi
+fi
+
 exit 0
