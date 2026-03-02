@@ -1088,7 +1088,11 @@ sub format_rollback_block_reason {
 }
 
 sub volume_rollback_check {
-    my ( $scfg, $storeid, $vmid, $volname, $snap, $blockers ) = @_;
+    # Optional 7th arg: pre-computed $force_rollback (skips internal pvesh call).
+    # Optional 8th arg: scalar ref to receive the managed-snapshots list so the
+    # caller can cache it and avoid a duplicate pvesh call later.
+    my ( $scfg, $storeid, $vmid, $volname, $snap, $blockers,
+         $force_rollback, $man_snaps_ref ) = @_;
 
     my $pool = get_pool($scfg);
 
@@ -1129,9 +1133,11 @@ sub volume_rollback_check {
     my $blockers_clones = [];
     my $blockers_unknown = [];
 
-    my $force_rollback = vm_tag_force_rollback_is_set($scfg, $vmid);
+    # Use caller-supplied value to avoid a redundant pvesh subprocess.
+    $force_rollback //= vm_tag_force_rollback_is_set($scfg, $vmid);
 
     my $managed_snapshots = snapshots_list_from_vmid($scfg, $vmid);
+    $$man_snaps_ref = $managed_snapshots if defined $man_snaps_ref;
     my $force_rollback_possible = 1;
     foreach my $blocker ( $blockers_found->@* ) {
         if ( $blocker =~ /^snap:(.+)$/ ) {
@@ -1175,6 +1181,7 @@ sub volume_rollback_check {
 
     die $msg;
 }
+
 
 sub get_iscsi_addresses {
     my ( $scfg, $storeid, $addport ) = @_;

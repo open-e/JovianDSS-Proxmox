@@ -46,7 +46,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.11.0-alpha';
+my $PLUGIN_VERSION = '0.11.0';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -684,76 +684,53 @@ sub volume_snapshot_rollback {
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
+    print "Rollback: starting rollback of ${volname} to snapshot ${snap}\n";
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "Volume ${volname}"
+            "Volume ${volname} "
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snap )
           . " rollback start" );
 
-    my $force_rollback = OpenEJovianDSS::Common::vm_tag_force_rollback_is_set($scfg, $vmid);
+    # Determine virtualisation type from config file presence — instant file
+    # check, no pvesh call needed.  Used only for remove_vm_snapshot_config
+    # when blocker snapshots are cleaned up from the Proxmox config.
+    my $virt_type =
+        -f "/etc/pve/qemu-server/${vmid}.conf" ? 'qemu' :
+        -f "/etc/pve/lxc/${vmid}.conf"         ? 'lxc'  : undef;
 
-    if ( $force_rollback ) {
-        # volume rollback check get called 2 times.
-        # It is better to call it 2 times then rely on proxmox logic
-        my $blockers = [];
-        my $rollback_check_ok = OpenEJovianDSS::Common::volume_rollback_check( $scfg,
-             $storeid, $vmid, $volname, $snap, $blockers );
-        if ( $rollback_check_ok ) {
-            my $prefix = OpenEJovianDSS::Common::get_target_prefix($scfg);
-            my $tgname = OpenEJovianDSS::Common::get_vm_target_group_name(
-                $scfg, $vmid );
+    # Always use --force-snapshots: volume_rollback_is_possible already
+    # verified this rollback is safe.  For VMs without the force_rollback tag,
+    # no blockers exist at this point so --force-snapshots is a no-op.
+    # For force_rollback VMs the JovianDSS REST API atomically deletes all
+    # newer snapshot blockers before restoring the volume.
+    # Deleted blocker names are returned as "snap:<name>" tokens; we call
+    # remove_vm_snapshot_config for each — it is idempotent, so calling it for
+    # unmanaged snapshots is harmless.
+    my $deleted_raw = OpenEJovianDSS::Common::joviandss_cmd(
+        $scfg,
+        $storeid,
+        [
+            'pool',     $pool, 'volume',   $volname,
+            'snapshot', $snap, 'rollback', 'do',
+            '--force-snapshots',
+        ]
+    );
 
-            my $virt_type =
-                OpenEJovianDSS::Common::vmid_identify_virt_type($scfg, $vmid);
-            my $man_snaps = OpenEJovianDSS::Common::snapshots_list_from_vmid(
-                $scfg, $vmid);
-            my %managed_set = map { $_ => 1 } @$man_snaps;
-
-            foreach my $blocker ( $blockers->@* ) {
-                OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-                    "Force rollback: deleting blocking snapshot ${blocker}"
-                    . " of volume ${volname}\n" );
-                OpenEJovianDSS::Common::volume_deactivate( $scfg,
-                    $storeid, $vmid, $volname, $blocker, undef );
-                OpenEJovianDSS::Common::joviandss_cmd(
-                    $scfg,
-                    $storeid,
-                    [
-                        'pool',     $pool,   'volume',   $volname,
-                        'snapshot', $blocker, 'delete',
-                        '--target-prefix',    $prefix,
-                        '--target-group-name', $tgname
-                    ]
-                );
-                if ( $managed_set{$blocker} && defined($virt_type) ) {
-                    OpenEJovianDSS::Common::remove_vm_snapshot_config(
-                        $scfg, $vmid, $virt_type, $blocker);
-                }
+    foreach my $line ( split /\n/, $deleted_raw ) {
+        foreach my $token ( split /\s+/, $line ) {
+            next unless $token =~ /^snap:(.+)$/;
+            my $deleted = $1;
+            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                "Rollback: jdssc deleted blocking snapshot '${deleted}'\n" );
+            if ( defined $virt_type ) {
+                OpenEJovianDSS::Common::remove_vm_snapshot_config(
+                    $scfg, $vmid, $virt_type, $deleted);
             }
-
-            OpenEJovianDSS::Common::joviandss_cmd(
-                $scfg,
-                $storeid,
-                [
-                    'pool',     $pool, 'volume',   $volname,
-                    'snapshot', $snap, 'rollback', 'do'
-                ]
-            );
-        } else {
-            die "Failed to check if volume can be rolled back\n";
         }
-    } else {
-        OpenEJovianDSS::Common::joviandss_cmd(
-            $scfg,
-            $storeid,
-            [
-                "pool",     $pool, "volume",   $volname,
-                "snapshot", $snap, "rollback", "do"
-            ]
-        );
     }
 
+    print "Rollback: ${volname} to snapshot ${snap} complete\n";
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "Volume ${volname}"
+            "Volume ${volname} "
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snap )
           . " rollback done" );
 
@@ -770,6 +747,7 @@ sub volume_rollback_is_possible {
 
         if (($hastate ne 'ignored')) {
             my $resource_type = OpenEJovianDSS::Common::ha_type_get($scfg, $vmid);
+            print "vmid ${vmid}: HA check failed — managed by HA (state: ${hastate})\n";
             my $msg =
             "Rollback blocked: ${resource_type}:${vmid} is controlled by High Availability (state: ${hastate}).\n"
             . "Rollback requires temporary manual control to prevent HA from restarting or moving the resource.\n"
@@ -779,8 +757,17 @@ sub volume_rollback_is_possible {
             die $msg;
         }
     }
-    return OpenEJovianDSS::Common::volume_rollback_check( $scfg,
-            $storeid, $vmid, $volname, $snap, $blockers );
+
+    # Compute force_rollback once here so volume_rollback_check does not need
+    # to spawn its own pvesh subprocess for the same information.
+    my $force_rollback = OpenEJovianDSS::Common::vm_tag_force_rollback_is_set(
+        $scfg, $vmid);
+
+    my $ok = OpenEJovianDSS::Common::volume_rollback_check(
+        $scfg, $storeid, $vmid, $volname, $snap, $blockers,
+        $force_rollback);
+
+    return $ok;
 }
 
 sub volume_snapshot_delete {

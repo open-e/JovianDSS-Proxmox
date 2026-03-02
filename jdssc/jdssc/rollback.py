@@ -120,9 +120,11 @@ class Rollback():
     def do(self):
 
         try:
-            self.jdss.rollback(
+            deleted = self.jdss.rollback(
                 self.args['volume_name'], self.args['snapshot_name'],
                 force_snapshots=self.args['force_snapshots'])
+            if deleted:
+                print(' '.join('snap:' + s for s in deleted))
             return
         except jexc.JDSSResourceIsBusyException as berr:
             LOG.error(berr)

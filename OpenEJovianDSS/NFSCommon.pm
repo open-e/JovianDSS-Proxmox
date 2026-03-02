@@ -180,17 +180,22 @@ sub snapshot_activate {
     if (-d $snapmntpath) {
         if ( path_is_mnt( $scfg, $snapmntpath ) ){
             if ( path_is_nfs( $scfg,  $snapmntpath, $sharepath, $server ) ) {
+                OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                    "snapshot_activate: ${snapmntpath} already mounted"
+                    . " with correct NFS share ${server}:${sharepath}, reusing\n" );
                 return $snapmntpath;
             } else {
+                OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                    "snapshot_activate: ${snapmntpath} mounted with different"
+                    . " source, unmounting before remount\n" );
                 umount( $scfg, $storeid, $snapmntpath );
             }
         }
     } else {
+        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+            "snapshot_activate: creating mount dir ${snapmntpath}\n" );
         make_path( $snapmntpath );
     }
-
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-        "Mounting ${server}:${sharepath} to ${snapmntpath}\n" );
 
     my $nfs_mount_cmd = [ '/bin/mount', '-t', 'nfs'];
 
@@ -205,10 +210,29 @@ sub snapshot_activate {
     my $shareippath = OpenEJovianDSS::Common::safe_word("${server}:${sharepath}", "Share ip with NFS path" );
     push @$nfs_mount_cmd, $shareippath, $snapmntpath;
 
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        "snapshot_activate: mounting ${server}:${sharepath}"
+        . " at ${snapmntpath} options='${optstr}'\n" );
+
     run_command( $nfs_mount_cmd,
                 outfunc => sub {},
                 errfunc => sub { cmd_log_output($scfg, 'error', $nfs_mount_cmd, shift); }
             );
+
+    # Log what is actually visible at the mount point after mounting
+    eval {
+        if ( opendir( my $dh, $snapmntpath ) ) {
+            my @entries = grep { $_ ne '.' && $_ ne '..' } readdir($dh);
+            closedir($dh);
+            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                "snapshot_activate: mount point ${snapmntpath} top-level entries: ["
+                . join( ", ", sort @entries ) . "]\n" );
+        } else {
+            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                "snapshot_activate: cannot read mount point ${snapmntpath}: $!\n" );
+        }
+    };
+
     return $snapmntpath;
 }
 
@@ -617,6 +641,9 @@ sub snapshot_publish {
           "snapshot", $internal_snap,
           "publish" ] );
 
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        "snapshot_publish raw jdssc output for snap ${internal_snap}: '${cmd_output}'\n" );
+
    my $sharepath;
     # Parse clone name from output (last non-empty line)
     my @lines = split( /\n/, $cmd_output );
@@ -627,6 +654,10 @@ sub snapshot_publish {
             last;
         }
     }
+
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        "snapshot_publish parsed sharepath: "
+        . ( defined($sharepath) ? "'${sharepath}'" : "undef" ) . "\n" );
 
     if ( $sharepath =~ /^([\:\-\@\w.\/]+)$/ ) {
         return $1;

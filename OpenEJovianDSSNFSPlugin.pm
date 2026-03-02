@@ -374,6 +374,9 @@ sub volume_snapshot_rollback {
     my $sharepath = OpenEJovianDSS::NFSCommon::snapshot_publish($scfg, $storeid,
             $datname, $name, $snapname );
 
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        "Snapshot ${snapname} published as NFS share: '${sharepath}'\n" );
+
     # Activate snapshot and mount it
     my $snapmntpath;
     eval {
@@ -394,18 +397,48 @@ sub volume_snapshot_rollback {
         }
     }
 
+    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        "Snapshot ${snapname} NFS share mounted at: '${snapmntpath}'\n" );
+
     # Here we have share active and mounted
 
     my $vol_path = $class->path($scfg, $volname, $storeid, undef);
     my $snap_path = $class->path($scfg, $volname, $storeid, $snapname);
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-        "Snapshot ${snapname} activated at ${snap_path}\n" );
+        "Rollback paths:\n"
+        . "  volume (destination): '${vol_path}'\n"
+        . "  snapshot (source):    '${snap_path}'\n"
+        . "  snapshot exists: " . ( -e $snap_path ? "YES" : "NO" ) . "\n"
+        . "  format: " . ( defined($format) ? $format : "raw" ) . "\n" );
+
+    # Log top-level contents of mount point to diagnose structure mismatch
+    eval {
+        if ( defined($snapmntpath) && opendir( my $dh, $snapmntpath ) ) {
+            my @entries = grep { $_ ne '.' && $_ ne '..' } readdir($dh);
+            closedir($dh);
+            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                "Mount point '${snapmntpath}' top-level entries: ["
+                . join( ", ", sort @entries ) . "]\n" );
+        }
+    };
 
     eval {
         # Step 2: Physically copy VM/container file from activated snapshot
 
         unless ( -e $snap_path ) {
+            # Log deeper directory structure to show what is actually mounted
+            my $diag = '';
+            eval {
+                my $find_cmd = [ '/usr/bin/find', $snapmntpath, '-maxdepth', '4',
+                                 '-not', '-path', '*/proc/*' ];
+                PVE::Tools::run_command( $find_cmd,
+                    outfunc => sub { $diag .= "$_[0]\n"; },
+                    errfunc => sub {},
+                    noerr   => 1 );
+            };
+            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                "Snapshot mount tree (maxdepth 4) for diagnosis:\n${diag}" );
             die "Unable to identify volume ${volname} data within "
                 . "snapshot ${snapname}\n";
         }
