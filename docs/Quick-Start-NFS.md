@@ -53,6 +53,7 @@ Clone the repository, build the package, and install it on all nodes:
 ```bash
 git clone https://github.com/open-e/JovianDSS-Proxmox.git
 cd JovianDSS-Proxmox
+git checkout nfs-plugin
 make deb
 ./dev/install-local.pl ./open-e-joviandss-proxmox-plugin-latest.deb --all-nodes
 ```
@@ -70,7 +71,7 @@ To check the current version of the installed plugin, run the following script:
 dpkg-query -W -f='${Version}\n' open-e-joviandss-proxmox-plugin
 ```
 
-To update to a newer NFS plugin version, pull the latest changes from `main`, run `make deb` again, and reinstall with `dev/install-local.pl`.
+To update to a newer NFS plugin version, pull the latest changes from `nfs-plugin`, run `make deb` again, and reinstall with `dev/install-local.pl`.
 
 To remove the plugin, use:
 
