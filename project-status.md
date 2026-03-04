@@ -497,7 +497,7 @@ disks during `volume_snapshot_rollback`.  No false cache misses observed.
   Fixed to `"Volume ${volname} "` in both rollback-start and rollback-done
   debug messages.
 
-#### Outstanding Optimisation Proposals
+#### Optimisation Proposals — Final Status
 
 **Pre-work (2026.02.26, not a numbered proposal):**
 Replace N per-blocker `jdssc snapshot delete` + `jdssc rollback do` calls from
@@ -509,11 +509,20 @@ launches per disk.
 
 | # | Description | Status |
 |---|-------------|--------|
-| 1 | Write rollback-check result to a short-lived temp file in `volume_rollback_is_possible`; read it in `volume_snapshot_rollback` to skip duplicate `vm_tag_force_rollback_is_set` (pvesh) + `volume_rollback_check` (jdssc + pvesh) + `vmid_identify_virt_type` (pvesh) calls per disk | ✅ Done |
+| 1 | Cache mechanism replaced: removed temp-file cache entirely; `volume_snapshot_rollback` now always passes `--force-snapshots` (pre-check already confirmed safe), determines `virt_type` via instant file existence check (no pvesh), calls `remove_vm_snapshot_config` for all `snap:xxx` tokens (idempotent). `volume_rollback_is_possible` no longer calls `vmid_identify_virt_type` (saves 2 pvesh per round-2 invocation × 3 disks). Cache subs removed from `Common.pm`. | ✅ Done (2026.03.01) |
 | 2 | Pre-compute `$force_rollback` in `volume_rollback_is_possible` and pass it into `volume_rollback_check` via optional 7th arg, so `volume_rollback_check` skips its own `vm_tag_force_rollback_is_set` pvesh call (saves 1 pvesh per `volume_rollback_is_possible` invocation, ×6 for 2-round×3-disk) | ✅ Done |
-| 3 | Skip `get_snapshot_rollback` REST pre-check at the start of `driver.py rollback()` when `force_snapshots=True` (result is discarded immediately; blockers already deleted by the time this path runs) | ❌ Not yet |
-| 4 | Fetch snapshot list once before the blocker-deletion loop in `driver.py rollback()` and pass it to `_delete_snapshot`, instead of each call re-running `_find_snapshot_parent` → `get_volume_snapshots_page` pagination from scratch | ❌ Not yet |
+| 3 | Skip `get_snapshot_rollback` REST pre-check at the start of `driver.py rollback()` when `force_snapshots=True` — the result is superseded immediately by `_list_snapshot_rollback_dependency` | ✅ Done (2026.03.01) |
+| 4 | Eliminated `_delete_snapshot` per-blocker loop entirely from force path: JovianDSS `POST .../snapshots/<snap>/rollback` atomically deletes all newer snapshot dependencies before restoring the volume.  `driver.py rollback(force_snapshots=True)` now calls `_list_snapshot_rollback_dependency` (clone check + blocker names for caller) then `snapshot_rollback` directly. | ✅ Done (2026.03.01) |
 | 5 | Eliminate round-1 Proxmox double-call (Proxmox calls `volume_rollback_is_possible` for all disks, then again per disk just before rollback — round-1 cache is overwritten by round-2 before it is ever read) | ❌ Not actionable from plugin |
+
+#### Timing Results
+
+| Change | Time (3-disk VM, `force_rollback` tag) | Notes |
+|--------|----------------------------------------|-------|
+| Before all optimisation | 145 s | |
+| After Proposals 1+2 (cache + force_rollback pass-through) | 99 s | Baseline as of 2026.03.01 |
+| After driver.py force path rewrite (Proposals 3+4) | 94 s | Tested 2026.03.01 |
+| After cache removal + always `--force-snapshots` (new Proposal 1) | 67 s (with blockers) / 49 s (no blockers) | Tested 2026.03.01 — all 3 disks correct |
 
 ### 2026.02.26 - iSCSI Force-Rollback: config file editing + message fixes (tested ✅)
 
