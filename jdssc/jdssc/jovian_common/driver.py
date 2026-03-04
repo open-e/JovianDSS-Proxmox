@@ -19,6 +19,7 @@ from oslo_utils import units as o_units
 import math
 import re
 import string
+import time
 import hashlib
 import time
 
@@ -39,7 +40,7 @@ class JovianDSSDriver(object):
 
     def __init__(self, config):
 
-        self.VERSION = "0.10.17"
+        self.VERSION = "0.11.0"
 
         self.configuration = config
         self._pool = self.configuration.get('jovian_pool', 'Pool-0')
@@ -292,6 +293,20 @@ class JovianDSSDriver(object):
 
         return clist
 
+    def _list_nas_snapshot_clones_names(self, vname, sname):
+        """Lists all snapshot clones
+
+        :return: list of clone names related to given snapshot
+        """
+
+        clist = list()
+
+        clones = self.ra.get_nas_snapshot_clones(vname, sname)
+        for c in clones:
+            clist.append(c['name'])
+
+        return clist
+
     def _list_busy_snapshots(self, vname, snapshots,
                              exclude_dedicated_volumes=False,
                              exclude_dedicated_snapshots=False) -> list:
@@ -383,6 +398,8 @@ class JovianDSSDriver(object):
         :return: None
         """
         LOG.debug("Deleting %s", vname)
+        # TODO: consider more optimal method for identification
+        # if volume is assigned to any target
 
         if detach_target:
             try:
@@ -454,9 +471,8 @@ class JovianDSSDriver(object):
 
         :param volume: volume reference
         :param cascade: remove snapshots of a volume as well
-        :param target_name: optional target group name hint (e.g. 'vm-999').
-            When provided, the detach scan is limited to targets belonging
-            to this group instead of scanning the entire pool.
+        :param target_name: optional target group name hint (e.g. 'vm-999')
+            used to filter the iSCSI target scan in _detach_volume
         """
         vname = jcom.vname(volume_name)
 
@@ -472,6 +488,21 @@ class JovianDSSDriver(object):
         return self._delete_volume(vname, cascade=cascade,
                                    target_name=target_name)
 
+    def _delete_nas_volume(self, vname, cascade=False, detach_target=True):
+        """_delete_volume delete routine containing delete logic
+
+        :param str vname: physical volume id
+        :param bool cascade: flag for cascade volume deletion
+            with its snapshots
+        :param bool delete_target: indicate ifwe have to check for target
+            related to given volume
+
+        :return: None
+        """
+        LOG.debug("Deleting %s", vname)
+
+        self.ra.delete_nas_volume(vname)
+
     def delete_nas_volume(self, volume_name,
                           direct_mode=False,
                           print_and_exit=False):
@@ -480,11 +511,15 @@ class JovianDSSDriver(object):
         :param volume: volume reference
         :param cascade: remove snapshots of a volume as well
         """
+
         vname = jcom.vname(volume_name)
+
+        if direct_mode:
+            vname = volume_name
 
         LOG.info('deleting nas volume %s', vname)
 
-        self.ra.delete_nas_volume(vname)
+        self._delete_nas_volume(vname, cascade=True)
 
     def _list_resources_to_delete(self, vname, cascade=False):
         ret = []
@@ -749,7 +784,7 @@ class JovianDSSDriver(object):
                                               vname)
         (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
 
-        if volume_attached_flag:
+        if (volume_attached_flag or (new_target_flag is True)):
             try:
                 self._detach_target_volume(tname, vname)
             except jexc.JDSSException as jerr:
@@ -834,7 +869,7 @@ class JovianDSSDriver(object):
 
                     if len(dsnaps) > 0:
                         msg = ("Snapshot is busy, delete dependent snapshots "
-                               "firs")
+                               "first")
                         dsnames = [jcom.sid_from_sname(
                             s['name']) for s in dsnaps]
                         jcom.dependency_error(msg, dsnames)
@@ -843,6 +878,15 @@ class JovianDSSDriver(object):
                             jcom.sid_from_sname(sname))
                     else:
                         self._delete_volume(cvname, cascade=False)
+
+                if jcom.is_volume(cvname):
+                    msg = ("Snapshot is busy, delete dependent clone "
+                           "first")
+                    dcnames = [jcom.idname(cvname)]
+                    jcom.dependency_error(msg, dcnames)
+
+                    raise jexc.JDSSSnapshotIsBusyException(
+                        jcom.sid_from_sname(sname))
 
                 if jcom.is_snapshot(cvname):
                     self._delete_volume(cvname, cascade=False)
@@ -932,37 +976,33 @@ class JovianDSSDriver(object):
     def _detach_volume(self, vname, target_name=None):
         """detach volume from target it is attached to
 
-        Will go through targets, find one that volume is attached to
-        and detach it from it. If volume is the last one attached to
-        a particular target it will remove that target.
-
-        When target_name is provided the scan is limited to targets
-        belonging to that group (e.g. 'vm-999'), avoiding a full
-        pool-wide scan.  Falls back to the full scan when no hint is
-        given or when no matching target is found with the hint.
+        Will go through all target, find one that volume is attached to
+        and detach it from it
+        If volume is a last one attached to particular target
+        it will remove target
 
         :param str vname: physical volume id
         :param str target_name: optional target group name hint (e.g. 'vm-999')
+            when provided, only targets matching this name are scanned
         """
         LOG.debug("detach volume %s (target_name hint: %s)", vname, target_name)
 
         all_targets = self.ra.get_targets()
 
-        # Build a filtered candidate list when we have a group hint so we
-        # avoid iterating over every target in the pool (~60+ REST calls).
-        candidates = all_targets
         if target_name is not None:
             tprefix = self.jovian_target_prefix
-            tname = tprefix + target_name
             if tprefix[-1] != ':':
-                tname = tprefix + ':' + target_name
-            target_re = re.compile(fr'^{re.escape(tname)}-\d+$')
-            candidates = [t for t in all_targets
+                tprefix = tprefix + ':'
+            tname = tprefix + target_name
+            target_re = re.compile(r'^' + re.escape(tname) + r'-\d+$')
+            candidates = [t['name'] for t in all_targets
                           if target_re.match(t['name'])]
             LOG.debug("Filtered detach scan to %d/%d targets matching %s",
                       len(candidates), len(all_targets), tname)
+        else:
+            candidates = [t['name'] for t in all_targets]
 
-        for t in [target['name'] for target in candidates]:
+        for t in candidates:
             try:
                 luns = self.ra.get_target_luns(t)
             except jexc.JDSSResourceNotFoundException:
@@ -1594,6 +1634,396 @@ class JovianDSSDriver(object):
 
         return ret
 
+    def list_nas_volumes(self):
+        """List all NAS volumes (datasets) in the pool.
+
+        :return: list of NAS volumes
+        """
+        LOG.debug('list all nas volumes')
+
+        data = self.ra.get_nas_volumes()
+
+        return data
+
+    def create_nas_snapshot(self, snapshot_name, dataset_name,
+                            nas_volume_direct_mode=False,
+                            proxmox_volume=None,
+                            ignoreexists=False):
+        """Create snapshot of existing NAS volume (dataset).
+
+        :param str snapshot_name: new snapshot name
+        :param str dataset_name: dataset name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
+        """
+        LOG.debug(('create snapshot %(snap)s for NAS volume %(vol)s '
+                   'direct mode %(mode)s proxmox volume %(pvol)s'), {
+            'snap': snapshot_name,
+            'vol': dataset_name,
+            'mode': str(nas_volume_direct_mode),
+            'pvol': proxmox_volume})
+
+        dname = jcom.vname(dataset_name)
+
+        if nas_volume_direct_mode:
+            dname = dataset_name
+
+        sname = jcom.sname(snapshot_name, dataset_name,
+                           proxmox_volume=proxmox_volume)
+
+        try:
+            self.ra.create_nas_snapshot(dname, sname)
+        except jexc.JDSSSnapshotExistsException as err:
+            if ignoreexists:
+                pass
+            else:
+                raise err
+
+    def _delete_nas_snapshot(self, vname, sname):
+        """Delete snapshot
+
+        This method will delete snapshot mount point and snapshot if possible
+
+        :param str vname: zvol name
+        :param dict snap: snapshot info dictionary
+
+        :return: None
+        """
+
+        clones = []
+
+        try:
+            clones = self._list_nas_snapshot_clones_names(vname, sname)
+        except jexc.JDSSSnapshotNotFoundException:
+            LOG.debug('Snapshot %s not found', sname)
+            pass
+        except jexc.JDSSResourceNotFoundException:
+            LOG.debug(('Resource related to nas-volume %s snapshot %s'
+                       'not found'), vname, sname)
+            pass
+
+        if len(clones) > 0:
+            for cvname in clones:
+                if jcom.is_snapshot(cvname):
+                    self._delete_nas_volume(cvname, cascade=False)
+
+        try:
+            self.ra.delete_nas_snapshot(vname, sname)
+        except jexc.JDSSSnapshotNotFoundException:
+            LOG.debug('Snapshot %s not found', sname)
+            pass
+        except jexc.JDSSResourceNotFoundException:
+            LOG.debug(('Resource related to nas-volume %s snapshot %s'
+                       'not found'), vname, sname)
+            pass
+
+
+    def delete_nas_snapshot(self, dataset_name, snapshot_name,
+                            nas_volume_direct_mode=False,
+                            proxmox_volume=None):
+        """Delete snapshot of existing NAS volume (dataset).
+
+        :param str dataset_name: dataset name
+        :param str snapshot_name: snapshot name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
+        """
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, dataset_name,
+                           proxmox_volume=proxmox_volume)
+
+        self._delete_nas_snapshot(dname, sname)
+
+    def list_nas_snapshots(self, dataset_name, nas_volume_direct_mode=False,
+                           proxmox_volume=None):
+        """List snapshots for NAS volume (dataset).
+
+        :param str dataset_name: dataset name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
+        :param str proxmox_volume: name of proxmox volume
+        :return: list of snapshots
+        """
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
+        try:
+            data = self._list_nas_volume_snapshots(dname, dname)
+        except jexc.JDSSException as ex:
+            LOG.error("List NAS snapshots error. Because %(err)s",
+                      {"err": ex})
+            raise
+
+        out = []
+        for d in data:
+            r = {'snapshot_name': jcom.idname(d['name']),
+                 'volume_name': jcom.idname(d['volume_name']),
+                 'creation': d.get('properties', {}).get('creation')}
+            if proxmox_volume:
+                if proxmox_volume == jcom.proxid_from_sname(d['name']):
+                    out.append(r)
+            else:
+                out.append(r)
+        return out
+
+    def get_nas_snapshot(self, dataset_name, snapshot_name,
+                         nas_volume_direct_mode=False,
+                         proxmox_volume=None):
+        """Get NAS snapshot information.
+
+        :param str dataset_name: dataset name
+        :param str snapshot_name: snapshot name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
+        :return: snapshot data
+        """
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, dataset_name,
+                           proxmox_volume=proxmox_volume)
+
+        data = self.ra.get_nas_snapshot(dname, sname)
+        return data
+
+    def create_nas_clone(self, dataset_name, snapshot_name, clone_name,
+                         nas_volume_direct_mode=False, **options):
+        """Create clone from NAS snapshot.
+
+        :param str dataset_name: dataset name
+        :param str snapshot_name: snapshot name
+        :param str clone_name: clone name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
+        :param options: optional ZFS properties
+        :return: clone data
+        """
+        LOG.debug('create clone %(clone)s from snapshot %(snap)s '
+                  'of NAS volume %(vol)s', {
+            'clone': clone_name,
+            'snap': snapshot_name,
+            'vol': dataset_name})
+
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, dataset_name)
+        cname = clone_name
+
+        return self.ra.create_nas_clone(dname, sname, cname, **options)
+
+    def delete_nas_clone(self, dataset_name, snapshot_name, clone_name,
+                         nas_volume_direct_mode=False):
+        """Delete NAS clone.
+
+        :param str dataset_name: dataset name
+        :param str snapshot_name: snapshot name
+        :param str clone_name: clone name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
+        """
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, None)
+        cname = clone_name
+
+        self.ra.delete_nas_clone(dname, sname, cname)
+
+    def list_nas_clones(self, dataset_name, snapshot_name,
+                        nas_volume_direct_mode=False):
+        """List clones for NAS snapshot.
+
+        :param str dataset_name: dataset name
+        :param str snapshot_name: snapshot name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
+        :return: list of clones
+        """
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, dataset_name)
+
+        try:
+            data = self.ra.get_nas_clones(dname, sname)
+        except jexc.JDSSException as ex:
+            LOG.error("List NAS clones error. Because %(err)s",
+                      {"err": ex})
+            raise
+
+        return data
+
+    def get_nas_snapshot_publish_name(self, dataset_name, snapshot_name,
+                                      proxmox_volume=None,
+                                      nas_volume_direct_mode=False):
+        """Get the clone name that would be used for publishing a snapshot.
+
+        Returns the clone dataset name without actually creating the clone.
+        This is useful for determining mount paths.
+
+        :param str dataset_name: dataset name
+        :param str snapshot_name: snapshot name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
+        :return: clone dataset name (properly formatted with se_ prefix)
+        """
+        # Generate clone name using sname with dataset reference
+        # This creates the se_ prefixed name with base32 encoding
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
+        clone_name = jcom.sname(snapshot_name, dataset_name)
+        return clone_name
+
+    def publish_nas_snapshot(self, dataset_name, snapshot_name,
+                             proxmox_volume=None,
+                             nas_volume_direct_mode=False):
+        """Publish NAS snapshot by creating clone and NFS share.
+
+        Creates a snapshot export clone with proper se_ naming and
+        creates an NFS share for it, making it accessible for mounting.
+
+        :param str dataset_name: dataset name
+        :param str snapshot_name: snapshot name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
+        :return: clone dataset name (properly formatted with se_ prefix)
+        """
+        LOG.debug('publish snapshot %(snap)s from NAS volume %(vol)s', {
+            'snap': snapshot_name,
+            'vol': dataset_name})
+
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, dataset_name,
+                           proxmox_volume=proxmox_volume)
+        # Generate clone name using sname with dataset reference
+        # This creates the se_ prefixed name with base32 encoding
+        #clone_name = jcom.sname(snapshot_name, dataset_name,
+        #                         proxmox_volume=proxmox_volume)
+
+        #self.ra.get_nas_snapshot_clone(dname, sname, clone_name)
+        # Create clone from snapshot
+        try:
+            self.ra.create_nas_clone(dname, sname, sname)
+        except jexc.JDSSResourceExistsException:
+            pass
+        # Create NFS share for the clone
+        path = "{}/{}".format(self._pool, sname)
+        try:
+            self.ra.create_share(sname, path,
+                                 active=True,
+                                 proto='nfs',
+                                 insecure_connections=False,
+                                 synchronous_data_record=True)
+        except jexc.JDSSResourceExistsException:
+            pass
+
+        LOG.debug('published snapshot as clone %(clone)s', {
+            'clone': sname})
+
+        for i in range(3):
+            try:
+                share_data = self.ra.get_share(sname)
+                if "real_path" in share_data:
+                    return share_data['real_path']
+                else:
+                    time.sleep(1)
+                    continue
+            except Exception:
+                time.sleep(1)
+                continue
+
+        self.ra.delete_share(sname)
+        self.ra.delete_nas_clone(dname, sname, sname)
+        raise jexc.JDSSException("Unable to create share %(share)s",
+                                 {'share': sname})
+
+    def unpublish_nas_snapshot(self, dataset_name, snapshot_name,
+                               proxmox_volume=None,
+                               nas_volume_direct_mode=False):
+        """Unpublish NAS snapshot by deleting clone and NFS share.
+
+        Removes the NFS share and deletes the snapshot export clone,
+        cleaning up resources created by publish_nas_snapshot.
+
+        After deleting the share, polls get_share up to 10 times (1 s apart)
+        to confirm the share has been fully removed before attempting clone
+        deletion — NFS may hold references briefly after DELETE returns.
+
+        delete_nas_clone is retried up to 10 times (2 s apart) in case the
+        clone is temporarily busy (e.g. NFS client still has open handles).
+
+        :param str dataset_name: dataset name
+        :param str snapshot_name: snapshot name
+        :param bool nas_volume_direct_mode: use dataset name without
+                                            transformation
+        """
+        LOG.debug('unpublish snapshot %(snap)s from NAS volume %(vol)s', {
+            'snap': snapshot_name,
+            'vol': dataset_name})
+
+        if nas_volume_direct_mode:
+            dname = dataset_name
+        else:
+            dname = jcom.vname(dataset_name)
+        sname = jcom.sname(snapshot_name, dataset_name,
+                           proxmox_volume=proxmox_volume)
+
+        # Delete NFS share
+        try:
+            self.ra.delete_share(sname)
+        except jexc.JDSSResourceNotFoundException:
+            pass
+
+        # Confirm share is gone before touching the clone — the NFS server
+        # may keep the share object alive for a short time after deletion,
+        # causing the subsequent clone delete to be rejected as busy.
+        for attempt in range(10):
+            try:
+                self.ra.get_share(sname)
+                LOG.debug('share %s still present after deletion, waiting'
+                          ' (attempt %d/10)', sname, attempt + 1)
+                time.sleep(1)
+            except jexc.JDSSResourceNotFoundException:
+                LOG.debug('share %s confirmed removed', sname)
+                break
+        else:
+            LOG.warning('share %s still reported present after 10 attempts,'
+                        ' proceeding with clone deletion anyway', sname)
+
+        # Delete clone, retrying if it is temporarily busy (NFS client may
+        # still hold file handles open right after the share disappears).
+        for attempt in range(10):
+            try:
+                self.ra.delete_nas_clone(dname, sname, sname)
+                break
+            except jexc.JDSSResourceNotFoundException:
+                break
+            except jexc.JDSSException:
+                if attempt < 9:
+                    LOG.debug('clone %s busy or error on deletion attempt'
+                              ' %d/10, retrying in 2 s', sname, attempt + 1)
+                    time.sleep(2)
+                else:
+                    LOG.warning('clone %s could not be deleted after 10'
+                                ' attempts, giving up', sname)
+
+        LOG.debug('unpublished snapshot clone %(clone)s', {
+            'clone': sname})
+
     def get_snapshot(self, volume_name, snapshot_name,
                      export=False, direct_mode=False):
         """Get volume information.
@@ -1722,7 +2152,7 @@ class JovianDSSDriver(object):
 
         return snaps
 
-    def _list_volume_snapshots(self, ovolume_name, vname):
+    def _list_volume_snapshots(self, ovolume_name, vname, all=False):
         """List volume snapshots
 
         :return: list of volume related snapshots
@@ -1774,7 +2204,61 @@ class JovianDSSDriver(object):
                         LOG.debug(
                             "List volume recursion step for list_volume_snapshots")
                         out.extend(self._list_volume_snapshots(ovolume_name,
-                                                               clone))
+                                                               clone,
+                                                               all=all))
+                    continue
+            if all:
+                snap['volume_name'] = vname
+                out.append(snap)
+
+        return out
+
+    def _list_nas_volume_snapshots(self, ovolume_name, vname, all=False):
+        """List volume snapshots
+
+        :return: list of volume related snapshots
+        """
+        out = []
+        snapshots = []
+        i = 0
+        # First we list all volume snapshots page by page
+        try:
+            while True:
+                spage = self.ra.get_nas_volume_snapshots_page(vname, i)
+
+                if len(spage) > 0:
+                    LOG.debug("Page: %s", str(spage))
+
+                    snapshots.extend(spage)
+                    i += 1
+                else:
+                    break
+
+        except jexc.JDSSException as ex:
+            LOG.error("List snapshots error. Because %(err)s",
+                      {"err": ex})
+
+        # Each snapshot we check
+        for snap in snapshots:
+            # if that is a linked clone one we might not
+            # want to list it for specific volume
+            if jcom.is_volume(snap['name']):
+                if all:
+                    snap['volume_name'] = vname
+                    out.append(snap)
+                else:
+                    LOG.warning("Linked clone present among volumes")
+                continue
+
+            if jcom.is_snapshot(snap['name']):
+                vid = jcom.vid_from_sname(snap['name'])
+                if vid is None or vid == ovolume_name:
+                    # That is used in create_snapshot function
+                    # to provide detailed
+                    # info in case volume already have snapshot
+                    snap['volume_name'] = vname
+
+                    out.append(snap)
                     continue
             if all:
                 snap['volume_name'] = vname
@@ -2071,14 +2555,49 @@ class JovianDSSDriver(object):
         And commits rollback if no dependecy is found.
         In other case it raises ResourceIsBusy exception.
 
-        :param vname: physical volume id
-        :param sname: physical snapshot id that belongs to vname
+        When force_snapshots is True and only snapshots (no clones) block the
+        rollback, snapshot_rollback REST call is issued directly — the
+        JovianDSS API deletes all newer snapshot dependencies atomically
+        before restoring the volume.  The logical names of the blocker
+        snapshots are returned so the caller can perform any necessary
+        housekeeping (e.g. removing Proxmox VM snapshot config entries).
+        If clone blockers are present the rollback is refused even in force
+        mode, because the REST API cannot delete clones automatically.
 
-        :return: None
+        :param volume_name: logical volume id
+        :param snapshot_name: logical snapshot id that belongs to volume_name
+        :param force_snapshots: when True allow rollback past snapshot blockers
+
+        :return: list of logical snapshot names that were deleted (may be empty)
         """
 
         vname = jcom.vname(volume_name)
         sname = jcom.sname(snapshot_name, None)
+
+        if force_snapshots:
+            # List blockers upfront — needed for two things:
+            #   1. clone check: REST rollback cannot delete clones automatically
+            #   2. return blocker names to caller for Proxmox config cleanup
+            deplist = self._list_snapshot_rollback_dependency(vname, sname)
+
+            if len(deplist['clones']) > 0:
+                LOG.debug("forced rolling back volume %s to snapshot %s is"
+                          " blocked by %d clone(s)",
+                          jcom.idname(vname), jcom.idname(sname),
+                          len(deplist['clones']))
+                raise jexc.JDSSRollbackIsBlocked(
+                    volume_name, snapshot_name,
+                    deplist['snapshots'], deplist['clones'],
+                    len(deplist['snapshots']), len(deplist['clones']))
+
+            # No clone blockers — snapshot_rollback REST call deletes all
+            # newer snapshot dependencies atomically and restores the volume.
+            LOG.info("rolling back volume %(vol)s to snapshot %(snap)s"
+                     " (deleting %(n)d snapshot blocker(s))",
+                     {'vol': jcom.idname(vname), 'snap': jcom.idname(sname),
+                      'n': len(deplist['snapshots'])})
+            self.ra.snapshot_rollback(vname, sname)
+            return deplist['snapshots']
 
         dependency = {}
         try:
@@ -2110,14 +2629,7 @@ class JovianDSSDriver(object):
                           "%(snap)s done"),
                          {'vol': jcom.idname(vname),
                           'snap': jcom.idname(sname)})
-                return
-            elif (force_snapshots):
-                if dependency['clones'] == 0:
-                    self.ra.snapshot_rollback(vname, sname)
-                    return
-                else:
-                    LOG.debug("forced rolling back is blocked by %s clones",
-                              dependency['clones'])
+                return []
             else:
                 LOG.debug("rolling back is blocked by resources %s",
                           dependency)
@@ -2128,8 +2640,8 @@ class JovianDSSDriver(object):
                                          snapshot_name,
                                          deplist['snapshots'],
                                          deplist['clones'],
-                                         dependency['snapshots'],
-                                         dependency['clones'])
+                                         dependency.get('snapshots', 0),
+                                         dependency.get('clones', 0))
 
     @property
     def backend_name(self):

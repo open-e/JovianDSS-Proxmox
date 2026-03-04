@@ -46,7 +46,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.10.17';
+my $PLUGIN_VERSION = '0.11.0';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -662,14 +662,9 @@ sub free_image {
     OpenEJovianDSS::Common::volume_deactivate( $scfg, $storeid, $vmid,
         $volname, undef, undef );
 
-    # volume_unpublish is intentionally skipped here.  The final
-    # "volume delete -c" already handles iSCSI target detachment via
-    # _detach_volume() with the --target-group-name filter.  Running
-    # volume_unpublish first would (a) duplicate REST calls and
-    # (b) delete the target before _detach_volume sees it, forcing an
-    # expensive full-pool target scan (~7 s) instead of a single
-    # filtered lookup (~0.3 s).  Total free_image time drops from
-    # ~22 s to ~9 s, keeping it under the 10 s CFS lock timeout.
+    # Deactivation does not unpublish volumes, only snapshots
+    OpenEJovianDSS::Common::volume_unpublish( $scfg, $storeid, $vmid, $volname,
+        undef, undef );
 
     OpenEJovianDSS::Common::joviandss_cmd(
         $scfg,
@@ -772,45 +767,53 @@ sub volume_snapshot_rollback {
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
+    print "Rollback: starting rollback of ${volname} to snapshot ${snap}\n";
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "Volume ${volname}"
+            "Volume ${volname} "
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snap )
           . " rollback start" );
 
-    my $force_rollback = OpenEJovianDSS::Common::vm_tag_force_rollback_is_set($scfg, $vmid);
+    # Determine virtualisation type from config file presence — instant file
+    # check, no pvesh call needed.  Used only for remove_vm_snapshot_config
+    # when blocker snapshots are cleaned up from the Proxmox config.
+    my $virt_type =
+        -f "/etc/pve/qemu-server/${vmid}.conf" ? 'qemu' :
+        -f "/etc/pve/lxc/${vmid}.conf"         ? 'lxc'  : undef;
 
-    if ( $force_rollback ) {
-        # volume rollback check get called 2 times.
-        # It is better to call it 2 times then rely on proxmox logic
-        my $blockers = [];
-        my $rollback_check_ok = OpenEJovianDSS::Common::volume_rollback_check( $scfg,
-             $storeid, $vmid, $volname, $snap, $blockers );
-        if ( $rollback_check_ok ) {
+    # Always use --force-snapshots: volume_rollback_is_possible already
+    # verified this rollback is safe.  For VMs without the force_rollback tag,
+    # no blockers exist at this point so --force-snapshots is a no-op.
+    # For force_rollback VMs the JovianDSS REST API atomically deletes all
+    # newer snapshot blockers before restoring the volume.
+    # Deleted blocker names are returned as "snap:<name>" tokens; we call
+    # remove_vm_snapshot_config for each — it is idempotent, so calling it for
+    # unmanaged snapshots is harmless.
+    my $deleted_raw = OpenEJovianDSS::Common::joviandss_cmd(
+        $scfg,
+        $storeid,
+        [
+            'pool',     $pool, 'volume',   $volname,
+            'snapshot', $snap, 'rollback', 'do',
+            '--force-snapshots',
+        ]
+    );
 
-            OpenEJovianDSS::Common::joviandss_cmd(
-                $scfg,
-                $storeid,
-                [
-                    'pool',     $pool, 'volume',   $volname,
-                    'snapshot', $snap, 'rollback', 'do', '--force-snapshots'
-                ]
-            );
-        } else {
-            die "Failed to check if volume can be rolled back\n";
+    foreach my $line ( split /\n/, $deleted_raw ) {
+        foreach my $token ( split /\s+/, $line ) {
+            next unless $token =~ /^snap:(.+)$/;
+            my $deleted = $1;
+            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                "Rollback: jdssc deleted blocking snapshot '${deleted}'\n" );
+            if ( defined $virt_type ) {
+                OpenEJovianDSS::Common::remove_vm_snapshot_config(
+                    $scfg, $vmid, $virt_type, $deleted);
+            }
         }
-    } else {
-        OpenEJovianDSS::Common::joviandss_cmd(
-            $scfg,
-            $storeid,
-            [
-                "pool",     $pool, "volume",   $volname,
-                "snapshot", $snap, "rollback", "do"
-            ]
-        );
     }
 
+    print "Rollback: ${volname} to snapshot ${snap} complete\n";
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "Volume ${volname}"
+            "Volume ${volname} "
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snap )
           . " rollback done" );
 
@@ -827,6 +830,7 @@ sub volume_rollback_is_possible {
 
         if (($hastate ne 'ignored')) {
             my $resource_type = OpenEJovianDSS::Common::ha_type_get($scfg, $vmid);
+            print "vmid ${vmid}: HA check failed — managed by HA (state: ${hastate})\n";
             my $msg =
             "Rollback blocked: ${resource_type}:${vmid} is controlled by High Availability (state: ${hastate}).\n"
             . "Rollback requires temporary manual control to prevent HA from restarting or moving the resource.\n"
@@ -836,8 +840,17 @@ sub volume_rollback_is_possible {
             die $msg;
         }
     }
-    return OpenEJovianDSS::Common::volume_rollback_check( $scfg,
-            $storeid, $vmid, $volname, $snap, $blockers );
+
+    # Compute force_rollback once here so volume_rollback_check does not need
+    # to spawn its own pvesh subprocess for the same information.
+    my $force_rollback = OpenEJovianDSS::Common::vm_tag_force_rollback_is_set(
+        $scfg, $vmid);
+
+    my $ok = OpenEJovianDSS::Common::volume_rollback_check(
+        $scfg, $storeid, $vmid, $volname, $snap, $blockers,
+        $force_rollback);
+
+    return $ok;
 }
 
 sub volume_snapshot_delete {
@@ -1282,6 +1295,28 @@ sub on_update_hook_full {
     my ($class, $storeid, $scfg, $update, $delete, $sensitive) = @_;
 
     return $class->on_update_hook($storeid, $update, $sensitive->%*);
+}
+
+sub cluster_lock_storage {
+    my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
+
+    if( ! defined($timeout)) {
+        $timeout = int(rand(40));
+    }
+
+    $timeout = int(rand(20)) + (2 * $timeout);
+    my $res;
+    if (!$shared) {
+        my $lockid = "pve-storage-$storeid";
+        my $lockdir = "/var/lock/pve-manager";
+        mkdir $lockdir;
+        $res = PVE::Tools::lock_file("$lockdir/$lockid", $timeout, $func, @param);
+        die $@ if $@;
+    } else {
+        $res = PVE::Cluster::cfs_lock_storage($storeid, $timeout, $func, @param);
+        die $@ if $@;
+    }
+    return $res;
 }
 
 1;
