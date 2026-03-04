@@ -329,6 +329,10 @@ sub volume_snapshot {
         "Creating snapshot ${snap} for dataset ${datname}\n" );
 
     my $vol_path = $class->path($scfg, $volname, $storeid, undef);
+
+    die "volume ${volname} not found at path ${vol_path}\n"
+        unless -e $vol_path;
+
     my $sync_cmd = ['/usr/bin/sync', $vol_path];
     eval {
         run_command($sync_cmd,
@@ -336,13 +340,33 @@ sub volume_snapshot {
           outfunc => sub { },
           errfunc => sub { cmd_log_output($scfg, 'error', $sync_cmd, shift) });
     };
+
     # Use JovianDSS REST API to create ZFS snapshot on NAS volume (dataset)
     # REST API path: /pools/{pool}/nas-volumes/{dataset}/snapshots
     # Use -d flag because dataset name from export property is the exact dataset name on JovianDSS
     # Encode vmid into snapshot name so list/delete can filter per volume
     my $internal_snap = OpenEJovianDSS::NFSCommon::nas_sname($snap, $vmid);
+
+    # If snapshot already exists, remove it first so the new snapshot
+    # reflects the current disk state rather than a stale previous capture.
+    my $existing = OpenEJovianDSS::NFSCommon::snapshot_info(
+        $scfg, $storeid, $datname, $name);
+    if ( exists $existing->{$snap} ) {
+        OpenEJovianDSS::Common::debugmsg( $scfg, 'debug',
+            "Snapshot ${snap} already exists for dataset ${datname},"
+            . " removing before recreating\n" );
+        OpenEJovianDSS::NFSCommon::snapshot_deactivate_unpublish(
+            $scfg, $storeid, $datname, $vmid, $name, $snap);
+        OpenEJovianDSS::NFSCommon::joviandss_cmd( $scfg, $storeid,
+            [ "pool", $pool, "nas_volume", "-d", $datname,
+              "snapshot", $internal_snap, "delete" ] );
+        OpenEJovianDSS::Common::debugmsg( $scfg, 'debug',
+            "Snapshot ${snap} removed for dataset ${datname}\n" );
+    }
+
     OpenEJovianDSS::NFSCommon::joviandss_cmd( $scfg, $storeid,
-        [ "pool", $pool, "nas_volume", "-d", $datname, "snapshots", "create", '--ignoreexists', $internal_snap ] );
+        [ "pool", $pool, "nas_volume", "-d", $datname,
+          "snapshots", "create", $internal_snap ] );
 }
 
 sub volume_snapshot_info {
@@ -427,18 +451,91 @@ sub volume_snapshot_rollback {
         # Step 2: Physically copy VM/container file from activated snapshot
 
         unless ( -e $snap_path ) {
-            # Log deeper directory structure to show what is actually mounted
-            my $diag = '';
+            my $diag = "Expected path '${snap_path}' not found.\n\n";
+
+            # --- /proc/mounts: all entries under private/mounts ----------
+            my $storage_path = OpenEJovianDSS::Common::get_path($scfg);
+            my $private_base = "${storage_path}/private/mounts";
+            $diag .= "=== /proc/mounts entries under '${private_base}' ===\n";
             eval {
-                my $find_cmd = [ '/usr/bin/find', $snapmntpath, '-maxdepth', '4',
-                                 '-not', '-path', '*/proc/*' ];
-                PVE::Tools::run_command( $find_cmd,
-                    outfunc => sub { $diag .= "$_[0]\n"; },
-                    errfunc => sub {},
-                    noerr   => 1 );
+                open( my $fh, '<', '/proc/mounts' )
+                    or die "cannot open /proc/mounts: $!\n";
+                my $found_any = 0;
+                while ( my $line = <$fh> ) {
+                    if ( index( $line, $private_base ) >= 0 ) {
+                        $diag .= "  ${line}";
+                        $found_any = 1;
+                    }
+                }
+                close($fh);
+                $diag .= "  (none)\n" unless $found_any;
             };
+            $diag .= "  (error reading /proc/mounts: $@)\n" if $@;
+            $diag .= "\n";
+
+            # --- helper: list one directory's contents -------------------
+            my $list_dir = sub {
+                my ($dir) = @_;
+                my $out = '';
+                if ( -d $dir ) {
+                    eval {
+                        if ( opendir( my $dh, $dir ) ) {
+                            my @entries = sort grep { $_ ne '.' && $_ ne '..' }
+                                          readdir($dh);
+                            closedir($dh);
+                            if (@entries) {
+                                for my $e (@entries) {
+                                    my $full = "${dir}/${e}";
+                                    my $tag  = -l $full ? 'link'
+                                             : -d $full ? 'dir '
+                                             : -f $full ? 'file'
+                                             :            '?   ';
+                                    my $size = -f $full
+                                        ? sprintf( ' (%d bytes)',
+                                                   (stat($full))[7] )
+                                        : '';
+                                    $out .= "    [${tag}] ${e}${size}\n";
+                                }
+                            } else {
+                                $out .= "    (empty)\n";
+                            }
+                        } else {
+                            $out .= "    (opendir failed: $!)\n";
+                        }
+                    };
+                    $out .= "    (error: $@)\n" if $@;
+                } else {
+                    $out .= "    (directory does not exist)\n";
+                }
+                return $out;
+            };
+
+            # --- walk the expected path one level at a time --------------
+            my $vtype_subdirs = $class->get_vtype_subdirs();
+            my $subdir = ( $scfg->{"content-dirs"} // {} )->{$vtype}
+                         // $vtype_subdirs->{$vtype} // $vtype;
+            my @levels = (
+                [ $snapmntpath,
+                  "snapshot mount root" ],
+                [ "${snapmntpath}/${subdir}",
+                  "subdir '${subdir}'" ],
+                [ "${snapmntpath}/${subdir}/${vmid}",
+                  "vmid dir '${subdir}/${vmid}'" ],
+            );
+            for my $lvl (@levels) {
+                my ( $dir, $label ) = @$lvl;
+                my $exists = -d $dir ? 'EXISTS' : 'MISSING';
+                $diag .= "=== ${label}: '${dir}' [${exists}] ===\n";
+                $diag .= $list_dir->($dir);
+                $diag .= "\n";
+            }
+            $diag .= "=== expected file: '${snap_path}' ["
+                     . ( -e $snap_path ? 'EXISTS' : 'MISSING' )
+                     . "] ===\n";
+
             OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-                "Snapshot mount tree (maxdepth 4) for diagnosis:\n${diag}" );
+                "Snapshot volume not found - diagnostic report:\n${diag}" );
+
             die "Unable to identify volume ${volname} data within "
                 . "snapshot ${snapname}\n";
         }

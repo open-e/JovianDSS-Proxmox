@@ -1665,7 +1665,8 @@ class JovianRESTAPI(object):
         req = '/nas-volumes/%s/snapshots' % dataset_name
 
         jbody = {
-            'name': snapshot_name
+            'name': snapshot_name,
+            'recursive': True
         }
 
         LOG.info("create snapshot %(snap)s for NAS volume %(vol)s",

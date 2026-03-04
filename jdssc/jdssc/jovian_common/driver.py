@@ -1942,6 +1942,13 @@ class JovianDSSDriver(object):
         Removes the NFS share and deletes the snapshot export clone,
         cleaning up resources created by publish_nas_snapshot.
 
+        After deleting the share, polls get_share up to 10 times (1 s apart)
+        to confirm the share has been fully removed before attempting clone
+        deletion — NFS may hold references briefly after DELETE returns.
+
+        delete_nas_clone is retried up to 10 times (2 s apart) in case the
+        clone is temporarily busy (e.g. NFS client still has open handles).
+
         :param str dataset_name: dataset name
         :param str snapshot_name: snapshot name
         :param bool nas_volume_direct_mode: use dataset name without
@@ -1964,11 +1971,38 @@ class JovianDSSDriver(object):
         except jexc.JDSSResourceNotFoundException:
             pass
 
-        # Delete clone
-        try:
-            self.ra.delete_nas_clone(dname, sname, sname)
-        except jexc.JDSSResourceNotFoundException:
-            pass
+        # Confirm share is gone before touching the clone — the NFS server
+        # may keep the share object alive for a short time after deletion,
+        # causing the subsequent clone delete to be rejected as busy.
+        for attempt in range(10):
+            try:
+                self.ra.get_share(sname)
+                LOG.debug('share %s still present after deletion, waiting'
+                          ' (attempt %d/10)', sname, attempt + 1)
+                time.sleep(1)
+            except jexc.JDSSResourceNotFoundException:
+                LOG.debug('share %s confirmed removed', sname)
+                break
+        else:
+            LOG.warning('share %s still reported present after 10 attempts,'
+                        ' proceeding with clone deletion anyway', sname)
+
+        # Delete clone, retrying if it is temporarily busy (NFS client may
+        # still hold file handles open right after the share disappears).
+        for attempt in range(10):
+            try:
+                self.ra.delete_nas_clone(dname, sname, sname)
+                break
+            except jexc.JDSSResourceNotFoundException:
+                break
+            except jexc.JDSSException:
+                if attempt < 9:
+                    LOG.debug('clone %s busy or error on deletion attempt'
+                              ' %d/10, retrying in 2 s', sname, attempt + 1)
+                    time.sleep(2)
+                else:
+                    LOG.warning('clone %s could not be deleted after 10'
+                                ' attempts, giving up', sname)
 
         LOG.debug('unpublished snapshot clone %(clone)s', {
             'clone': sname})
