@@ -31,7 +31,9 @@ use PVE::Network;
 use PVE::Tools qw(run_command);
 use PVE::ProcFSTools;
 use PVE::Storage::Plugin;
+use PVE::Storage::DirPlugin;
 use PVE::JSONSchema qw(get_standard_option);
+use PVE::Cluster;
 
 use OpenEJovianDSS::Common qw(:all);
 use OpenEJovianDSS::NFSCommon qw(:all);
@@ -347,26 +349,9 @@ sub volume_snapshot {
     # Encode vmid into snapshot name so list/delete can filter per volume
     my $internal_snap = OpenEJovianDSS::NFSCommon::nas_sname($snap, $vmid);
 
-    # If snapshot already exists, remove it first so the new snapshot
-    # reflects the current disk state rather than a stale previous capture.
-    my $existing = OpenEJovianDSS::NFSCommon::snapshot_info(
-        $scfg, $storeid, $datname, $name);
-    if ( exists $existing->{$snap} ) {
-        OpenEJovianDSS::Common::debugmsg( $scfg, 'debug',
-            "Snapshot ${snap} already exists for dataset ${datname},"
-            . " removing before recreating\n" );
-        OpenEJovianDSS::NFSCommon::snapshot_deactivate_unpublish(
-            $scfg, $storeid, $datname, $vmid, $name, $snap);
-        OpenEJovianDSS::NFSCommon::joviandss_cmd( $scfg, $storeid,
-            [ "pool", $pool, "nas_volume", "-d", $datname,
-              "snapshot", $internal_snap, "delete" ] );
-        OpenEJovianDSS::Common::debugmsg( $scfg, 'debug',
-            "Snapshot ${snap} removed for dataset ${datname}\n" );
-    }
-
     OpenEJovianDSS::NFSCommon::joviandss_cmd( $scfg, $storeid,
         [ "pool", $pool, "nas_volume", "-d", $datname,
-          "snapshots", "create", $internal_snap ] );
+          "snapshots", "create", "--ignoreexists", $internal_snap ] );
 }
 
 sub volume_snapshot_info {
@@ -414,7 +399,7 @@ sub volume_snapshot_rollback {
                $datname, $name, $snapname );
         };
         my $errup = $@;
-        if ($@) {
+        if ($errup) {
             die "Fail to unpublish: ${errup} after failed activation ${err}\n";
         } else {
             die "Failed to activate: $err\n";
@@ -550,6 +535,7 @@ sub volume_snapshot_rollback {
         if ( !defined($format) || $format eq 'raw' ) {
             # Raw image: block-level sparse copy
             $copy_cmd = [
+                'systemd-run', '--scope', '-p', 'IOWeight=10',
                 'dd', "if=${snap_path}", "of=${vol_path}",
                 'bs=1M', 'conv=sparse', 'status=progress',
             ];
@@ -895,7 +881,7 @@ sub on_update_hook {
 sub on_update_hook_full {
     my ($class, $storeid, $scfg, $update, $delete, $sensitive) = @_;
 
-    return $class->on_update_hook($storeid, $update, $sensitive->%*);
+    return $class->on_update_hook($storeid, $scfg, $sensitive->%*);
 }
 
 sub volume_qemu_snapshot_method {

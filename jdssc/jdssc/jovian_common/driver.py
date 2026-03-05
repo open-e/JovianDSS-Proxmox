@@ -1868,9 +1868,26 @@ class JovianDSSDriver(object):
         clone_name = jcom.sname(snapshot_name, dataset_name)
         return clone_name
 
+    def _find_share_by_real_path(self, real_path):
+        """Return the first share whose real_path matches, or None.
+
+        :param str real_path: full export path, e.g. /Pools/Pool-0/dataset
+        :return: raw share dict from the API, or None if not found
+        """
+        try:
+            shares = self._list_all_pages(self.ra.get_shares_page)
+            for share in shares:
+                if share.get('real_path') == real_path:
+                    return share
+        except Exception:
+            LOG.debug('Unable to list shares while searching for %s',
+                      real_path)
+        return None
+
     def publish_nas_snapshot(self, dataset_name, snapshot_name,
                              proxmox_volume=None,
-                             nas_volume_direct_mode=False):
+                             nas_volume_direct_mode=False,
+                             inherit_from_path=None):
         """Publish NAS snapshot by creating clone and NFS share.
 
         Creates a snapshot export clone with proper se_ naming and
@@ -1903,14 +1920,36 @@ class JovianDSSDriver(object):
             self.ra.create_nas_clone(dname, sname, sname)
         except jexc.JDSSResourceExistsException:
             pass
-        # Create NFS share for the clone
+        # Read NFS properties from the main dataset share so the snapshot
+        # share is created with the same configuration.
+        # allow_write_ip is intentionally not copied — snapshots are read-only.
+        nfs_props = {
+            'insecure_connections': False,
+            'synchronous_data_record': True,
+            'insecure_lock_requests': False,
+            'all_squash': False,
+            'no_root_squash': False,
+            'allow_access_ip': None,
+        }
+        if inherit_from_path:
+            main_share = self._find_share_by_real_path(inherit_from_path)
+            if main_share and 'nfs' in main_share:
+                nfs = main_share['nfs']
+                for key in nfs_props:
+                    if key in nfs:
+                        nfs_props[key] = nfs[key]
+            else:
+                LOG.debug(
+                    'No share found with real_path %s,'
+                    ' using defaults', inherit_from_path)
+
+        # Create NFS share for the clone with same properties as main share
         path = "{}/{}".format(self._pool, sname)
         try:
             self.ra.create_share(sname, path,
                                  active=True,
                                  proto='nfs',
-                                 insecure_connections=False,
-                                 synchronous_data_record=True)
+                                 **nfs_props)
         except jexc.JDSSResourceExistsException:
             pass
 

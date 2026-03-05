@@ -165,7 +165,7 @@ sub snapshot_activate {
 
     # TODO: Make sure that clone is mounted as READONLY
 
-    my $server = $scfg->{server};
+    my $server = OpenEJovianDSS::Common::get_data_address($scfg);
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
         "Activating dataset ${dataset} volume ${volname} snapshot ${snapname}\n" );
@@ -354,9 +354,6 @@ sub all_snapshots_deactivate_unpublish {
         next if $entry eq '.' || $entry eq '..';
 
         my $snapname = $entry;
-        my $snapshot_dir = File::Spec->catdir($volume_dir, $snapname);
-
-        $snapshot_dir = OpenEJovianDSS::Common::safe_word($snapshot_dir, "Snapshot directory");
 
         eval {
             snapshot_deactivate_unpublish( $scfg, $storeid, $datname, $vmid, $volname, $snapname );
@@ -429,6 +426,9 @@ sub path_is_mnt {
         return 1;
     } elsif ($rc == 32){
         # is not a mountpoint
+        # Exit code 32 is the standard return of /usr/bin/mountpoint on
+        # Proxmox VE (Debian-based). This plugin targets Proxmox exclusively
+        # and has been tested against its mountpoint binary only.
         return 0;
     }
     die "Failure during mount point check of ${path_safe}: ${err}\n";
@@ -639,12 +639,13 @@ sub snapshot_publish {
         [ "pool", $pool,
           "nas_volume", "-d", $datname,
           "snapshot", $internal_snap,
-          "publish" ] );
+          "publish",
+          "--inherit-from-path", $scfg->{export} ] );
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
         "snapshot_publish raw jdssc output for snap ${internal_snap}: '${cmd_output}'\n" );
 
-   my $sharepath;
+    my $sharepath;
     # Parse clone name from output (last non-empty line)
     my @lines = split( /\n/, $cmd_output );
     for my $line ( reverse @lines ) {
@@ -659,14 +660,15 @@ sub snapshot_publish {
         "snapshot_publish parsed sharepath: "
         . ( defined($sharepath) ? "'${sharepath}'" : "undef" ) . "\n" );
 
-    if ( $sharepath =~ /^([\:\-\@\w.\/]+)$/ ) {
+    if ( defined($sharepath) && $sharepath =~ /^([\:\-\@\w.\/]+)$/ ) {
         return $1;
     }
-    die "Share name representing "
-        . "dataset ${datname} "
-        . "volume ${volname} "
-        . "snapshot ${snapname} "
-        . "contains forbidden symbols: ${sharepath}\n";
+    die !defined($sharepath)
+        ? "Got no share path for dataset ${datname} volume ${volname}"
+          . " snapshot ${snapname}\n"
+        : "Share path for dataset ${datname} volume ${volname}"
+          . " snapshot ${snapname} contains forbidden symbols:"
+          . " ${sharepath}\n";
 }
 
 

@@ -1602,7 +1602,11 @@ class JovianRESTAPI(object):
                      active=False,
                      proto='nfs',
                      insecure_connections=False,
-                     synchronous_data_record=True):
+                     synchronous_data_record=True,
+                     insecure_lock_requests=False,
+                     all_squash=False,
+                     no_root_squash=False,
+                     allow_access_ip=None):
         req = '/shares'
 
         LOG.info("create share %s with path %s", share_name, path)
@@ -1611,7 +1615,13 @@ class JovianRESTAPI(object):
         if proto.lower() == 'nfs':
             nfs_flags = {"enabled": True,
                          "insecure_connections": insecure_connections,
-                         "synchronous_data_record": synchronous_data_record}
+                         "synchronous_data_record": synchronous_data_record,
+                         "insecure_lock_requests": insecure_lock_requests,
+                         "all_squash": all_squash,
+                         "no_root_squash": no_root_squash}
+
+            if allow_access_ip is not None:
+                nfs_flags["allow_access_ip"] = allow_access_ip
 
             json_data = {"path": path,
                          "name": share_name,

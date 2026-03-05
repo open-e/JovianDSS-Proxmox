@@ -104,8 +104,13 @@ class NASSnapshot():
 
         clones_action.add_parser('list')
 
-        parsers.add_parser('publish',
-                           help='Prints share path on completion')
+        publish = parsers.add_parser('publish',
+                                     help='Prints share path on completion')
+        publish.add_argument('--inherit-from-path',
+                             dest='inherit_from_path',
+                             default=None,
+                             help='real_path of the share whose NFS '
+                             'properties the snapshot share should inherit')
 
         parsers.add_parser('unpublish')
 
@@ -234,13 +239,15 @@ class NASSnapshot():
         proxmox_volume = self.args['proxmox_volume']
         snapshot_name = self.args['snapshot_name']
         nas_volume_direct_mode = self.args.get('nas_volume_direct_mode', False)
+        inherit_from_path = self.args.get('inherit_from_path', None)
 
         try:
             share_path = self.jdss.publish_nas_snapshot(
                 dataset_name,
                 snapshot_name,
                 proxmox_volume=proxmox_volume,
-                nas_volume_direct_mode=nas_volume_direct_mode)
+                nas_volume_direct_mode=nas_volume_direct_mode,
+                inherit_from_path=inherit_from_path)
             # Print the clone dataset name so Perl can capture it
             print(share_path)
         except jexc.JDSSException as err:
