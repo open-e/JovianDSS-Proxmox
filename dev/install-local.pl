@@ -44,6 +44,8 @@ my $FORCE_MULTIPATH_CONFIG = 0;
 my $USE_REINSTALL = 0;
 my $ALLOW_DOWNGRADES = 0;
 my $VERBOSE = 0;
+my $DEBUG = 0;
+my $NO_TIMEOUT = 0;
 my $ASSUME_YES = 0;
 my @WARNING_NODES = ();
 my @SKIPPED_NODES = ();
@@ -51,7 +53,6 @@ my $PACKAGE_PATH = "";
 
 # Parse command line options
 GetOptions(
-    "package=s"     => \$PACKAGE_PATH,
     "sudo"          => sub { $USE_SUDO = 1 },
     "restart"       => \$NEED_RESTART,
     "dry-run"       => \$DRY_RUN,
@@ -65,12 +66,28 @@ GetOptions(
     "allow-downgrades" => \$ALLOW_DOWNGRADES,
     "assume-yes"    => \$ASSUME_YES,
     "verbose|v"     => \$VERBOSE,
+    "debug"         => \$DEBUG,
+    "no-timeout"    => \$NO_TIMEOUT,
     "help|h"        => \$HELP,
 ) or die "Error parsing options\n";
 
 if ($HELP) {
     print_usage();
     exit 0;
+}
+
+# --debug implies --verbose
+if ($DEBUG) {
+    $VERBOSE = 1;
+}
+
+# Accept .deb path as positional argument (first non-option arg)
+if (@ARGV) {
+    $PACKAGE_PATH = shift @ARGV;
+}
+
+if (@ARGV) {
+    die "Error: unexpected arguments: " . join(' ', @ARGV) . "\nUse --help for usage information.\n";
 }
 
 
@@ -111,11 +128,10 @@ sub print_usage {
     print <<EOF;
 JovianDSS Proxmox plugin local installer
 
-Usage: $prog --package <path> [options]
+Usage: $prog <path-to-deb> [options]
        $prog --remove [options]
 
 General:
-  --package <path>           Path to local .deb file (required for install)
   --remove                   Remove/uninstall the plugin instead of installing
   --sudo                     Use sudo for commands (default: run without sudo)
   --restart                  Restart pvedaemon after install/remove
@@ -126,6 +142,8 @@ General:
   --allow-downgrades         Allow installing older package versions
   --assume-yes               Automatic yes to prompts (non-interactive mode)
   -v, --verbose              Show detailed output during installation/removal
+  --debug                    Show commands, exit codes, and all output (implies --verbose)
+  --no-timeout               Disable default 30s timeout on all commands
   -h, --help                 Show this help
 
 Cluster:
@@ -135,16 +153,16 @@ Cluster:
 
 Examples:
   # Install from local .deb on this node only
-  $prog --package ./open-e-joviandss-proxmox-plugin.deb
+  $prog ./open-e-joviandss-proxmox-plugin.deb
 
   # Install on all cluster nodes
-  $prog --package ./open-e-joviandss-proxmox-plugin.deb --all-nodes
+  $prog ./open-e-joviandss-proxmox-plugin.deb --all-nodes
 
   # Install using sudo (when not running as root)
-  $prog --package ./plugin.deb --sudo
+  $prog ./plugin.deb --sudo
 
   # Install with default multipath config on all nodes
-  $prog --package ./plugin.deb --all-nodes --add-default-multipath-config
+  $prog ./plugin.deb --all-nodes --add-default-multipath-config
 
   # Remove plugin from local node only
   $prog --remove
@@ -251,14 +269,21 @@ sub run_cmd {
     my $outfunc;
     my $errfunc;
 
-    # Check if last argument is a hash with outfunc/errfunc
+    my $timeout = $NO_TIMEOUT ? 0 : 30;
+
+    # Check if last argument is a hash with outfunc/errfunc/timeout
     if (ref($args[-1]) eq 'HASH') {
         my $opts = pop @args;
         $outfunc = $opts->{outfunc} || undef;
         $errfunc = $opts->{errfunc} || undef;
+        $timeout = $opts->{timeout} if defined $opts->{timeout};
     }
 
     my @cmd = @args;
+
+    if ($DEBUG) {
+        say "[debug] exec: " . join(" ", @cmd);
+    }
 
     if ($DRY_RUN) {
         print "[dry-run] " . join(" ", @cmd) . "\n";
@@ -274,16 +299,44 @@ sub run_cmd {
         die "Error: PVE::Tools::run_command not available. This script must run on Proxmox VE.\n";
     }
 
+    # In debug mode, wrap outfunc/errfunc to always show output
+    my $actual_outfunc = $outfunc;
+    if ($DEBUG && !$outfunc) {
+        $actual_outfunc = sub {
+            my $line = shift;
+            chomp $line if defined $line;
+            say "[debug] out: $line" if $line;
+        };
+    }
+
+    my $actual_errfunc = $errfunc;
+    if ($DEBUG) {
+        $actual_errfunc = sub {
+            my $line = shift;
+            chomp $line if defined $line;
+            say "[debug] err: $line" if $line;
+            $errfunc->($line) if $errfunc;
+        };
+    }
+
     my $exitcode = 0;
+    my %run_opts = (
+        outfunc => $actual_outfunc,
+        errfunc => $actual_errfunc,
+        noerr   => 1,
+        timeout => $timeout,
+    );
+
     eval {
-        $exitcode = PVE::Tools::run_command(\@cmd,
-            outfunc => $outfunc,
-            errfunc => $errfunc,
-            noerr   => 1
-        );
+        $exitcode = PVE::Tools::run_command(\@cmd, %run_opts);
     };
     if ($@) {
+        say "[debug] exception: $@" if $DEBUG;
         return 0;
+    }
+
+    if ($DEBUG) {
+        say "[debug] exit: $exitcode";
     }
 
     # Return 1 for success (exit code 0), 0 for failure
@@ -661,7 +714,8 @@ sub remove_node {
         }
         $removal_success = run_cmd(@cmd, {
             outfunc => get_output_handler("local"),
-            errfunc => create_package_removal_error_handler("Package removal", undef, \$package_not_installed)
+            errfunc => create_package_removal_error_handler("Package removal", undef, \$package_not_installed),
+            timeout => 0,
         });
     } else {
         # Remote removal
@@ -671,7 +725,8 @@ sub remove_node {
         my $apt_cmd = get_apt_remove_command("open-e-joviandss-proxmox-plugin");
         $removal_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "DEBIAN_FRONTEND=noninteractive ${r_sudo}${apt_cmd}", {
             outfunc => get_output_handler($display_name),
-            errfunc => create_package_removal_error_handler("Remote package removal", $display_name, \$package_not_installed)
+            errfunc => create_package_removal_error_handler("Remote package removal", $display_name, \$package_not_installed),
+            timeout => 0,
         });
     }
 
@@ -730,6 +785,16 @@ sub install_node {
 
     # Install package
     my $install_success;
+    my $already_installed = 0;
+    my $output_handler = get_output_handler($is_local ? "local" : $display_name);
+    my $install_outfunc = sub {
+        my $line = $_[0];
+        if ($line && $line =~ /already the newest version|is already the most recent version/i) {
+            $already_installed = 1;
+        }
+        $output_handler->($line);
+    };
+
     if ($is_local) {
         # Local installation - set environment variable for non-interactive mode
         local $ENV{DEBIAN_FRONTEND} = 'noninteractive';
@@ -743,8 +808,9 @@ sub install_node {
         }
 
         $install_success = run_cmd(@cmd, {
-            outfunc => get_output_handler("local"),
-            errfunc => create_context_error_handler("Package installation")
+            outfunc => $install_outfunc,
+            errfunc => create_context_error_handler("Package installation"),
+            timeout => 0,
         });
     } else {
         # Remote installation
@@ -763,9 +829,16 @@ sub install_node {
         # Install package
         my $apt_cmd = get_apt_install_command($REMOTE_TMP);
         $install_success = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "DEBIAN_FRONTEND=noninteractive ${r_sudo}${apt_cmd}", {
-            outfunc => get_output_handler($display_name),
-            errfunc => create_context_error_handler("Remote package installation", $display_name)
+            outfunc => $install_outfunc,
+            errfunc => create_context_error_handler("Remote package installation", $display_name),
+            timeout => 0,
         });
+    }
+
+    if ($already_installed) {
+        say "Warning: Package is already installed at the same version on node $display_name.";
+        say "  No changes were made. Use --reinstall flag to force reinstallation.";
+        push @WARNING_NODES, "$display_name: package already at same version, use --reinstall to force";
     }
 
     # Handle installation failure
@@ -1075,7 +1148,7 @@ sub main {
     # Validate --package option for install operations
     if (!$REMOVE_PLUGIN) {
         unless ($PACKAGE_PATH) {
-            die "Error: --package <path> is required for installation.\nUse --help for usage information.\n";
+            die "Error: path to .deb file is required for installation.\nUse --help for usage information.\n";
         }
         unless (-f $PACKAGE_PATH) {
             die "Error: Package file not found: $PACKAGE_PATH\n";

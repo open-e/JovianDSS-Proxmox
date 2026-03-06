@@ -38,7 +38,7 @@ use JSON qw(decode_json from_json to_json);
 use Time::HiRes qw(gettimeofday);
 
 use PVE::INotify;
-use PVE::Tools qw(run_command);
+use PVE::Tools qw(run_command file_set_contents);
 
 our @EXPORT_OK = qw(
 
@@ -46,6 +46,8 @@ our @EXPORT_OK = qw(
   block_device_path_from_rest
 
   clean_word
+  safe_ford
+  cmd_log_output
 
   get_default_control_port
   get_default_content_size
@@ -75,6 +77,7 @@ our @EXPORT_OK = qw(
   get_block_size_bytes
   get_thin_provisioning
   get_log_file
+  get_options
   get_content
   get_content_volume_name
   get_content_volume_type
@@ -94,6 +97,7 @@ our @EXPORT_OK = qw(
   joviandss_cmd
   volume_snapshots_info
   volume_rollback_check
+  remove_vm_snapshot_config
 
   get_iscsi_addresses
   get_target_path
@@ -108,7 +112,6 @@ our @EXPORT_OK = qw(
 
   volume_activate
   volume_deactivate
-
   store_settup
 
   ha_state_get
@@ -146,7 +149,7 @@ my $default_pool             = 'Pool-0';
 my $default_log_file         = '/var/log/joviandss/joviandss.log';
 my $default_luns_per_target  = 8;
 my $default_multipath        = 0;
-my $default_path             = '/mnt/joviandss';
+my $default_path             = '/mnt/pve/joviandss';
 my $default_shared           = 0;
 my $default_target_prefix    = 'iqn.2025-04.proxmox.joviandss.iscsi:';
 my $default_user_name        = 'admin';
@@ -160,7 +163,7 @@ sub get_default_pool             { return $default_pool }
 sub get_default_debug            { return $default_debug }
 sub get_default_multipath        { return $default_multipath }
 sub get_default_content_size     { return $default_content_size }
-sub get_default_path             { return $default_path }
+sub get_default_path             { die "Please set up path property in storage.cfg\n"; }
 sub get_default_target_prefix    { return $default_target_prefix }
 sub get_default_log_file         { return $default_log_file }
 sub get_default_luns_per_target  { return $default_luns_per_target }
@@ -263,12 +266,33 @@ sub get_control_port {
     return int( clean_word($port) + 0);
 }
 
+sub get_data_address {
+    my ($scfg) = @_;
+
+    # We do not not do traditional check, because address might be ipv6
+    # with [] around it
+    if (defined( $scfg->{server} ) ) {
+        return clean_word($scfg->{server});
+    }
+
+    if (defined( $scfg->{data_addresses} )) {
+        my $da = clean_word($scfg->{data_addresses});
+        my @iplist = split( /\s*,\s*/, $da );
+        return $iplist[0];
+    }
+    die "JovianDSS data addresses are not provided.\n";
+}
+
 sub get_data_addresses {
     my ($scfg) = @_;
 
     if ( defined( $scfg->{data_addresses} ) ) {
         return clean_word($scfg->{data_addresses});
     } else {
+        my $data_address = get_data_address($scfg);
+        if ( defined($data_address) ) {
+            return $data_address;
+        }
         die "JovianDSS data addresses are not provided.\n";
     }
 }
@@ -395,6 +419,20 @@ sub get_log_file {
     return $scfg->{log_file} || $default_log_file;
 }
 
+sub get_options {
+    my ($scfg) = @_;
+    my $options = $scfg->{options};
+    if (defined($options)) {
+        if ( $options =~ /^([\:\-\@\w.\/]+)$/ ) {
+            return $1;
+        } else {
+            die "Options property contains forbiden symbols: ${options}\n";
+        }
+    } else {
+        return undef;
+    }
+}
+
 sub get_content {
     my ($scfg) = @_;
     return $scfg->{content};
@@ -471,6 +509,16 @@ sub clean_word {
     $word =~ s/[^[:ascii:]]//;
 
     return $word;
+}
+
+sub safe_word{
+    my ($word, $word_desc) = @_;
+
+    if ( $word =~ /^([\:\-\@\w.\/]+)$/ ) {
+        return $1;
+    } else {
+        die "${word_desc} contains forbidden symbols: ${word}\n";
+    }
 }
 
 my $log_file_path = undef;
@@ -564,21 +612,21 @@ sub safe_var_print {
 }
 
 sub joviandss_cmd {
-    my ( $scfg, $storeid, $cmd, $timeout, $retries, $force_debub_level ) = @_;
+    my ( $scfg, $storeid, $cmd, $timeout, $retries, $force_debug_level, $password ) = @_;
 
     my $msg = '';
     my $err = undef;
     my $target;
     my $retry_count = 0;
 
-    $timeout = 40 if !$timeout;
-    $retries = 0  if !$retries;
+    $timeout = 40 if ! defined($timeout);
+    $retries = 0  if ! defined($retries);
     my $connection_options = [];
 
     my $debug_level = map_log_level_to_number('debug');
 
-    if ( defined($force_debub_level) ) {
-        push @$connection_options, '--loglvl', $force_debub_level;
+    if ( defined($force_debug_level) ) {
+        push @$connection_options, '--loglvl', $force_debug_level;
     } else {
         my $config_level = get_log_level($scfg);
         if ( $config_level >= $debug_level ) {
@@ -618,7 +666,7 @@ sub joviandss_cmd {
         die "JovianDSS REST user name is not provided.\n";
     }
 
-    my $user_password = get_user_password($storeid);
+    my $user_password = defined($password) ? $password : get_user_password($storeid);
     if ( defined($user_password) ) {
         push @$connection_options, '--user-password', $user_password;
     } else {
@@ -654,8 +702,11 @@ sub joviandss_cmd {
                 timeout => $timeout,
                 noerr   => 1
             );
+            #cmd_log_output( $scfg, 'debug' , $jcmd, "code ${exitcode} msg " . safe_var_print('msg', $msg) . ' ' . safe_var_print('err', $err) );
+            #warn "Insecure plugin usage! Disable DEBUG\n";
         };
         my $rerr = $@;
+        #debugmsg( $scfg, 'debug' , "CMD: code ${exitcode} retry ${retry_count} " . safe_var_print('msg', $msg) . ' ' . safe_var_print('err', $err));
 
         # Check for timeout BEFORE checking exitcode.  When run_command
         # dies with a timeout inside eval, $exitcode keeps its initial
@@ -862,8 +913,72 @@ sub snapshots_list_from_vmid {
     return \@names;
 }
 
+sub remove_vm_snapshot_config {
+    my ($scfg, $vmid, $virt_type, $snapname) = @_;
+
+    my $conf_path;
+    if ($virt_type eq 'qemu') {
+        $conf_path = "/etc/pve/qemu-server/${vmid}.conf";
+    } elsif ($virt_type eq 'lxc') {
+        $conf_path = "/etc/pve/lxc/${vmid}.conf";
+    } else {
+        debugmsg($scfg, 'debug',
+            "Unknown virt type '${virt_type}' for vmid ${vmid},"
+            . " skipping config update\n");
+        return;
+    }
+
+    unless (-f $conf_path) {
+        debugmsg($scfg, 'debug',
+            "Config file ${conf_path} not found,"
+            . " skipping snapshot config removal\n");
+        return;
+    }
+
+    open(my $fh, '<', $conf_path)
+        or die "Cannot open ${conf_path}: $!\n";
+    my @lines = <$fh>;
+    close($fh);
+
+    my $found = 0;
+    my @out;
+    my $skip = 0;
+
+    foreach my $line (@lines) {
+        if ($line =~ /^\[(.+)\]\s*$/) {
+            my $sect = $1;
+            if ($sect eq $snapname) {
+                $skip  = 1;
+                $found = 1;
+                # Strip blank separator line(s) preceding this section
+                while (@out && $out[-1] =~ /^\s*$/) {
+                    pop @out;
+                }
+            } else {
+                $skip = 0;
+                push @out, $line;
+            }
+        } elsif (!$skip) {
+            push @out, $line;
+        }
+    }
+
+    unless ($found) {
+        debugmsg($scfg, 'debug',
+            "Snapshot ${snapname} not found in ${conf_path},"
+            . " nothing to remove\n");
+        return;
+    }
+
+    debugmsg($scfg, 'debug',
+        "Removing snapshot ${snapname} from ${conf_path}\n");
+
+    file_set_contents($conf_path, join('', @out));
+}
+
 sub format_rollback_block_reason {
-    my ($volname, $target_snap, $snapshots, $clones, $unmanaged_snaps, $blockers_unknown, $force_rollback) = @_;
+    my ($volname, $target_snap, $snapshots, $clones,
+        $unmanaged_snaps, $blockers_unknown, $force_rollback) = @_;
 
     my $msg = '';
 
@@ -881,46 +996,11 @@ sub format_rollback_block_reason {
         return join('; ', @out);
     };
 
-    my $has_managed   = $snapshots && @$snapshots;
-    my $has_clones    = $clones && @$clones;
+    my $has_managed   = $snapshots       && @$snapshots;
+    my $has_clones    = $clones          && @$clones;
     my $has_unmanaged = $unmanaged_snaps && @$unmanaged_snaps;
     my $has_unknown   = $blockers_unknown && @$blockers_unknown;
 
-
-
-    # ------------------------------------------------------------
-    # Special case: ONLY unmanaged snapshots exist
-    # ------------------------------------------------------------
-    if ($has_unmanaged && !$has_managed && !$has_clones && !$has_unknown) {
-
-        my $count = scalar(@$unmanaged_snaps);
-
-        $msg .= "There are $count newer storage side snapshots:\n";
-        $msg .= $format_list->($unmanaged_snaps) . "\n";
-
-        $msg .= "\n";
-        $msg .= "Hint: User can add 'force_rollback' tag to VM/Container in order to conduct rollback.\n";
-        $msg .= "!! DANGER !! Rolling back with 'force_rollback' tag will result in destruction of newer storage side snapshots.\n";
-
-        return $msg;
-    }
-
-    # ONLY unknown blockers exist
-    if ($has_unknown && !$has_managed && !$has_clones && !$has_unmanaged) {
-
-        my $count = scalar(@$blockers_unknown);
-
-        $msg .= "There are $count newer rollback blockers of unknown origin:\n";
-        $msg .= $format_list->($blockers_unknown) . "\n";
-
-        $msg .= "\n";
-        $msg .= "Hint: User can add 'force_rollback' tag to VM/Container in order to conduct rollback.\n";
-        $msg .= "!! DANGER !! Rolling back with 'force_rollback' tag will result in destruction of newer storage side resources.\n";
-
-        return $msg;
-    }
-
-    # Normal combined cases
     my $printed = 0;
     my $append_section = sub {
         my ($label, $items) = @_;
@@ -931,54 +1011,74 @@ sub format_rollback_block_reason {
         $printed = 1;
     };
 
-    # Force rollback is set with existing clone blockers
-    if ($force_rollback && ($has_managed || $has_clones) ) {
-
+    # force_rollback is set but clones or unknown blockers prevent it.
+    # Managed and storage-side snapshots are handled automatically;
+    # only the resources listed below require manual removal.
+    if ($force_rollback) {
         $msg .= "Unable to rollback.\n";
-        $msg .= "'force_rollback' tag will work only for storage side snapshots.\n";
-
-        $msg .= "Following resources have to be removed first:\n";
-
-        $append_section->(
-              scalar(@$snapshots)
-              . " Proxmox managed snapshots: ",
-            $snapshots
-        ) if $has_managed;
+        $msg .= "'force_rollback' handles managed and storage-side"
+              . " snapshots automatically,\n";
+        $msg .= "but the following resources must be removed"
+              . " manually first:\n\n";
 
         $append_section->(
-            scalar(@$clones)
-            . " dependent clones : ",
+            scalar(@$clones) . " dependent clones: ",
             $clones
         ) if $has_clones;
+
+        $append_section->(
+            scalar(@$blockers_unknown)
+            . " blockers of unknown origin: ",
+            $blockers_unknown
+        ) if $has_unknown;
 
         return $msg;
     }
 
-    $msg .= "Rollback is possible to the latest Proxmox managed snapshot only.\n\n";
+    # No force_rollback set.
+    # When only snapshots block (no clones, no unknown),
+    # adding the 'force_rollback' tag will handle them automatically.
+    if (!$has_clones && !$has_unknown) {
+        $msg .= "Rollback blocked by newer snapshots:\n\n";
 
-    $msg .= "Hint: please remove newer resources:\n";
+        $append_section->(
+            scalar(@$snapshots) . " Proxmox managed snapshots: ",
+            $snapshots
+        ) if $has_managed;
+
+        $append_section->(
+            scalar(@$unmanaged_snaps) . " storage side snapshots: ",
+            $unmanaged_snaps
+        ) if $has_unmanaged;
+
+        $msg .= "Hint: add 'force_rollback' tag to VM/Container"
+              . " to roll back automatically.\n";
+        $msg .= "!! DANGER !! All listed snapshots will be destroyed.\n";
+
+        return $msg;
+    }
+
+    # Clones or unknown blockers present — must be removed manually.
+    $msg .= "Rollback blocked. Remove the following resources first:\n\n";
 
     $append_section->(
-          scalar(@$snapshots)
-          . " Proxmox managed snapshots: ",
+        scalar(@$snapshots) . " Proxmox managed snapshots: ",
         $snapshots
     ) if $has_managed;
 
     $append_section->(
-        scalar(@$unmanaged_snaps)
-        . " storage side snapshots: ",
+        scalar(@$unmanaged_snaps) . " storage side snapshots: ",
         $unmanaged_snaps
     ) if $has_unmanaged;
 
     $append_section->(
-        scalar(@$clones)
-        . " dependent clones : ",
+        scalar(@$clones) . " dependent clones: ",
         $clones
     ) if $has_clones;
 
     $append_section->(
         scalar(@$blockers_unknown)
-        . " newer rollback blockers of unknown origin: ",
+        . " rollback blockers of unknown origin: ",
         $blockers_unknown
     ) if $has_unknown;
 
@@ -988,7 +1088,11 @@ sub format_rollback_block_reason {
 }
 
 sub volume_rollback_check {
-    my ( $scfg, $storeid, $vmid, $volname, $snap, $blockers ) = @_;
+    # Optional 7th arg: pre-computed $force_rollback (skips internal pvesh call).
+    # Optional 8th arg: scalar ref to receive the managed-snapshots list so the
+    # caller can cache it and avoid a duplicate pvesh call later.
+    my ( $scfg, $storeid, $vmid, $volname, $snap, $blockers,
+         $force_rollback, $man_snaps_ref ) = @_;
 
     my $pool = get_pool($scfg);
 
@@ -1029,11 +1133,12 @@ sub volume_rollback_check {
     my $blockers_clones = [];
     my $blockers_unknown = [];
 
-    my $force_rollback = vm_tag_force_rollback_is_set($scfg, $vmid);
+    # Use caller-supplied value to avoid a redundant pvesh subprocess.
+    $force_rollback //= vm_tag_force_rollback_is_set($scfg, $vmid);
 
     my $managed_snapshots = snapshots_list_from_vmid($scfg, $vmid);
+    $$man_snaps_ref = $managed_snapshots if defined $man_snaps_ref;
     my $force_rollback_possible = 1;
-
     foreach my $blocker ( $blockers_found->@* ) {
         if ( $blocker =~ /^snap:(.+)$/ ) {
             my $snap_blocker = $1;
@@ -1041,7 +1146,6 @@ sub volume_rollback_check {
             my $managed_found = 0;
             foreach my $snap ( $managed_snapshots->@* ) {
                 if ($snap eq $snap_blocker) {
-                    $force_rollback_possible = 0;
                     $managed_found = 1;
                     push $blockers_snapshots_tracked->@*, $snap_blocker;
                     last;
@@ -1077,6 +1181,7 @@ sub volume_rollback_check {
 
     die $msg;
 }
+
 
 sub get_iscsi_addresses {
     my ( $scfg, $storeid, $addport ) = @_;
@@ -1592,7 +1697,7 @@ sub ha_state_is_defined {
 
      debugmsg($scfg, 'debug', "VM ${vmid} is HA-managed");
      return 1;
- }
+}
 
 
 sub ha_state_get {
@@ -1761,7 +1866,15 @@ sub id_serial_from_rest {
 sub volume_unstage_iscsi_device {
     my ( $scfg, $storeid, $targetname, $lunid, $hosts ) = @_;
 
-    debugmsg( $scfg, "debug", "Volume unstage iscsi device ${targetname} with lun ${lunid}\n" );
+    if (! defined($targetname) || ! defined($lunid) ) {
+        my $msg = "Failed to identify";
+        $msg .= " target name" if (! defined($targetname));
+        $msg .= " lun id" if (! defined($lunid));
+        my $trace = longmess($msg);
+        debugmsg( $scfg, "error", "${msg}" );
+        die "${msg}\n";
+    }
+    debugmsg( $scfg, "debug", "Volume unstage iscsi device ${targetname} with lun ${lunid}" );
     my $block_devs = block_device_iscsi_paths ( $scfg, $targetname, $lunid, $hosts );
 
     foreach my $idp (@$block_devs) {

@@ -46,7 +46,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.10.17';
+my $PLUGIN_VERSION = '0.11.0';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -574,69 +574,6 @@ sub alloc_image {
     return OpenEJovianDSS::Common::clean_word($volume_name);
 }
 
-sub cluster_lock_storage {
-    my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
-
-    if (!$timeout) {
-        # Scale the CFS lock acquisition timeout to the number of
-        # concurrent storage workers that may compete for this lock.
-        # Each operation holds the lock for ~2-30 s depending on
-        # REST API response time under load.
-        #
-        # /var/log/pve/tasks/active format:
-        #   running:   UPID:…:type:id:user: 0              (2 fields after split)
-        #   completed: UPID:…:type:id:user: 1 ts status    (4+ fields)
-        #
-        # Task types that hold the storage lock:
-        #   imgdel    — UPID contains storeid in the id field
-        #   qmrestore, qmstart, qmmigrate, qmclone, vzdump, qmdestroy
-        #             — UPID contains only VMID, not storeid
-        #
-        # We count tasks with storeid in the UPID (imgdel) plus tasks
-        # of storage-intensive types (which may target any storage).
-        # Overcounting is safe — it only increases the timeout.
-        my $running = 0;
-        if (open(my $fh, '<', '/var/log/pve/tasks/active')) {
-            while (my $line = <$fh>) {
-                my @f = split(/\s+/, $line);
-                next unless @f <= 2;  # only running tasks
-                if ($line =~ /\Q$storeid\E/ ||
-                    $line =~ /:(?:qmrestore|qmstart|qmmigrate|qmclone|vzdump|qmdestroy):/) {
-                    $running++;
-                }
-            }
-            close($fh);
-        }
-        # 30 s base + 5 s per concurrent worker, capped at 120 s.
-        # The 30 s base covers the typical worst-case single-operation
-        # lock hold time (REST call + iSCSI staging under load).
-        $timeout = 30 + ($running * 5);
-        $timeout = 120 if $timeout > 120;
-    }
-
-    # Pre-fetch the volume list BEFORE acquiring the lock.
-    # If the inner function is alloc_image, it will consume this cache
-    # instead of calling list_images via REST, roughly halving the lock
-    # hold time.  For other operations (free_image, etc.) the cache is
-    # harmlessly ignored.
-    $_prefetched_volumes = undef;
-    eval {
-        my $scfg = PVE::Storage::storage_config(
-            PVE::Storage::config(), $storeid);
-        $_prefetched_volumes = $class->list_images($storeid, $scfg);
-    };
-    $_prefetched_volumes = undef if $@;
-
-    my $res = eval {
-        $class->SUPER::cluster_lock_storage(
-            $storeid, $shared, $timeout, $func, @param);
-    };
-    my $err = $@;
-    $_prefetched_volumes = undef;  # ensure cleanup
-    die $err if $err;
-    return $res;
-}
-
 sub free_image {
     my ( $class, $storeid, $scfg, $volname, $isBase, $_format ) = @_;
 
@@ -772,45 +709,53 @@ sub volume_snapshot_rollback {
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
+    print "Rollback: starting rollback of ${volname} to snapshot ${snap}\n";
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "Volume ${volname}"
+            "Volume ${volname} "
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snap )
           . " rollback start" );
 
-    my $force_rollback = OpenEJovianDSS::Common::vm_tag_force_rollback_is_set($scfg, $vmid);
+    # Determine virtualisation type from config file presence — instant file
+    # check, no pvesh call needed.  Used only for remove_vm_snapshot_config
+    # when blocker snapshots are cleaned up from the Proxmox config.
+    my $virt_type =
+        -f "/etc/pve/qemu-server/${vmid}.conf" ? 'qemu' :
+        -f "/etc/pve/lxc/${vmid}.conf"         ? 'lxc'  : undef;
 
-    if ( $force_rollback ) {
-        # volume rollback check get called 2 times.
-        # It is better to call it 2 times then rely on proxmox logic
-        my $blockers = [];
-        my $rollback_check_ok = OpenEJovianDSS::Common::volume_rollback_check( $scfg,
-             $storeid, $vmid, $volname, $snap, $blockers );
-        if ( $rollback_check_ok ) {
+    # Always use --force-snapshots: volume_rollback_is_possible already
+    # verified this rollback is safe.  For VMs without the force_rollback tag,
+    # no blockers exist at this point so --force-snapshots is a no-op.
+    # For force_rollback VMs the JovianDSS REST API atomically deletes all
+    # newer snapshot blockers before restoring the volume.
+    # Deleted blocker names are returned as "snap:<name>" tokens; we call
+    # remove_vm_snapshot_config for each — it is idempotent, so calling it for
+    # unmanaged snapshots is harmless.
+    my $deleted_raw = OpenEJovianDSS::Common::joviandss_cmd(
+        $scfg,
+        $storeid,
+        [
+            'pool',     $pool, 'volume',   $volname,
+            'snapshot', $snap, 'rollback', 'do',
+            '--force-snapshots',
+        ]
+    );
 
-            OpenEJovianDSS::Common::joviandss_cmd(
-                $scfg,
-                $storeid,
-                [
-                    'pool',     $pool, 'volume',   $volname,
-                    'snapshot', $snap, 'rollback', 'do', '--force-snapshots'
-                ]
-            );
-        } else {
-            die "Failed to check if volume can be rolled back\n";
+    foreach my $line ( split /\n/, $deleted_raw ) {
+        foreach my $token ( split /\s+/, $line ) {
+            next unless $token =~ /^snap:(.+)$/;
+            my $deleted = $1;
+            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                "Rollback: jdssc deleted blocking snapshot '${deleted}'\n" );
+            if ( defined $virt_type ) {
+                OpenEJovianDSS::Common::remove_vm_snapshot_config(
+                    $scfg, $vmid, $virt_type, $deleted);
+            }
         }
-    } else {
-        OpenEJovianDSS::Common::joviandss_cmd(
-            $scfg,
-            $storeid,
-            [
-                "pool",     $pool, "volume",   $volname,
-                "snapshot", $snap, "rollback", "do"
-            ]
-        );
     }
 
+    print "Rollback: ${volname} to snapshot ${snap} complete\n";
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-            "Volume ${volname}"
+            "Volume ${volname} "
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snap )
           . " rollback done" );
 
@@ -827,6 +772,7 @@ sub volume_rollback_is_possible {
 
         if (($hastate ne 'ignored')) {
             my $resource_type = OpenEJovianDSS::Common::ha_type_get($scfg, $vmid);
+            print "vmid ${vmid}: HA check failed — managed by HA (state: ${hastate})\n";
             my $msg =
             "Rollback blocked: ${resource_type}:${vmid} is controlled by High Availability (state: ${hastate}).\n"
             . "Rollback requires temporary manual control to prevent HA from restarting or moving the resource.\n"
@@ -836,8 +782,17 @@ sub volume_rollback_is_possible {
             die $msg;
         }
     }
-    return OpenEJovianDSS::Common::volume_rollback_check( $scfg,
-            $storeid, $vmid, $volname, $snap, $blockers );
+
+    # Compute force_rollback once here so volume_rollback_check does not need
+    # to spawn its own pvesh subprocess for the same information.
+    my $force_rollback = OpenEJovianDSS::Common::vm_tag_force_rollback_is_set(
+        $scfg, $vmid);
+
+    my $ok = OpenEJovianDSS::Common::volume_rollback_check(
+        $scfg, $storeid, $vmid, $volname, $snap, $blockers,
+        $force_rollback);
+
+    return $ok;
 }
 
 sub volume_snapshot_delete {
@@ -1282,6 +1237,69 @@ sub on_update_hook_full {
     my ($class, $storeid, $scfg, $update, $delete, $sensitive) = @_;
 
     return $class->on_update_hook($storeid, $update, $sensitive->%*);
+}
+
+sub cluster_lock_storage {
+    my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
+
+    if (!$timeout) {
+        # Scale the CFS lock acquisition timeout to the number of
+        # concurrent storage workers that may compete for this lock.
+        # Each operation holds the lock for ~2-30 s depending on
+        # REST API response time under load.
+        #
+        # /var/log/pve/tasks/active format:
+        #   running:   UPID:…:type:id:user: 0              (2 fields after split)
+        #   completed: UPID:…:type:id:user: 1 ts status    (4+ fields)
+        #
+        # Task types that hold the storage lock:
+        #   imgdel    — UPID contains storeid in the id field
+        #   qmrestore, qmstart, qmmigrate, qmclone, vzdump, qmdestroy
+        #             — UPID contains only VMID, not storeid
+        #
+        # We count tasks with storeid in the UPID (imgdel) plus tasks
+        # of storage-intensive types (which may target any storage).
+        # Overcounting is safe — it only increases the timeout.
+        my $running = 0;
+        if (open(my $fh, '<', '/var/log/pve/tasks/active')) {
+            while (my $line = <$fh>) {
+                my @f = split(/\s+/, $line);
+                next unless @f <= 2;  # only running tasks
+                if ($line =~ /\Q$storeid\E/ ||
+                    $line =~ /:(?:qmrestore|qmstart|qmmigrate|qmclone|vzdump|qmdestroy):/) {
+                    $running++;
+                }
+            }
+            close($fh);
+        }
+        # 30 s base + 5 s per concurrent worker, capped at 120 s.
+        # The 30 s base covers the typical worst-case single-operation
+        # lock hold time (REST call + iSCSI staging under load).
+        $timeout = 30 + ($running * 5);
+        $timeout = 120 if $timeout > 120;
+    }
+
+    # Pre-fetch the volume list BEFORE acquiring the lock.
+    # If the inner function is alloc_image, it will consume this cache
+    # instead of calling list_images via REST, roughly halving the lock
+    # hold time.  For other operations (free_image, etc.) the cache is
+    # harmlessly ignored.
+    $_prefetched_volumes = undef;
+    eval {
+        my $scfg = PVE::Storage::storage_config(
+            PVE::Storage::config(), $storeid);
+        $_prefetched_volumes = $class->list_images($storeid, $scfg);
+    };
+    $_prefetched_volumes = undef if $@;
+
+    my $res = eval {
+        $class->SUPER::cluster_lock_storage(
+            $storeid, $shared, $timeout, $func, @param);
+    };
+    my $err = $@;
+    $_prefetched_volumes = undef;  # ensure cleanup
+    die $err if $err;
+    return $res;
 }
 
 1;

@@ -67,7 +67,7 @@ class NASVolumes():
                             help=('New NAS volume maximum size in format num '
                                   '+ [M G T]'))
         create.add_argument('-d',
-                            dest='direct_mode',
+                            dest='nas_volume_direct_mode',
                             action='store_true',
                             default=False,
                             help='Use real volume name')
@@ -96,14 +96,14 @@ class NASVolumes():
         quota = self.args['volume_quota'].upper()
 
         name = str(uuid.uuid1())
-        if 'volume_name' in self.args:
-            name = self.args['volume_name']
+        if 'nas_volume_name' in self.args:
+            name = self.args['nas_volume_name']
 
         try:
             self.jdss.create_nas_volume(
                 name,
                 quota,
-                direct_mode=self.args['direct_mode'],
+                direct_mode=self.args['nas_volume_direct_mode'],
                 reservation=self.args['volume_reservation'])
 
         except (jexc.JDSSVolumeExistsException,
@@ -115,17 +115,29 @@ class NASVolumes():
             LOG.error("No space left on the storage")
             exit(1)
 
-    def get(self):
+    def list(self):
+        """List all NAS volumes in the pool."""
 
-        volume_name = self.args['volume_name']
+        data = self.jdss.list_nas_volumes()
 
-        volume = {'id': volume_name}
-
-        d = self.jdss.get_volume(volume)
-
-        if self.args['volume_size']:
-            print(d['size'])
-
-    def delete(self):
-
-        self.jdss.ra.delete_nas_volume(self.args['nas_volume_name'])
+        if 'entries' in data:
+            for volume in data['entries']:
+                name = volume.get('name', volume.get('full_name', ''))
+                if self.args.get('vmid', False):
+                    # Only show volumes with VM ID pattern
+                    if 'vm-' in name:
+                        print(name)
+                else:
+                    print(name)
+        else:
+            # If data is already a list
+            for volume in data:
+                if isinstance(volume, dict):
+                    name = volume.get('name', volume.get('full_name', ''))
+                    if self.args.get('vmid', False):
+                        if 'vm-' in name:
+                            print(name)
+                    else:
+                        print(name)
+                else:
+                    print(volume)
