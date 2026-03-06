@@ -46,7 +46,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.11.0';
+my $PLUGIN_VERSION = '0.11.0-no-lock-0';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -1242,63 +1242,21 @@ sub on_update_hook_full {
 sub cluster_lock_storage {
     my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
 
-    if (!$timeout) {
-        # Scale the CFS lock acquisition timeout to the number of
-        # concurrent storage workers that may compete for this lock.
-        # Each operation holds the lock for ~2-30 s depending on
-        # REST API response time under load.
-        #
-        # /var/log/pve/tasks/active format:
-        #   running:   UPID:…:type:id:user: 0              (2 fields after split)
-        #   completed: UPID:…:type:id:user: 1 ts status    (4+ fields)
-        #
-        # Task types that hold the storage lock:
-        #   imgdel    — UPID contains storeid in the id field
-        #   qmrestore, qmstart, qmmigrate, qmclone, vzdump, qmdestroy
-        #             — UPID contains only VMID, not storeid
-        #
-        # We count tasks with storeid in the UPID (imgdel) plus tasks
-        # of storage-intensive types (which may target any storage).
-        # Overcounting is safe — it only increases the timeout.
-        my $running = 0;
-        if (open(my $fh, '<', '/var/log/pve/tasks/active')) {
-            while (my $line = <$fh>) {
-                my @f = split(/\s+/, $line);
-                next unless @f <= 2;  # only running tasks
-                if ($line =~ /\Q$storeid\E/ ||
-                    $line =~ /:(?:qmrestore|qmstart|qmmigrate|qmclone|vzdump|qmdestroy):/) {
-                    $running++;
-                }
-            }
-            close($fh);
-        }
-        # 30 s base + 5 s per concurrent worker, capped at 120 s.
-        # The 30 s base covers the typical worst-case single-operation
-        # lock hold time (REST call + iSCSI staging under load).
-        $timeout = 30 + ($running * 5);
-        $timeout = 120 if $timeout > 120;
-    }
+    use B qw(svref_2object);
+    my $func_name = svref_2object($func)->GV->NAME;
 
-    # Pre-fetch the volume list BEFORE acquiring the lock.
-    # If the inner function is alloc_image, it will consume this cache
-    # instead of calling list_images via REST, roughly halving the lock
-    # hold time.  For other operations (free_image, etc.) the cache is
-    # harmlessly ignored.
-    $_prefetched_volumes = undef;
-    eval {
-        my $scfg = PVE::Storage::storage_config(
-            PVE::Storage::config(), $storeid);
-        $_prefetched_volumes = $class->list_images($storeid, $scfg);
-    };
-    $_prefetched_volumes = undef if $@;
+    # Need $scfg for debugmsg - get it from storage config
+    my $cfg = PVE::Storage::config();
+    my $scfg = $cfg->{ids}->{$storeid};
 
-    my $res = eval {
-        $class->SUPER::cluster_lock_storage(
-            $storeid, $shared, $timeout, $func, @param);
-    };
-    my $err = $@;
-    $_prefetched_volumes = undef;  # ensure cleanup
-    die $err if $err;
+    OpenEJovianDSS::Common::debugmsg($scfg, 'debug',
+        "cluster_lock_storage: storeid=${storeid} func=${func_name}");
+
+
+    my $res;
+
+    $res = eval { &$func(@param); };
+    return undef if $@;
     return $res;
 }
 

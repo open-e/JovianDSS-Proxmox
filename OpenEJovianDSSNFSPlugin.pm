@@ -889,26 +889,24 @@ sub volume_qemu_snapshot_method {
     return 'storage';
 }
 
-
 sub cluster_lock_storage {
     my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
 
-    if( ! defined($timeout)) {
-        $timeout = int(360);
-    }
+    use B qw(svref_2object);
+    my $func_name = svref_2object($func)->GV->NAME;
 
-    $timeout = (2 * $timeout);
+    # Need $scfg for debugmsg - get it from storage config
+    my $cfg = PVE::Storage::config();
+    my $scfg = $cfg->{ids}->{$storeid};
+
+    OpenEJovianDSS::Common::debugmsg($scfg, 'debug',
+        "cluster_lock_storage: storeid=${storeid} func=${func_name}");
+
+
     my $res;
-    if (!$shared) {
-        my $lockid = "pve-storage-$storeid";
-        my $lockdir = "/var/lock/pve-manager";
-        mkdir $lockdir;
-        $res = PVE::Tools::lock_file("$lockdir/$lockid", $timeout, $func, @param);
-        die $@ if $@;
-    } else {
-        $res = PVE::Cluster::cfs_lock_storage($storeid, $timeout, $func, @param);
-        die $@ if $@;
-    }
+
+    $res = eval { &$func(@param); };
+    return undef if $@;
     return $res;
 }
 
