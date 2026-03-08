@@ -470,8 +470,9 @@ class JovianDSSDriver(object):
 
         :param volume: volume reference
         :param cascade: remove snapshots of a volume as well
-        :param target_name: optional target group name hint (e.g. 'vm-999')
-            used to filter the iSCSI target scan in _detach_volume
+        :param target_name: optional target group name hint (e.g. 'vm-999').
+            When provided, the detach scan is limited to targets belonging
+            to this group instead of scanning the entire pool.
         """
         vname = jcom.vname(volume_name)
 
@@ -975,10 +976,14 @@ class JovianDSSDriver(object):
     def _detach_volume(self, vname, target_name=None):
         """detach volume from target it is attached to
 
-        Will go through all target, find one that volume is attached to
-        and detach it from it
-        If volume is a last one attached to particular target
-        it will remove target
+        Will go through targets, find one that volume is attached to
+        and detach it from it. If volume is the last one attached to
+        a particular target it will remove that target.
+
+        When target_name is provided the scan is limited to targets
+        belonging to that group (e.g. 'vm-999'), avoiding a full
+        pool-wide scan.  Falls back to the full scan when no hint is
+        given or when no matching target is found with the hint.
 
         :param str vname: physical volume id
         :param str target_name: optional target group name hint (e.g. 'vm-999')
@@ -988,20 +993,21 @@ class JovianDSSDriver(object):
 
         all_targets = self.ra.get_targets()
 
+        # Build a filtered candidate list when we have a group hint so we
+        # avoid iterating over every target in the pool (~60+ REST calls).
+        candidates = all_targets
         if target_name is not None:
             tprefix = self.jovian_target_prefix
-            if tprefix[-1] != ':':
-                tprefix = tprefix + ':'
             tname = tprefix + target_name
-            target_re = re.compile(r'^' + re.escape(tname) + r'-\d+$')
-            candidates = [t['name'] for t in all_targets
+            if tprefix[-1] != ':':
+                tname = tprefix + ':' + target_name
+            target_re = re.compile(fr'^{re.escape(tname)}-\d+$')
+            candidates = [t for t in all_targets
                           if target_re.match(t['name'])]
             LOG.debug("Filtered detach scan to %d/%d targets matching %s",
                       len(candidates), len(all_targets), tname)
-        else:
-            candidates = [t['name'] for t in all_targets]
 
-        for t in candidates:
+        for t in [target['name'] for target in candidates]:
             try:
                 luns = self.ra.get_target_luns(t)
             except jexc.JDSSResourceNotFoundException:
@@ -1176,7 +1182,16 @@ class JovianDSSDriver(object):
 
             volume_publication_info['vips'] = list(expected_vips.values())
             if not self.ra.is_target_lun(tname, vname, lid):
-                self._attach_target_volume_lun(tname, vname, lid)
+                try:
+                    self._attach_target_volume_lun(tname, vname, lid)
+                except jexc.JDSSResourceIsBusyException:
+                    # The attach POST may have been processed by a previous
+                    # timed-out request.  Re-check before giving up.
+                    if self.ra.is_target_lun(tname, vname, lid):
+                        LOG.info("Volume %s attached to target %s "
+                                 "by prior request", vname, tname)
+                    else:
+                        raise
 
             volume_publication_info['lun'] = lid
 
@@ -1391,15 +1406,19 @@ class JovianDSSDriver(object):
             try:
                 conforming_vips=dict()
                 vip_data=self.ra.get_pool_vips()
+
                 for vip in vip_data:
                     if vip['address'] in iscsi_addresses:
                         conforming_vips[vip['name']]=vip['address']
+
                 if len(conforming_vips) > 0:
                     return conforming_vips
+
                 reason = ("no match for %s" %
                           ','.join(iscsi_addresses))
             except jexc.JDSSException as err:
                 reason = str(err)
+
             if attempt < retries - 1:
                 LOG.warning("VIP lookup failed: %s "
                             "(attempt %d/%d, retrying in %ds)",
@@ -1407,6 +1426,7 @@ class JovianDSSDriver(object):
                             attempt + 1, retries,
                             (attempt + 1) * 2)
                 time.sleep((attempt + 1) * 2)
+
         raise jexc.JDSSVIPNotFoundException(iscsi_addresses)
 
     def _create_target_volume_lun(self, target_name, vid, lid, provider_auth):
@@ -1434,9 +1454,14 @@ class JovianDSSDriver(object):
         conforming_vips=self._get_conforming_vips()
         volume_publication_info['vips']=list(conforming_vips.values())
         # Create target
-        self.ra.create_target(target_name,
-                              list(conforming_vips.keys()),
-                              use_chap=(provider_auth is not None))
+        try:
+            self.ra.create_target(target_name,
+                                  list(conforming_vips.keys()),
+                                  use_chap=(provider_auth is not None))
+        except jexc.JDSSResourceExistsException:
+            # Target may have been created by a prior timed-out request.
+            LOG.info("Target %s already exists, proceeding with "
+                     "volume attachment", target_name)
         volume_publication_info['target']=target_name
         try:
             # Attach volume
@@ -1502,18 +1527,34 @@ class JovianDSSDriver(object):
         """Attach target to volume and handles exceptions
 
         Attempts to set attach volume to specific target.
+        Under concurrent load the volume may be temporarily busy
+        (REST API processing another operation), so retry with backoff.
         :param target_name: name of target
         :param vname: volume physical id
         :param lun: lun number that given vname will be attached to target_name
         """
-        try:
-            self.ra.attach_target_vol(target_name, vname, lun_id=lun)
-        except jexc.JDSSException as jerr:
-            msg=(f"Unable to attach volume {vname} to "
-                   f"target {target_name} lun {lun} "
-                   f"because of {jerr}.")
-            LOG.warning(msg)
-            raise jerr
+        max_attempts = 4
+        for attempt in range(max_attempts):
+            try:
+                self.ra.attach_target_vol(target_name, vname, lun_id=lun)
+                return
+            except jexc.JDSSResourceIsBusyException:
+                if attempt >= max_attempts - 1:
+                    LOG.warning("Volume %s still busy after %d attempts "
+                                "to attach to target %s",
+                                vname, max_attempts, target_name)
+                    raise
+                delay = 3 + attempt * 2
+                LOG.info("Volume %s is busy, retrying attachment in %ds "
+                         "(%d/%d)", vname, delay, attempt + 1,
+                         max_attempts - 1)
+                time.sleep(delay)
+            except jexc.JDSSException as jerr:
+                msg=(f"Unable to attach volume {vname} to "
+                       f"target {target_name} lun {lun} "
+                       f"because of {jerr}.")
+                LOG.warning(msg)
+                raise jerr
 
     def _set_target_credentials(self, target_name, cred):
         """Set CHAP configuration for target and handle exceptions

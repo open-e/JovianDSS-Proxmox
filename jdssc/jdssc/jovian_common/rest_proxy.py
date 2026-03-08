@@ -118,9 +118,6 @@ class JovianDSSRESTProxy(object):
         :param req: where to send
         :param json_data: data
         """
-
-        # self.session = self._get_session(application_json=application_json)
-
         out = None
         for i in range(50):
 
@@ -140,6 +137,7 @@ class JovianDSSRESTProxy(object):
                                              data=json.dumps(json_data))
                     else:
                         r = requests.Request(request_method, addr)
+
                     pr = self.session.prepare_request(r)
                     out = self._send(pr)
                 except requests.exceptions.SSLError as sslerr:

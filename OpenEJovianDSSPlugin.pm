@@ -471,7 +471,7 @@ sub clone_image {
     my $clone_name = $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt );
 
     my $size = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
-        [ "pool", $pool, "volume", $volname, "get", "-s" ] );
+        [ "pool", $pool, "volume", $volname, "get", "-s" ], 80, 3 );
     $size = OpenEJovianDSS::Common::clean_word($size);
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
@@ -486,7 +486,8 @@ sub clone_image {
                 "pool",  $pool,    "volume", $volname,
                 "clone", "--size", $size,    "--snapshot",
                 $snap,   "-n",     $clone_name
-            ]
+            ],
+            80, 3
         );
     }
     else {
@@ -497,7 +498,8 @@ sub clone_image {
                 "pool",  $pool,    "volume", $volname,
                 "clone", "--size", $size,    "-n",
                 $clone_name
-            ]
+            ],
+            80, 3
         );
     }
     return $clone_name;
@@ -569,9 +571,78 @@ sub alloc_image {
             push @$create_vol_cmd, '--block-size', $block_size;
         }
 
-        OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid, $create_vol_cmd );
+        OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid, $create_vol_cmd, 80, 3 );
     }
     return OpenEJovianDSS::Common::clean_word($volume_name);
+}
+
+sub cluster_lock_storage {
+    my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
+
+    # Pre-fetch the volume list BEFORE acquiring the lock.
+    # If the inner function is alloc_image, it will consume this cache
+    # instead of calling list_images via REST, roughly halving the lock
+    # hold time.  For other operations (free_image, etc.) the cache is
+    # harmlessly ignored.
+    $_prefetched_volumes = undef;
+    eval {
+        my $scfg = PVE::Storage::storage_config(
+            PVE::Storage::config(), $storeid);
+        $_prefetched_volumes = $class->list_images($storeid, $scfg);
+    };
+    $_prefetched_volumes = undef if $@;
+
+    if ($timeout) {
+        # Explicit timeout provided — use it as-is (single attempt).
+        my $res = eval {
+            $class->SUPER::cluster_lock_storage(
+                $storeid, $shared, $timeout, $func, @param);
+        };
+        my $err = $@;
+        $_prefetched_volumes = undef;
+        die $err if $err;
+        return $res;
+    }
+
+    # No explicit timeout — use retry loop.
+    # Each attempt gets 120 s which is enough for lock acquisition
+    # (~8 s per queued operation) plus inner function execution
+    # (~8-30 s).  If a timeout occurs, the lock was NOT acquired
+    # and no work was done, so retrying is safe.  The total time
+    # is capped at 600 s to prevent indefinite waiting.
+    my $start = time();
+    my $max_total   = 600;
+    my $per_attempt = 120;
+
+    while (1) {
+        my $remaining = $max_total - (time() - $start);
+        if ($remaining <= 10) {
+            $_prefetched_volumes = undef;
+            die "cfs-lock 'storage-$storeid' error: got lock request timeout\n";
+        }
+        my $attempt = ($per_attempt < $remaining) ? $per_attempt : int($remaining);
+
+        my $res = eval {
+            $class->SUPER::cluster_lock_storage(
+                $storeid, $shared, $attempt, $func, @param);
+        };
+        my $err = $@;
+
+        if (!$err) {
+            $_prefetched_volumes = undef;
+            return $res;
+        }
+
+        if ($err =~ /got lock request timeout/) {
+            # Lock acquisition timed out — retry with a fresh attempt.
+            # Conditions may have improved (other tasks completed).
+            next;
+        }
+
+        # Non-timeout error — propagate immediately.
+        $_prefetched_volumes = undef;
+        die $err;
+    }
 }
 
 sub free_image {
@@ -853,7 +924,7 @@ sub volume_size_info {
     }
 
     my $size = OpenEJovianDSS::Common::joviandss_cmd( $scfg, $storeid,
-        [ "pool", $pool, "volume", $volname, "get", "-s" ] );
+        [ "pool", $pool, "volume", $volname, "get", "-s" ], 80, 3 );
     chomp($size);
     $size =~ s/[^[:ascii:]]//;
 
@@ -1237,69 +1308,6 @@ sub on_update_hook_full {
     my ($class, $storeid, $scfg, $update, $delete, $sensitive) = @_;
 
     return $class->on_update_hook($storeid, $update, $sensitive->%*);
-}
-
-sub cluster_lock_storage {
-    my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
-
-    if (!$timeout) {
-        # Scale the CFS lock acquisition timeout to the number of
-        # concurrent storage workers that may compete for this lock.
-        # Each operation holds the lock for ~2-30 s depending on
-        # REST API response time under load.
-        #
-        # /var/log/pve/tasks/active format:
-        #   running:   UPID:…:type:id:user: 0              (2 fields after split)
-        #   completed: UPID:…:type:id:user: 1 ts status    (4+ fields)
-        #
-        # Task types that hold the storage lock:
-        #   imgdel    — UPID contains storeid in the id field
-        #   qmrestore, qmstart, qmmigrate, qmclone, vzdump, qmdestroy
-        #             — UPID contains only VMID, not storeid
-        #
-        # We count tasks with storeid in the UPID (imgdel) plus tasks
-        # of storage-intensive types (which may target any storage).
-        # Overcounting is safe — it only increases the timeout.
-        my $running = 0;
-        if (open(my $fh, '<', '/var/log/pve/tasks/active')) {
-            while (my $line = <$fh>) {
-                my @f = split(/\s+/, $line);
-                next unless @f <= 2;  # only running tasks
-                if ($line =~ /\Q$storeid\E/ ||
-                    $line =~ /:(?:qmrestore|qmstart|qmmigrate|qmclone|vzdump|qmdestroy):/) {
-                    $running++;
-                }
-            }
-            close($fh);
-        }
-        # 30 s base + 5 s per concurrent worker, capped at 120 s.
-        # The 30 s base covers the typical worst-case single-operation
-        # lock hold time (REST call + iSCSI staging under load).
-        $timeout = 30 + ($running * 5);
-        $timeout = 120 if $timeout > 120;
-    }
-
-    # Pre-fetch the volume list BEFORE acquiring the lock.
-    # If the inner function is alloc_image, it will consume this cache
-    # instead of calling list_images via REST, roughly halving the lock
-    # hold time.  For other operations (free_image, etc.) the cache is
-    # harmlessly ignored.
-    $_prefetched_volumes = undef;
-    eval {
-        my $scfg = PVE::Storage::storage_config(
-            PVE::Storage::config(), $storeid);
-        $_prefetched_volumes = $class->list_images($storeid, $scfg);
-    };
-    $_prefetched_volumes = undef if $@;
-
-    my $res = eval {
-        $class->SUPER::cluster_lock_storage(
-            $storeid, $shared, $timeout, $func, @param);
-    };
-    my $err = $@;
-    $_prefetched_volumes = undef;  # ensure cleanup
-    die $err if $err;
-    return $res;
 }
 
 1;

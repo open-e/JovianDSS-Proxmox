@@ -29,7 +29,7 @@ use File::Path qw(make_path);
 use File::Spec;
 use String::Util;
 
-use Fcntl qw(:DEFAULT O_WRONLY O_APPEND O_CREAT O_SYNC);
+use Fcntl qw(:DEFAULT :flock O_WRONLY O_APPEND O_CREAT O_SYNC);
 use IO::Handle;
 
 use JSON qw(decode_json from_json to_json);
@@ -702,11 +702,8 @@ sub joviandss_cmd {
                 timeout => $timeout,
                 noerr   => 1
             );
-            #cmd_log_output( $scfg, 'debug' , $jcmd, "code ${exitcode} msg " . safe_var_print('msg', $msg) . ' ' . safe_var_print('err', $err) );
-            #warn "Insecure plugin usage! Disable DEBUG\n";
         };
         my $rerr = $@;
-        #debugmsg( $scfg, 'debug' , "CMD: code ${exitcode} retry ${retry_count} " . safe_var_print('msg', $msg) . ' ' . safe_var_print('err', $err));
 
         # Check for timeout BEFORE checking exitcode.  When run_command
         # dies with a timeout inside eval, $exitcode keeps its initial
@@ -734,7 +731,7 @@ sub joviandss_cmd {
         die "jdssc exited with code $exitcode\n";
     }
 
-    die "Unhandled state during running JovianDSS command\n";
+    die "JovianDSS command timed out after $retries retries\n";
 }
 
 
@@ -996,9 +993,9 @@ sub format_rollback_block_reason {
         return join('; ', @out);
     };
 
-    my $has_managed   = $snapshots       && @$snapshots;
-    my $has_clones    = $clones          && @$clones;
-    my $has_unmanaged = $unmanaged_snaps && @$unmanaged_snaps;
+    my $has_managed   = $snapshots        && @$snapshots;
+    my $has_clones    = $clones           && @$clones;
+    my $has_unmanaged = $unmanaged_snaps  && @$unmanaged_snaps;
     my $has_unknown   = $blockers_unknown && @$blockers_unknown;
 
     my $printed = 0;
@@ -1182,7 +1179,6 @@ sub volume_rollback_check {
     die $msg;
 }
 
-
 sub get_iscsi_addresses {
     my ( $scfg, $storeid, $addport ) = @_;
 
@@ -1277,7 +1273,7 @@ sub target_active_info {
         push @$gettargetcmd, '-d';
     }
 
-    my $out = joviandss_cmd( $scfg, $storeid, $gettargetcmd, 80, 3 );
+    my $out = joviandss_cmd( $scfg, $storeid, $gettargetcmd, 180, 5 );
 
     if ( defined $out and clean_word($out) eq '' ) {
         return undef;
@@ -1329,7 +1325,7 @@ sub volume_publish {
         }
     }
 
-    my $out = joviandss_cmd( $scfg, $storeid, $create_target_cmd, 80, 3 );
+    my $out = joviandss_cmd( $scfg, $storeid, $create_target_cmd, 180, 5 );
     my ( $targetname, $lunid, $ips ) = split( ' ', $out );
 
     my @iplist = split /\s*,\s*/, clean_word($ips);
@@ -1431,7 +1427,7 @@ sub volume_stage_iscsi {
         debugmsg( $scfg, "debug", "Staging target ${targetname} of host ${host} done\n" );
     } # end of for loop over all addresses
 
-    for ( my $i = 1 ; $i <= 10 ; $i++ ) {
+    for ( my $i = 1 ; $i <= 30 ; $i++ ) {
         sleep(1);
 
         $targets_block_devices = block_device_iscsi_paths( $scfg, $targetname, $lunid, $hosts );
@@ -1443,9 +1439,13 @@ sub volume_stage_iscsi {
 
         debugmsg( $scfg, "debug", "Waiting for block devices: got "
             . scalar(@$targets_block_devices) . " of " . scalar(@$hosts)
-            . " (attempt ${i}/10)\n" );
+            . " (attempt ${i}/30)\n" );
 
-        if ( $lunid =~ /^\A\d+\z$/ ) {
+        # Run rescan-scsi-bus only every 3rd attempt.  Under concurrent
+        # load (many clones), each rescan takes minutes and 19 concurrent
+        # rescans create massive SCSI bus congestion.  The first 2 attempts
+        # just wait — the devices often appear without a forced rescan.
+        if ( $i % 3 == 0 && $lunid =~ /^\A\d+\z$/ ) {
             my $cmd = [ '/usr/bin/rescan-scsi-bus.sh', '--sparselun', '--reportlun2', '--largelun', "--luns=${lunid}", '-a'];
             run_command(
                 $cmd ,
@@ -1453,7 +1453,7 @@ sub volume_stage_iscsi {
                 errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
                 noerr   => 1
             );
-        } else {
+        } elsif ( $lunid !~ /^\A\d+\z$/ ) {
             debugmsg( $scfg, "warn", "Lun id ${lunid} contains non digit symbols" );
         }
     }
@@ -1465,7 +1465,7 @@ sub volume_stage_iscsi {
 }
 
 sub volume_stage_multipath {
-    my ( $scfg, $scsiid ) = @_;
+    my ( $scfg, $scsiid, $block_devs ) = @_;
     $scsiid = clean_word($scsiid);
 
     my $mpath;
@@ -1487,17 +1487,92 @@ sub volume_stage_multipath {
 
         $mpath = block_device_path_from_serial( $id, $is_multipath);
 
-        for my $attempt ( 1 .. 10) {
-            eval {
-                my $cmd = [ $MULTIPATH, $id ];
-                run_command(
-                    $cmd,
-                    outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
-                    noerr   => 1,
-                    timeout => 30
-                );
-            };
+        # Phase 1: Wait for SCSI VPD inquiry to complete.
+        # The /dev/disk/by-id/scsi-$id symlink is created by udev after the
+        # kernel reads the device serial via SCSI inquiry.  multipathd cannot
+        # associate paths with our WWID until this is done.  During heavy
+        # concurrent operations (many clones) the inquiry queue backs up and
+        # this can take 30+ seconds.
+        my $scsi_by_id = "/dev/disk/by-id/scsi-${id}";
+        my $paths_ready = 0;
+        for my $wait ( 1 .. 60 ) {
+            if ( -e $scsi_by_id ) {
+                $paths_ready = 1;
+                debugmsg( $scfg, "debug",
+                    "SCSI device ${scsi_by_id} ready after ${wait}s wait" );
+                last;
+            }
+            if ( $wait == 1 || $wait % 10 == 0 ) {
+                debugmsg( $scfg, "debug",
+                    "Waiting for SCSI device ${scsi_by_id} (${wait}/60)" );
+            }
+            sleep(1);
+        }
+        unless ($paths_ready) {
+            debugmsg( $scfg, "warn",
+                "SCSI device ${scsi_by_id} not found after 60s, "
+                . "attempting multipath creation anyway" );
+        }
+
+        # Resolve iSCSI by-path symlinks to real sd device names so we can
+        # explicitly register them with multipathd.  Under concurrent load,
+        # udev events may be delayed and multipathd might not know about the
+        # paths yet, causing "multipathd add map" to fail.
+        my @sd_devnames;
+        if ($block_devs && ref($block_devs) eq 'ARRAY') {
+            for my $bp (@$block_devs) {
+                my $real = Cwd::abs_path($bp);
+                if ($real && $real =~ m{^/dev/(sd[a-z]+)$}) {
+                    push @sd_devnames, $1;
+                }
+            }
+            if (@sd_devnames) {
+                debugmsg( $scfg, "debug",
+                    "Resolved iSCSI paths for multipath: " . join(', ', @sd_devnames) );
+            }
+        }
+
+        # Phase 2: Create the multipath map.
+        # Under concurrent load (many clones), multipathd gets overwhelmed
+        # and "add map" fails.  The root cause is that udev events back up
+        # under load, so multipathd doesn't know about the new paths.
+        #
+        # IMPORTANT: Do NOT use "udevadm trigger" here — it generates
+        # CHANGE events on sd devices which causes multipathd to re-evaluate
+        # paths, disrupting existing multipath devices that are actively
+        # being used for data copies (causes qemu-img I/O errors).
+        for my $attempt ( 1 .. 20) {
+
+            # Explicitly register paths with multipathd before creating
+            # the map.  This ensures multipathd knows which sd devices
+            # belong to this WWID, even if udev events were delayed.
+            for my $devname (@sd_devnames) {
+                eval {
+                    my $cmd = [ $MULTIPATHD, 'add', 'path', $devname ];
+                    run_command(
+                        $cmd,
+                        outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                        errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                        noerr   => 1
+                    );
+                };
+            }
+
+            # On first attempt and every 5th attempt, try the multipath
+            # CLI which does a heavier scan.  On other attempts, use only
+            # the lighter multipathd daemon commands.
+            if ( $attempt == 1 || $attempt % 5 == 0 ) {
+                eval {
+                    my $cmd = [ $MULTIPATH, $id ];
+                    run_command(
+                        $cmd,
+                        outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                        errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                        noerr   => 1,
+                        timeout => 30
+                    );
+                };
+            }
 
             if ( -b $mpath ) {
                 return clean_word($mpath);
@@ -1528,7 +1603,26 @@ sub volume_stage_multipath {
                     noerr   => 1
                 );
             };
-            sleep(1);
+
+            # Every 10th attempt, try a full multipathd reconfigure as a
+            # heavier fallback.  This forces the daemon to re-read all
+            # paths and recreate maps from scratch.
+            if ( $attempt % 10 == 0 ) {
+                debugmsg( $scfg, "debug",
+                    "Attempting multipathd reconfigure for scsiid ${id} "
+                    . "(attempt ${attempt})" );
+                eval {
+                    my $cmd = [ $MULTIPATHD, 'reconfigure' ];
+                    run_command(
+                        $cmd,
+                        outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                        errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                        noerr   => 1,
+                        timeout => 30
+                    );
+                };
+            }
+            sleep(2);
         }
     } else {
         die "Invalid characters in scsiid: ${scsiid}";
@@ -1831,7 +1925,8 @@ sub id_serial_from_rest {
                 "pool",   $pool,
                 "volume", $volname,
                 "get", "-i"
-            ]
+            ],
+            80, 5
         );
     } elsif (defined($volname) && defined($snapname)) {
         $jscsiid = joviandss_cmd(
@@ -1842,7 +1937,8 @@ sub id_serial_from_rest {
                 "volume", $volname,
                 "snapshot", $snapname,
                 "get", "-i"
-            ]
+            ],
+            80, 5
         );
     } else {
         die "Volume name is required to acquire scsi id\n";
@@ -1866,15 +1962,7 @@ sub id_serial_from_rest {
 sub volume_unstage_iscsi_device {
     my ( $scfg, $storeid, $targetname, $lunid, $hosts ) = @_;
 
-    if (! defined($targetname) || ! defined($lunid) ) {
-        my $msg = "Failed to identify";
-        $msg .= " target name" if (! defined($targetname));
-        $msg .= " lun id" if (! defined($lunid));
-        my $trace = longmess($msg);
-        debugmsg( $scfg, "error", "${msg}" );
-        die "${msg}\n";
-    }
-    debugmsg( $scfg, "debug", "Volume unstage iscsi device ${targetname} with lun ${lunid}" );
+    debugmsg( $scfg, "debug", "Volume unstage iscsi device ${targetname} with lun ${lunid}\n" );
     my $block_devs = block_device_iscsi_paths ( $scfg, $targetname, $lunid, $hosts );
 
     foreach my $idp (@$block_devs) {
@@ -2728,7 +2816,7 @@ sub volume_activate {
 
         if ($multipath) {
             $multipath_staged = 1;
-            my $multipath_path = volume_stage_multipath( $scfg, $scsiid );
+            my $multipath_path = volume_stage_multipath( $scfg, $scsiid, $block_devs );
             my $mpdl = [ clean_word($multipath_path) ];
             $block_devs = $mpdl;
         }
@@ -3171,7 +3259,7 @@ sub volume_get_size {
 
     my $pool = get_pool($scfg);
 
-    my $output = joviandss_cmd($scfg, $storeid, ['pool', $pool, 'volume', $volname, 'get', '-s']);
+    my $output = joviandss_cmd($scfg, $storeid, ['pool', $pool, 'volume', $volname, 'get', '-s'], 80, 5);
 
     my $size = int( clean_word( $output ) + 0 );
     return $size;
