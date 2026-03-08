@@ -70,19 +70,14 @@ class JovianDSSRESTProxy(object):
 
         self.session = self._get_session()
 
-    def _get_session(self, application_json=True):
+    def _get_session(self):
         """Create and init new session object"""
 
         session = requests.Session()
         session.auth = (self.user, self.password)
-
-        headers = {'Connection': 'keep-alive', 'Authorization': 'Basic'}
-
-        if application_json:
-            headers['Content-Type'] = 'application/json'
-
-        session.headers.update(headers)
-
+        session.headers.update({'Connection': 'keep-alive',
+                                'Content-Type': 'application/json',
+                                'Authorization': 'Basic'})
         session.hooks['response'] = [JovianDSSRESTProxy._handle_500]
         session.verify = self.verify
         if self.verify and self.cert:
@@ -108,10 +103,7 @@ class JovianDSSRESTProxy(object):
 
         self.active_host = (self.active_host + 1) % len(self.hosts)
 
-    def request(self, request_method, req,
-                json_data=None,
-                apiv=4,
-                application_json=True):
+    def request(self, request_method, req, json_data=None, apiv=4):
         """Send request to the specific url.
 
         :param request_method: GET, POST, DELETE
@@ -171,9 +163,7 @@ class JovianDSSRESTProxy(object):
             time.sleep(3)
         raise jexc.JDSSCommunicationFailure(self.hosts, req)
 
-    def pool_request(self, request_method, req,
-                     json_data=None, apiv=4,
-                     application_json=True):
+    def pool_request(self, request_method, req, json_data=None, apiv=4):
         """Send request to the specific url.
 
         :param request_method: GET, POST, DELETE
@@ -187,8 +177,7 @@ class JovianDSSRESTProxy(object):
         return self.request(request_method,
                             req,
                             json_data=json_data,
-                            apiv=apiv,
-                            application_json=application_json)
+                            apiv=apiv)
 
     @retry(json.JSONDecodeError,
            tries=50)

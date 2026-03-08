@@ -19,8 +19,8 @@ from oslo_utils import units as o_units
 import math
 import re
 import string
-import time
 import hashlib
+import time
 
 from jdssc.jovian_common import exception as jexc
 # from jdssc.jovian_common import cexception as exception

@@ -31,6 +31,8 @@ install:
 	install -D -m 0644 ./OpenEJovianDSS/NFSCommon.pm $(DESTDIR)/usr/share/perl5/OpenEJovianDSS/NFSCommon.pm
 
 	install -D -m 0644 ./configs/multipath/open-e-joviandss.conf $(DESTDIR)/etc/joviandss/multipath-open-e-joviandss.conf.example
+	install -D -m 0644 ./configs/multipath/open-e-joviandss.conf $(DESTDIR)/etc/multipath/conf.d/open-e-joviandss.conf
+	install -D -m 0644 ./configs/udev/50-joviandss-scsi-skip-dm.rules $(DESTDIR)/etc/udev/rules.d/50-joviandss-scsi-skip-dm.rules
 	$(MAKE) -C jdssc install DESTDIR=$(DESTDIR)
 
 uninstall:
@@ -40,5 +42,7 @@ uninstall:
 	rm $(DESTDIR)/usr/share/perl5/OpenEJovianDSS/Common.pm
 	rm $(DESTDIR)/usr/share/perl5/OpenEJovianDSS/NFSCommon.pm
 	rm $(DESTDIR)/etc/joviandss/multipath-open-e-joviandss.conf.example
+	rm -f $(DESTDIR)/etc/multipath/conf.d/open-e-joviandss.conf
+	rm -f $(DESTDIR)/etc/udev/rules.d/50-joviandss-scsi-skip-dm.rules
 
 	$(MAKE) -C jdssc uninstall DESTDIR=$(DESTDIR)

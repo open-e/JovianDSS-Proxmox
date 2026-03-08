@@ -26,4 +26,16 @@ if [ -f "$LVM_CONF" ]; then
     fi
 fi
 
+# Reload udev rules so 50-joviandss-scsi-skip-dm.rules takes effect.
+# This rule prevents udev from running SCSI inquiry on dm-* devices,
+# which causes event storms under concurrent iSCSI activations.
+if [ -x /usr/bin/udevadm ]; then
+    udevadm control --reload-rules 2>/dev/null || true
+fi
+
+# Reconfigure multipathd to pick up updated conf.d/open-e-joviandss.conf.
+if [ -x /usr/sbin/multipathd ] && systemctl is-active --quiet multipathd 2>/dev/null; then
+    multipathd reconfigure 2>/dev/null || true
+fi
+
 exit 0

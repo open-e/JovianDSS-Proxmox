@@ -48,36 +48,34 @@ Possible source of issues: routing problems. If you encounter connectivity issue
 
 ### Installation
 
-Clone the repository, build the package, and install it on all nodes:
+Install latest plugin on all nodes in a cluster by running following command on any Proxmox VE server:
 
 ```bash
-git clone https://github.com/open-e/JovianDSS-Proxmox.git
-cd JovianDSS-Proxmox
-git checkout nfs-plugin
-make deb
-./dev/install-local.pl ./open-e-joviandss-proxmox-plugin-latest.deb --all-nodes
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/nfs-plugin/install.pl | perl - --all-nodes
 ```
 
-Restart the pvedaemon service on **every Proxmox node** to load the newly installed plugin:
+To check latest `pre-release` run:
+```bash
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/nfs-plugin/install.pl | perl - --pre --all-nodes
+```
+
+Restart the pvedaemon service to load the newly installed plugin:
 
 ```bash
 systemctl restart pvedaemon
 ```
-
-> The `--all-nodes` flag installs the package cluster-wide via SSH, but the service restart must be performed on each node individually.
 
 To check the current version of the installed plugin, run the following script:
 ```bash
 dpkg-query -W -f='${Version}\n' open-e-joviandss-proxmox-plugin
 ```
 
-To update to a newer NFS plugin version, pull the latest changes from `nfs-plugin`, run `make deb` again, and reinstall with `dev/install-local.pl`.
+To update to a newest version, the user must re-run the installation script.
 
-To remove the plugin, use:
+The script will automatically install the latest release, or a pre-release version if specified.
 
-```bash
-./dev/install-local.pl --remove --all-nodes
-```
+To downgrade, the current plugin must be removed first.
+For more information, please refer to the [Installation script](https://github.com/open-e/JovianDSS-Proxmox/wiki/Installation-script).
 
 ## Configuration
 
