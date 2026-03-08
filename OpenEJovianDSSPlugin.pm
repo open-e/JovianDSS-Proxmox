@@ -509,7 +509,6 @@ sub clone_image {
     # acquiring the CFS lock.  Consumed once by alloc_image inside the
     # lock so that find_free_diskname can skip the REST API call.
     # This roughly halves the lock hold time for alloc_image.
-my $_prefetched_volumes;
 
 sub alloc_image {
     my ( $class, $storeid, $scfg, $vmid, $fmt, $name, $size ) = @_;
@@ -517,24 +516,10 @@ sub alloc_image {
     my $volume_name = $name;
 
     unless ( defined($volume_name) ) {
-        if (defined($_prefetched_volumes)) {
-            # Use pre-fetched list (populated before the lock was acquired)
-            my $disk_list = [
-                map { $_->{volid} }
-                grep { !defined($vmid) || $_->{vmid} eq $vmid }
-                @$_prefetched_volumes
-            ];
-            $_prefetched_volumes = undef;  # consume once
-            $volume_name = PVE::Storage::Plugin::get_next_vm_diskname(
-                $disk_list, $storeid, $vmid, $fmt, $scfg);
-            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-                "Using pre-fetched volume list for vm ${vmid}, chose ${volume_name}" );
-        } else {
-            $volume_name =
-              $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt );
-            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
-                "Searching for free volume name for vm ${vmid} format ${fmt}" );
-        }
+        $volume_name =
+          $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt );
+        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+            "Searching for free volume name for vm ${vmid} format ${fmt}" );
     }
 
     if ( 'images' ne "${fmt}" ) {
@@ -584,13 +569,6 @@ sub cluster_lock_storage {
     # instead of calling list_images via REST, roughly halving the lock
     # hold time.  For other operations (free_image, etc.) the cache is
     # harmlessly ignored.
-    $_prefetched_volumes = undef;
-    eval {
-        my $scfg = PVE::Storage::storage_config(
-            PVE::Storage::config(), $storeid);
-        $_prefetched_volumes = $class->list_images($storeid, $scfg);
-    };
-    $_prefetched_volumes = undef if $@;
 
     if ($timeout) {
         # Explicit timeout provided — use it as-is (single attempt).
@@ -599,7 +577,6 @@ sub cluster_lock_storage {
                 $storeid, $shared, $timeout, $func, @param);
         };
         my $err = $@;
-        $_prefetched_volumes = undef;
         die $err if $err;
         return $res;
     }
@@ -617,7 +594,6 @@ sub cluster_lock_storage {
     while (1) {
         my $remaining = $max_total - (time() - $start);
         if ($remaining <= 10) {
-            $_prefetched_volumes = undef;
             die "cfs-lock 'storage-$storeid' error: got lock request timeout\n";
         }
         my $attempt = ($per_attempt < $remaining) ? $per_attempt : int($remaining);
@@ -629,7 +605,6 @@ sub cluster_lock_storage {
         my $err = $@;
 
         if (!$err) {
-            $_prefetched_volumes = undef;
             return $res;
         }
 
@@ -640,7 +615,6 @@ sub cluster_lock_storage {
         }
 
         # Non-timeout error — propagate immediately.
-        $_prefetched_volumes = undef;
         die $err;
     }
 }
