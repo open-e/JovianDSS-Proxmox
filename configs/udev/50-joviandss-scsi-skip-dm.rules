@@ -1,0 +1,6 @@
+# Skip SCSI sg3_id inquiry for device-mapper devices (dm-*).
+# Under concurrent iSCSI activations, the 55-scsi-sg3_id.rules rule
+# generates massive udev event storms for dm-* devices that overwhelm
+# udevd and multipathd.  dm-* devices don't need SCSI inquiry.
+# This rule runs before 55-scsi-sg3_id.rules (alphabetical order).
+SUBSYSTEM=="block", KERNEL=="dm-*", ENV{DEVTYPE}=="disk", GOTO="sg3_utils_id_end"
