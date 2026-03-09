@@ -1,3 +1,44 @@
+open-e-joviandss-proxmox-plugin (0.11.1-0) stable; urgency=medium
+
+  * Fix: Remove volume info caching in alloc_image to eliminate race condition
+    under concurrent volume creation
+  * Fix: Extended jdssc call timeouts and improved multipath handling under load
+  * Fix: Correct udev rules installation via Makefile and postinst
+  * Fix: Simplify HTTP session management in REST proxy
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>  Sun, 08 Mar 2026 20:00:00 -0400
+
+open-e-joviandss-proxmox-plugin (0.11.0-0) stable; urgency=medium
+
+  * New: NFS storage plugin (joviandss-nfs) with ZFS-backed VM snapshots and rollback
+  * New: NAS snapshot management via jdssc (create, delete, rollback, clone)
+  * New: Recursive snapshotting for NFS-backed VMs
+  * New: Inherit NFS share properties from origin dataset on clone
+  * New: Quick-Start-NFS.md installation and configuration guide
+  * New: Extended dev/install-local.pl with cluster-wide deployment support
+  * Fix: HTTP request timeout (570 s) in REST proxy to prevent indefinite hangs
+  * Fix: ItemNotFoundError in snapshot page retrieval now raises correct exception
+  * Fix: Orphaned iSCSI targets after VM removal cleaned up by _delete_zombie_targets
+  * Fix: TOCTOU races in _detach_volume, _acquire_target_volume_lun, _ensure_target_volume_lun
+  * Fix: Wrong regex in path() that caused qm destroy --purge to fail on already-deleted volumes
+  * Fix: VIP lookup retries with exponential backoff on transient REST errors
+  * Fix: joviandss_cmd timeout detection (check $rerr before $exitcode, reset state between retries)
+  * Fix: iSCSI block device activation now waits for all paths before returning
+  * Fix: Multipath removal order — iSCSI logout before multipath flush to prevent device recreation
+  * Fix: Use multipath -f (flush) instead of bare multipath <id> to avoid device re-creation
+  * Fix: Deferred multipath removal with dmsetup --deferred as fallback; wait for blocker processes
+  * Fix: Error message for snapshot deletion when dependent clones exist
+  * Fix: Replace cryptic "DNE" with "does not exist" in all error messages
+  * Perf: Eliminate pool-wide iSCSI target scan in detach_volume via --target-group-name filter
+  * Perf: Skip detach call in remove_export when volume has no associated iSCSI target
+  * Perf: Remove redundant volume_unpublish from free_image, reducing deletion time from ~22 s to ~4 s
+  * Perf: Pre-fetch volume list before acquiring CFS lock to halve lock hold time in alloc_image
+  * Perf: Dynamic CFS lock timeout (30 s base + 5 s per concurrent worker, capped at 120 s)
+  * Config: Add LVM global_filter in postinst to prevent vgs/pvscan scanning JovianDSS multipath devices
+  * Config: Add delete_timeout property for tuning volume deletion timeout
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>, Miroslaw Franek, Claude Code (Anthropic AI)  Fri, 06 Mar 2026 14:00:00 -0500
+
 open-e-joviandss-proxmox-plugin (0.10.17-0) stable; urgency=medium
 
   * Perf: Add dynamic CFS lock timeout scaling with concurrent workers (10s base + 5s/worker, capped at 120s)
