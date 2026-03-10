@@ -1357,89 +1357,180 @@ sub volume_stage_iscsi {
         return $targets_block_devices;
     }
 
-    foreach my $host (@$hosts) {
-
-        # Check if session already exists
-        my $session_exists = 0;
+    # Helper: update %host_has_session by querying iscsiadm --mode session.
+    my %host_has_session;
+    my $refresh_sessions = sub {
         eval {
-            my $cmd = [
-                $ISCSIADM,
-                '--mode', 'session'
-            ];
+            my $cmd = [ $ISCSIADM, '--mode', 'session' ];
+            my @session_lines;
             run_command(
                 $cmd,
                 outfunc => sub {
                     my $line = shift;
-                    if ($line =~ /\Q$targetname\E/ && $line =~ /\Q$host\E/) {
-                        $session_exists = 1;
+                    push @session_lines, $line;
+                    for my $host (@$hosts) {
+                        if ($line =~ /\Q$targetname\E/ && $line =~ /\Q$host\E/) {
+                            $host_has_session{$host} = 1;
+                        }
                     }
                 },
-                errfunc => sub {
-                    cmd_log_output($scfg, 'error', $cmd, shift);
-                },
+                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
                 noerr   => 1
             );
+            debugmsg($scfg, 'debug',
+                "refresh_sessions: found " . scalar(@session_lines)
+                . " session(s): @{session_lines}, looking for target ${targetname} "
+                . "hosts [@$hosts]: "
+                . join(', ', map { "$_=" . ($host_has_session{$_} ? 'yes' : 'no') } @$hosts));
         };
+    };
 
-        if ($session_exists) {
-            debugmsg($scfg, "debug", "iSCSI session already exists for target ${targetname} on host ${host}");
-        } else {
+    $refresh_sessions->();
+
+    for my $host (grep { $host_has_session{$_} } @$hosts) {
+        debugmsg($scfg, "debug",
+            "iSCSI session already exists for target ${targetname} on host ${host}");
+    }
+
+    # Retry login for hosts that do not yet have a session.
+    # Up to 10 attempts; at least one host must succeed before we can
+    # proceed to block-device detection.
+    my $max_login_attempts = 10;
+    for my $attempt (1 .. $max_login_attempts) {
+        # Re-check sessions on retries: a prior login that returned a transient
+        # error (e.g. PDU timeout) may have actually established the session in
+        # the background by the time we get here.  The session can be in a
+        # FAILED/IN-LOGIN recovery cycle managed by iscsid, briefly disappearing
+        # between retry intervals.  Poll a few times with short gaps so we catch
+        # it in the up-phase of the cycle.
+        if ($attempt > 1) {
+            my %had_session = map { $_ => 1 } grep { $host_has_session{$_} } @$hosts;
+            my $max_session_polls = 5;
+            for my $poll (1 .. $max_session_polls) {
+                $refresh_sessions->();
+                my @still_pending = grep { !$host_has_session{$_} } @$hosts;
+                last unless @still_pending;
+                last if $poll == $max_session_polls;
+                sleep(2);
+            }
+            for my $host (grep { $host_has_session{$_} && !$had_session{$_} } @$hosts) {
+                debugmsg($scfg, 'debug',
+                    "refresh_sessions: session for ${host} target ${targetname} "
+                    . "appeared between login attempts");
+            }
+        }
+
+        my @pending = grep { !$host_has_session{$_} } @$hosts;
+        last unless @pending;
+
+        debugmsg($scfg, "debug",
+            "iSCSI login attempt ${attempt}/${max_login_attempts} "
+            . "for hosts: @pending target ${targetname}");
+
+        for my $host (@pending) {
+            # Create node db entry — ignore errors, already-existing is normal.
             eval {
                 my $cmd = [
-                        $ISCSIADM,
-                        '--mode',       'node',
-                        '-p',            $host,
-                        '--targetname',  $targetname,
-                        '-o', 'new'
-                    ];
+                    $ISCSIADM, '--mode', 'node',
+                    '-p', $host, '--targetname', $targetname, '-o', 'new'
+                ];
+                run_command(
+                    $cmd,
+                    outfunc => sub { },
+                    errfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                    noerr   => 1
+                );
+            };
 
+            # Set a short login timeout so each failed attempt fails quickly,
+            # leaving room for more retries. JovianDSS may take time to fully
+            # initialize a newly-created iSCSI target under concurrent load.
+            eval {
+                my $cmd = [
+                    $ISCSIADM, '--mode', 'node',
+                    '-p', $host, '--targetname', $targetname,
+                    '-o', 'update',
+                    '-n', 'node.conn[0].timeo.login_timeout', '-v', '30'
+                ];
+                run_command(
+                    $cmd,
+                    outfunc => sub { },
+                    errfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                    noerr   => 1
+                );
+            };
+
+            # Attempt login — capture exit code via eval so the real error
+            # is logged instead of being silently swallowed.
+            my $already_present = 0;
+            eval {
+                my $cmd = [
+                    $ISCSIADM, '--mode', 'node',
+                    '-p', $host, '--targetname', $targetname, '--login'
+                ];
                 run_command(
                     $cmd,
                     outfunc => sub { },
                     errfunc => sub {
-                        cmd_log_output($scfg, 'warn', $cmd, shift);
-                    },
-                    noerr   => 1
+                        my $line = shift;
+                        $already_present = 1 if $line =~ /already present/i;
+                        cmd_log_output($scfg,
+                            $already_present ? 'debug' : 'warn', $cmd, $line);
+                    }
                 );
+                $host_has_session{$host} = 1;
             };
-            # Don't warn on node creation errors - already existing is normal
+            if ($@) {
+                if ($already_present) {
+                    debugmsg($scfg, 'debug',
+                        "iSCSI session already present for host ${host} "
+                        . "target ${targetname}, treating as success");
+                    $host_has_session{$host} = 1;
+                } else {
+                    debugmsg($scfg, 'warn',
+                        "iSCSI login attempt ${attempt}/${max_login_attempts} "
+                        . "failed for host ${host} target ${targetname}: $@");
+                }
+            } else {
+                debugmsg($scfg, 'debug',
+                    "iSCSI login succeeded for host ${host} "
+                    . "target ${targetname} on attempt ${attempt}/${max_login_attempts}");
+            }
+        }
 
-            # Attempt login
-            eval {
-                my $cmd = [
-                        $ISCSIADM,
-                        '--mode',       'node',
-                        '-p',           $host,
-                        '--targetname', $targetname,
-                        '--login'
-                    ];
+        sleep(1) if $attempt < $max_login_attempts
+                    && grep { !$host_has_session{$_} } @$hosts;
+    }
 
-                run_command(
-                    $cmd,
-                    outfunc => sub { },
-                    errfunc => sub {
-                        cmd_log_output($scfg, 'warn', $cmd, shift);
-                    },
-                    noerr   => 1
-                );
-            };
-        } # End of iscsi session creation for given address
-        debugmsg( $scfg, "debug", "Staging target ${targetname} of host ${host} done\n" );
-    } # end of for loop over all addresses
+    my @logged_in = grep {  $host_has_session{$_} } @$hosts;
+    my @failed    = grep { !$host_has_session{$_} } @$hosts;
+
+    if (!@logged_in) {
+        die "Unable to establish iSCSI session for target ${targetname} "
+            . "on any host after ${max_login_attempts} attempts. "
+            . "Hosts tried: @$hosts\n";
+    }
+    if (@failed) {
+        debugmsg($scfg, 'warn',
+            "iSCSI login failed for hosts @failed after ${max_login_attempts} attempts; "
+            . "proceeding with " . scalar(@logged_in) . " of " . scalar(@$hosts)
+            . " hosts for target ${targetname}");
+    }
 
     for ( my $i = 1 ; $i <= 30 ; $i++ ) {
-        sleep(1);
+        $targets_block_devices =
+            block_device_iscsi_paths( $scfg, $targetname, $lunid, \@logged_in );
 
-        $targets_block_devices = block_device_iscsi_paths( $scfg, $targetname, $lunid, $hosts );
-
-        if ( @$targets_block_devices == @$hosts ) {
+        if ( @$targets_block_devices == @logged_in ) {
             debugmsg( $scfg, "debug", "Stage iSCSI block devices @{ $targets_block_devices }\n" );
             return $targets_block_devices;
         }
 
         debugmsg( $scfg, "debug", "Waiting for block devices: got "
-            . scalar(@$targets_block_devices) . " of " . scalar(@$hosts)
+            . scalar(@$targets_block_devices) . " of " . scalar(@logged_in)
             . " (attempt ${i}/30)\n" );
+
+        sleep(1);
 
         # Run rescan-scsi-bus only every 3rd attempt.  Under concurrent
         # load (many clones), each rescan takes minutes and 19 concurrent
@@ -1448,10 +1539,11 @@ sub volume_stage_iscsi {
         if ( $i % 3 == 0 && $lunid =~ /^\A\d+\z$/ ) {
             my $cmd = [ '/usr/bin/rescan-scsi-bus.sh', '--sparselun', '--reportlun2', '--largelun', "--luns=${lunid}", '-a'];
             run_command(
-                $cmd ,
-                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
-                noerr   => 1
+                $cmd,
+                outfunc  => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
+                errfunc  => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                timeout  => 60,
+                noerr    => 1
             );
         } elsif ( $lunid !~ /^\A\d+\z$/ ) {
             debugmsg( $scfg, "warn", "Lun id ${lunid} contains non digit symbols" );
@@ -1556,6 +1648,51 @@ sub volume_stage_multipath {
                         noerr   => 1
                     );
                 };
+            }
+
+            # TODO: remove once multipath device appearance is reliable under load
+            # Trigger udev rescan for the specific sd devices belonging to this
+            # WWID every 4th attempt.  Unlike a broad "udevadm trigger -t all",
+            # targeting individual sysfs paths only generates events for these
+            # devices, avoiding disruption to other active multipath devices.
+            if ( $attempt % 4 == 0 ) {
+                if (@sd_devnames) {
+                    for my $devname (@sd_devnames) {
+                        eval {
+                            my $cmd = [ 'udevadm', 'trigger',
+                                        '/sys/block/' . $devname ];
+                            run_command(
+                                $cmd,
+                                outfunc => sub { },
+                                errfunc => sub {
+                                    cmd_log_output($scfg, 'debug', $cmd, shift);
+                                },
+                                noerr => 1
+                            );
+                        };
+                    }
+                    debugmsg( $scfg, 'debug',
+                        "Triggered udev rescan for devices: "
+                        . join(', ', @sd_devnames)
+                        . " (attempt ${attempt})" );
+                } else {
+                    eval {
+                        my $cmd = [ 'udevadm', 'trigger',
+                                    '--subsystem-match=block',
+                                    "--attr-match=ID_SERIAL=${id}" ];
+                        run_command(
+                            $cmd,
+                            outfunc => sub { },
+                            errfunc => sub {
+                                cmd_log_output($scfg, 'debug', $cmd, shift);
+                            },
+                            noerr => 1
+                        );
+                    };
+                    debugmsg( $scfg, 'debug',
+                        "Triggered udev rescan for scsiid ${id} "
+                        . "(attempt ${attempt})" );
+                }
             }
 
             # On first attempt and every 5th attempt, try the multipath

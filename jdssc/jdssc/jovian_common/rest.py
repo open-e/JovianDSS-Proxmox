@@ -16,6 +16,8 @@
 
 """REST cmd interoperation class for Open-E JovianDSS driver."""
 import re
+import time
+import random
 
 import logging
 
@@ -163,12 +165,29 @@ class JovianRESTAPI(object):
 
         LOG.debug("get page %d of all volumes", page_id)
 
-        resp = self.rproxy.pool_request('GET', req)
+        max_retries = 10
+        for attempt in range(max_retries):
+            resp = self.rproxy.pool_request('GET', req)
 
-        if not resp["error"] and resp["code"] == 200:
-            return resp["data"]["entries"]
+            if not resp["error"] and resp["code"] == 200:
+                if isinstance(resp["data"], dict) and "entries" in resp["data"]:
+                    return resp["data"]["entries"]
+                delay = random.uniform(1, 5)
+                LOG.warning("get_volumes_page: unexpected response format "
+                            "(attempt %d/%d), retrying in %.1fs: %s",
+                            attempt + 1, max_retries, delay, resp["data"])
+                time.sleep(delay)
+                continue
 
-        self._general_error(req, resp)
+            if attempt < max_retries - 1:
+                delay = random.uniform(1, 5)
+                LOG.warning("get_volumes_page: request failed "
+                            "(attempt %d/%d), retrying in %.1fs",
+                            attempt + 1, max_retries, delay)
+                time.sleep(delay)
+                continue
+
+            self._general_error(req, resp)
 
     def create_lun(self, volume_name, volume_size, sparse=False,
                    block_size=None):
@@ -819,7 +838,7 @@ class JovianRESTAPI(object):
         if resp['code'] == 404:
             raise jexc.JDSSResourceNotFoundException(res=target_name)
 
-            self._general_error(req, resp)
+        self._general_error(req, resp)
 
     def detach_target_vol(self, target_name, lun_name):
         """detach_target_vol.
