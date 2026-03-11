@@ -42,6 +42,7 @@ use PVE::Storage::Plugin;
 #use PVE::SafeSyslog;
 
 use OpenEJovianDSS::Common qw(:all);
+use OpenEJovianDSS::Lock   qw(cluster_lock);
 use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
@@ -601,21 +602,15 @@ sub alloc_image {
 sub cluster_lock_storage {
     my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
 
-    use B qw(svref_2object);
-    my $func_name = svref_2object($func)->GV->NAME;
+    my $caller = (caller(1))[3] // '';
+    $caller =~ s/.*:://;
 
-    # Need $scfg for debugmsg - get it from storage config
-    my $cfg = PVE::Storage::config();
+    my $cfg  = PVE::Storage::config();
     my $scfg = $cfg->{ids}->{$storeid};
-
     OpenEJovianDSS::Common::debugmsg($scfg, 'debug',
-        "cluster_lock_storage: storeid=${storeid} func=${func_name}");
+        "cluster_lock_storage: caller=${caller}");
 
-    my $res;
-
-    $res = eval { &$func(@param); };
-    die $@ if $@;
-    return $res;
+    return cluster_lock($storeid, $shared, $timeout, $caller, $func, @param);
 }
 
 sub free_image {
