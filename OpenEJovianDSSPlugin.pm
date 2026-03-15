@@ -42,7 +42,7 @@ use PVE::Storage::Plugin;
 #use PVE::SafeSyslog;
 
 use OpenEJovianDSS::Common qw(:all);
-use OpenEJovianDSS::Lock   qw(cluster_lock);
+use OpenEJovianDSS::Lock   qw(lock_vm lock_storage);
 use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
@@ -409,6 +409,60 @@ sub path {
 }
 
 sub rename_volume {
+    my ( $class, $scfg, $storeid, $original_volname, $new_vmid, $new_volname ) = @_;
+    return _rename_volume_lock( $class, $scfg, $storeid, $original_volname, $new_vmid, $new_volname );
+}
+
+sub _rename_volume_lock {
+    my ( $class, $scfg, $storeid, $original_volname, $new_vmid, $new_volname ) = @_;
+
+    my ( undef, undef, $src_vmid ) = eval { $class->parse_volname($original_volname) };
+
+    my $code = sub {
+        _rename_volume( $class, $scfg, $storeid, $original_volname, $new_vmid, $new_volname )
+    };
+
+    my $res;
+    if ( !defined($src_vmid) || !defined($new_vmid) ) {
+        # Cannot determine one or both VMIDs: serialise at storage level.
+        $res = OpenEJovianDSS::Lock::lock_storage(
+            $storeid, $scfg->{path}, $scfg->{shared}, undef, $code,
+        );
+    } elsif ( $src_vmid == $new_vmid ) {
+        # Rename within the same VM: one lock is sufficient.
+        $res = OpenEJovianDSS::Lock::lock_vm(
+            $storeid, $scfg->{path}, $scfg->{shared}, $new_vmid, undef, $code,
+        );
+    } elsif ( $src_vmid < $new_vmid ) {
+        # Acquire lower vmid first.
+        $res = OpenEJovianDSS::Lock::lock_vm(
+            $storeid, $scfg->{path}, $scfg->{shared}, $src_vmid, undef,
+            sub {
+                my $r = OpenEJovianDSS::Lock::lock_vm(
+                    $storeid, $scfg->{path}, $scfg->{shared}, $new_vmid, undef, $code,
+                );
+                die $@ if $@;
+                return $r;
+            },
+        );
+    } else {
+        # Acquire lower vmid first (new_vmid is lower here).
+        $res = OpenEJovianDSS::Lock::lock_vm(
+            $storeid, $scfg->{path}, $scfg->{shared}, $new_vmid, undef,
+            sub {
+                my $r = OpenEJovianDSS::Lock::lock_vm(
+                    $storeid, $scfg->{path}, $scfg->{shared}, $src_vmid, undef, $code,
+                );
+                die $@ if $@;
+                return $r;
+            },
+        );
+    }
+    die $@ if $@;
+    return $res;
+}
+
+sub _rename_volume {
     my ( $class, $scfg, $storeid, $original_volname, $new_vmid, $new_volname )
       = @_;
 
@@ -439,13 +493,40 @@ sub rename_volume {
 
 sub create_base {
     my ( $class, $storeid, $scfg, $volname ) = @_;
+    return _create_base_lock( $class, $storeid, $scfg, $volname );
+}
+
+sub _create_base_lock {
+    my ( $class, $storeid, $scfg, $volname ) = @_;
+
+    my ( undef, undef, $vmid ) = eval { $class->parse_volname($volname) };
+    my $res;
+    if ( defined $vmid ) {
+        $res = OpenEJovianDSS::Lock::lock_vm(
+            $storeid, $scfg->{path}, $scfg->{shared}, $vmid, undef,
+            sub { _create_base( $class, $storeid, $scfg, $volname ) },
+        );
+    } else {
+        $res = OpenEJovianDSS::Lock::lock_storage(
+            $storeid, $scfg->{path}, $scfg->{shared}, undef,
+            sub { _create_base( $class, $storeid, $scfg, $volname ) },
+        );
+    }
+    die $@ if $@;
+    return $res;
+}
+
+sub _create_base {
+    my ( $class, $storeid, $scfg, $volname ) = @_;
 
     my ( $vtype, $name, $vmid, $basename, $basevmid, $isBase ) =
       $class->parse_volname($volname);
 
     die "create_base is not possible with base image\n" if $isBase;
 
-    $class->deactivate_volume( $storeid, $scfg, $volname, undef, undef );
+    # Call _deactivate_volume directly to avoid re-acquiring the per-VM lock
+    # (pmxcfs mkdir is not re-entrant; the lock is already held here).
+    _deactivate_volume( $class, $storeid, $scfg, $volname, undef, undef );
 
     my $pool = OpenEJovianDSS::Common::get_pool($scfg);
 
@@ -457,12 +538,62 @@ sub create_base {
     chomp($newname);
     $newname =~ s/[^[:ascii:]]//;
 
-    $class->rename_volume( $scfg, $storeid, $volname, $vmid, $newname );
+    # Call _rename_volume directly for the same reason.
+    _rename_volume( $class, $scfg, $storeid, $volname, $vmid, $newname );
 
     return $newname;
 }
 
 sub clone_image {
+    my ( $class, $scfg, $storeid, $volname, $vmid, $snap ) = @_;
+    return _clone_image_lock( $class, $scfg, $storeid, $volname, $vmid, $snap );
+}
+
+sub _clone_image_lock {
+    my ( $class, $scfg, $storeid, $volname, $vmid, $snap ) = @_;
+
+    my ( undef, undef, $src_vmid ) = eval { $class->parse_volname($volname) };
+
+    my $code = sub {
+        _clone_image( $class, $scfg, $storeid, $volname, $vmid, $snap )
+    };
+
+    my $res;
+    if ( !defined($src_vmid) || $src_vmid == $vmid ) {
+        # Source vmid unknown or same as destination: single lock is sufficient.
+        $res = OpenEJovianDSS::Lock::lock_vm(
+            $storeid, $scfg->{path}, $scfg->{shared}, $vmid, undef, $code,
+        );
+    } elsif ( $src_vmid < $vmid ) {
+        # Acquire lower vmid first to prevent deadlock.
+        $res = OpenEJovianDSS::Lock::lock_vm(
+            $storeid, $scfg->{path}, $scfg->{shared}, $src_vmid, undef,
+            sub {
+                my $r = OpenEJovianDSS::Lock::lock_vm(
+                    $storeid, $scfg->{path}, $scfg->{shared}, $vmid, undef, $code,
+                );
+                die $@ if $@;
+                return $r;
+            },
+        );
+    } else {
+        # Acquire lower vmid first (vmid is lower here).
+        $res = OpenEJovianDSS::Lock::lock_vm(
+            $storeid, $scfg->{path}, $scfg->{shared}, $vmid, undef,
+            sub {
+                my $r = OpenEJovianDSS::Lock::lock_vm(
+                    $storeid, $scfg->{path}, $scfg->{shared}, $src_vmid, undef, $code,
+                );
+                die $@ if $@;
+                return $r;
+            },
+        );
+    }
+    die $@ if $@;
+    return $res;
+}
+
+sub _clone_image {
     my ( $class, $scfg, $storeid, $volname, $vmid, $snap ) = @_;
 
     my $pool = OpenEJovianDSS::Common::get_pool($scfg);
@@ -506,12 +637,23 @@ sub clone_image {
     return $clone_name;
 }
 
-    # Pre-fetched volume list, populated by cluster_lock_storage BEFORE
-    # acquiring the CFS lock.  Consumed once by alloc_image inside the
-    # lock so that find_free_diskname can skip the REST API call.
-    # This roughly halves the lock hold time for alloc_image.
-
 sub alloc_image {
+    my ( $class, $storeid, $scfg, $vmid, $fmt, $name, $size ) = @_;
+    return _alloc_image_lock( $class, $storeid, $scfg, $vmid, $fmt, $name, $size );
+}
+
+sub _alloc_image_lock {
+    my ( $class, $storeid, $scfg, $vmid, $fmt, $name, $size ) = @_;
+
+    my $res = OpenEJovianDSS::Lock::lock_vm(
+        $storeid, $scfg->{path}, $scfg->{shared}, $vmid, undef,
+        sub { _alloc_image( $class, $storeid, $scfg, $vmid, $fmt, $name, $size ) },
+    );
+    die $@ if $@;
+    return $res;
+}
+
+sub _alloc_image {
     my ( $class, $storeid, $scfg, $vmid, $fmt, $name, $size ) = @_;
 
     my $volume_name = $name;
@@ -599,21 +741,45 @@ sub alloc_image {
     return OpenEJovianDSS::Common::clean_word($volume_name);
 }
 
+# cluster_lock_storage — strict no-op pass-through.
+#
+# Locking is handled inside each plugin method via _method_lock wrappers that
+# call Lock::lock_vm directly.  cluster_lock_storage must NOT acquire any lock
+# here because the pmxcfs mkdir primitive is not re-entrant: if this function
+# acquired a lock and the plugin method it calls also tried to acquire the same
+# lock, the inner mkdir would block forever (deadlock).
 sub cluster_lock_storage {
     my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
-
-    my $caller = (caller(1))[3] // '';
-    $caller =~ s/.*:://;
-
-    my $cfg  = PVE::Storage::config();
-    my $scfg = $cfg->{ids}->{$storeid};
-    OpenEJovianDSS::Common::debugmsg($scfg, 'debug',
-        "cluster_lock_storage: caller=${caller}");
-
-    return cluster_lock($storeid, $shared, $timeout, $caller, $func, @param);
+    return $func->(@param);
 }
 
+
 sub free_image {
+    my ( $class, $storeid, $scfg, $volname, $isBase, $_format ) = @_;
+    return _free_image_lock( $class, $storeid, $scfg, $volname, $isBase, $_format );
+}
+
+sub _free_image_lock {
+    my ( $class, $storeid, $scfg, $volname, $isBase, $_format ) = @_;
+
+    my ( undef, undef, $vmid ) = eval { $class->parse_volname($volname) };
+    my $res;
+    if ( defined $vmid ) {
+        $res = OpenEJovianDSS::Lock::lock_vm(
+            $storeid, $scfg->{path}, $scfg->{shared}, $vmid, undef,
+            sub { _free_image( $class, $storeid, $scfg, $volname, $isBase, $_format ) },
+        );
+    } else {
+        $res = OpenEJovianDSS::Lock::lock_storage(
+            $storeid, $scfg->{path}, $scfg->{shared}, undef,
+            sub { _free_image( $class, $storeid, $scfg, $volname, $isBase, $_format ) },
+        );
+    }
+    die $@ if $@;
+    return $res;
+}
+
+sub _free_image {
     my ( $class, $storeid, $scfg, $volname, $isBase, $_format ) = @_;
 
     my $pool = OpenEJovianDSS::Common::get_pool($scfg);
@@ -988,6 +1154,31 @@ sub deactivate_storage {
 
 sub activate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
+    return _activate_volume_lock( $class, $storeid, $scfg, $volname, $snapname, $cache );
+}
+
+sub _activate_volume_lock {
+    my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
+
+    my ( undef, undef, $vmid ) = eval { $class->parse_volname($volname) };
+    my $res;
+    if ( defined $vmid ) {
+        $res = OpenEJovianDSS::Lock::lock_vm(
+            $storeid, $scfg->{path}, $scfg->{shared}, $vmid, undef,
+            sub { _activate_volume( $class, $storeid, $scfg, $volname, $snapname, $cache ) },
+        );
+    } else {
+        $res = OpenEJovianDSS::Lock::lock_storage(
+            $storeid, $scfg->{path}, $scfg->{shared}, undef,
+            sub { _activate_volume( $class, $storeid, $scfg, $volname, $snapname, $cache ) },
+        );
+    }
+    die $@ if $@;
+    return $res;
+}
+
+sub _activate_volume {
+    my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
             "Activate volume ${volname}"
@@ -1051,6 +1242,31 @@ sub activate_volume {
 }
 
 sub deactivate_volume {
+    my ( $class, $storeid, $scfg, $volname, $snapname, $cache, $hints ) = @_;
+    return _deactivate_volume_lock( $class, $storeid, $scfg, $volname, $snapname, $cache, $hints );
+}
+
+sub _deactivate_volume_lock {
+    my ( $class, $storeid, $scfg, $volname, $snapname, $cache, $hints ) = @_;
+
+    my ( undef, undef, $vmid ) = eval { $class->parse_volname($volname) };
+    my $res;
+    if ( defined $vmid ) {
+        $res = OpenEJovianDSS::Lock::lock_vm(
+            $storeid, $scfg->{path}, $scfg->{shared}, $vmid, undef,
+            sub { _deactivate_volume( $class, $storeid, $scfg, $volname, $snapname, $cache, $hints ) },
+        );
+    } else {
+        $res = OpenEJovianDSS::Lock::lock_storage(
+            $storeid, $scfg->{path}, $scfg->{shared}, undef,
+            sub { _deactivate_volume( $class, $storeid, $scfg, $volname, $snapname, $cache, $hints ) },
+        );
+    }
+    die $@ if $@;
+    return $res;
+}
+
+sub _deactivate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache, $hints ) = @_;
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",

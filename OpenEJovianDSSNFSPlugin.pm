@@ -37,6 +37,7 @@ use PVE::Cluster;
 
 use OpenEJovianDSS::Common qw(:all);
 use OpenEJovianDSS::NFSCommon qw(:all);
+use OpenEJovianDSS::Lock qw(lock_vm lock_storage);
 
 use base qw(PVE::Storage::Plugin);
 
@@ -657,6 +658,31 @@ sub volume_rollback_is_possible {
 
 sub activate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
+    return _activate_volume_lock( $class, $storeid, $scfg, $volname, $snapname, $cache );
+}
+
+sub _activate_volume_lock {
+    my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
+
+    my ( undef, undef, $vmid ) = eval { $class->parse_volname($volname) };
+    my $res;
+    if ( defined $vmid ) {
+        $res = OpenEJovianDSS::Lock::lock_vm(
+            $storeid, $scfg->{path}, $scfg->{shared}, $vmid, undef,
+            sub { _activate_volume( $class, $storeid, $scfg, $volname, $snapname, $cache ) },
+        );
+    } else {
+        $res = OpenEJovianDSS::Lock::lock_storage(
+            $storeid, $scfg->{path}, $scfg->{shared}, undef,
+            sub { _activate_volume( $class, $storeid, $scfg, $volname, $snapname, $cache ) },
+        );
+    }
+    die $@ if $@;
+    return $res;
+}
+
+sub _activate_volume {
+    my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
         "Activate volume ${volname}"
@@ -715,6 +741,31 @@ sub activate_volume {
 }
 
 sub deactivate_volume {
+    my ( $class, $storeid, $scfg, $volname, $snapname, $cache, $hints ) = @_;
+    return _deactivate_volume_lock( $class, $storeid, $scfg, $volname, $snapname, $cache, $hints );
+}
+
+sub _deactivate_volume_lock {
+    my ( $class, $storeid, $scfg, $volname, $snapname, $cache, $hints ) = @_;
+
+    my ( undef, undef, $vmid ) = eval { $class->parse_volname($volname) };
+    my $res;
+    if ( defined $vmid ) {
+        $res = OpenEJovianDSS::Lock::lock_vm(
+            $storeid, $scfg->{path}, $scfg->{shared}, $vmid, undef,
+            sub { _deactivate_volume( $class, $storeid, $scfg, $volname, $snapname, $cache, $hints ) },
+        );
+    } else {
+        $res = OpenEJovianDSS::Lock::lock_storage(
+            $storeid, $scfg->{path}, $scfg->{shared}, undef,
+            sub { _deactivate_volume( $class, $storeid, $scfg, $volname, $snapname, $cache, $hints ) },
+        );
+    }
+    die $@ if $@;
+    return $res;
+}
+
+sub _deactivate_volume {
     my ( $class, $storeid, $scfg, $volname, $snapname, $cache, $hints ) = @_;
 
     OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
@@ -890,26 +941,15 @@ sub volume_qemu_snapshot_method {
 }
 
 
+
+# cluster_lock_storage — strict no-op pass-through.
+# Per-VM locking is handled inside each plugin method (_activate_volume_lock,
+# _deactivate_volume_lock) via OpenEJovianDSS::Lock. If this function also
+# acquired a lock and the plugin method it calls also tried to acquire the same
+# lock, the inner mkdir would block forever (deadlock).
 sub cluster_lock_storage {
     my ($class, $storeid, $shared, $timeout, $func, @param) = @_;
-
-    if( ! defined($timeout)) {
-        $timeout = int(360);
-    }
-
-    $timeout = (2 * $timeout);
-    my $res;
-    if (!$shared) {
-        my $lockid = "pve-storage-$storeid";
-        my $lockdir = "/var/lock/pve-manager";
-        mkdir $lockdir;
-        $res = PVE::Tools::lock_file("$lockdir/$lockid", $timeout, $func, @param);
-        die $@ if $@;
-    } else {
-        $res = PVE::Cluster::cfs_lock_storage($storeid, $timeout, $func, @param);
-        die $@ if $@;
-    }
-    return $res;
+    return $func->(@param);
 }
 
 1;

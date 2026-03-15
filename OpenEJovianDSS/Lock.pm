@@ -20,16 +20,14 @@ use warnings;
 
 use Exporter 'import';
 
-use File::Path qw(make_path);
-use PadWalker  qw(peek_sub);
+use File::Path  qw(make_path);
+use File::stat  ();
 use PVE::Cluster ();
-use PVE::Tools qw(lock_file);
+use PVE::Tools  qw(lock_file);
 
 our @EXPORT_OK = qw(
-    cluster_lock
     lock_storage
     lock_vm
-    lock_volume
 );
 
 our %EXPORT_TAGS = ( all => [@EXPORT_OK] );
@@ -45,9 +43,6 @@ sub _cluster_lockdir {
     return "/etc/pve/priv/storage/joviandss/${storeid}/locks";
 }
 
-# Node-local lock root: standard Proxmox lock directory.
-sub _node_lockdir { return "/var/lock/pve-manager" }
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -60,104 +55,187 @@ sub _sanitize_lockid {
 }
 
 # ---------------------------------------------------------------------------
-# Cluster-wide lock  (pmxcfs atomic mkdir)
+# Cluster-wide lock — single acquisition attempt  (pmxcfs atomic mkdir)
 # ---------------------------------------------------------------------------
 #
-# Replicates the private $cfs_lock closure from PVE::Cluster using a
-# plugin-specific directory instead of /etc/pve/priv/lock/.
+# Modelled on the private $cfs_lock closure in PVE::Cluster
+# (pve-cluster/src/PVE/Cluster.pm:601) with three additions:
 #
-# The pmxcfs filesystem guarantees that mkdir(2) is atomic across all cluster
-# nodes — the same primitive used by every PVE::Cluster::cfs_lock_* function.
+#   1. Retry-friendly acquisition error string ("acquire timeout") so that
+#      _cluster_lock can detect and retry acquisition-only failures.
 #
-# pmxcfs automatically releases lock directories that have not been touched
-# for ~120s.  We therefore impose a 60s execution timeout after acquiring the
-# lock, matching the PVE::Cluster convention, to stay safely within that
-# window and leave room to abort the task.
+#   2. Quorum check on lock failure: if the lock was never acquired, test
+#      the write bit on /etc/pve/local (pmxcfs clears it on quorum loss)
+#      and replace the generic timeout with "no quorum!\n".
 #
-# Args:
-#   $storeid  — storage id (used to scope the lock directory)
-#   $lockid   — unique lock name within this storage (safe filename component)
-#   $timeout  — seconds to wait for lock acquisition (default 30)
-#   $code     — code ref to execute while holding the lock
-#   @param    — extra arguments forwarded to $code
+#   3. $is_code_err flag: set to 1 after cfs_update() and before $code so
+#      that errors from $code are re-raised as-is while lock-machinery errors
+#      (including cfs_update failures and execution timeout) are prefixed with
+#      "joviandss-lock '$lockid' error: ...".
+#
+# The execution alarm is set to 60s — safely within pmxcfs's ~120s stale-lock
+# release window, matching the PVE::Cluster convention.
+#
+# Returns result of $code on success ($@ = undef).
+# Returns undef and sets $@ on any failure.
 
-sub _cluster_lock {
-    my ($storeid, $lockid, $timeout, $code, @param) = @_;
+sub _cluster_lock_attempt {
+    my ($lockdir, $lockpath, $lockid, $timeout, $code, @param) = @_;
 
-    $timeout //= 30;
-
-    my $lockdir  = _cluster_lockdir($storeid);
-    my $lockpath = "$lockdir/$lockid";
-
-    my $prev_alarm = alarm(0);    # suspend any outer alarm
-    my $got_lock   = 0;
+    my $prev_alarm  = alarm(0);    # suspend any outer alarm
+    my $got_lock    = 0;
+    my $is_code_err = 0;
     my $res;
 
     eval {
-        make_path($lockdir);      # idempotent; creates intermediate dirs too
+        make_path($lockdir);
         die "pve cluster filesystem not online\n" if !-d $lockdir;
 
-        my $timeout_err = sub { die "joviandss lock '$lockid' acquire timeout\n" };
+        my $timeout_err = sub { die "acquire timeout\n" };
         local $SIG{ALRM} = $timeout_err;
 
         while (1) {
             alarm($timeout);
-            $got_lock = mkdir($lockpath);  # atomic on pmxcfs
-            $timeout  = alarm(0) - 1;     # account for 1s sleep below
+            $got_lock = mkdir($lockpath);    # atomic on pmxcfs
+            $timeout  = alarm(0) - 1;       # deduct elapsed; sleep costs 1s
 
             last if $got_lock;
 
             $timeout_err->() if $timeout <= 0;
 
             print STDERR "waiting for joviandss lock '$lockid' ...\n";
-            utime(0, 0, $lockpath);        # tell pmxcfs to release stale lock
+            utime(0, 0, $lockpath);          # signal pmxcfs to release stale lock
             sleep(1);
         }
 
-        # Hard execution timeout: must complete before pmxcfs drops the lock.
-        local $SIG{ALRM} = sub {
-            die "joviandss lock '$lockid' execution timed out\n";
-        };
+        # Hard execution timeout: pmxcfs drops locks not touched for ~120s.
+        # We use 60s to stay safely within that window (matching PVE::Cluster).
+        # $is_code_err is set after cfs_update() so that a cfs_update timeout
+        # is classified as a lock-machinery error (prefixed), not a code error.
+        local $SIG{ALRM} = sub { die "execution timed out\n" };
         alarm(60);
 
-        # Ensure we see the latest cluster state before doing any work.
-        PVE::Cluster::cfs_update();
+        PVE::Cluster::cfs_update();          # ensure latest cluster state
 
+        $is_code_err = 1;                    # errors from here on are from $code
         $res = &$code(@param);
 
         alarm(0);
     };
 
     my $err = $@;
-    rmdir $lockpath if $got_lock;  # release lock; safe even on error
-    alarm($prev_alarm);            # restore outer alarm
-    die $err if $err;
+
+    # If we never got the lock, check whether quorum was lost.
+    # pmxcfs clears the write bit on /etc/pve/local when quorum is lost.
+    # Ref: PVE::Cluster::check_cfs_quorum (pve-cluster/src/PVE/Cluster.pm:116)
+    if (!$got_lock) {
+        my $st = File::stat::lstat("/etc/pve/local");
+        my $quorate = ($st && (($st->mode & 0200) != 0));
+        $err = "no quorum!\n" if !$quorate;
+    }
+
+    rmdir $lockpath if $got_lock;            # release lock; safe even on error
+    alarm($prev_alarm);                      # restore outer alarm
+
+    if ($err) {
+        # Code errors are re-raised as-is; lock machinery errors are prefixed.
+        # Mirrors $cfs_lock error handling (pve-cluster/src/PVE/Cluster.pm:662).
+        if (ref($err) eq 'PVE::Exception' || $is_code_err) {
+            $@ = $err;
+        } else {
+            $@ = "joviandss-lock '$lockid' error: $err";
+        }
+        return undef;
+    }
+
+    $@ = undef;
     return $res;
+}
+
+# ---------------------------------------------------------------------------
+# Cluster-wide lock — retry loop
+# ---------------------------------------------------------------------------
+#
+# Wraps _cluster_lock_attempt with a retry strategy suited to JovianDSS
+# operations, which can hold a lock for 30-90s under concurrent load.
+#
+# If $timeout is defined:  single attempt with that timeout, no retry.
+# If $timeout is undef:    retry loop — up to 600s total, 120s per attempt,
+#                          retrying only on acquisition timeout (safe to retry
+#                          because the lock was never acquired and no code ran).
+#
+# Returns result of $code on success; returns undef and sets $@ on failure.
+
+sub _cluster_lock {
+    my ($storeid, $lockid, $timeout, $code, @param) = @_;
+
+    my $lockdir  = _cluster_lockdir($storeid);
+    my $lockpath = "$lockdir/$lockid";
+
+    my $explicit    = defined $timeout;
+    my $max_total   = 600;
+    my $per_attempt = 120;
+    my $start       = time();
+
+    while (1) {
+        my $attempt;
+        if ($explicit) {
+            $attempt = $timeout;
+        } else {
+            my $remaining = $max_total - (time() - $start);
+            if ($remaining <= 10) {
+                $@ = "joviandss-lock '$lockid' error: got lock request timeout\n";
+                return undef;
+            }
+            $attempt = ($per_attempt < $remaining) ? $per_attempt : int($remaining);
+        }
+
+        my $res = _cluster_lock_attempt($lockdir, $lockpath, $lockid, $attempt, $code, @param);
+
+        # Success: $@ is undef (set by _cluster_lock_attempt on success).
+        return $res if !$@;
+
+        my $err = $@;
+
+        # Acquisition timeout without explicit deadline → safe to retry.
+        # Matches "joviandss-lock '...' error: acquire timeout\n" from _cluster_lock_attempt.
+        next if !$explicit && $err =~ /acquire timeout/;
+
+        # Anything else (code error, execution timeout, quorum loss,
+        # explicit-deadline expiry) → propagate immediately.
+        return undef;
+    }
 }
 
 # ---------------------------------------------------------------------------
 # Node-local lock  (POSIX flock)
 # ---------------------------------------------------------------------------
 #
-# Uses PVE::Tools::lock_file which holds an exclusive flock on a file in
-# /var/lock/pve-manager/.  Suitable for non-shared storage where all
-# operations on a given storage happen on a single Proxmox node.
+# Uses PVE::Tools::lock_file which holds an exclusive flock on a file under
+# <path>/private/lock/.  Suitable for non-shared storage where all operations
+# on a given storage happen on a single Proxmox node.
 #
-# The lock is re-entrant within the same process (PVE::Tools tracks handles
-# per PID).
+# Re-entrant within the same process: PVE::Tools::lock_file_full tracks open
+# handles per PID in $lock_handles->{$$} and skips re-acquisition if the same
+# file is already locked by the current process.
 #
-# Args: same as _cluster_lock
+# $timeout defaults to 600s (not PVE::Tools' 10s default) because JovianDSS
+# operations can hold the lock for 30-90s under concurrent load.
 
 sub _node_lock {
-    my ($storeid, $lockid, $timeout, $code, @param) = @_;
+    my ($path, $lockid, $timeout, $code, @param) = @_;
 
-    my $lockdir  = _node_lockdir();
-    mkdir $lockdir;    # ensure dir exists; ignore error if already present
+    # Substitute a large default; PVE::Tools' 10s default is too short for
+    # JovianDSS operations that can legitimately take 30-90s under load.
+    $timeout //= 600;
 
-    my $lockfile = "$lockdir/joviandss-${storeid}-${lockid}";
+    my $lockdir  = "$path/private/lock";
+    make_path($lockdir);
+
+    my $lockfile = "$lockdir/$lockid";
 
     my $res = PVE::Tools::lock_file($lockfile, $timeout, $code, @param);
-    die $@ if $@;
+    return undef if $@;    # $@ set by lock_file; caller must die $@ if $@
     return $res;
 }
 
@@ -165,138 +243,49 @@ sub _node_lock {
 # Public API
 # ---------------------------------------------------------------------------
 
-# lock_storage($storeid, $shared, $timeout, $code, @param)
+# lock_storage($storeid, $path, $shared, $timeout, $code, @param)
 #
 # Storage-level lock — serializes all operations on a given storage instance.
-# Direct replacement for cluster_lock_storage in storage plugins.
+# Used as a fallback for methods not covered by lock_vm.
 #
-# Uses cluster-wide locking when $shared is true, node-local flock otherwise.
+# $storeid — storage id (scopes the cluster lock directory)
+# $path    — value of the `path` property from storage.cfg (e.g. /mnt/pve/jdss-Pool-2);
+#            used as root for node-local lock files
+# $shared  — true → cluster-wide pmxcfs mkdir lock; false → node-local flock
+# $timeout — cluster: undef = retry loop up to 600s; defined = single attempt.
+#            node-local: undef = 600s default; defined = that many seconds.
 #
-# Lock granularity: per storage  →  storage
 # Lock path (cluster): /etc/pve/priv/storage/joviandss/<storeid>/locks/storage
-# Lock path (node):    /var/lock/pve-manager/joviandss-<storeid>-storage
+# Lock path (node):    <path>/private/lock/storage
 
 sub lock_storage {
-    my ($storeid, $shared, $timeout, $code, @param) = @_;
+    my ($storeid, $path, $shared, $timeout, $code, @param) = @_;
 
     my $lockid = "storage";
 
     if ($shared) {
         return _cluster_lock($storeid, $lockid, $timeout, $code, @param);
     }
-    return _node_lock($storeid, $lockid, $timeout, $code, @param);
+    return _node_lock($path, $lockid, $timeout, $code, @param);
 }
 
-# lock_vm($storeid, $shared, $vmid, $timeout, $code, @param)
+# lock_vm($storeid, $path, $shared, $vmid, $timeout, $code, @param)
 #
-# Serializes operations that target the same VM's volumes on a given storage.
+# Per-VM lock — serializes operations that target the same VM's volumes.
 # Concurrent operations for different VMIDs proceed independently.
 #
-# Uses cluster-wide locking when $shared is true (storage accessible from
-# multiple nodes), node-local flock otherwise.
-#
-# Lock granularity: per VM  →  vm-<vmid>
 # Lock path (cluster): /etc/pve/priv/storage/joviandss/<storeid>/locks/vm-<vmid>
-# Lock path (node):    /var/lock/pve-manager/joviandss-<storeid>-vm-<vmid>
+# Lock path (node):    <path>/private/lock/vm-<vmid>
 
 sub lock_vm {
-    my ($storeid, $shared, $vmid, $timeout, $code, @param) = @_;
+    my ($storeid, $path, $shared, $vmid, $timeout, $code, @param) = @_;
 
     my $lockid = "vm-" . _sanitize_lockid($vmid);
 
     if ($shared) {
         return _cluster_lock($storeid, $lockid, $timeout, $code, @param);
     }
-    return _node_lock($storeid, $lockid, $timeout, $code, @param);
-}
-
-# lock_volume($storeid, $shared, $volname, $timeout, $code, @param)
-#
-# Serializes operations on a specific volume (activate/deactivate, resize,
-# snapshot, etc.).  Concurrent operations on different volumes proceed
-# independently.
-#
-# Uses cluster-wide locking when $shared is true, node-local flock otherwise.
-#
-# Lock granularity: per volume  →  vol-<sanitized_volname>
-# Lock path (cluster): /etc/pve/priv/storage/joviandss/<storeid>/locks/vol-<volname>
-# Lock path (node):    /var/lock/pve-manager/joviandss-<storeid>-vol-<volname>
-
-sub lock_volume {
-    my ($storeid, $shared, $volname, $timeout, $code, @param) = @_;
-
-    my $lockid = "vol-" . _sanitize_lockid($volname);
-
-    if ($shared) {
-        return _cluster_lock($storeid, $lockid, $timeout, $code, @param);
-    }
-    return _node_lock($storeid, $lockid, $timeout, $code, @param);
-}
-
-# ---------------------------------------------------------------------------
-# Dispatch table for cluster_lock
-# ---------------------------------------------------------------------------
-#
-# Maps PVE::Storage calling function name → lock type and which closure
-# variable holds the lock key.
-#
-# 'var'          — name of the variable captured by the PVE::Storage closure
-# 'type'         — 'vm' or 'volume'
-# 'from_volname' — if true, extract vmid from the volname variable via regex
-#                  instead of using the variable value directly as the key
-
-my %_DISPATCH = (
-    vdisk_alloc       => { type => 'vm',     var => '$vmid'        },
-    vdisk_free        => { type => 'vm',     var => '$volname',    from_volname => 1 },
-    vdisk_clone       => { type => 'vm',     var => '$vmid'        },
-    vdisk_create_base => { type => 'vm',     var => '$volname',    from_volname => 1 },
-    rename_volume     => { type => 'vm',     var => '$target_vmid' },
-    rename_snapshot   => { type => 'volume', var => '$volname'     },
-);
-
-# Extract vmid from a standard Proxmox volume name.
-# Handles: vm-<N>-disk-*, base-<N>-disk-*, subvol-<N>-*
-sub _vmid_from_volname {
-    my ($volname) = @_;
-    my ($vmid) = $volname =~ /^(?:vm|base|subvol)-(\d+)-/;
-    return $vmid;
-}
-
-# cluster_lock($storeid, $shared, $timeout, $caller, $func, @param)
-#
-# Smart dispatch: uses the PVE::Storage caller function name and PadWalker
-# to determine per-VM or per-volume lock granularity, falling back to
-# storage-level lock for unknown callers.
-#
-# $caller — bare PVE::Storage function name (e.g. "vdisk_alloc"), extracted
-#            by the plugin's cluster_lock_storage via caller(1).
-# $func   — the anonymous closure passed to cluster_lock_storage.
-
-sub cluster_lock {
-    my ($storeid, $shared, $timeout, $caller, $func, @param) = @_;
-
-    my $dispatch = $_DISPATCH{$caller};
-    if ($dispatch) {
-        my $vars = peek_sub($func);
-        my $raw  = exists $vars->{ $dispatch->{var} }
-                 ? ${ $vars->{ $dispatch->{var} } }
-                 : undef;
-
-        if (defined $raw) {
-            my $key = $dispatch->{from_volname} ? _vmid_from_volname($raw) : $raw;
-
-            if (defined $key) {
-                if ($dispatch->{type} eq 'vm') {
-                    return lock_vm($storeid, $shared, $key, $timeout, $func, @param);
-                } else {
-                    return lock_volume($storeid, $shared, $key, $timeout, $func, @param);
-                }
-            }
-        }
-    }
-
-    # Fallback: storage-level lock for unknown or unresolvable callers.
-    return lock_storage($storeid, $shared, $timeout, $func, @param);
+    return _node_lock($path, $lockid, $timeout, $code, @param);
 }
 
 1;
