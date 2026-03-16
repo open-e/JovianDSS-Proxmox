@@ -584,7 +584,7 @@ sub map_log_level_to_number {
 }
 
 sub _new_reqid {
-    return sprintf("%05x", int(rand(0xFFFFF)));
+    return sprintf("%08x", int(rand(0xFFFFFFFF)));
 }
 
 sub new_ctx {
@@ -737,6 +737,11 @@ sub joviandss_cmd {
     my $log_file = get_log_file($ctx);
     if ( defined($log_file) ) {
         push @$connection_options, '--logfile', $log_file;
+    }
+
+    my $reqid = $ctx->{reqid};
+    if ( defined($reqid) ) {
+        push @$connection_options, '--request-id', $reqid;
     }
 
     my $config_file = get_config($ctx);
