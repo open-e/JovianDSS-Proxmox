@@ -723,10 +723,10 @@ sub verify_package_checksum {
 # Generate unified apt install command
 sub get_apt_install_command {
     my $package_path = shift;
-    my $cmd = "apt-get -y -q";
-    $cmd .= " --reinstall" if $USE_REINSTALL;
+    my $cmd = "apt-get -y -q install";
+    $cmd .= " --reinstall"        if $USE_REINSTALL;
     $cmd .= " --allow-downgrades" if $ALLOW_DOWNGRADES;
-    $cmd .= " install $package_path";
+    $cmd .= " $package_path";
     return $cmd;
 }
 

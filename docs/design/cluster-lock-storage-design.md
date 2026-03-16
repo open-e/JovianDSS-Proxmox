@@ -30,8 +30,14 @@ Uses pmxcfs atomic `mkdir`. The pmxcfs FUSE filesystem guarantees that `mkdir(2)
 cluster-wide atomic — the same primitive used internally by every
 `PVE::Cluster::cfs_lock_*` function.
 
-Lock directory: `/etc/pve/priv/storage/joviandss/<storeid>/locks/`
-Lock entry: a subdirectory `<lockid>` created by `mkdir`, removed by `rmdir`.
+Lock directory: `/etc/pve/priv/lock/`
+Lock entry: a subdirectory `joviandss-<storeid>-<lockid>` created by `mkdir`, removed by `rmdir`.
+
+Locks are placed directly under `priv/lock/` — the standard pmxcfs lock
+namespace — so that pmxcfs's built-in stale-lock release (`ltime` tracking,
+`utime(mtime=0)` unlock request) applies automatically. The storeid is
+embedded in the lock name to isolate different storage instances within the
+shared namespace.
 
 **pmxcfs stale-lock release — how it actually works:**
 
@@ -151,20 +157,24 @@ operations go through standard filesystem calls on the pmxcfs FUSE mount
 (root required, works on any cluster node):
 
 ```bash
-# List held locks for a storage instance
-ls /etc/pve/priv/storage/joviandss/<storeid>/locks/
+# List all JovianDSS locks currently held (for any storage instance)
+ls /etc/pve/priv/lock/ | grep '^joviandss-'
+
+# List locks for a specific storage instance
+ls /etc/pve/priv/lock/ | grep '^joviandss-<storeid>-'
 
 # Manually acquire a lock (cluster-wide atomic)
-mkdir /etc/pve/priv/storage/joviandss/<storeid>/locks/vm-101
+mkdir /etc/pve/priv/lock/joviandss-<storeid>-vm-101
 
-# Release a lock
-rmdir /etc/pve/priv/storage/joviandss/<storeid>/locks/vm-101
+# Release a stuck lock
+rmdir /etc/pve/priv/lock/joviandss-<storeid>-vm-101
 
-# Trigger stale-lock removal (utime mtime=0 — unlock request)
-touch -d @0 /etc/pve/priv/storage/joviandss/<storeid>/locks/vm-101
+# Trigger stale-lock removal (utime mtime=0 — pmxcfs unlock request)
+# pmxcfs deletes the directory if it has been idle for > 120 s
+touch -d @0 /etc/pve/priv/lock/joviandss-<storeid>-vm-101
 
 # Refresh a held lock — resets the 120 s expiry timer
-touch /etc/pve/priv/storage/joviandss/<storeid>/locks/vm-101
+touch /etc/pve/priv/lock/joviandss-<storeid>-vm-101
 ```
 
 **The cluster mkdir lock is not re-entrant.** A second `mkdir` on the same path from
@@ -208,23 +218,34 @@ ensures no path separator or special character can appear.
 
 ### Name format
 
+Cluster-wide lock names embed the storeid to avoid collisions within the
+shared `priv/lock/` namespace.
+
 | Granularity | Pattern | Example input | Lock name |
 |---|---|---|---|
-| Per-storage | `storage` | — | `storage` |
-| Per-VM | `vm-<vmid>` | vmid `101` | `vm-101` |
+| Per-storage | `joviandss-<storeid>-storage` | storeid `jdss-Pool-2` | `joviandss-jdss-Pool-2-storage` |
+| Per-VM | `joviandss-<storeid>-vm-<vmid>` | storeid `jdss-Pool-2`, vmid `101` | `joviandss-jdss-Pool-2-vm-101` |
+
+Node-local lock names (flock files) use only the short form without the
+storeid prefix, since they are already scoped by the storage path directory.
+
+| Granularity | Pattern | Example |
+|---|---|---|
+| Per-storage | `storage` | `storage` |
+| Per-VM | `vm-<vmid>` | `vm-101` |
 
 ### Full paths
 
-**Cluster-wide** (`/etc/pve/priv/storage/joviandss/<storeid>/locks/`):
+**Cluster-wide** (`/etc/pve/priv/lock/`):
 
 ```
-/etc/pve/priv/storage/joviandss/jdss-Pool-2/locks/storage
-/etc/pve/priv/storage/joviandss/jdss-Pool-2/locks/vm-101
+/etc/pve/priv/lock/joviandss-jdss-Pool-2-storage
+/etc/pve/priv/lock/joviandss-jdss-Pool-2-vm-101
 ```
 
 Each entry is a **directory** created by `mkdir` and removed by `rmdir`.
-Each storage instance has its own subdirectory, isolating lock namespaces
-between storage instances.
+The `joviandss-<storeid>-` prefix isolates lock namespaces between storage
+instances and between the JovianDSS plugin and other Proxmox components.
 
 **Node-local** (`<path>/private/lock/`):
 
@@ -267,10 +288,10 @@ alloc_image              ← public, called by PVE::Storage                     
                       ├─ $shared=1 → _cluster_lock   ← retry loop              [Lock.pm]
                       │                   │
                       │                   └─► _cluster_lock_attempt             [Lock.pm]
-                      │                         mkdir /etc/pve/priv/storage/joviandss/<storeid>/locks/vm-101
+                      │                         mkdir /etc/pve/priv/lock/joviandss-<storeid>-vm-101
                       │                         cfs_update()
                       │                         └─► _alloc_image               [plugin file]
-                      │                         rmdir /etc/pve/priv/storage/joviandss/<storeid>/locks/vm-101
+                      │                         rmdir /etc/pve/priv/lock/joviandss-<storeid>-vm-101
                       │
                       └─ $shared=0 → _node_lock                                [Lock.pm]
                                       flock /mnt/pve/jdss-Pool-2/private/lock/vm-101
@@ -310,12 +331,12 @@ VM 101:
 ```
 1. PVE::Storage::vdisk_alloc(vmid=101)
    └─► cluster_lock_storage acquires lock_vm("vm-101")
-         └─► mkdir /etc/pve/.../locks/vm-101   ← SUCCESS, directory created
+         └─► mkdir /etc/pve/priv/lock/joviandss-<storeid>-vm-101   ← SUCCESS
 
 2. cluster_lock_storage calls $func->()
    └─► alloc_image(vmid=101)
          └─► _alloc_image_lock calls lock_vm("vm-101")
-               └─► mkdir /etc/pve/.../locks/vm-101   ← FAILS, directory already exists
+               └─► mkdir /etc/pve/priv/lock/joviandss-<storeid>-vm-101   ← FAILS, already exists
                    sleeps 1s, retries...
                    sleeps 1s, retries...
                    ... until 60s execution alarm fires and kills the task
@@ -346,24 +367,25 @@ PVE::Storage::vdisk_alloc($cfg, $storeid, $vmid=101, ...)
         └─► $func->()
               │
               └─► plugin->alloc_image($storeid, $scfg, $vmid=101, ...)
+                    │  $ctx = new_ctx($scfg, $storeid)
                     │
-                    └─► _alloc_image_lock($storeid, $scfg, $vmid=101, ...)
-                          │  lock_vm($storeid, $path, $shared=1, $vmid=101, $timeout, ...)
+                    └─► _alloc_image_lock($class, $ctx, $vmid=101, ...)
+                          │  lock_vm($ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}=1, $vmid=101, undef, ...)
                           │
                           └─► _cluster_lock($storeid, "vm-101", ...)   [retry loop]
                                 │
                                 └─► _cluster_lock_attempt(...)
-                                      mkdir /etc/pve/priv/storage/joviandss/<storeid>/locks/vm-101
+                                      mkdir /etc/pve/priv/lock/joviandss-<storeid>-vm-101
                                       PVE::Cluster::cfs_update()
                                       _alloc_image(...)
-                                      rmdir /etc/pve/priv/storage/joviandss/<storeid>/locks/vm-101
+                                      rmdir /etc/pve/priv/lock/joviandss-<storeid>-vm-101
 ```
 
 ### Non-shared storage (node-local lock)
 
 ```
-              └─► _alloc_image_lock($storeid, $scfg, $vmid=101, ...)
-                    │  lock_vm($storeid, $path, $shared=0, $vmid=101, $timeout, ...)
+              └─► _alloc_image_lock($class, $ctx, $vmid=101, ...)
+                    │  lock_vm($ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}=0, $vmid=101, undef, ...)
                     │
                     └─► _node_lock($path, "vm-101", ...)
                           flock /mnt/pve/jdss-Pool-2/private/lock/vm-101
@@ -383,10 +405,31 @@ PVE::Storage::vdisk_alloc($cfg, $storeid, $vmid=101, ...)
 | `rename_volume` | `_rename_volume_lock` | per-VM (dual) | `$src_vmid` + `$new_vmid` |
 | `activate_volume` | `_activate_volume_lock` | per-VM | parse vmid from `$volname` |
 | `deactivate_volume` | `_deactivate_volume_lock` | per-VM | parse vmid from `$volname` |
+| `volume_snapshot_rollback` | `_volume_snapshot_rollback_lock` | per-VM | parse vmid from `$volname` |
+| `volume_snapshot_delete` | `_volume_snapshot_delete_lock` | per-VM | parse vmid from `$volname` |
+| `volume_resize` | `_volume_resize_lock` | per-VM | parse vmid from `$volname` |
 
 `activate_volume` and `deactivate_volume` are called directly by
 `PVE::Storage::activate_volumes` / `deactivate_volumes` — they never go through
 `cluster_lock_storage`. Per-method locking is the only way to protect them.
+
+`volume_snapshot_rollback` is called by `PVE::AbstractConfig::snapshot_rollback()`
+with the VM config `lock: rollback` field already set. If the plugin method dies
+without locking, concurrent operations on the same VM's volumes (e.g. a racing
+`free_image` from another node) can observe a partially-restored volume. The
+per-VM lock serializes rollback against all other per-VM operations. The lock does
+**not** prevent the VM config `lock: rollback` from getting stuck — that is
+Proxmox's responsibility and is cleared by `qm unlock <vmid>` when needed.
+
+`volume_snapshot_delete` modifies the snapshot chain of a volume. Without a lock,
+a concurrent `clone_image` or `volume_snapshot_rollback` on the same VM can race
+with snapshot deletion and encounter a snapshot that disappears mid-operation.
+The per-VM lock serializes deletion against all other per-VM operations.
+
+`volume_resize` changes the size of a live volume. Without a lock, a concurrent
+`activate_volume` or `clone_image` on the same VM may read a stale size or race
+with the resize against iSCSI LUN record updates. The per-VM lock serializes
+resize against all other per-VM operations. Only present in the iSCSI plugin.
 
 ### Extracting vmid from `$volname`
 
@@ -409,11 +452,11 @@ my (undef, undef, $vmid) = eval { $class->parse_volname($volname) };
 my $res;
 if ( defined $vmid ) {
     $res = OpenEJovianDSS::Lock::lock_vm(
-        $storeid, $scfg->{path}, $scfg->{shared}, $vmid, undef, $code,
+        $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef, $code,
     );
 } else {
     $res = OpenEJovianDSS::Lock::lock_storage(
-        $storeid, $scfg->{path}, $scfg->{shared}, undef, $code,
+        $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef, $code,
     );
 }
 die $@ if $@;
@@ -449,33 +492,39 @@ guaranteed never to deadlock with `_rename_volume_lock`.
 **Reference implementation:**
 
 ```perl
-sub _rename_volume_lock {
+sub rename_volume {
     my ( $class, $scfg, $storeid, $original_volname, $new_vmid, $new_volname ) = @_;
+    my $ctx = new_ctx($scfg, $storeid);
+    return _rename_volume_lock( $class, $ctx, $original_volname, $new_vmid, $new_volname );
+}
+
+sub _rename_volume_lock {
+    my ( $class, $ctx, $original_volname, $new_vmid, $new_volname ) = @_;
 
     my ( undef, undef, $src_vmid ) = eval { $class->parse_volname($original_volname) };
 
     my $code = sub {
-        _rename_volume( $class, $scfg, $storeid, $original_volname, $new_vmid, $new_volname )
+        _rename_volume( $class, $ctx, $original_volname, $new_vmid, $new_volname )
     };
 
     my $res;
     if ( !defined($src_vmid) || !defined($new_vmid) ) {
         # Cannot determine one or both VMIDs: serialise at storage level.
         $res = OpenEJovianDSS::Lock::lock_storage(
-            $storeid, $scfg->{path}, $scfg->{shared}, undef, $code,
+            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef, $code,
         );
     } elsif ( $src_vmid == $new_vmid ) {
         # Rename within the same VM: one lock is sufficient.
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $storeid, $scfg->{path}, $scfg->{shared}, $new_vmid, undef, $code,
+            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $new_vmid, undef, $code,
         );
     } elsif ( $src_vmid < $new_vmid ) {
         # Acquire lower vmid first.
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $storeid, $scfg->{path}, $scfg->{shared}, $src_vmid, undef,
+            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $src_vmid, undef,
             sub {
                 my $r = OpenEJovianDSS::Lock::lock_vm(
-                    $storeid, $scfg->{path}, $scfg->{shared}, $new_vmid, undef, $code,
+                    $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $new_vmid, undef, $code,
                 );
                 die $@ if $@;
                 return $r;
@@ -484,10 +533,10 @@ sub _rename_volume_lock {
     } else {
         # Acquire lower vmid first (new_vmid is lower here).
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $storeid, $scfg->{path}, $scfg->{shared}, $new_vmid, undef,
+            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $new_vmid, undef,
             sub {
                 my $r = OpenEJovianDSS::Lock::lock_vm(
-                    $storeid, $scfg->{path}, $scfg->{shared}, $src_vmid, undef, $code,
+                    $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $src_vmid, undef, $code,
                 );
                 die $@ if $@;
                 return $r;
@@ -539,28 +588,34 @@ lock with the lower numeric vmid is always acquired first.
 **Reference implementation:**
 
 ```perl
-sub _clone_image_lock {
+sub clone_image {
     my ( $class, $scfg, $storeid, $volname, $vmid, $snap ) = @_;
+    my $ctx = new_ctx($scfg, $storeid);
+    return _clone_image_lock( $class, $ctx, $volname, $vmid, $snap );
+}
+
+sub _clone_image_lock {
+    my ( $class, $ctx, $volname, $vmid, $snap ) = @_;
 
     my ( undef, undef, $src_vmid ) = eval { $class->parse_volname($volname) };
 
     my $code = sub {
-        _clone_image( $class, $scfg, $storeid, $volname, $vmid, $snap )
+        _clone_image( $class, $ctx, $volname, $vmid, $snap )
     };
 
     my $res;
     if ( !defined($src_vmid) || $src_vmid == $vmid ) {
         # Source vmid unknown or same as destination: single lock is sufficient.
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $storeid, $scfg->{path}, $scfg->{shared}, $vmid, undef, $code,
+            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef, $code,
         );
     } elsif ( $src_vmid < $vmid ) {
         # Acquire lower vmid first to prevent deadlock.
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $storeid, $scfg->{path}, $scfg->{shared}, $src_vmid, undef,
+            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $src_vmid, undef,
             sub {
                 my $r = OpenEJovianDSS::Lock::lock_vm(
-                    $storeid, $scfg->{path}, $scfg->{shared}, $vmid, undef, $code,
+                    $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef, $code,
                 );
                 die $@ if $@;
                 return $r;
@@ -569,10 +624,10 @@ sub _clone_image_lock {
     } else {
         # Acquire lower vmid first (vmid is lower here).
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $storeid, $scfg->{path}, $scfg->{shared}, $vmid, undef,
+            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
             sub {
                 my $r = OpenEJovianDSS::Lock::lock_vm(
-                    $storeid, $scfg->{path}, $scfg->{shared}, $src_vmid, undef, $code,
+                    $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $src_vmid, undef, $code,
                 );
                 die $@ if $@;
                 return $r;
@@ -721,14 +776,16 @@ to retry or propagate based on the error type.
 # _cluster_lock($storeid, $lockid, $timeout, $code, @param)
 #
 # Acquires a cluster-wide pmxcfs mkdir lock for $lockid scoped to $storeid.
+# The full lock name is "joviandss-<storeid>-<lockid>" placed under /etc/pve/priv/lock/.
 # If $timeout is undef, retries on acquisition timeout up to 600s total.
 # If $timeout is defined, makes a single attempt with that timeout.
 # Returns result of $code on success; returns undef and sets $@ on failure.
 sub _cluster_lock {
     my ($storeid, $lockid, $timeout, $code, @param) = @_;
 
-    my $lockdir  = _cluster_lockdir($storeid);
-    my $lockpath = "$lockdir/$lockid";
+    my $lockdir     = _cluster_lockdir();
+    my $full_lockid = "joviandss-" . _sanitize_lockid($storeid) . "-" . _sanitize_lockid($lockid);
+    my $lockpath    = "$lockdir/$full_lockid";
 
     my $explicit    = defined $timeout;
     my $max_total   = 600;
@@ -742,13 +799,13 @@ sub _cluster_lock {
         } else {
             my $remaining = $max_total - (time() - $start);
             if ($remaining <= 10) {
-                $@ = "joviandss-lock '$lockid' error: got lock request timeout\n";
+                $@ = "joviandss-lock '$full_lockid' error: got lock request timeout\n";
                 return undef;
             }
             $attempt = ($per_attempt < $remaining) ? $per_attempt : int($remaining);
         }
 
-        my $res = _cluster_lock_attempt($lockdir, $lockpath, $lockid, $attempt, $code, @param);
+        my $res = _cluster_lock_attempt($lockdir, $lockpath, $full_lockid, $attempt, $code, @param);
 
         # Success: $@ is undef (set by _cluster_lock_attempt on success).
         return $res if !$@;
@@ -990,19 +1047,17 @@ The correct pattern:
 
 ```perl
 sub alloc_image {
-    my ($class, $storeid, $scfg, $vmid, $fmt, $name, $size) = @_;
-    return _alloc_image_lock($storeid, $scfg, $vmid, $fmt, $name, $size);
+    my ( $class, $storeid, $scfg, $vmid, $fmt, $name, $size ) = @_;
+    my $ctx = new_ctx($scfg, $storeid);
+    return _alloc_image_lock( $class, $ctx, $vmid, $fmt, $name, $size );
 }
 
 sub _alloc_image_lock {
-    my ($storeid, $scfg, $vmid, $fmt, $name, $size) = @_;
-
-    my $shared  = $scfg->{shared};
-    my $path    = $scfg->{path};
+    my ( $class, $ctx, $vmid, $fmt, $name, $size ) = @_;
 
     my $res = OpenEJovianDSS::Lock::lock_vm(
-        $storeid, $path, $shared, $vmid, undef,
-        sub { _alloc_image($storeid, $scfg, $vmid, $fmt, $name, $size) },
+        $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
+        sub { _alloc_image( $class, $ctx, $vmid, $fmt, $name, $size ) },
     );
     die $@ if $@;    # re-raise: die expected by eval { $plugin->alloc_image() }
     return $res;
@@ -1063,12 +1118,12 @@ _alloc_image dies
 
 _cluster_lock_attempt lock timeout (per-attempt acquisition timeout)
   → ALRM fires: die "acquire timeout\n"
-  → $is_code_err=0, not PVE::Exception → prefixed:
-      $@ = "joviandss-lock 'vm-101' error: acquire timeout\n"
+  → $is_code_err=0, not PVE::Exception → prefixed with $full_lockid
+      (e.g. "joviandss-lock 'joviandss-jdss-Pool-2-vm-101' error: acquire timeout\n")
   → _cluster_lock_attempt returns undef
   → _cluster_lock: $err =~ /acquire timeout/ → retry if no explicit timeout
   → after retries: $remaining <= 10 → _cluster_lock sets:
-      $@ = "joviandss-lock 'vm-101' error: got lock request timeout\n"
+      $@ = "joviandss-lock 'joviandss-jdss-Pool-2-vm-101' error: got lock request timeout\n"
   → lock_vm returns undef + $@ set
   → _alloc_image_lock: die $@ if $@   ← re-raises as die
   → vdisk_alloc eval catches it
@@ -1077,7 +1132,7 @@ _cluster_lock_attempt lock timeout (per-attempt acquisition timeout)
 _cluster_lock_attempt execution timeout (60s alarm while holding lock)
   → ALRM fires: die "execution timed out\n"
   → if $is_code_err=0 (fired during cfs_update):
-      $@ = "joviandss-lock 'vm-101' error: execution timed out\n"
+      $@ = "joviandss-lock 'joviandss-jdss-Pool-2-vm-101' error: execution timed out\n"
   → if $is_code_err=1 (fired during $code):
       $@ = "execution timed out\n"  (re-raised as-is, not prefixed)
   → lock is always released (rmdir) before error propagates
@@ -1087,8 +1142,8 @@ _cluster_lock_attempt execution timeout (60s alarm while holding lock)
 
 No quorum (lock never acquired)
   → quorum check replaces $err with "no quorum!\n"
-  → $is_code_err=0, not PVE::Exception → prefixed:
-      $@ = "joviandss-lock 'vm-101' error: no quorum!\n"
+  → $is_code_err=0, not PVE::Exception → prefixed with $full_lockid:
+      $@ = "joviandss-lock 'joviandss-jdss-Pool-2-vm-101' error: no quorum!\n"
   → _cluster_lock_attempt returns undef
   → _cluster_lock: $err !~ /acquire timeout/ → propagates immediately (not retried)
   → lock_vm returns undef + $@ set
@@ -1114,8 +1169,8 @@ lock_vm     ($storeid, $path, $shared, $vmid,    $timeout, $code, @param)
                used to construct the node-local lock file path; obtained from `$scfg->{path}`
 - `$shared`  — if true, use `_cluster_lock`; otherwise use `_node_lock`
 - `$timeout` — cluster lock: if defined, single attempt; if undef, retry loop up to 600s (see section 1).
-               node-local lock: `lock_vm` replaces `undef` with 600s before passing to
-               `PVE::Tools::lock_file`, so callers can safely pass `undef` for both backends.
+               node-local lock: `_node_lock` replaces `undef` with 600s via `$timeout //= 600`
+               before calling `PVE::Tools::lock_file`, so callers can safely pass `undef` for both backends.
                Passing an explicit value overrides the default for both backends: for cluster
                it disables the retry loop; for node-local it sets the flock timeout directly.
 

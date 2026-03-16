@@ -47,7 +47,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.11.1-1-no-lock';
+my $PLUGIN_VERSION = '0.11.2';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -927,6 +927,31 @@ sub volume_snapshot_needs_fsfreeze {
 sub volume_snapshot_rollback {
     my ( $class, $scfg, $storeid, $volname, $snap ) = @_;
     my $ctx = new_ctx($scfg, $storeid);
+    return _volume_snapshot_rollback_lock( $class, $ctx, $volname, $snap );
+}
+
+sub _volume_snapshot_rollback_lock {
+    my ( $class, $ctx, $volname, $snap ) = @_;
+
+    my ( undef, undef, $vmid ) = eval { $class->parse_volname($volname) };
+    my $res;
+    if ( defined $vmid ) {
+        $res = OpenEJovianDSS::Lock::lock_vm(
+            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
+            sub { _volume_snapshot_rollback( $class, $ctx, $volname, $snap ) },
+        );
+    } else {
+        $res = OpenEJovianDSS::Lock::lock_storage(
+            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
+            sub { _volume_snapshot_rollback( $class, $ctx, $volname, $snap ) },
+        );
+    }
+    die $@ if $@;
+    return $res;
+}
+
+sub _volume_snapshot_rollback {
+    my ( $class, $ctx, $volname, $snap ) = @_;
 
     my $pool = get_pool($ctx);
 
@@ -1021,6 +1046,31 @@ sub volume_rollback_is_possible {
 sub volume_snapshot_delete {
     my ( $class, $scfg, $storeid, $volname, $snap, $running ) = @_;
     my $ctx = new_ctx($scfg, $storeid);
+    return _volume_snapshot_delete_lock( $class, $ctx, $volname, $snap, $running );
+}
+
+sub _volume_snapshot_delete_lock {
+    my ( $class, $ctx, $volname, $snap, $running ) = @_;
+
+    my ( undef, undef, $vmid ) = eval { $class->parse_volname($volname) };
+    my $res;
+    if ( defined $vmid ) {
+        $res = OpenEJovianDSS::Lock::lock_vm(
+            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
+            sub { _volume_snapshot_delete( $class, $ctx, $volname, $snap, $running ) },
+        );
+    } else {
+        $res = OpenEJovianDSS::Lock::lock_storage(
+            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
+            sub { _volume_snapshot_delete( $class, $ctx, $volname, $snap, $running ) },
+        );
+    }
+    die $@ if $@;
+    return $res;
+}
+
+sub _volume_snapshot_delete {
+    my ( $class, $ctx, $volname, $snap, $running ) = @_;
 
     my $pool   = get_pool($ctx);
     my $prefix = get_target_prefix($ctx);
@@ -1329,6 +1379,31 @@ sub _deactivate_volume {
 sub volume_resize {
     my ( $class, $scfg, $storeid, $volname, $size, $running ) = @_;
     my $ctx = new_ctx($scfg, $storeid);
+    return _volume_resize_lock( $class, $ctx, $volname, $size, $running );
+}
+
+sub _volume_resize_lock {
+    my ( $class, $ctx, $volname, $size, $running ) = @_;
+
+    my ( undef, undef, $vmid ) = eval { $class->parse_volname($volname) };
+    my $res;
+    if ( defined $vmid ) {
+        $res = OpenEJovianDSS::Lock::lock_vm(
+            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
+            sub { _volume_resize( $class, $ctx, $volname, $size, $running ) },
+        );
+    } else {
+        $res = OpenEJovianDSS::Lock::lock_storage(
+            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
+            sub { _volume_resize( $class, $ctx, $volname, $size, $running ) },
+        );
+    }
+    die $@ if $@;
+    return $res;
+}
+
+sub _volume_resize {
+    my ( $class, $ctx, $volname, $size, $running ) = @_;
 
     my $pool = get_pool($ctx);
 
