@@ -119,6 +119,12 @@ def parse_args():
                         help='''Port number that will be used to
                         transfer storage data(iSCSI data)''')
 
+    parser.add_argument('--request-id',
+                        dest='request_id',
+                        required=False,
+                        default=None,
+                        help='Unique request identifier to include in log output')
+
     command = parser.add_subparsers(required=True, dest='command')
 
     command.add_parser('pool', add_help=True)
@@ -184,6 +190,15 @@ def setup_logging(args, cfg):
 
     logfile = cfg['logfile']
 
+    request_id = getattr(args, 'request_id', None) or ''
+
+    if request_id:
+        log_format = ('%(asctime)s.%(msecs)03d - %(name)s'
+                      f' - %(levelname)s - [{request_id}] %(message)s')
+    else:
+        log_format = ('%(asctime)s.%(msecs)03d - %(name)s'
+                      ' - %(levelname)s - %(message)s')
+
     handlers = []
     if logfile:
         handlers.append(RotatingFileHandler(logfile,
@@ -199,13 +214,13 @@ def setup_logging(args, cfg):
 
     logging.basicConfig(
         level=numeric_level,
-        format=(
-            '%(asctime)s.%(msecs)03d - %(name)s - %(levelname)s - %(message)s'),
+        format=log_format,
         datefmt='%Y-%m-%d %H:%M:%S',
         handlers=handlers
     )
 
     logger = logging.getLogger()
+
     err_handler = logging.StreamHandler(sys.stderr)  # Error handler
     err_handler.setLevel(logging.ERROR)  # Capture only errors
     eformater = logging.Formatter('%(message)s')

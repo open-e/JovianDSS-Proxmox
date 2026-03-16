@@ -17,6 +17,7 @@ import datetime
 import logging
 from oslo_utils import units as o_units
 import math
+import random
 import re
 import string
 import hashlib
@@ -39,7 +40,7 @@ class JovianDSSDriver(object):
 
     def __init__(self, config):
 
-        self.VERSION = "0.11.1"
+        self.VERSION = "0.11.2"
 
         self.configuration = config
         self._pool = self.configuration.get('jovian_pool', 'Pool-0')
@@ -1364,24 +1365,43 @@ class JovianDSSDriver(object):
         if not self.ra.is_lun(vname):
             raise jexc.JDSSVolumeNotFoundException(vname)
 
-        # target volume lune descriptor of form
-        # (<target_name>, <lun_id>, <volume attached>,<new target>)
-        tvld = self._acquire_taget_volume_lun(target_prefix,
-                                              target_name,
-                                              vname,
-                                              luns_per_target=luns_per_target)
-        (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
+        max_retries = 5
+        for attempt in range(max_retries):
+            try:
+                # target volume lun descriptor of form
+                # (<target_name>, <lun_id>, <volume attached>, <new target>)
+                tvld = self._acquire_taget_volume_lun(
+                    target_prefix,
+                    target_name,
+                    vname,
+                    luns_per_target=luns_per_target)
+                (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
 
-        if new_target_flag:
-            return self._create_target_volume_lun(tname,
-                                                  vname,
-                                                  lun_id,
-                                                  provider_auth)
+                if new_target_flag:
+                    return self._create_target_volume_lun(tname,
+                                                          vname,
+                                                          lun_id,
+                                                          provider_auth)
 
-        return self._ensure_target_volume_lun(tname,
-                                              vname,
-                                              lun_id,
-                                              provider_auth)
+                return self._ensure_target_volume_lun(tname,
+                                                      vname,
+                                                      lun_id,
+                                                      provider_auth)
+
+            except jexc.JDSSException as err:
+                if 'CfgParserError' not in str(err):
+                    raise
+                if attempt >= max_retries - 1:
+                    LOG.error("Target volume ensure failed after %d attempts "
+                              "due to concurrent config update: %s",
+                              max_retries, err)
+                    raise
+                delay = 2 + attempt + random.uniform(0, 2)
+                LOG.warning("JovianDSS config parser error during target "
+                            "setup (concurrent operation), retrying in %.1fs "
+                            "(attempt %d/%d): %s",
+                            delay, attempt + 1, max_retries - 1, err)
+                time.sleep(delay)
 
     def _get_conforming_vips(self):
         """get vips that conforms configuration requirments

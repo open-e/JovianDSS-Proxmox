@@ -32,3 +32,8 @@ Rollback to snapshot consists of 3 stages:
 
 1. `activate` specific snapshot, in similar way as it is done in OpenEJovianDSSPlugin.pm (iSCSI plugin)
 2. Physicaly copy of vm/container file from activated snapshot to share managed by JovianDSS.
+
+## Cuncurrent running
+
+Proxmox should be able to run concurrent operations
+Like cloning different volumes or activating different volumes or making snapshot of different volumes

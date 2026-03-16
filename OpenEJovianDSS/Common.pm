@@ -42,6 +42,8 @@ use PVE::Tools qw(run_command file_set_contents);
 
 our @EXPORT_OK = qw(
 
+  new_ctx
+
   block_device_path_from_lun_rec
   block_device_path_from_rest
 
@@ -62,6 +64,7 @@ our @EXPORT_OK = qw(
   get_default_ssl_cert_verify
   get_default_target_prefix
 
+  get_path
   get_pool
   get_config
   get_debug
@@ -69,8 +72,10 @@ our @EXPORT_OK = qw(
   get_ssl_cert_verify
   get_control_addresses
   get_control_port
+  get_data_address
   get_data_addresses
   get_data_port
+  get_delete_timeout
   get_user_name
   get_user_password
   get_block_size
@@ -83,6 +88,7 @@ our @EXPORT_OK = qw(
   get_content_volume_type
   get_content_volume_size
   get_content_path
+  get_create_base_path
   get_multipath
 
   get_log_level
@@ -93,6 +99,7 @@ our @EXPORT_OK = qw(
   password_file_delete
 
   safe_var_print
+  safe_word
   debugmsg
   joviandss_cmd
   volume_snapshots_info
@@ -106,6 +113,7 @@ our @EXPORT_OK = qw(
   get_content_target_group_name
 
   volume_get_size
+  volume_update_size
 
   volume_publish
   volume_unpublish
@@ -114,9 +122,14 @@ our @EXPORT_OK = qw(
   volume_deactivate
   store_settup
 
+  lun_record_local_get_info_list
+  lun_record_update_device
+
   ha_state_get
   ha_state_is_defined
   ha_type_get
+
+  vm_tag_force_rollback_is_set
 
 );
 
@@ -173,14 +186,16 @@ sub get_default_data_port        { return $default_data_port }
 sub get_default_user_name        { return $default_user_name }
 
 sub get_path {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
 
     return $scfg->{'path'} if defined( $scfg->{ 'path' } );
     return get_default_path();
 }
 
 sub get_pool {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
 
     die "pool name required in storage.cfg \n"
       if !defined( $scfg->{'pool_name'} );
@@ -188,7 +203,8 @@ sub get_pool {
 }
 
 sub get_create_base_path {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
 
     return $scfg->{'create-base-path'} if ( defined( $scfg->{ 'create-base-path' } ) );
 
@@ -196,7 +212,8 @@ sub get_create_base_path {
 }
 
 sub get_config {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
 
     return $scfg->{config} if ( defined( $scfg->{config} ) );
 
@@ -205,7 +222,8 @@ sub get_config {
 
 
 sub get_debug {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
 
     if ( defined( $scfg->{debug} ) && $scfg->{debug} ) {
         return 1;
@@ -214,7 +232,8 @@ sub get_debug {
 }
 
 sub get_log_level {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
 
     if ( defined( $scfg->{debug} ) && $scfg->{debug} ) {
         return map_log_level_to_number("DEBUG");
@@ -223,7 +242,8 @@ sub get_log_level {
 }
 
 sub get_target_prefix {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
     my $prefix = $scfg->{target_prefix} || $default_target_prefix;
 
     $prefix =~ s/:$//;
@@ -231,43 +251,49 @@ sub get_target_prefix {
 }
 
 sub get_luns_per_target {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
     my $luns_per_target = $scfg->{luns_per_target} || $default_luns_per_target;
 
     return int($luns_per_target);
 }
 
 sub get_ssl_cert_verify {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
 
     return $scfg->{ssl_cert_verify};
 }
 
 sub get_delete_timeout {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
 
     return $scfg->{delete_timeout} || 600;
 }
 
 sub get_control_addresses {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
     if ( defined( $scfg->{control_addresses} ) ) {
         if ( length( $scfg->{control_addresses} ) > 4 ) {
             return $scfg->{control_addresses};
         }
     }
-    return get_data_addresses( $scfg );
+    return get_data_addresses( $ctx );
 }
 
 sub get_control_port {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
     my $port = $scfg->{control_port} || $default_control_port;
 
     return int( clean_word($port) + 0);
 }
 
 sub get_data_address {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
 
     # We do not not do traditional check, because address might be ipv6
     # with [] around it
@@ -284,12 +310,13 @@ sub get_data_address {
 }
 
 sub get_data_addresses {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
 
     if ( defined( $scfg->{data_addresses} ) ) {
         return clean_word($scfg->{data_addresses});
     } else {
-        my $data_address = get_data_address($scfg);
+        my $data_address = get_data_address($ctx);
         if ( defined($data_address) ) {
             return $data_address;
         }
@@ -298,7 +325,8 @@ sub get_data_addresses {
 }
 
 sub get_data_port {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
 
     if ( defined( $scfg->{data_port} ) ) {
         return  int( clean_word($scfg->{data_port}) + 0);
@@ -307,13 +335,15 @@ sub get_data_port {
 }
 
 sub get_user_name {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
     return $scfg->{user_name} || $default_user_name;
 }
 
 sub get_user_password {
-    my ($storeid) = @_;
-    my $pwfile = get_password_file_name($storeid);
+    my ($ctx) = @_;
+    my $storeid = $ctx->{storeid};
+    my $pwfile = get_password_file_name($ctx);
 
     return undef if ! -f $pwfile;
 
@@ -333,13 +363,15 @@ sub get_user_password {
 }
 
 sub get_password_file_name {
-    my ($storeid) = @_;
+    my ($ctx) = @_;
+    my $storeid = $ctx->{storeid};
     return "/etc/pve/priv/storage/joviandss/${storeid}.pw";
 }
 
 sub password_file_set_password {
-    my ($password, $storeid) = @_;
-    my $pwfile = get_password_file_name($storeid);
+    my ($password, $ctx) = @_;
+    my $storeid = $ctx->{storeid};
+    my $pwfile = get_password_file_name($ctx);
 
     # Create directory with full path
     my $dir = "/etc/pve/priv/storage/joviandss";
@@ -351,13 +383,15 @@ sub password_file_set_password {
 }
 
 sub password_file_delete {
-    my ($storeid) = @_;
-    my $pwfile = get_password_file_name($storeid);
+    my ($ctx) = @_;
+    my $storeid = $ctx->{storeid};
+    my $pwfile = get_password_file_name($ctx);
     unlink $pwfile;
 }
 
 sub get_block_size {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
 
     # This function is used by others
     # and should return only valid block size strings
@@ -382,9 +416,9 @@ sub get_block_size {
 }
 
 sub get_block_size_bytes {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
 
-    my $block_size_str = get_block_size($scfg);
+    my $block_size_str = get_block_size($ctx);
 
     $block_size_str =~ s/\s+//g;
     $block_size_str = uc($block_size_str);
@@ -402,7 +436,8 @@ sub get_block_size_bytes {
 }
 
 sub get_thin_provisioning {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
     if ( defined( $scfg->{thin_provisioning} ) ) {
         if ( $scfg->{thin_provisioning} ) {
             return 'y';
@@ -415,12 +450,14 @@ sub get_thin_provisioning {
 }
 
 sub get_log_file {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
     return $scfg->{log_file} || $default_log_file;
 }
 
 sub get_options {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
     my $options = $scfg->{options};
     if (defined($options)) {
         if ( $options =~ /^([\:\-\@\w.\/]+)$/ ) {
@@ -434,12 +471,14 @@ sub get_options {
 }
 
 sub get_content {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
     return $scfg->{content};
 }
 
 sub get_content_volume_name {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
 
     if ( !defined( $scfg->{content_volume_name} ) ) {
         die "content_volume_name property is not set\n";
@@ -453,7 +492,8 @@ sub get_content_volume_name {
 }
 
 sub get_content_volume_type {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
     if ( defined( $scfg->{content_volume_type} ) ) {
         if ( $scfg->{content_volume_type} eq 'nfs' ) {
             return 'nfs';
@@ -467,9 +507,10 @@ sub get_content_volume_type {
 }
 
 sub get_content_volume_size {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
 
-    if ( get_debug($scfg) ) {
+    if ( get_debug($ctx) ) {
         print
 "content_volume_size property is not set up, using default $default_content_size\n"
           if ( !defined( $scfg->{content_volume_size} ) );
@@ -479,7 +520,8 @@ sub get_content_volume_size {
 }
 
 sub get_content_path {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
 
     if ( defined( $scfg->{path} ) ) {
         return $scfg->{path};
@@ -490,12 +532,14 @@ sub get_content_path {
 }
 
 sub get_multipath {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
     return $scfg->{multipath} || $default_multipath;
 }
 
 sub get_shared {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
     return $scfg->{shared} || $default_shared;
 }
 
@@ -539,14 +583,29 @@ sub map_log_level_to_number {
     return exists $levels{$upper} ? $levels{$upper} : $levels{TRACE};
 }
 
+sub _new_reqid {
+    return sprintf("%08x", int(rand(0xFFFFFFFF)));
+}
+
+sub new_ctx {
+    my ($scfg, $storeid) = @_;
+    return {
+        scfg    => $scfg,
+        storeid => $storeid,
+        reqid   => _new_reqid(),
+    };
+}
+
 sub debugmsg_trace {
-    my ( $scfg, $dlevel, $msg ) = @_;
+    my ( $ctx, $dlevel, $msg ) = @_;
     my $stack = longmess($msg || "Stack trace:");
-    debugmsg( $scfg, $dlevel, $stack );
+    debugmsg( $ctx, $dlevel, $stack );
 }
 
 sub debugmsg {
-    my ( $scfg, $dlevel, $msg ) = @_;
+    my ( $ctx, $dlevel, $msg ) = @_;
+    my $scfg  = $ctx->{scfg};
+    my $reqid = $ctx->{reqid} // '';
 
     chomp $msg;
 
@@ -554,10 +613,10 @@ sub debugmsg {
 
     my $msg_level = map_log_level_to_number($dlevel);
 
-    my $config_level = get_log_level($scfg);
+    my $config_level = get_log_level($ctx);
     if ( $config_level >= $msg_level ) {
 
-        $log_file_path = get_log_file($scfg);
+        $log_file_path = get_log_file($ctx);
 
         my ( $seconds, $microseconds ) = gettimeofday();
 
@@ -567,9 +626,9 @@ sub debugmsg {
         $year  += 1900;
         $month += 1;
         my $line =
-          sprintf( "%04d-%02d-%02d %02d:%02d:%02d.%03d - plugin - %s - %s",
+          sprintf( "%04d-%02d-%02d %02d:%02d:%02d.%03d - plugin - %s - [%s] %s",
             $year, $month,        $day,        $hour, $min,
-            $sec,  $milliseconds, uc($dlevel), $msg );
+            $sec,  $milliseconds, uc($dlevel), $reqid, $msg );
 
         if ( $log_file_path =~ /^([\:\-\@\w.\/]+)$/ ) {
             my $log_file_abs_path;
@@ -612,7 +671,9 @@ sub safe_var_print {
 }
 
 sub joviandss_cmd {
-    my ( $scfg, $storeid, $cmd, $timeout, $retries, $force_debug_level, $password ) = @_;
+    my ( $ctx, $cmd, $timeout, $retries, $force_debug_level, $password ) = @_;
+    my $scfg    = $ctx->{scfg};
+    my $storeid = $ctx->{storeid};
 
     my $msg = '';
     my $err = undef;
@@ -628,57 +689,62 @@ sub joviandss_cmd {
     if ( defined($force_debug_level) ) {
         push @$connection_options, '--loglvl', $force_debug_level;
     } else {
-        my $config_level = get_log_level($scfg);
+        my $config_level = get_log_level($ctx);
         if ( $config_level >= $debug_level ) {
             push @$connection_options, '--loglvl', 'debug';
         }
     }
-    my $ssl_cert_verify = get_ssl_cert_verify($scfg);
+    my $ssl_cert_verify = get_ssl_cert_verify($ctx);
     if ( defined($ssl_cert_verify) ) {
         push @$connection_options, '--ssl-cert-verify', $ssl_cert_verify;
     }
 
-    my $control_addresses = get_control_addresses($scfg);
+    my $control_addresses = get_control_addresses($ctx);
     if ( defined($control_addresses) ) {
         push @$connection_options, '--control-addresses',
           "${control_addresses}";
     }
 
-    my $control_port = get_control_port($scfg);
+    my $control_port = get_control_port($ctx);
     if ( defined($control_port) ) {
         push @$connection_options, '--control-port', $control_port;
     }
 
-    my $data_addresses = get_data_addresses($scfg);
+    my $data_addresses = get_data_addresses($ctx);
     if ( defined($data_addresses) ) {
         push @$connection_options, '--data-addresses', $data_addresses;
     }
 
-    my $data_port = get_data_port($scfg);
+    my $data_port = get_data_port($ctx);
     if ( defined($data_port) ) {
         push @$connection_options, '--data-port', $data_port;
     }
 
-    my $user_name = get_user_name($scfg);
+    my $user_name = get_user_name($ctx);
     if ( defined($user_name) ) {
         push @$connection_options, '--user-name', $user_name;
     } else {
         die "JovianDSS REST user name is not provided.\n";
     }
 
-    my $user_password = defined($password) ? $password : get_user_password($storeid);
+    my $user_password = defined($password) ? $password : get_user_password($ctx);
     if ( defined($user_password) ) {
         push @$connection_options, '--user-password', $user_password;
     } else {
         die "JovianDSS REST user password is not provided.\n";
     }
 
-    my $log_file = get_log_file($scfg);
+    my $log_file = get_log_file($ctx);
     if ( defined($log_file) ) {
         push @$connection_options, '--logfile', $log_file;
     }
 
-    my $config_file = get_config($scfg);
+    my $reqid = $ctx->{reqid};
+    if ( defined($reqid) ) {
+        push @$connection_options, '--request-id', $reqid;
+    }
+
+    my $config_file = get_config($ctx);
     if ( defined($config_file) ) {
         push @$connection_options, '-c', $config_file;
     }
@@ -736,11 +802,11 @@ sub joviandss_cmd {
 
 
 sub cmd_log_output {
-    my ( $scfg, $level , $cmd, $data ) = @_;
+    my ( $ctx, $level , $cmd, $data ) = @_;
     my $cmd_str = join ' ', map {
         (my $a = $_) =~ s/'/'\\''/g; "'$a'"
     } @$cmd;
-    debugmsg( $scfg, $level, "CMD ${cmd_str} output ${data}");
+    debugmsg( $ctx, $level, "CMD ${cmd_str} output ${data}");
 }
 
 # Returns a hash with the snapshot names as keys and the following data:
@@ -748,13 +814,12 @@ sub cmd_log_output {
 # timestamp - Creation time of the snapshot (seconds since epoch).
 # Returns an empty hash if the volume does not exist.
 sub volume_snapshots_info {
-    my ( $scfg, $storeid, $volname ) = @_;
+    my ( $ctx, $volname ) = @_;
 
-    my $pool = get_pool($scfg);
+    my $pool = get_pool($ctx);
 
     my $output = joviandss_cmd(
-        $scfg,
-        $storeid,
+        $ctx,
         [
             'pool',      $pool,  'volume', $volname,
             'snapshots', 'list', '--guid', '--creation'
@@ -766,7 +831,7 @@ sub volume_snapshots_info {
     for my $line (@lines) {
         my ( $name, $guid, $creation ) = split( /\s+/, $line );
         #my ($sname) = split;
-        debugmsg( $scfg, "debug",
+        debugmsg( $ctx, "debug",
 "Volume ${volname} has snapshot ${name} with id ${guid} made at ${creation}\n"
         );
         $snapshots->{$name} = {
@@ -779,7 +844,7 @@ sub volume_snapshots_info {
 }
 
 sub vmid_is_qemu {
-    my ( $scfg, $vmid) = @_;
+    my ( $ctx, $vmid) = @_;
 
     my $nodename = PVE::INotify::nodename();
     my $cmd = [
@@ -800,17 +865,17 @@ sub vmid_is_qemu {
 
     if ($exitcode != 0) {
         if ($err_out =~ /does not exist/) {
-            debugmsg($scfg, 'debug', "${vmid} is not Qemu");
+            debugmsg($ctx, 'debug', "${vmid} is not Qemu");
             return 0;
         }
-        debugmsg($scfg, 'debug', "Unable to check if ${vmid} is Qemu: ${err_out}");
+        debugmsg($ctx, 'debug', "Unable to check if ${vmid} is Qemu: ${err_out}");
         return 0;
     }
     return 1;
 }
 
 sub vmid_is_lxc {
-    my ($scfg, $vmid) = @_;
+    my ($ctx, $vmid) = @_;
 
     my $nodename = PVE::INotify::nodename();
     my $cmd = [
@@ -831,10 +896,10 @@ sub vmid_is_lxc {
 
     if ($exitcode != 0) {
         if ($err_out =~ /does not exist/) {
-            debugmsg($scfg, 'debug', "${vmid} is not LXC");
+            debugmsg($ctx, 'debug', "${vmid} is not LXC");
             return 0;
         }
-        debugmsg($scfg, 'debug', "Unable to check if ${vmid} is LXC ${err_out}");
+        debugmsg($ctx, 'debug', "Unable to check if ${vmid} is LXC ${err_out}");
         return 0;
     }
     return 1;
@@ -844,11 +909,11 @@ sub vmid_identify_virt_type {
     # Check if there is a qemu config file or lxc config file
     # If one config file found reply with it
     # If unable to identify config reply with undef
-    my ($scfg, $vmid) = @_;
+    my ($ctx, $vmid) = @_;
 
-    my $is_qemu = vmid_is_qemu($scfg, $vmid);
+    my $is_qemu = vmid_is_qemu($ctx, $vmid);
 
-    my $is_lxc = vmid_is_lxc($scfg, $vmid);
+    my $is_lxc = vmid_is_lxc($ctx, $vmid);
 
     if ( $is_qemu == 1 && $is_lxc == 0 ) {
         return 'qemu';
@@ -857,19 +922,19 @@ sub vmid_identify_virt_type {
         return 'lxc';
     }
     if ($is_qemu == 1 && $is_lxc == 1 ) {
-        debugmsg($scfg, 'debug', "Unable to identify virtualisation type for ${vmid}, seams to be both Qemu and LXC");
+        debugmsg($ctx, 'debug', "Unable to identify virtualisation type for ${vmid}, seams to be both Qemu and LXC");
         return undef;
     }
-    debugmsg($scfg, 'debug', "Unable to identify virtualisation type for ${vmid}, seams neither Qemu nor LXC");
+    debugmsg($ctx, 'debug', "Unable to identify virtualisation type for ${vmid}, seams neither Qemu nor LXC");
     return undef;
 }
 
 sub snapshots_list_from_vmid {
-    my ( $scfg, $vmid) = @_;
+    my ( $ctx, $vmid) = @_;
 
     my $nodename = PVE::INotify::nodename();
 
-    my $virtualisation = vmid_identify_virt_type( $scfg, $vmid);
+    my $virtualisation = vmid_identify_virt_type( $ctx, $vmid);
 
     if (!defined($virtualisation)) {
         die "Unable to identify snapshots belonging to VM/CT. Unable to conduct forced rollback\n";
@@ -911,7 +976,7 @@ sub snapshots_list_from_vmid {
 }
 
 sub remove_vm_snapshot_config {
-    my ($scfg, $vmid, $virt_type, $snapname) = @_;
+    my ($ctx, $vmid, $virt_type, $snapname) = @_;
 
     my $conf_path;
     if ($virt_type eq 'qemu') {
@@ -919,14 +984,14 @@ sub remove_vm_snapshot_config {
     } elsif ($virt_type eq 'lxc') {
         $conf_path = "/etc/pve/lxc/${vmid}.conf";
     } else {
-        debugmsg($scfg, 'debug',
+        debugmsg($ctx, 'debug',
             "Unknown virt type '${virt_type}' for vmid ${vmid},"
             . " skipping config update\n");
         return;
     }
 
     unless (-f $conf_path) {
-        debugmsg($scfg, 'debug',
+        debugmsg($ctx, 'debug',
             "Config file ${conf_path} not found,"
             . " skipping snapshot config removal\n");
         return;
@@ -961,13 +1026,13 @@ sub remove_vm_snapshot_config {
     }
 
     unless ($found) {
-        debugmsg($scfg, 'debug',
+        debugmsg($ctx, 'debug',
             "Snapshot ${snapname} not found in ${conf_path},"
             . " nothing to remove\n");
         return;
     }
 
-    debugmsg($scfg, 'debug',
+    debugmsg($ctx, 'debug',
         "Removing snapshot ${snapname} from ${conf_path}\n");
 
     file_set_contents($conf_path, join('', @out));
@@ -1085,20 +1150,19 @@ sub format_rollback_block_reason {
 }
 
 sub volume_rollback_check {
-    # Optional 7th arg: pre-computed $force_rollback (skips internal pvesh call).
-    # Optional 8th arg: scalar ref to receive the managed-snapshots list so the
+    # Optional 6th arg: pre-computed $force_rollback (skips internal pvesh call).
+    # Optional 7th arg: scalar ref to receive the managed-snapshots list so the
     # caller can cache it and avoid a duplicate pvesh call later.
-    my ( $scfg, $storeid, $vmid, $volname, $snap, $blockers,
+    my ( $ctx, $vmid, $volname, $snap, $blockers,
          $force_rollback, $man_snaps_ref ) = @_;
 
-    my $pool = get_pool($scfg);
+    my $pool = get_pool($ctx);
 
     $blockers //= [];
     my $res;
     eval {
         $res = joviandss_cmd(
-            $scfg,
-            $storeid,
+            $ctx,
             [
                 "pool",     $pool, "volume",   $volname,
                 "snapshot", $snap, "rollback", "check",
@@ -1117,7 +1181,7 @@ sub volume_rollback_check {
         foreach my $obj ( split( /\s+/, $line ) ) {
             push $blockers_found->@*, $obj;
             $blockers_found_flag = 1;
-            debugmsg($scfg, 'debug', "Rollback blocker found vol ${volname} snap ${snap} blocker ${obj}");
+            debugmsg($ctx, 'debug', "Rollback blocker found vol ${volname} snap ${snap} blocker ${obj}");
         }
     }
 
@@ -1131,9 +1195,9 @@ sub volume_rollback_check {
     my $blockers_unknown = [];
 
     # Use caller-supplied value to avoid a redundant pvesh subprocess.
-    $force_rollback //= vm_tag_force_rollback_is_set($scfg, $vmid);
+    $force_rollback //= vm_tag_force_rollback_is_set($ctx, $vmid);
 
-    my $managed_snapshots = snapshots_list_from_vmid($scfg, $vmid);
+    my $managed_snapshots = snapshots_list_from_vmid($ctx, $vmid);
     $$man_snaps_ref = $managed_snapshots if defined $man_snaps_ref;
     my $force_rollback_possible = 1;
     foreach my $blocker ( $blockers_found->@* ) {
@@ -1157,7 +1221,7 @@ sub volume_rollback_check {
             $force_rollback_possible = 0;
             push $blockers->@*, $clone_blocker;
             push $blockers_clones->@*, $clone_blocker;
-            debugmsg($scfg, 'debug', "Rollback blocker clone blocker for vol ${volname} snap ${snap} clone ${clone_blocker}");
+            debugmsg($ctx, 'debug', "Rollback blocker clone blocker for vol ${volname} snap ${snap} clone ${clone_blocker}");
         } else {
             $force_rollback_possible = 0;
             push $blockers->@*, $blocker;
@@ -1180,11 +1244,11 @@ sub volume_rollback_check {
 }
 
 sub get_iscsi_addresses {
-    my ( $scfg, $storeid, $addport ) = @_;
+    my ( $ctx, $addport ) = @_;
 
-    my $da = get_data_addresses($scfg);
+    my $da = get_data_addresses($ctx);
 
-    my $dp = get_data_port($scfg);
+    my $dp = get_data_port($ctx);
 
     if ( defined($da) ) {
         my @iplist = split( /\s*,\s*/, $da );
@@ -1198,7 +1262,7 @@ sub get_iscsi_addresses {
 
     my $getaddressescmd = [ 'hosts', '--iscsi' ];
 
-    my $cmdout = joviandss_cmd( $scfg, $storeid, $getaddressescmd );
+    my $cmdout = joviandss_cmd( $ctx, $getaddressescmd );
 
     if ( length($cmdout) > 1 ) {
         my @hosts = ();
@@ -1218,7 +1282,7 @@ sub get_iscsi_addresses {
         }
     }
 
-    my $ca = get_control_addresses($scfg);
+    my $ca = get_control_addresses($ctx);
 
     my @iplist = split( /\s*,\s*/, $ca );
     if ( defined($addport) && $addport ) {
@@ -1231,15 +1295,15 @@ sub get_iscsi_addresses {
 }
 
 sub block_device_iscsi_paths {
-    my ( $scfg, $target, $lunid, $hosts ) = @_;
+    my ( $ctx, $target, $lunid, $hosts ) = @_;
 
     my @targets_block_devices = ();
     my $path;
-    my $port = get_data_port( $scfg );
+    my $port = get_data_port( $ctx );
     foreach my $host (@$hosts) {
         $path = "/dev/disk/by-path/ip-${host}:${port}-iscsi-${target}-lun-${lunid}";
         if ( -b $path ) {
-            debugmsg( $scfg, "debug", "Target ${target} mapped to ${path}\n" );
+            debugmsg( $ctx, "debug", "Target ${target} mapped to ${path}\n" );
             $path = clean_word($path);
             ($path) = $path =~ m{^(/dev/disk/by-path/[\w\-\.:/]+)$} or die "Tainted path: $path";
             push( @targets_block_devices, $path );
@@ -1249,17 +1313,17 @@ sub block_device_iscsi_paths {
 }
 
 sub target_active_info {
-    my ( $scfg, $storeid, $tgname, $volname, $snapname, $contentvolflag ) = @_;
+    my ( $ctx, $tgname, $volname, $snapname, $contentvolflag ) = @_;
     # Provides target info by requesting target info from joviandss
-    debugmsg( $scfg, "debug", "Acquiring active target info for "
+    debugmsg( $ctx, "debug", "Acquiring active target info for "
                 . "target group name ${tgname} "
                 . "volume ${volname} "
                 . safe_var_print( "snapshot", $snapname )
                 . "\n"
             );
 
-    my $pool   = get_pool($scfg);
-    my $prefix = get_target_prefix($scfg);
+    my $pool   = get_pool($ctx);
+    my $prefix = get_target_prefix($ctx);
 
     my $gettargetcmd = [
         'pool',            $pool,    'targets',             'get',
@@ -1273,7 +1337,7 @@ sub target_active_info {
         push @$gettargetcmd, '-d';
     }
 
-    my $out = joviandss_cmd( $scfg, $storeid, $gettargetcmd, 180, 5 );
+    my $out = joviandss_cmd( $ctx, $gettargetcmd, 180, 5 );
 
     if ( defined $out and clean_word($out) eq '' ) {
         return undef;
@@ -1282,7 +1346,7 @@ sub target_active_info {
     my ( $targetname, $lunid, $ips ) = split( ' ', $out );
 
     my @iplist = split /\s*,\s*/, $ips;
-    debugmsg( $scfg, "debug",
+    debugmsg( $ctx, "debug",
         "Active target name for volume ${volname} is $targetname lun ${lunid}\n"
     );
 
@@ -1295,21 +1359,21 @@ sub target_active_info {
 }
 
 sub get_vm_target_group_name {
-    my ( $scfg, $vmid ) = @_;
+    my ( $ctx, $vmid ) = @_;
     return "vm-${vmid}";
 }
 
 sub get_content_target_group_name {
-    my ($scfg) = @_;
+    my ($ctx) = @_;
     return "proxmox-content";
 }
 
 sub volume_publish {
-    my ( $scfg, $storeid, $tgname, $volname, $snapname, $content_volume_flag ) = @_;
+    my ( $ctx, $tgname, $volname, $snapname, $content_volume_flag ) = @_;
 
-    my $pool   = get_pool($scfg);
-    my $prefix = get_target_prefix($scfg);
-    my $luns_per_target = get_luns_per_target($scfg);
+    my $pool   = get_pool($ctx);
+    my $prefix = get_target_prefix($ctx);
+    my $luns_per_target = get_luns_per_target($ctx);
 
     my $create_target_cmd = [
         'pool',            $pool,   'targets',             'create',
@@ -1325,7 +1389,7 @@ sub volume_publish {
         }
     }
 
-    my $out = joviandss_cmd( $scfg, $storeid, $create_target_cmd, 180, 5 );
+    my $out = joviandss_cmd( $ctx, $create_target_cmd, 180, 5 );
     my ( $targetname, $lunid, $ips ) = split( ' ', $out );
 
     my @iplist = split /\s*,\s*/, clean_word($ips);
@@ -1335,7 +1399,7 @@ sub volume_publish {
         lunid  => clean_word($lunid),
         iplist => \@iplist
     );
-    debugmsg( $scfg, "debug",
+    debugmsg( $ctx, "debug",
             "Publish volume ${volname} "
           . safe_var_print( "snapshot", $snapname )
           . 'acquired '
@@ -1347,99 +1411,190 @@ sub volume_publish {
 }
 
 sub volume_stage_iscsi {
-    my ( $scfg, $storeid, $targetname, $lunid, $hosts ) = @_;
+    my ( $ctx, $targetname, $lunid, $hosts ) = @_;
 
-    debugmsg( $scfg, "debug", "Stage target ${targetname} lun ${lunid} over addresses @$hosts\n" );
+    debugmsg( $ctx, "debug", "Stage target ${targetname} lun ${lunid} over addresses @$hosts\n" );
     my $targets_block_devices =
-      block_device_iscsi_paths( $scfg, $targetname, $lunid, $hosts );
+      block_device_iscsi_paths( $ctx, $targetname, $lunid, $hosts );
 
     if ( @$targets_block_devices == @$hosts ) {
         return $targets_block_devices;
     }
 
-    foreach my $host (@$hosts) {
-
-        # Check if session already exists
-        my $session_exists = 0;
+    # Helper: update %host_has_session by querying iscsiadm --mode session.
+    my %host_has_session;
+    my $refresh_sessions = sub {
         eval {
-            my $cmd = [
-                $ISCSIADM,
-                '--mode', 'session'
-            ];
+            my $cmd = [ $ISCSIADM, '--mode', 'session' ];
+            my @session_lines;
             run_command(
                 $cmd,
                 outfunc => sub {
                     my $line = shift;
-                    if ($line =~ /\Q$targetname\E/ && $line =~ /\Q$host\E/) {
-                        $session_exists = 1;
+                    push @session_lines, $line;
+                    for my $host (@$hosts) {
+                        if ($line =~ /\Q$targetname\E/ && $line =~ /\Q$host\E/) {
+                            $host_has_session{$host} = 1;
+                        }
                     }
                 },
-                errfunc => sub {
-                    cmd_log_output($scfg, 'error', $cmd, shift);
-                },
+                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
                 noerr   => 1
             );
+            debugmsg($ctx, 'debug',
+                "refresh_sessions: found " . scalar(@session_lines)
+                . " session(s): @{session_lines}, looking for target ${targetname} "
+                . "hosts [@$hosts]: "
+                . join(', ', map { "$_=" . ($host_has_session{$_} ? 'yes' : 'no') } @$hosts));
         };
+    };
 
-        if ($session_exists) {
-            debugmsg($scfg, "debug", "iSCSI session already exists for target ${targetname} on host ${host}");
-        } else {
+    $refresh_sessions->();
+
+    for my $host (grep { $host_has_session{$_} } @$hosts) {
+        debugmsg($ctx, "debug",
+            "iSCSI session already exists for target ${targetname} on host ${host}");
+    }
+
+    # Retry login for hosts that do not yet have a session.
+    # Up to 10 attempts; at least one host must succeed before we can
+    # proceed to block-device detection.
+    my $max_login_attempts = 10;
+    for my $attempt (1 .. $max_login_attempts) {
+        # Re-check sessions on retries: a prior login that returned a transient
+        # error (e.g. PDU timeout) may have actually established the session in
+        # the background by the time we get here.  The session can be in a
+        # FAILED/IN-LOGIN recovery cycle managed by iscsid, briefly disappearing
+        # between retry intervals.  Poll a few times with short gaps so we catch
+        # it in the up-phase of the cycle.
+        if ($attempt > 1) {
+            my %had_session = map { $_ => 1 } grep { $host_has_session{$_} } @$hosts;
+            my $max_session_polls = 5;
+            for my $poll (1 .. $max_session_polls) {
+                $refresh_sessions->();
+                my @still_pending = grep { !$host_has_session{$_} } @$hosts;
+                last unless @still_pending;
+                last if $poll == $max_session_polls;
+                sleep(2);
+            }
+            for my $host (grep { $host_has_session{$_} && !$had_session{$_} } @$hosts) {
+                debugmsg($ctx, 'debug',
+                    "refresh_sessions: session for ${host} target ${targetname} "
+                    . "appeared between login attempts");
+            }
+        }
+
+        my @pending = grep { !$host_has_session{$_} } @$hosts;
+        last unless @pending;
+
+        debugmsg($ctx, "debug",
+            "iSCSI login attempt ${attempt}/${max_login_attempts} "
+            . "for hosts: @pending target ${targetname}");
+
+        for my $host (@pending) {
+            # Create node db entry — ignore errors, already-existing is normal.
             eval {
                 my $cmd = [
-                        $ISCSIADM,
-                        '--mode',       'node',
-                        '-p',            $host,
-                        '--targetname',  $targetname,
-                        '-o', 'new'
-                    ];
+                    $ISCSIADM, '--mode', 'node',
+                    '-p', $host, '--targetname', $targetname, '-o', 'new'
+                ];
+                run_command(
+                    $cmd,
+                    outfunc => sub { },
+                    errfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                    noerr   => 1
+                );
+            };
 
+            # Set a short login timeout so each failed attempt fails quickly,
+            # leaving room for more retries. JovianDSS may take time to fully
+            # initialize a newly-created iSCSI target under concurrent load.
+            eval {
+                my $cmd = [
+                    $ISCSIADM, '--mode', 'node',
+                    '-p', $host, '--targetname', $targetname,
+                    '-o', 'update',
+                    '-n', 'node.conn[0].timeo.login_timeout', '-v', '30'
+                ];
+                run_command(
+                    $cmd,
+                    outfunc => sub { },
+                    errfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                    noerr   => 1
+                );
+            };
+
+            # Attempt login — capture exit code via eval so the real error
+            # is logged instead of being silently swallowed.
+            my $already_present = 0;
+            eval {
+                my $cmd = [
+                    $ISCSIADM, '--mode', 'node',
+                    '-p', $host, '--targetname', $targetname, '--login'
+                ];
                 run_command(
                     $cmd,
                     outfunc => sub { },
                     errfunc => sub {
-                        cmd_log_output($scfg, 'warn', $cmd, shift);
-                    },
-                    noerr   => 1
+                        my $line = shift;
+                        $already_present = 1 if $line =~ /already present/i;
+                        cmd_log_output($ctx,
+                            $already_present ? 'debug' : 'warn', $cmd, $line);
+                    }
                 );
+                $host_has_session{$host} = 1;
             };
-            # Don't warn on node creation errors - already existing is normal
+            if ($@) {
+                if ($already_present) {
+                    debugmsg($ctx, 'debug',
+                        "iSCSI session already present for host ${host} "
+                        . "target ${targetname}, treating as success");
+                    $host_has_session{$host} = 1;
+                } else {
+                    debugmsg($ctx, 'warn',
+                        "iSCSI login attempt ${attempt}/${max_login_attempts} "
+                        . "failed for host ${host} target ${targetname}: $@");
+                }
+            } else {
+                debugmsg($ctx, 'debug',
+                    "iSCSI login succeeded for host ${host} "
+                    . "target ${targetname} on attempt ${attempt}/${max_login_attempts}");
+            }
+        }
 
-            # Attempt login
-            eval {
-                my $cmd = [
-                        $ISCSIADM,
-                        '--mode',       'node',
-                        '-p',           $host,
-                        '--targetname', $targetname,
-                        '--login'
-                    ];
+        sleep(1) if $attempt < $max_login_attempts
+                    && grep { !$host_has_session{$_} } @$hosts;
+    }
 
-                run_command(
-                    $cmd,
-                    outfunc => sub { },
-                    errfunc => sub {
-                        cmd_log_output($scfg, 'warn', $cmd, shift);
-                    },
-                    noerr   => 1
-                );
-            };
-        } # End of iscsi session creation for given address
-        debugmsg( $scfg, "debug", "Staging target ${targetname} of host ${host} done\n" );
-    } # end of for loop over all addresses
+    my @logged_in = grep {  $host_has_session{$_} } @$hosts;
+    my @failed    = grep { !$host_has_session{$_} } @$hosts;
+
+    if (!@logged_in) {
+        die "Unable to establish iSCSI session for target ${targetname} "
+            . "on any host after ${max_login_attempts} attempts. "
+            . "Hosts tried: @$hosts\n";
+    }
+    if (@failed) {
+        debugmsg($ctx, 'warn',
+            "iSCSI login failed for hosts @failed after ${max_login_attempts} attempts; "
+            . "proceeding with " . scalar(@logged_in) . " of " . scalar(@$hosts)
+            . " hosts for target ${targetname}");
+    }
 
     for ( my $i = 1 ; $i <= 30 ; $i++ ) {
-        sleep(1);
+        $targets_block_devices =
+            block_device_iscsi_paths( $ctx, $targetname, $lunid, \@logged_in );
 
-        $targets_block_devices = block_device_iscsi_paths( $scfg, $targetname, $lunid, $hosts );
-
-        if ( @$targets_block_devices == @$hosts ) {
-            debugmsg( $scfg, "debug", "Stage iSCSI block devices @{ $targets_block_devices }\n" );
+        if ( @$targets_block_devices == @logged_in ) {
+            debugmsg( $ctx, "debug", "Stage iSCSI block devices @{ $targets_block_devices }\n" );
             return $targets_block_devices;
         }
 
-        debugmsg( $scfg, "debug", "Waiting for block devices: got "
-            . scalar(@$targets_block_devices) . " of " . scalar(@$hosts)
+        debugmsg( $ctx, "debug", "Waiting for block devices: got "
+            . scalar(@$targets_block_devices) . " of " . scalar(@logged_in)
             . " (attempt ${i}/30)\n" );
+
+        sleep(1);
 
         # Run rescan-scsi-bus only every 3rd attempt.  Under concurrent
         # load (many clones), each rescan takes minutes and 19 concurrent
@@ -1448,24 +1603,25 @@ sub volume_stage_iscsi {
         if ( $i % 3 == 0 && $lunid =~ /^\A\d+\z$/ ) {
             my $cmd = [ '/usr/bin/rescan-scsi-bus.sh', '--sparselun', '--reportlun2', '--largelun', "--luns=${lunid}", '-a'];
             run_command(
-                $cmd ,
-                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
-                noerr   => 1
+                $cmd,
+                outfunc  => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                errfunc  => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+                timeout  => 60,
+                noerr    => 1
             );
         } elsif ( $lunid !~ /^\A\d+\z$/ ) {
-            debugmsg( $scfg, "warn", "Lun id ${lunid} contains non digit symbols" );
+            debugmsg( $ctx, "warn", "Lun id ${lunid} contains non digit symbols" );
         }
     }
 
-    log_dir_content($scfg, $storeid, '/dev/disk/by-path');
-    debugmsg( $scfg, "warn", "Unable to identify iscsi block device location @{ $targets_block_devices }\n" );
+    log_dir_content($ctx, '/dev/disk/by-path');
+    debugmsg( $ctx, "warn", "Unable to identify iscsi block device location @{ $targets_block_devices }\n" );
 
     die "Unable to locate target ${targetname} block device location.\n";
 }
 
 sub volume_stage_multipath {
-    my ( $scfg, $scsiid, $block_devs ) = @_;
+    my ( $ctx, $scsiid, $block_devs ) = @_;
     $scsiid = clean_word($scsiid);
 
     my $mpath;
@@ -1477,8 +1633,8 @@ sub volume_stage_multipath {
             my $cmd = [ $MULTIPATH, '-a', $id ];
             run_command(
                 $cmd ,
-                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
                 noerr   => 1
             );
         };
@@ -1498,18 +1654,18 @@ sub volume_stage_multipath {
         for my $wait ( 1 .. 60 ) {
             if ( -e $scsi_by_id ) {
                 $paths_ready = 1;
-                debugmsg( $scfg, "debug",
+                debugmsg( $ctx, "debug",
                     "SCSI device ${scsi_by_id} ready after ${wait}s wait" );
                 last;
             }
             if ( $wait == 1 || $wait % 10 == 0 ) {
-                debugmsg( $scfg, "debug",
+                debugmsg( $ctx, "debug",
                     "Waiting for SCSI device ${scsi_by_id} (${wait}/60)" );
             }
             sleep(1);
         }
         unless ($paths_ready) {
-            debugmsg( $scfg, "warn",
+            debugmsg( $ctx, "warn",
                 "SCSI device ${scsi_by_id} not found after 60s, "
                 . "attempting multipath creation anyway" );
         }
@@ -1527,7 +1683,7 @@ sub volume_stage_multipath {
                 }
             }
             if (@sd_devnames) {
-                debugmsg( $scfg, "debug",
+                debugmsg( $ctx, "debug",
                     "Resolved iSCSI paths for multipath: " . join(', ', @sd_devnames) );
             }
         }
@@ -1551,11 +1707,59 @@ sub volume_stage_multipath {
                     my $cmd = [ $MULTIPATHD, 'add', 'path', $devname ];
                     run_command(
                         $cmd,
-                        outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                        errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                        outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                        errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+                        timeout  => 20,
                         noerr   => 1
                     );
                 };
+            }
+
+            # TODO: remove once multipath device appearance is reliable under load
+            # Trigger udev rescan for the specific sd devices belonging to this
+            # WWID every 4th attempt.  Unlike a broad "udevadm trigger -t all",
+            # targeting individual sysfs paths only generates events for these
+            # devices, avoiding disruption to other active multipath devices.
+            if ( $attempt % 4 == 0 ) {
+                if (@sd_devnames) {
+                    for my $devname (@sd_devnames) {
+                        eval {
+                            my $cmd = [ 'udevadm', 'trigger',
+                                        '/sys/block/' . $devname ];
+                            run_command(
+                                $cmd,
+                                outfunc => sub { },
+                                errfunc => sub {
+                                    cmd_log_output($ctx, 'debug', $cmd, shift);
+                                },
+                                timeout  => 20,
+                                noerr => 1
+                            );
+                        };
+                    }
+                    debugmsg( $ctx, 'debug',
+                        "Triggered udev rescan for devices: "
+                        . join(', ', @sd_devnames)
+                        . " (attempt ${attempt})" );
+                } else {
+                    eval {
+                        my $cmd = [ 'udevadm', 'trigger',
+                                    '--subsystem-match=block',
+                                    "--attr-match=ID_SERIAL=${id}" ];
+                        run_command(
+                            $cmd,
+                            outfunc => sub { },
+                            errfunc => sub {
+                                cmd_log_output($ctx, 'debug', $cmd, shift);
+                            },
+                            timeout  => 20,
+                            noerr => 1
+                        );
+                    };
+                    debugmsg( $ctx, 'debug',
+                        "Triggered udev rescan for scsiid ${id} "
+                        . "(attempt ${attempt})" );
+                }
             }
 
             # On first attempt and every 5th attempt, try the multipath
@@ -1566,8 +1770,8 @@ sub volume_stage_multipath {
                     my $cmd = [ $MULTIPATH, $id ];
                     run_command(
                         $cmd,
-                        outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                        errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                        outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                        errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
                         noerr   => 1,
                         timeout => 30
                     );
@@ -1578,7 +1782,7 @@ sub volume_stage_multipath {
                 return clean_word($mpath);
             }
 
-            debugmsg( $scfg,
+            debugmsg( $ctx,
                     "debug",
                     "Unable to identify block device mapper name for "
                     . "scsiid ${id} "
@@ -1588,8 +1792,9 @@ sub volume_stage_multipath {
                 my $cmd = [ $MULTIPATH, '-a', $id ];
                 run_command(
                     $cmd ,
-                    outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                    outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                    errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+                    timeout  => 20,
                     noerr   => 1
                 );
             };
@@ -1598,8 +1803,9 @@ sub volume_stage_multipath {
                 my $cmd = [ $MULTIPATHD, 'add', 'map', $id ];
                 run_command(
                     $cmd ,
-                    outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                    outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                    errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+                    timeout  => 20,
                     noerr   => 1
                 );
             };
@@ -1608,15 +1814,15 @@ sub volume_stage_multipath {
             # heavier fallback.  This forces the daemon to re-read all
             # paths and recreate maps from scratch.
             if ( $attempt % 10 == 0 ) {
-                debugmsg( $scfg, "debug",
+                debugmsg( $ctx, "debug",
                     "Attempting multipathd reconfigure for scsiid ${id} "
                     . "(attempt ${attempt})" );
                 eval {
                     my $cmd = [ $MULTIPATHD, 'reconfigure' ];
                     run_command(
                         $cmd,
-                        outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                        errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                        outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                        errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
                         noerr   => 1,
                         timeout => 30
                     );
@@ -1647,30 +1853,30 @@ sub block_device_path_from_serial {
 }
 
 sub block_device_path_from_rest {
-    my ( $scfg, $storeid, $volname, $snapname ) = @_;
+    my ( $ctx, $volname, $snapname ) = @_;
 
-    my $id_serial = id_serial_from_rest( $scfg, $storeid, $volname, $snapname );
+    my $id_serial = id_serial_from_rest( $ctx, $volname, $snapname );
 
     return block_device_path_from_serial(
                 $id_serial,
-                get_multipath($scfg) );
+                get_multipath($ctx) );
 }
 
 sub block_device_path_from_lun_rec {
-    my ( $scfg, $storeid, $targetname, $lunid, $lunrec ) = @_;
+    my ( $ctx, $targetname, $lunid, $lunrec ) = @_;
 
     my $block_dev;
 
     my $block_device_path = undef;
-    if ( get_multipath($scfg) ) {
+    if ( get_multipath($ctx) ) {
 
         unless ($lunrec->{multipath}) {
             $lunrec->{multipath} = 1;
-            lun_record_local_update( $scfg, $storeid,
+            lun_record_local_update( $ctx,
                                      $targetname, $lunid,
                                      $lunrec->{volname}, $lunrec->{snapname},
                                      $lunrec );
-            $block_dev = volume_stage_multipath( $scfg, $lunrec->{scsiid} );
+            $block_dev = volume_stage_multipath( $ctx, $lunrec->{scsiid} );
             return $block_dev;
         }
 
@@ -1694,7 +1900,7 @@ sub block_device_path_from_lun_rec {
     }
 
     unless ( defined($block_device_path) ) {
-        debugmsg( $scfg,
+        debugmsg( $ctx,
                 "debug",
                 "Block device path from lun record for "
                 . "target ${targetname} "
@@ -1704,7 +1910,7 @@ sub block_device_path_from_lun_rec {
         die "Unable to identify path from lun record.\n";
     }
 
-    debugmsg( $scfg,
+    debugmsg( $ctx,
             "debug",
             "Block device path from lun record for "
             . "target ${targetname} "
@@ -1715,7 +1921,7 @@ sub block_device_path_from_lun_rec {
 }
 
 sub get_device_mapper_name {
-    my ( $scfg, $wwid ) = @_;
+    my ( $ctx, $wwid ) = @_;
 
     my $device_mapper_name;
 
@@ -1728,13 +1934,14 @@ sub get_device_mapper_name {
             outfunc => sub {
                     my $line = shift;
                     chomp $line;
-                    cmd_log_output($scfg, 'debug', $cmd, $line);
+                    cmd_log_output($ctx, 'debug', $cmd, $line);
                     if ( $line =~ /\b$wwid\b/ ) {
                         my @parts = split( /\s+/, $line );
                         $device_mapper_name = $parts[0];
                     }
                 },
-            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+            errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+            timeout  => 20,
             noerr   => 1
         );
     } else {
@@ -1746,14 +1953,14 @@ sub get_device_mapper_name {
 
     if ( $device_mapper_name =~ /^([\:\-\@\w.\/]+)$/ ) {
 
-        debugmsg( $scfg, "debug", "Mapper name for ${wwid} is ${1}\n" );
+        debugmsg( $ctx, "debug", "Mapper name for ${wwid} is ${1}\n" );
         return $1;
     }
     return undef;
 }
 
 sub ha_state_is_defined {
-     my ($scfg, $vmid) = @_;
+     my ($ctx, $vmid) = @_;
 
      my $cmd = [
          'pvesh', 'get', "/cluster/ha/resources/${vmid}",
@@ -1768,19 +1975,20 @@ sub ha_state_is_defined {
          $cmd,
          outfunc => $outfunc,
          errfunc => $errfunc,
+         timeout  => 20,
          noerr   => 1
      );
 
      if ($exitcode != 0) {
          if ($err_out =~ /no such resource/) {
-             debugmsg($scfg, 'debug', "VM ${vmid} is not HA-managed");
+             debugmsg($ctx, 'debug', "VM ${vmid} is not HA-managed");
              return 0;
          }
          die "Failed to check HA status for ${vmid}: ${err_out}";
      }
 
      if ($json_out eq '') {
-         debugmsg($scfg, 'debug', "VM ${vmid} is not HA-managed (empty response)");
+         debugmsg($ctx, 'debug', "VM ${vmid} is not HA-managed (empty response)");
          return 0;
      }
 
@@ -1789,13 +1997,13 @@ sub ha_state_is_defined {
          die "Unexpected HA status response for ${vmid}: ${json_out}";
      }
 
-     debugmsg($scfg, 'debug', "VM ${vmid} is HA-managed");
+     debugmsg($ctx, 'debug', "VM ${vmid} is HA-managed");
      return 1;
 }
 
 
 sub ha_state_get {
-    my ($scfg, $vmid) = @_;
+    my ($ctx, $vmid) = @_;
 
     my $cmd = ['pvesh', 'get', "/cluster/ha/resources/${vmid}", '--output-format', 'json'];
     my $json_out = '';
@@ -1805,8 +2013,9 @@ sub ha_state_get {
         $cmd,
         outfunc => $outfunc,
         errfunc => sub {
-            cmd_log_output($scfg, 'error', $cmd, shift);
+            cmd_log_output($ctx, 'error', $cmd, shift);
         },
+        timeout  => 10,
         noerr   => 1
     );
 
@@ -1820,7 +2029,7 @@ sub ha_state_get {
     }
     if (exists $jdata->{'state'}) {
         my $state = $jdata->{'state'};
-        debugmsg( $scfg, 'debug', "HA state of ${vmid} is ${state}");
+        debugmsg( $ctx, 'debug', "HA state of ${vmid} is ${state}");
         return $state;
     } else {
         die "Unable to identify state of ${vmid}\n";
@@ -1828,7 +2037,7 @@ sub ha_state_get {
 }
 
 sub ha_type_get {
-    my ($scfg, $vmid) = @_;
+    my ($ctx, $vmid) = @_;
 
     my $cmd = ['pvesh', 'get', "/cluster/ha/resources/${vmid}", '--output-format', 'json'];
     my $json_out = '';
@@ -1838,8 +2047,9 @@ sub ha_type_get {
         $cmd,
         outfunc => $outfunc,
         errfunc => sub {
-            cmd_log_output($scfg, 'error', $cmd, shift);
+            cmd_log_output($ctx, 'error', $cmd, shift);
         },
+        timeout  => 10,
         noerr   => 1
     );
 
@@ -1853,7 +2063,7 @@ sub ha_type_get {
     }
     if (exists $jdata->{'type'}) {
         my $type = $jdata->{'type'};
-        debugmsg( $scfg, 'debug', "HA type of ${vmid} is ${type}");
+        debugmsg( $ctx, 'debug', "HA type of ${vmid} is ${type}");
         return $type;
     } else {
         die "Unable to identify type of ${vmid}\n";
@@ -1877,7 +2087,8 @@ sub get_multipath_device_name {
     run_command(
         $cmd,
         errmsg  => "Getting multipath device for ${device_path} failed",
-        outfunc => $outfunc
+        outfunc => $outfunc,
+        timeout  => 10,
     );
 
     my $data = decode_json($json_out);
@@ -1907,11 +2118,11 @@ sub get_multipath_device_name {
 }
 
 sub id_serial_from_rest {
-    my ( $scfg, $storeid, $volname, $snapname ) = @_;
+    my ( $ctx, $volname, $snapname ) = @_;
 
-    my $pool = get_pool( $scfg );
+    my $pool = get_pool( $ctx );
 
-    debugmsg( $scfg,"debug",
+    debugmsg( $ctx,"debug",
                 "Obtain SCSI ID for volume ${volname} "
                 . safe_var_print( "snapshot", $snapname )
                 . "\n");
@@ -1919,8 +2130,7 @@ sub id_serial_from_rest {
     my $jscsiid;
     if (defined($volname) && !defined($snapname)) {
         $jscsiid = joviandss_cmd(
-            $scfg,
-            $storeid,
+            $ctx,
             [
                 "pool",   $pool,
                 "volume", $volname,
@@ -1930,8 +2140,7 @@ sub id_serial_from_rest {
         );
     } elsif (defined($volname) && defined($snapname)) {
         $jscsiid = joviandss_cmd(
-            $scfg,
-            $storeid,
+            $ctx,
             [
                 "pool",   $pool,
                 "volume", $volname,
@@ -1948,7 +2157,7 @@ sub id_serial_from_rest {
         my $id = $1;
         my $uei64_bytes = substr( $id, 0, 16 );
 
-        debugmsg( $scfg,"debug",
+        debugmsg( $ctx,"debug",
                 "Obtain SCSI ID for volume ${volname} "
                 . safe_var_print( "snapshot", $snapname )
                 . "\n");
@@ -1960,10 +2169,10 @@ sub id_serial_from_rest {
 }
 
 sub volume_unstage_iscsi_device {
-    my ( $scfg, $storeid, $targetname, $lunid, $hosts ) = @_;
+    my ( $ctx, $targetname, $lunid, $hosts ) = @_;
 
-    debugmsg( $scfg, "debug", "Volume unstage iscsi device ${targetname} with lun ${lunid}\n" );
-    my $block_devs = block_device_iscsi_paths ( $scfg, $targetname, $lunid, $hosts );
+    debugmsg( $ctx, "debug", "Volume unstage iscsi device ${targetname} with lun ${lunid}\n" );
+    my $block_devs = block_device_iscsi_paths ( $ctx, $targetname, $lunid, $hosts );
 
     foreach my $idp (@$block_devs) {
         if ( -b $idp ) {
@@ -1978,9 +2187,9 @@ sub volume_unstage_iscsi_device {
                         if ( $path =~ /^([\:\-\@\w.\/]+)$/ ) {
                             $bdp = $1;
                         }
-                        cmd_log_output($scfg, 'debug', $cmd, $path);
+                        cmd_log_output($ctx, 'debug', $cmd, $path);
                     },
-                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                    errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); }
                 );
             }
             my $block_device_name = File::Basename::basename($bdp);
@@ -1994,17 +2203,17 @@ sub volume_unstage_iscsi_device {
             print $fh "1" or die "Cannot write to $delete_file $!";
 
             close $fh     or die "Cannot close ${delete_file} $!";
-            debugmsg( $scfg, "debug", "Sending delete request to ${delete_file} done\n" );
+            debugmsg( $ctx, "debug", "Sending delete request to ${delete_file} done\n" );
         }
     }
-    debugmsg( $scfg, "debug", "Volume unstage iscsi device ${targetname} done\n" );
+    debugmsg( $ctx, "debug", "Volume unstage iscsi device ${targetname} done\n" );
 }
 
 
 sub volume_unstage_iscsi {
-    my ( $scfg, $storeid, $targetname ) = @_;
+    my ( $ctx, $targetname ) = @_;
 
-    debugmsg( $scfg, "debug", "Volume unstage iscsi target ${targetname}\n" );
+    debugmsg( $ctx, "debug", "Volume unstage iscsi target ${targetname}\n" );
 
     # Driver should not commit any write operation including sync before unmounting
     # Because that myght lead to data corruption in case of active migration
@@ -2018,8 +2227,9 @@ sub volume_unstage_iscsi {
 
         run_command(
             $cmd,
-            outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+            outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+            errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+            timeout  => 20,
             noerr   => 1
         );
     };
@@ -2032,16 +2242,17 @@ sub volume_unstage_iscsi {
 
         run_command(
             $cmd,
-            outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+            outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+            errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+            timeout  => 20,
             noerr   => 1
         );
     };
-    debugmsg( $scfg, "debug", "Volume unstage iscsi target ${targetname} done\n" );
+    debugmsg( $ctx, "debug", "Volume unstage iscsi target ${targetname} done\n" );
 }
 
 sub volume_unstage_multipath {
-    my ( $scfg, $scsiid ) = @_;
+    my ( $ctx, $scsiid ) = @_;
 
     # Driver should not commit any write operation including sync before unmounting
     # Because that might lead to data corruption in case of active migration
@@ -2053,21 +2264,21 @@ sub volume_unstage_multipath {
     }
     my $clean_scsiid = $1;
 
-    debugmsg( $scfg, "debug", "Volume unstage multipath scsiid ${clean_scsiid}" );
+    debugmsg( $ctx, "debug", "Volume unstage multipath scsiid ${clean_scsiid}" );
 
     # Phase 1: Wait for device to become unused
     # There are strong suspicions that proxmox does not terminate qemu during migration
     # before calling volume deactivation. This prevents data corruption.
-    my $device_ready = _volume_unstage_multipath_wait_unused($scfg, $clean_scsiid);
+    my $device_ready = _volume_unstage_multipath_wait_unused($ctx, $clean_scsiid);
     unless ($device_ready) {
-        debugmsg( $scfg, "warn", "Device ${clean_scsiid} may still be in use, proceeding with cleanup" );
+        debugmsg( $ctx, "warn", "Device ${clean_scsiid} may still be in use, proceeding with cleanup" );
     }
 
     # Phase 2: Remove multipath device with retries
-    my $cleanup_successful = _volume_unstage_multipath_remove_device($scfg, $clean_scsiid);
+    my $cleanup_successful = _volume_unstage_multipath_remove_device($ctx, $clean_scsiid);
 
     if ($cleanup_successful) {
-        debugmsg( $scfg, "debug", "Volume unstage multipath scsiid ${clean_scsiid} completed successfully" );
+        debugmsg( $ctx, "debug", "Volume unstage multipath scsiid ${clean_scsiid} completed successfully" );
         return;
     } else {
         die "Failed to remove multipath device for SCSI ID ${clean_scsiid} after multiple attempts\n";
@@ -2075,7 +2286,7 @@ sub volume_unstage_multipath {
 }
 
 sub _volume_unstage_multipath_wait_unused {
-    my ( $scfg, $scsiid ) = @_;
+    my ( $ctx, $scsiid ) = @_;
 
     # Before we try to remove multipath device
     # Let's check if no process is using it
@@ -2091,17 +2302,17 @@ sub _volume_unstage_multipath_wait_unused {
             my $pid;
             my $blocker_name;
 
-            my $mapper_name = get_device_mapper_name( $scfg, $scsiid );
+            my $mapper_name = get_device_mapper_name( $ctx, $scsiid );
 
             # Check if mapper exists and is valid
             if ( !defined($mapper_name) ) {
-                debugmsg( $scfg, "debug", "Multipath device mapper name is not defined");
+                debugmsg( $ctx, "debug", "Multipath device mapper name is not defined");
                 $should_continue = 0;
                 return;
             }
 
             if ( $mapper_name !~ /^([\:\-\@\w.\/]+)$/ ) {
-                debugmsg( $scfg, "debug", "Multipath device mapper name is incorrect: ${mapper_name}");
+                debugmsg( $ctx, "debug", "Multipath device mapper name is incorrect: ${mapper_name}");
                 $should_continue = 0;
                 return;
             }
@@ -2111,31 +2322,31 @@ sub _volume_unstage_multipath_wait_unused {
 
             # Check if mapper device file exists
             if ( !-b $mapper_path ) {
-                debugmsg( $scfg, "debug", "Multipath device mapping ${mapper_path} does not exist");
+                debugmsg( $ctx, "debug", "Multipath device mapping ${mapper_path} does not exist");
                 return;
             }
 
             # Check device usage
-            debugmsg( $scfg, "debug", "Check usage of multipath mapping ${mapper_path}" );
+            debugmsg( $ctx, "debug", "Check usage of multipath mapping ${mapper_path}" );
             my $cmd = [ 'lsof', '-t', $mapper_path ];
             eval {
                 run_command(
                     $cmd,
                     outfunc => sub {
                         $pid = clean_word(shift);
-                        cmd_log_output($scfg, 'debug', $cmd, $pid);
+                        cmd_log_output($ctx, 'debug', $cmd, $pid);
                     },
-                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                    errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); }
                 );
             };
             if ($@) {
                 my $err = $@;
-                debugmsg( $scfg, "warn", "Unable to identify mapper user for ${mapper_path}: ${err}");
+                debugmsg( $ctx, "warn", "Unable to identify mapper user for ${mapper_path}: ${err}");
                 $should_continue = 0;
                 return 1;
             }
 
-            debugmsg( $scfg, "debug", "Multipath device mapping ${mapper_path} is used by ${pid}");
+            debugmsg( $ctx, "debug", "Multipath device mapping ${mapper_path} is used by ${pid}");
 
             if ($pid) {
                 $pid = clean_word($pid);
@@ -2149,14 +2360,14 @@ sub _volume_unstage_multipath_wait_unused {
                         $cmd,
                         outfunc => sub {
                             $blocker_name = clean_word(shift);
-                            cmd_log_output($scfg, 'debug', $cmd, $blocker_name);
+                            cmd_log_output($ctx, 'debug', $cmd, $blocker_name);
                         },
-                        errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                        errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); }
                     );
                     my $warningmsg = "Multipath device "
                         . "with scsi id ${scsiid}, "
                         . "is used by ${blocker_name} with pid ${pid}";
-                    debugmsg( $scfg, 'warn', $warningmsg );
+                    debugmsg( $ctx, 'warn', $warningmsg );
                     warn "${warningmsg}\n";
                 }
             } else {
@@ -2166,7 +2377,7 @@ sub _volume_unstage_multipath_wait_unused {
         };
 
         if ($@) {
-            debugmsg( $scfg, 'warn', "Error during device usage check: $@" );
+            debugmsg( $ctx, 'warn', "Error during device usage check: $@" );
         }
 
         # Exit loop if device is unused or we encountered an exit condition
@@ -2181,29 +2392,30 @@ sub _volume_unstage_multipath_wait_unused {
 }
 
 sub _volume_unstage_multipath_remove_device {
-    my ( $scfg, $scsiid ) = @_;
+    my ( $ctx, $scsiid ) = @_;
 
     unless ( $scsiid =~ /^([\:\-\@\w.\/]+)$/ ) {
-        debugmsg( $scfg, 'warn', "SCSI ID contains forbidden symbols: ${scsiid}" );
+        debugmsg( $ctx, 'warn', "SCSI ID contains forbidden symbols: ${scsiid}" );
         return 0;
     }
     my $clean_scsiid = $1;
 
     for my $attempt ( 1 .. 10) {
-        debugmsg( $scfg, "debug", "Multipath removal attempt ${attempt}/10 for SCSI ID ${clean_scsiid}" );
+        debugmsg( $ctx, "debug", "Multipath removal attempt ${attempt}/10 for SCSI ID ${clean_scsiid}" );
 
         # Step 1: Remove SCSI ID from WWID file
         eval {
             my $cmd = [ $MULTIPATH, '-w', $clean_scsiid ];
             run_command(
                 $cmd,
-                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+                timeout  => 20,
                 noerr   => 1
             );
         };
         if ($@) {
-            debugmsg( $scfg, 'warn', "Unable to remove scsi id ${clean_scsiid} from wwid file: $@" );
+            debugmsg( $ctx, 'warn', "Unable to remove scsi id ${clean_scsiid} from wwid file: $@" );
         }
 
         # Step 2: Flush (remove) the multipath device map.
@@ -2213,8 +2425,8 @@ sub _volume_unstage_multipath_remove_device {
             my $cmd = [ $MULTIPATH, '-f', $clean_scsiid ];
             run_command(
                 $cmd,
-                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
                 noerr   => 1,
                 timeout => 30
             );
@@ -2225,38 +2437,39 @@ sub _volume_unstage_multipath_remove_device {
         # an orphaned dm device behind.  Use dmsetup info to check
         # if the dm device exists (not multipath -ll which only
         # sees the multipath map).
-        my $dm_exists = _dmsetup_device_exists($scfg, $clean_scsiid);
+        my $dm_exists = _dmsetup_device_exists($ctx, $clean_scsiid);
         unless ($dm_exists) {
-            debugmsg( $scfg, "debug", "Volume unstage multipath scsiid ${clean_scsiid} done (flush)" );
+            debugmsg( $ctx, "debug", "Volume unstage multipath scsiid ${clean_scsiid} done (flush)" );
             return 1;
         }
 
         eval {
             my $cmd = [ $DMSETUP, "remove", "-f", $clean_scsiid ];
             run_command( $cmd,
-                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+                timeout  => 20,
                 noerr   => 1
             );
         };
         if ($@) {
-            debugmsg( $scfg, 'warn', "dmsetup remove failed for ${clean_scsiid}: $@" );
+            debugmsg( $ctx, 'warn', "dmsetup remove failed for ${clean_scsiid}: $@" );
         }
 
         # Check if dmsetup removal succeeded
         sleep(1);
-        $dm_exists = _dmsetup_device_exists($scfg, $clean_scsiid);
+        $dm_exists = _dmsetup_device_exists($ctx, $clean_scsiid);
         unless ($dm_exists) {
-            debugmsg( $scfg, "debug", "Volume unstage multipath scsiid ${clean_scsiid} done (dmsetup)" );
+            debugmsg( $ctx, "debug", "Volume unstage multipath scsiid ${clean_scsiid} done (dmsetup)" );
             return 1;
         }
 
         # Identify what is blocking removal and wait for it
-        my $mapper_name = get_device_mapper_name( $scfg, $clean_scsiid );
+        my $mapper_name = get_device_mapper_name( $ctx, $clean_scsiid );
         $mapper_name = $clean_scsiid unless defined($mapper_name);
-        my $blocker_pid = _volume_unstage_multipath_get_blocker($scfg, $clean_scsiid, $mapper_name);
+        my $blocker_pid = _volume_unstage_multipath_get_blocker($ctx, $clean_scsiid, $mapper_name);
         if ($blocker_pid) {
-            debugmsg( $scfg, "debug", "Waiting for blocker pid ${blocker_pid} to finish (attempt ${attempt})" );
+            debugmsg( $ctx, "debug", "Waiting for blocker pid ${blocker_pid} to finish (attempt ${attempt})" );
             # Wait up to 5 seconds for the blocker to finish
             for my $wait (1 .. 5) {
                 last unless -d "/proc/${blocker_pid}";
@@ -2266,18 +2479,19 @@ sub _volume_unstage_multipath_remove_device {
             sleep(2);
         }
 
-        debugmsg( $scfg, "debug", "Unable to remove multipath mapping for scsiid ${clean_scsiid} in attempt ${attempt}" );
+        debugmsg( $ctx, "debug", "Unable to remove multipath mapping for scsiid ${clean_scsiid} in attempt ${attempt}" );
     }
 
     # Final fallback: deferred removal — device will be removed when
     # the last opener (e.g. vgs) closes it.
-    if (_dmsetup_device_exists($scfg, $clean_scsiid)) {
-        debugmsg( $scfg, "info", "Using deferred dmsetup removal for ${clean_scsiid}" );
+    if (_dmsetup_device_exists($ctx, $clean_scsiid)) {
+        debugmsg( $ctx, "info", "Using deferred dmsetup removal for ${clean_scsiid}" );
         eval {
             my $cmd = [ $DMSETUP, "remove", "--deferred", $clean_scsiid ];
             run_command( $cmd,
-                outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+                timeout  => 20,
                 noerr   => 1
             );
         };
@@ -2294,7 +2508,7 @@ sub _volume_unstage_multipath_remove_device {
 # multipath -f can remove the multipath map while leaving the
 # underlying dm device behind as an orphan.
 sub _dmsetup_device_exists {
-    my ( $scfg, $name ) = @_;
+    my ( $ctx, $name ) = @_;
 
     my $exists = 0;
     eval {
@@ -2303,9 +2517,10 @@ sub _dmsetup_device_exists {
             outfunc => sub {
                 my $line = shift;
                 $exists = 1 if $line =~ /State:\s+ACTIVE/;
-                cmd_log_output($scfg, 'debug', $cmd, $line);
+                cmd_log_output($ctx, 'debug', $cmd, $line);
             },
             errfunc => sub { },  # suppress "device not found" errors
+            timeout  => 20,
             noerr   => 1
         );
     };
@@ -2313,7 +2528,7 @@ sub _dmsetup_device_exists {
 }
 
 sub _volume_unstage_multipath_log_blockers {
-    my ( $scfg, $scsiid, $mapper_name ) = @_;
+    my ( $ctx, $scsiid, $mapper_name ) = @_;
 
     my $mapper_path = "/dev/mapper/${mapper_name}";
     if ( -b $mapper_path) {
@@ -2325,9 +2540,9 @@ sub _volume_unstage_multipath_log_blockers {
                 $cmd,
                 outfunc => sub {
                     $pid = clean_word(shift);
-                    cmd_log_output($scfg, 'debug', $cmd, $pid);
+                    cmd_log_output($ctx, 'debug', $cmd, $pid);
                 },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); }
             );
             if ( $pid =~ /^([\:\-\@\w.\/]+)$/ ) {
                 my $clean_pid = $1;
@@ -2336,27 +2551,27 @@ sub _volume_unstage_multipath_log_blockers {
                     $cmd,
                     outfunc => sub {
                         $blocker_name = clean_word(shift);
-                        cmd_log_output($scfg, 'debug', $cmd, $blocker_name);
+                        cmd_log_output($ctx, 'debug', $cmd, $blocker_name);
                     },
-                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                    errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); }
                 );
                 my $warningmsg = "Unable to deactivate multipath device "
                     . "with scsi id ${scsiid}, "
                     . "device is used by ${blocker_name} with pid ${pid}";
-                debugmsg( $scfg, 'warn', $warningmsg );
+                debugmsg( $ctx, 'warn', $warningmsg );
                 warn "${warningmsg}\n";
             }
         };
         if ($@) {
-            debugmsg( $scfg, 'warn', "Unable to identify multipath blocker: $@" );
+            debugmsg( $ctx, 'warn', "Unable to identify multipath blocker: $@" );
         }
     } else {
-        debugmsg( $scfg, "debug", "Multipath device file ${mapper_path} removed" );
+        debugmsg( $ctx, "debug", "Multipath device file ${mapper_path} removed" );
     }
 }
 
 sub _volume_unstage_multipath_get_blocker {
-    my ( $scfg, $scsiid, $mapper_name ) = @_;
+    my ( $ctx, $scsiid, $mapper_name ) = @_;
 
     my $mapper_path = "/dev/mapper/${mapper_name}";
     return unless -b $mapper_path;
@@ -2369,9 +2584,9 @@ sub _volume_unstage_multipath_get_blocker {
             $cmd,
             outfunc => sub {
                 $pid = clean_word(shift);
-                cmd_log_output($scfg, 'debug', $cmd, $pid);
+                cmd_log_output($ctx, 'debug', $cmd, $pid);
             },
-            errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+            errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); }
         );
     };
     return unless $pid;
@@ -2384,15 +2599,15 @@ sub _volume_unstage_multipath_get_blocker {
                 $cmd,
                 outfunc => sub {
                     $blocker_name = clean_word(shift);
-                    cmd_log_output($scfg, 'debug', $cmd, $blocker_name);
+                    cmd_log_output($ctx, 'debug', $cmd, $blocker_name);
                 },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); }
+                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); }
             );
         };
         my $warningmsg = "Unable to deactivate multipath device "
             . "with scsi id ${scsiid}, "
             . "device is used by ${blocker_name} with pid ${pid}";
-        debugmsg( $scfg, 'warn', $warningmsg );
+        debugmsg( $ctx, 'warn', $warningmsg );
         warn "${warningmsg}\n";
     }
 
@@ -2400,12 +2615,12 @@ sub _volume_unstage_multipath_get_blocker {
 }
 
 sub volume_unpublish {
-    my ( $scfg, $storeid, $vmid, $volname, $snapname, $content_volume_flag ) = @_;
+    my ( $ctx, $vmid, $volname, $snapname, $content_volume_flag ) = @_;
 
-    my $pool = get_pool( $scfg );
-    my $prefix = get_target_prefix($scfg);
+    my $pool = get_pool( $ctx );
+    my $prefix = get_target_prefix($ctx);
 
-    debugmsg( $scfg,"debug",
+    debugmsg( $ctx,"debug",
                 "Unpublish volume ${volname} "
                 . safe_var_print( "snapshot", $snapname )
                 . "\n");
@@ -2413,9 +2628,9 @@ sub volume_unpublish {
     my $tgname;
 
     if ( defined($content_volume_flag) && $content_volume_flag != 0 ) {
-        $tgname = get_content_target_group_name($scfg);
+        $tgname = get_content_target_group_name($ctx);
     } else {
-        $tgname = get_vm_target_group_name($scfg, $vmid);
+        $tgname = get_vm_target_group_name($ctx, $vmid);
     }
 
     # Volume deletion will result in deletetion of all its snapshots
@@ -2423,8 +2638,7 @@ sub volume_unpublish {
     # removed along side with volume
     unless ( defined($snapname) ) {
         my $delitablesnaps = joviandss_cmd(
-            $scfg,
-            $storeid,
+            $ctx,
             [
                 "pool",   $pool,
                 "volume", $volname,
@@ -2437,14 +2651,13 @@ sub volume_unpublish {
 
         unless ( $content_volume_flag ) {
             foreach my $snap (@dsl) {
-                volume_deactivate( $scfg, $storeid, $vmid,
+                volume_deactivate( $ctx, $vmid,
                     $volname, $snap, undef );
             }
         }
 
         joviandss_cmd(
-            $scfg,
-            $storeid,
+            $ctx,
             [
                 'pool', $pool,
                 'targets', 'delete',
@@ -2457,8 +2670,7 @@ sub volume_unpublish {
 
     if ( defined( $snapname ) ) {
         joviandss_cmd(
-            $scfg,
-            $storeid,
+            $ctx,
             [
                 'pool', $pool,
                 'targets', 'delete',
@@ -2472,12 +2684,13 @@ sub volume_unpublish {
 
 sub lun_record_local_create {
     my (
-        $scfg,    $storeid,
+        $ctx,
         $targetname, $lunid, $volname, $snapname,
         $scsiid, $size,
         $multipath, $shared,
         @hosts
     ) = @_;
+    my $storeid = $ctx->{storeid};
 
     my $ltldir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR,
                                      $storeid, $targetname, $lunid );
@@ -2510,10 +2723,11 @@ sub lun_record_local_create {
 
 sub lun_record_local_update {
     my (
-        $scfg,    $storeid,
+        $ctx,
         $targetname, $lunid, $volname, $snapname,
         $lunrec
     ) = @_;
+    my $storeid = $ctx->{storeid};
 
     my $ltldir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR,
                                      $storeid, $targetname, $lunid );
@@ -2539,12 +2753,13 @@ sub lun_record_local_update {
 }
 
 sub lun_record_local_get_info_list {
-    my ($scfg, $storeid, $volname, $snapname, $tgname ) = @_;
+    my ($ctx, $volname, $snapname, $tgname ) = @_;
+    my $storeid = $ctx->{storeid};
 
     # Provides
     # ( target name, lun number, path to lun record file, lun record data )
 
-    debugmsg( $scfg, "debug", "Searching for lun record of volume ${volname} "
+    debugmsg( $ctx, "debug", "Searching for lun record of volume ${volname} "
         . safe_var_print( "snapshot", $snapname )
         . safe_var_print( "target group", $tgname )
         . "\n");
@@ -2574,7 +2789,7 @@ sub lun_record_local_get_info_list {
                 $lunid = clean_word($lunid);
 
                 # TODO: consider using target group name
-                my $lunrec = lun_record_local_get_by_path( $scfg, $storeid, $full);
+                my $lunrec = lun_record_local_get_by_path( $ctx, $full);
                 if ($lunrec) {
                     if ( $lunrec->{volname} eq $volname ) {
                         if ( defined($snapname) ) {
@@ -2585,7 +2800,7 @@ sub lun_record_local_get_info_list {
                         } else {
                             unless( defined($lunrec->{snapname}) ) {
                                 push @matches, [ $targetname, $lunid, $full, $lunrec ];
-                                debugmsg( $scfg, "debug", "Found lun record of volume ${volname} "
+                                debugmsg( $ctx, "debug", "Found lun record of volume ${volname} "
                                     . safe_var_print( "snapshot", $snapname )
                                     . safe_var_print( "target group", $tgname )
                                     . " targetname ${targetname}"
@@ -2603,9 +2818,10 @@ sub lun_record_local_get_info_list {
 }
 
 sub lun_record_local_get_by_target {
-    my ($scfg, $storeid,
+    my ($ctx,
         $targetname, $lunid, $volname
     ) = @_;
+    my $storeid = $ctx->{storeid};
 
     my $ltldir = File::Spec->catfile( $PLUGIN_LOCAL_STATE_DIR,
                                       $storeid, $targetname, $lunid, $volname);
@@ -2619,11 +2835,11 @@ sub lun_record_local_get_by_target {
         return undef;
     }
 
-    return lun_record_local_get_by_path( $scfg, $storeid, $ltlfile );
+    return lun_record_local_get_by_path( $ctx, $ltlfile );
 }
 
 sub lun_record_local_get_by_path {
-    my ( $scfg, $storeid, $path ) = @_;
+    my ( $ctx, $path ) = @_;
 
     unless (-f $path && -r $path) {
         return undef;
@@ -2653,7 +2869,7 @@ sub lun_record_local_get_by_path {
 
 
 sub log_dir_content {
-    my ( $scfg, $storeid, $dir ) = @_;
+    my ( $ctx, $dir ) = @_;
 
     if (opendir my $dh, $dir) {
         my @files = grep { $_ ne '.' && $_ ne '..' } readdir $dh;
@@ -2661,7 +2877,7 @@ sub log_dir_content {
         closedir $dh;
 
         foreach my $file ( @files ) {
-            debugmsg( $scfg, "debug", "Folder ${dir} contains ${file}");
+            debugmsg( $ctx, "debug", "Folder ${dir} contains ${file}");
         }
     } else {
         warn "Cannot open directory '$dir': $!";
@@ -2670,23 +2886,23 @@ sub log_dir_content {
 }
 
 sub lun_record_local_delete {
-    my ( $scfg, $storeid, $targetname, $lunid, $volname, $snapname ) = @_;
+    my ( $ctx, $targetname, $lunid, $volname, $snapname ) = @_;
+    my $storeid = $ctx->{storeid};
 
-    debugmsg( $scfg, "debug", "Deleting local lun record for "
+    debugmsg( $ctx, "debug", "Deleting local lun record for "
         . "target ${targetname} "
         . "lun ${lunid} "
         . "volume ${volname} "
         . safe_var_print( "snapshot", $snapname )
         . "\n");
 
-    debugmsg($scfg, 'debug', "delete lun record check\n");
+    debugmsg($ctx, 'debug', "delete lun record check\n");
     my $ltdir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR,
                                     $storeid, $targetname );
     unless ( -d $ltdir ) {
         eval {
             volume_unstage_iscsi(
-                $scfg,
-                $storeid,
+                $ctx,
                 $targetname
             );
         };
@@ -2718,7 +2934,7 @@ sub lun_record_local_delete {
 
             unless ( @entries ) {
 
-                volume_unstage_iscsi( $scfg, $storeid, $targetname );
+                volume_unstage_iscsi( $ctx, $targetname );
 
                 unless ( rmdir( $ltdir ) ) {
                     if ( -d $ltdir) {
@@ -2732,7 +2948,7 @@ sub lun_record_local_delete {
                 }
             }
         } else {
-            debugmsg( $scfg, 'warn',
+            debugmsg( $ctx, 'warn',
                     "Skip removing lun dir of global target ${targetname} " .
                     "lun ${lunid} because of $!");
         }
@@ -2741,7 +2957,7 @@ sub lun_record_local_delete {
 }
 
 sub volume_activate {
-    my ($scfg, $storeid,
+    my ($ctx,
         $vmid, $volname, $snapname,
         $content_volume_flag ) = @_;
 
@@ -2756,27 +2972,26 @@ sub volume_activate {
 
     my $tgname;
     my $scsiid;
-    my $shared = get_shared( $scfg );
-    my $multipath = get_multipath( $scfg );
+    my $shared = get_shared( $ctx );
+    my $multipath = get_multipath( $ctx );
     my $targetname;
     my $lunid;
     my $hosts;
 
     if ( defined($content_volume_flag) && $content_volume_flag != 0 ) {
-        $tgname = get_content_target_group_name($scfg);
+        $tgname = get_content_target_group_name($ctx);
     } else {
-        $tgname = get_vm_target_group_name($scfg, $vmid);
+        $tgname = get_vm_target_group_name($ctx, $vmid);
     }
 
-    debugmsg( $scfg, "debug",
+    debugmsg( $ctx, "debug",
             "Activating volume ${volname} "
           . safe_var_print( "snapshot", $snapname )
           . "\n" );
 
     eval {
         $published = 1;
-        $tinfo = volume_publish($scfg,
-                                $storeid,
+        $tinfo = volume_publish($ctx,
                                 $tgname,
                                 $volname,
                                 $snapname,
@@ -2794,8 +3009,7 @@ sub volume_activate {
 
         $iscsi_staged = 1;
         my $tbdlist = volume_stage_iscsi(
-            $scfg,
-            $storeid,
+            $ctx,
             $targetname,
             $lunid,
             $hosts
@@ -2805,7 +3019,7 @@ sub volume_activate {
         unless (scalar(@$block_devs) == scalar(@$hosts)) {
             die "Unable to connect all storage addresses\n";
         }
-        $scsiid = id_serial_from_rest( $scfg, $storeid, $volname, $snapname );
+        $scsiid = id_serial_from_rest( $ctx, $volname, $snapname );
 
         if (defined( $scsiid ) ) {
             $scsiid_acquired = 1;
@@ -2816,18 +3030,18 @@ sub volume_activate {
 
         if ($multipath) {
             $multipath_staged = 1;
-            my $multipath_path = volume_stage_multipath( $scfg, $scsiid, $block_devs );
+            my $multipath_path = volume_stage_multipath( $ctx, $scsiid, $block_devs );
             my $mpdl = [ clean_word($multipath_path) ];
             $block_devs = $mpdl;
         }
 
-        my $size = volume_get_size( $scfg, $storeid, $volname);
+        my $size = volume_get_size( $ctx, $volname);
 
         $local_record_created      = 1;
         my $ltlfile;
 
         $ltlfile = lun_record_local_create(
-                $scfg, $storeid,
+                $ctx,
                 $targetname, $lunid, $volname, $snapname,
                 $scsiid, $size,
                 $multipath, $shared,
@@ -2835,8 +3049,8 @@ sub volume_activate {
         # We do it to recheck device size and properties
         # That is needed to ensure that proxmox recognize device as present
         # after volume migrates back
-        my $lunrec = lun_record_local_get_by_path( $scfg, $storeid, $ltlfile );
-        lun_record_update_device( $scfg, $storeid, $targetname, $lunid, $ltlfile, $lunrec, $size );
+        my $lunrec = lun_record_local_get_by_path( $ctx, $ltlfile );
+        lun_record_update_device( $ctx, $targetname, $lunid, $ltlfile, $lunrec, $size );
 
     };
     my $err = $@;
@@ -2850,12 +3064,12 @@ sub volume_activate {
         # Logout iSCSI BEFORE removing multipath — same rationale as
         # in the normal deactivation path (see volume_deactivate).
         if ( $iscsi_staged ) {
-            volume_unstage_iscsi_device( $scfg, $storeid, $targetname, $lunid, $hosts );
+            volume_unstage_iscsi_device( $ctx, $targetname, $lunid, $hosts );
         }
 
         if ($multipath_staged) {
             eval {
-                volume_unstage_multipath( $scfg, $scsiid );
+                volume_unstage_multipath( $ctx, $scsiid );
             };
             my $cerr = $@;
             if ($cerr) {
@@ -2871,7 +3085,7 @@ sub volume_activate {
             # in case of migration
             if ( $published ) {
                 eval {
-                    volume_unpublish( $scfg, $storeid, $vmid, $volname, $snapname, undef );
+                    volume_unpublish( $ctx, $vmid, $volname, $snapname, undef );
                 };
                 my $cerr = $@;
                 if ($cerr) {
@@ -2887,10 +3101,10 @@ sub volume_activate {
 
         if (defined($targetname) && defined($lunid) && $targetname ne "" && $lunid ne "") {
             eval {
-                lun_record_local_delete( $scfg, $storeid, $targetname, $lunid, $volname, $snapname );
+                lun_record_local_delete( $ctx, $targetname, $lunid, $volname, $snapname );
             };
         } else {
-            debugmsg($scfg, 'debug', "Skipping volume ${volname} "
+            debugmsg($ctx, 'debug', "Skipping volume ${volname} "
                      . safe_var_print( "snapshot", $snapname ) . ' '
                      .  'local LUN record delete - invalid target name or LUN ID'
                      . "\n" );
@@ -2915,7 +3129,7 @@ sub volume_activate {
 }
 
 sub volume_deactivate {
-    my ($scfg, $storeid,
+    my ($ctx,
         $vmid, $volname, $snapname,
         $contentvolumeflag )
       = @_;
@@ -2943,24 +3157,23 @@ sub volume_deactivate {
 
     my $local_cleanup = 0;
 
-    my $pool   = get_pool($scfg);
-    my $prefix = get_target_prefix($scfg);
+    my $pool   = get_pool($ctx);
+    my $prefix = get_target_prefix($ctx);
 
-    debugmsg( $scfg, "debug",
+    debugmsg( $ctx, "debug",
             "Volume ${volname} deactivate "
           . safe_var_print( "snapshot", $snapname )
           . "\n" );
 
     if ( defined($contentvolumeflag) && $contentvolumeflag != 0 ) {
-        $tgname = get_content_target_group_name($scfg);
+        $tgname = get_content_target_group_name($ctx);
     } else {
-        $tgname = get_vm_target_group_name($scfg, $vmid);
+        $tgname = get_vm_target_group_name($ctx, $vmid);
     }
 
     unless( $snapname ) {
         my $delitablesnaps = joviandss_cmd(
-            $scfg,
-            $storeid,
+            $ctx,
             [
                 "pool",   $pool,
                 "volume", $volname,
@@ -2972,15 +3185,15 @@ sub volume_deactivate {
         my @dsl = split( " ", $delitablesnaps );
 
         foreach my $snap (@dsl) {
-            volume_deactivate( $scfg, $storeid, $vmid,
+            volume_deactivate( $ctx, $vmid,
                 $volname, $snap, undef );
         }
     }
-    my $lunrecinfolist = lun_record_local_get_info_list( $scfg, $storeid, $volname, $snapname );
+    my $lunrecinfolist = lun_record_local_get_info_list( $ctx, $volname, $snapname );
 
     if (scalar(@$lunrecinfolist) == 0) {
         debugmsg(
-            $scfg,
+            $ctx,
             'warn',
             "Unable to identify lun record for "
                 . "volume ${volname} "
@@ -2995,7 +3208,7 @@ sub volume_deactivate {
         } else {
 
             foreach my $rec (@$lunrecinfolist) {
-                my $tinfo = target_active_info( $scfg, $storeid, $tgname, $volname, $snapname, $contentvolumeflag );
+                my $tinfo = target_active_info( $ctx, $tgname, $volname, $snapname, $contentvolumeflag );
                 if ( defined( $tinfo ) ){
                     my $lr;
                     ($targetname, $lunid, $lunrecpath, $lr) = $rec;
@@ -3022,7 +3235,7 @@ sub volume_deactivate {
 
     unless( defined( $lunrecord ) ) {
         debugmsg(
-            $scfg,
+            $ctx,
             'warn',
             "Unable to identify lun record for "
                 . "volume ${volname} "
@@ -3037,11 +3250,11 @@ sub volume_deactivate {
     # function recreate the device because iSCSI paths are still active.
     # By logging out iSCSI first, the underlying paths disappear and
     # multipath removal succeeds cleanly.
-    volume_unstage_iscsi_device ( $scfg, $storeid, $targetname, $lunid, $lunrecord->{hosts} );
+    volume_unstage_iscsi_device ( $ctx, $targetname, $lunid, $lunrecord->{hosts} );
 
     if ( $lunrecord->{multipath} ) {
         eval {
-            volume_unstage_multipath( $scfg, $lunrecord->{scsiid} );
+            volume_unstage_multipath( $ctx, $lunrecord->{scsiid} );
         };
         my $cerr = $@;
         if ($cerr) {
@@ -3055,7 +3268,7 @@ sub volume_deactivate {
     # We do not delete target on joviandss as this will lead to race condition
     # in case of migration
         eval {
-            volume_unpublish( $scfg, $storeid, $vmid, $volname, $snapname, undef );
+            volume_unpublish( $ctx, $vmid, $volname, $snapname, undef );
         };
         $cerr = $@;
         if ($cerr) {
@@ -3063,8 +3276,8 @@ sub volume_deactivate {
             warn "unpublish_volume failed: $@" if $@;
         }
     }
-    lun_record_local_delete( $scfg, $storeid, $targetname, $lunid, $volname, $snapname );
-    debugmsg( $scfg, "debug",
+    lun_record_local_delete( $ctx, $targetname, $lunid, $volname, $snapname );
+    debugmsg( $ctx, "debug",
             "Volume ${volname} deactivate done "
           . safe_var_print( "snapshot", $snapname )
           . "\n" );
@@ -3072,7 +3285,8 @@ sub volume_deactivate {
 }
 
 sub lun_record_update_device {
-    my ( $scfg, $storeid, $targetname, $lunid, $lunrecpath, $lunrec, $expectedsize ) = @_;
+    my ( $ctx, $targetname, $lunid, $lunrecpath, $lunrec, $expectedsize ) = @_;
+    my $storeid = $ctx->{storeid};
 
     unless(defined($lunrec)) {
         confess "Undefined lun record for updating\n";
@@ -3096,7 +3310,7 @@ sub lun_record_update_device {
             }
         }
 
-        my $iscsi_block_devices = block_device_iscsi_paths ( $scfg, $targetname, $lunid, $lunrec->{hosts} );
+        my $iscsi_block_devices = block_device_iscsi_paths ( $ctx, $targetname, $lunid, $lunrec->{hosts} );
         my $block_device_path;
         foreach my $iscsi_block_device ( @{ $iscsi_block_devices } ) {
             eval {
@@ -3106,7 +3320,7 @@ sub lun_record_update_device {
                     $cmd,
                     outfunc => sub { $block_device_path = shift; },
                     errfunc => sub {
-                        cmd_log_output($scfg, 'error', $cmd, shift);
+                        cmd_log_output($ctx, 'error', $cmd, shift);
                     },
                     noerr   => 1
                 );
@@ -3130,7 +3344,7 @@ sub lun_record_update_device {
 
             run_command( $cmd,
                 outfunc => sub { },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
                 noerr   => 1
             );
         };
@@ -3139,7 +3353,7 @@ sub lun_record_update_device {
             my $cmd = [ $ISCSIADM, '-m', 'node', '-R', '-T', ${targetname} ];
             run_command( $cmd,
                 outfunc => sub { },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
                 noerr   => 1
             );
         };
@@ -3153,29 +3367,29 @@ sub lun_record_update_device {
                 noerr   => 1
               );
         };
-        if ( get_multipath($scfg) ) {
+        if ( get_multipath($ctx) ) {
 
             unless ($lunrec->{multipath}) {
                 $lunrec->{multipath} = 1;
-                lun_record_local_update( $scfg, $storeid,
+                lun_record_local_update( $ctx,
                                          $targetname, $lunid,
                                          $lunrec->{volname}, $lunrec->{snapname},
                                          $lunrec );
             }
-            $block_device_path = volume_stage_multipath( $scfg, $lunrec->{scsiid} );
+            $block_device_path = volume_stage_multipath( $ctx, $lunrec->{scsiid} );
             eval {
                 my $cmd = [ $MULTIPATH, '-r', ${block_device_path} ];
                 run_command(
                     $cmd ,
-                    outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                    outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                    errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
                     noerr   => 1
                 );
                 $cmd = [ $MULTIPATH, 'reconfigure'];
                 run_command(
                     $cmd ,
-                    outfunc => sub { cmd_log_output($scfg, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                    outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                    errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
                     noerr   => 1
                 );
             };
@@ -3197,7 +3411,7 @@ sub lun_record_update_device {
                       if $line !~ /^(\d+)$/;
                     $updated_size = int($1);
                 },
-                errfunc => sub { cmd_log_output($scfg, 'error', $cmd, shift); },
+                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
                 noerr   => 1
             );
         };
@@ -3205,7 +3419,7 @@ sub lun_record_update_device {
         if ($expectedsize) {
             if ( $updated_size eq $expectedsize ) {
                 $lunrec->{size} = $expectedsize;
-                lun_record_local_update( $scfg, $storeid,
+                lun_record_local_update( $ctx,
                                          $targetname, $lunid,
                                          $lunrec->{volname}, $lunrec->{snapname},
                                          $lunrec );
@@ -3220,20 +3434,20 @@ sub lun_record_update_device {
 }
 
 sub volume_update_size {
-    my ( $scfg, $storeid, $vmid, $volname, $size ) = @_;
+    my ( $ctx, $vmid, $volname, $size ) = @_;
 
     my $tgname;
-    my $lunrecinfolist = lun_record_local_get_info_list( $scfg, $storeid, $volname, undef );
+    my $lunrecinfolist = lun_record_local_get_info_list( $ctx, $volname, undef );
 
-    $tgname = get_vm_target_group_name($scfg, $vmid);
+    $tgname = get_vm_target_group_name($ctx, $vmid);
 
     if ( @$lunrecinfolist ) {
         if ( @$lunrecinfolist == 1 ) {
             my ($targetname, $lunid, $lunrecpath, $lunrecord) = @{ $lunrecinfolist->[0] };
-            lun_record_update_device( $scfg, $storeid, $targetname, $lunid, $lunrecpath, $lunrecord, $size);
+            lun_record_update_device( $ctx, $targetname, $lunid, $lunrecpath, $lunrecord, $size);
         } else {
             foreach my $rec (@$lunrecinfolist) {
-                my $tinfo = target_active_info( $scfg, $storeid, $tgname, $volname, undef, undef );
+                my $tinfo = target_active_info( $ctx, $tgname, $volname, undef, undef );
                 if ( defined( $tinfo ) ){
                     my ($targetname, $lunid, $lunrecpath, $lunrecord) = $rec;
 
@@ -3241,7 +3455,7 @@ sub volume_update_size {
                         if ( $tinfo->{lun} eq $lunid ) {
                             if ( $lunrecord->{volname} eq $volname ) {
                                 unless(defined($lunrecord->{snapname})) {
-                                        lun_record_update_device( $scfg, $storeid, $targetname, $lunid, $lunrecpath, $lunrecord, $size);
+                                        lun_record_update_device( $ctx, $targetname, $lunid, $lunrecpath, $lunrecord, $size);
                                         return;
                                 }
                             }
@@ -3255,20 +3469,21 @@ sub volume_update_size {
 }
 
 sub volume_get_size {
-    my ( $scfg, $storeid, $volname ) = @_;
+    my ( $ctx, $volname ) = @_;
 
-    my $pool = get_pool($scfg);
+    my $pool = get_pool($ctx);
 
-    my $output = joviandss_cmd($scfg, $storeid, ['pool', $pool, 'volume', $volname, 'get', '-s'], 80, 5);
+    my $output = joviandss_cmd($ctx, ['pool', $pool, 'volume', $volname, 'get', '-s'], 80, 5);
 
     my $size = int( clean_word( $output ) + 0 );
     return $size;
 }
 
 sub store_settup {
-    my ( $scfg, $storeid ) = @_;
+    my ( $ctx ) = @_;
+    my $storeid = $ctx->{storeid};
 
-    my $path = get_content_path($scfg);
+    my $path = get_content_path($ctx);
 
     my $lldir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR, $storeid );
 
@@ -3278,9 +3493,9 @@ sub store_settup {
 }
 
 sub vm_tag_force_rollback_is_set {
-    my ( $scfg, $vmid ) = @_;
+    my ( $ctx, $vmid ) = @_;
 
-    my $virt_type = vmid_identify_virt_type($scfg, $vmid);
+    my $virt_type = vmid_identify_virt_type($ctx, $vmid);
 
     if ( ! defined($virt_type) ) {
         return 0;

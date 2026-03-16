@@ -121,6 +121,7 @@ sub _vmid_from_volname {
 sub snapshot_info {
     my ( $scfg, $storeid, $dataset, $volname ) = @_;
 
+    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
     my $vmid = _vmid_from_volname($volname);
     my $pool = pool_name_get( $scfg );
 
@@ -147,7 +148,7 @@ sub snapshot_info {
         }
         my $snap_name = nas_snapid_from_sname($sname_field);
         next unless defined($snap_name);
-        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
             "NAS volume ${dataset} volume ${volname} has snapshot ${snap_name}\n" );
         my $entry = { name => $snap_name };
         $entry->{timestamp} = int($creation)
@@ -165,12 +166,13 @@ sub snapshot_activate {
 
     # TODO: Make sure that clone is mounted as READONLY
 
-    my $server = OpenEJovianDSS::Common::get_data_address($scfg);
+    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
+    my $server = OpenEJovianDSS::Common::get_data_address($ctx);
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+    OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
         "Activating dataset ${dataset} volume ${volname} snapshot ${snapname}\n" );
 
-    my $path = OpenEJovianDSS::Common::get_path( $scfg );
+    my $path = OpenEJovianDSS::Common::get_path( $ctx );
     my $pmvs = nas_private_mounts_volname_snapname($vmid, $volname, $snapname);
 
     my $snapmntpath = OpenEJovianDSS::Common::safe_word("${path}/${pmvs}", 'snapshot mount path') ;
@@ -180,26 +182,26 @@ sub snapshot_activate {
     if (-d $snapmntpath) {
         if ( path_is_mnt( $scfg, $snapmntpath ) ){
             if ( path_is_nfs( $scfg,  $snapmntpath, $sharepath, $server ) ) {
-                OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
                     "snapshot_activate: ${snapmntpath} already mounted"
                     . " with correct NFS share ${server}:${sharepath}, reusing\n" );
                 return $snapmntpath;
             } else {
-                OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
                     "snapshot_activate: ${snapmntpath} mounted with different"
                     . " source, unmounting before remount\n" );
                 umount( $scfg, $storeid, $snapmntpath );
             }
         }
     } else {
-        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
             "snapshot_activate: creating mount dir ${snapmntpath}\n" );
         make_path( $snapmntpath );
     }
 
     my $nfs_mount_cmd = [ '/bin/mount', '-t', 'nfs'];
 
-    my $optionscfg = OpenEJovianDSS::Common::get_options($scfg);
+    my $optionscfg = OpenEJovianDSS::Common::get_options($ctx);
     my $optstr = 'ro';
 
     if (defined($optionscfg) && $optionscfg ne '') {
@@ -210,13 +212,13 @@ sub snapshot_activate {
     my $shareippath = OpenEJovianDSS::Common::safe_word("${server}:${sharepath}", "Share ip with NFS path" );
     push @$nfs_mount_cmd, $shareippath, $snapmntpath;
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+    OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
         "snapshot_activate: mounting ${server}:${sharepath}"
         . " at ${snapmntpath} options='${optstr}'\n" );
 
     run_command( $nfs_mount_cmd,
                 outfunc => sub {},
-                errfunc => sub { cmd_log_output($scfg, 'error', $nfs_mount_cmd, shift); }
+                errfunc => sub { cmd_log_output($ctx, 'error', $nfs_mount_cmd, shift); }
             );
 
     # Log what is actually visible at the mount point after mounting
@@ -224,11 +226,11 @@ sub snapshot_activate {
         if ( opendir( my $dh, $snapmntpath ) ) {
             my @entries = grep { $_ ne '.' && $_ ne '..' } readdir($dh);
             closedir($dh);
-            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+            OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
                 "snapshot_activate: mount point ${snapmntpath} top-level entries: ["
                 . join( ", ", sort @entries ) . "]\n" );
         } else {
-            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+            OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
                 "snapshot_activate: cannot read mount point ${snapmntpath}: $!\n" );
         }
     };
@@ -241,11 +243,12 @@ sub snapshot_activate {
 sub snapshot_deactivate {
     my ( $scfg, $storeid, $dataset, $vmid, $volname, $snapname ) = @_;
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
+    OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
         "Deactivating NAS dataset ${dataset} volume ${volname} snapshot ${snapname}\n" );
 
     my $snapshot_dir = File::Spec->catdir(
-            OpenEJovianDSS::Common::get_path($scfg),
+            OpenEJovianDSS::Common::get_path($ctx),
             nas_private_mounts_volname_snapname($vmid, $volname, $snapname)
         );
     return 1 if ( !-d $snapshot_dir);
@@ -280,8 +283,9 @@ sub path_is_empty {
 sub snapshot_deactivate_unpublish {
     my ( $scfg, $storeid, $datname, $vmid, $volname, $snapname ) = @_;
 
+    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
     my $dir = File::Spec->catdir(
-            OpenEJovianDSS::Common::get_path($scfg),
+            OpenEJovianDSS::Common::get_path($ctx),
             nas_private_mounts_volname_snapname($vmid, $volname, $snapname)
         );
     my $snapshot_dir = OpenEJovianDSS::Common::safe_word($dir, "Snapshot dir");
@@ -291,23 +295,23 @@ sub snapshot_deactivate_unpublish {
         eval {
 
             if ( -d $snapshot_dir) {
-                OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
                     "Deactivating volume ${volname} snapshot entry ${snapname} with path ${snapshot_dir}" );
                 snapshot_deactivate( $scfg, $storeid, $datname, $vmid, $volname, $snapname );
             }
             snapshot_unpublish( $scfg, $storeid, $datname, $volname, $snapname );
-            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+            OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
                     "Unpublishing ${volname} snapshot entry ${snapname} done" );
 
             if (! path_is_mnt($scfg, $snapshot_dir) && path_is_empty($scfg, $snapshot_dir)) {
-                OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+                OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
                     "Removing ${snapshot_dir}" );
                 rmdir($snapshot_dir);
             }
         };
         $err = $@;
         if ($err) {
-            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+            OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
                 "Deactivating volume ${volname} snapshot entry ${snapname} with path ${snapshot_dir} failed attempt ${attempt}: ${err}\n" );
             sleep 1;
         } else {
@@ -326,12 +330,13 @@ sub snapshot_deactivate_unpublish {
 sub all_snapshots_deactivate_unpublish {
     my ( $scfg, $storeid, $datname, $vmid, $volname ) = @_;
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
+    OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
         "Deactivating all snapshots for NAS dataset ${datname} volume ${volname}\n" );
 
     my $pmv = nas_private_mounts_volname($vmid, $volname);
 
-    my $volume_dir = OpenEJovianDSS::Common::get_path($scfg) . "/$pmv";
+    my $volume_dir = OpenEJovianDSS::Common::get_path($ctx) . "/$pmv";
 
     if ( path_is_empty($scfg, $volume_dir ) ) {
         rmdir($volume_dir);
@@ -345,7 +350,7 @@ sub all_snapshots_deactivate_unpublish {
     } else {
         die "Unable to open volume ${volname} snapshots dir ${volume_dir}\n";
     }
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+    OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
             "Entries to deactivate: " . join(" ", @entries) );
 
     my $no_error = 1;
@@ -377,6 +382,7 @@ sub all_snapshots_deactivate_unpublish {
 sub path_is_mnt {
     my ( $scfg,  $path) = @_;
 
+    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, '');
     my $path_safe = OpenEJovianDSS::Common::safe_word($path, 'Mounting path');
 
     return 0 if ( ! -d $path_safe );
@@ -390,7 +396,7 @@ sub path_is_mnt {
             $findmnt_cmd,
             outfunc => sub { },
             errfunc => sub {
-                cmd_log_output($scfg, 'error', $findmnt_cmd, shift);
+                cmd_log_output($ctx, 'error', $findmnt_cmd, shift);
             },
             noerr   => 1,
             timeout => 10,
@@ -411,7 +417,7 @@ sub path_is_mnt {
             $mountpoint_cmd,
             outfunc => sub {},
             errfunc => sub {
-                cmd_log_output($scfg, 'error', $mountpoint_cmd, shift);
+                cmd_log_output($ctx, 'error', $mountpoint_cmd, shift);
             },
             noerr   => 1,
             timeout => 10,
@@ -419,7 +425,7 @@ sub path_is_mnt {
     };
     $err = $@;
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Path is mnt check cmd " . join(' ', @$mountpoint_cmd) . " code ${rc} err ${err}" );
+    OpenEJovianDSS::Common::debugmsg( $ctx, "debug", "Path is mnt check cmd " . join(' ', @$mountpoint_cmd) . " code ${rc} err ${err}" );
 
     if ($rc == 0) {
         # is a mountpoint
@@ -451,6 +457,7 @@ sub path_is_nfs {
     # sharepath and shareip are optional
     # they will be checked if they are not undef
     # sharepath is a path of form <pool name>/<share name>
+    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, '');
 
     # TODO: consider extending this function with check for IP
     # and share name
@@ -467,7 +474,7 @@ sub path_is_nfs {
         $cmd,
         outfunc => sub { $json_out .= "$_[0]\n"; },
         errfunc => sub {
-            cmd_log_output($scfg, 'error', $cmd, shift);
+            cmd_log_output($ctx, 'error', $cmd, shift);
         },
         noerr   => 1,
         timeout => 10,
@@ -535,7 +542,8 @@ sub mount {
 sub umount {
     my ( $scfg, $storeid, $mntdirty ) = @_;
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug", "Umounting snapshotdir ${mntdirty}" );
+    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
+    OpenEJovianDSS::Common::debugmsg( $ctx, "debug", "Umounting snapshotdir ${mntdirty}" );
 
     my $mntclean;
     if ( $mntdirty =~ /^([\:\-\@\w.\/]+)$/ ) {
@@ -550,7 +558,7 @@ sub umount {
 
     if ($is_mnt) {
         # is a mountpoint
-        OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+        OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
             "Unmounting ${mntclean}\n" );
     } else {
         # is not a mountpoint
@@ -565,10 +573,10 @@ sub umount {
             $exitcode = run_command(
                 $cmd,
                 outfunc => sub {
-                    cmd_log_output($scfg, 'debug', $cmd, shift);
+                    cmd_log_output($ctx, 'debug', $cmd, shift);
                 },
                 errfunc => sub {
-                    cmd_log_output($scfg, 'error', $cmd, shift);
+                    cmd_log_output($ctx, 'error', $cmd, shift);
                 },
                 noerr   => 1,
                 timeout => 30
@@ -577,7 +585,7 @@ sub umount {
 
         my $umount_err = $@;
         if ($umount_err) {
-            OpenEJovianDSS::Common::debugmsg( $scfg, "error",
+            OpenEJovianDSS::Common::debugmsg( $ctx, "error",
                 "Unmounting has error: ${umount_err}\n" );
         }
 
@@ -585,7 +593,7 @@ sub umount {
 
         if ($is_mnt) {
             # is a mountpoint
-            OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+            OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
                 "Re-try umounting ${mntclean}\n" );
         } else {
             # is not a mountpoint
@@ -600,7 +608,7 @@ sub umount {
             $cmd,
             outfunc => sub {},
             errfunc => sub {
-                cmd_log_output($scfg, 'error', $cmd, shift);
+                cmd_log_output($ctx, 'error', $cmd, shift);
             },
             noerr   => 1,
             timeout => 30
@@ -609,7 +617,7 @@ sub umount {
 
     my $umount_err = $@;
     if ($umount_err) {
-        OpenEJovianDSS::Common::debugmsg( $scfg, "error",
+        OpenEJovianDSS::Common::debugmsg( $ctx, "error",
             "Unmounting of ${mntclean} failed: ${umount_err}\n" );
         warn "Unmounting of ${mntclean} failed: ${umount_err}";
     }
@@ -628,11 +636,12 @@ sub umount {
 sub snapshot_publish {
     my ( $scfg, $storeid, $datname, $volname, $snapname ) = @_;
 
+    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
     my $pool = pool_name_get( $scfg );
     my $vmid = _vmid_from_volname($volname);
     my $internal_snap = nas_sname($snapname, $vmid);
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+    OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
         "Publishing snapshot ${snapname} (${internal_snap}) for volume ${volname} from dataset ${datname}\n" );
 
     my $cmd_output = joviandss_cmd( $scfg, $storeid,
@@ -642,7 +651,7 @@ sub snapshot_publish {
           "publish",
           "--inherit-from-path", $scfg->{export} ] );
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+    OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
         "snapshot_publish raw jdssc output for snap ${internal_snap}: '${cmd_output}'\n" );
 
     my $sharepath;
@@ -656,7 +665,7 @@ sub snapshot_publish {
         }
     }
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+    OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
         "snapshot_publish parsed sharepath: "
         . ( defined($sharepath) ? "'${sharepath}'" : "undef" ) . "\n" );
 
@@ -675,11 +684,12 @@ sub snapshot_publish {
 sub snapshot_unpublish {
     my ( $scfg, $storeid, $datname, $volname, $snapname ) = @_;
 
+    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
     my $pool = pool_name_get( $scfg );
     my $vmid = _vmid_from_volname($volname);
     my $internal_snap = nas_sname($snapname, $vmid);
 
-    OpenEJovianDSS::Common::debugmsg( $scfg, "debug",
+    OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
         "Unpublishing snapshot ${snapname} (${internal_snap}) for dataset ${datname} of volume ${volname}\n" );
     $pool = OpenEJovianDSS::Common::safe_word($pool, 'Pool name');
     $datname = OpenEJovianDSS::Common::safe_word($datname, 'Dataset name');
@@ -775,8 +785,9 @@ sub password_file_delete {
 sub joviandss_cmd {
     my ( $scfg, $storeid, $cmd, $timeout, $retries, $force_debug_level ) = @_;
     my $password = get_user_password($storeid);
+    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
     return OpenEJovianDSS::Common::joviandss_cmd(
-        $scfg, $storeid, $cmd, $timeout, $retries, $force_debug_level, $password);
+        $ctx, $cmd, $timeout, $retries, $force_debug_level, $password);
 }
 
 1;
