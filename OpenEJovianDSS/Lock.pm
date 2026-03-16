@@ -36,11 +36,11 @@ our %EXPORT_TAGS = ( all => [@EXPORT_OK] );
 # Paths
 # ---------------------------------------------------------------------------
 
-# Cluster-wide lock root: one directory per storage instance.
-# Lock entries are subdirectories created atomically via mkdir on pmxcfs.
+# Cluster-wide lock root: the standard pmxcfs lock namespace.
+# pmxcfs tracks ltime and auto-expires stale locks only for entries under
+# priv/lock/, so all cluster locks must live here.
 sub _cluster_lockdir {
-    my ($storeid) = @_;
-    return "/etc/pve/priv/storage/joviandss/${storeid}/locks";
+    return "/etc/pve/priv/lock";
 }
 
 # ---------------------------------------------------------------------------
@@ -169,8 +169,9 @@ sub _cluster_lock_attempt {
 sub _cluster_lock {
     my ($storeid, $lockid, $timeout, $code, @param) = @_;
 
-    my $lockdir  = _cluster_lockdir($storeid);
-    my $lockpath = "$lockdir/$lockid";
+    my $lockdir     = _cluster_lockdir();
+    my $full_lockid = "joviandss-" . _sanitize_lockid($storeid) . "-" . _sanitize_lockid($lockid);
+    my $lockpath    = "$lockdir/$full_lockid";
 
     my $explicit    = defined $timeout;
     my $max_total   = 600;
@@ -184,13 +185,13 @@ sub _cluster_lock {
         } else {
             my $remaining = $max_total - (time() - $start);
             if ($remaining <= 10) {
-                $@ = "joviandss-lock '$lockid' error: got lock request timeout\n";
+                $@ = "joviandss-lock '$full_lockid' error: got lock request timeout\n";
                 return undef;
             }
             $attempt = ($per_attempt < $remaining) ? $per_attempt : int($remaining);
         }
 
-        my $res = _cluster_lock_attempt($lockdir, $lockpath, $lockid, $attempt, $code, @param);
+        my $res = _cluster_lock_attempt($lockdir, $lockpath, $full_lockid, $attempt, $code, @param);
 
         # Success: $@ is undef (set by _cluster_lock_attempt on success).
         return $res if !$@;
@@ -248,14 +249,14 @@ sub _node_lock {
 # Storage-level lock — serializes all operations on a given storage instance.
 # Used as a fallback for methods not covered by lock_vm.
 #
-# $storeid — storage id (scopes the cluster lock directory)
+# $storeid — storage id (embedded in the cluster lock name)
 # $path    — value of the `path` property from storage.cfg (e.g. /mnt/pve/jdss-Pool-2);
 #            used as root for node-local lock files
 # $shared  — true → cluster-wide pmxcfs mkdir lock; false → node-local flock
 # $timeout — cluster: undef = retry loop up to 600s; defined = single attempt.
 #            node-local: undef = 600s default; defined = that many seconds.
 #
-# Lock path (cluster): /etc/pve/priv/storage/joviandss/<storeid>/locks/storage
+# Lock path (cluster): /etc/pve/priv/lock/joviandss-<storeid>-storage
 # Lock path (node):    <path>/private/lock/storage
 
 sub lock_storage {
@@ -274,7 +275,7 @@ sub lock_storage {
 # Per-VM lock — serializes operations that target the same VM's volumes.
 # Concurrent operations for different VMIDs proceed independently.
 #
-# Lock path (cluster): /etc/pve/priv/storage/joviandss/<storeid>/locks/vm-<vmid>
+# Lock path (cluster): /etc/pve/priv/lock/joviandss-<storeid>-vm-<vmid>
 # Lock path (node):    <path>/private/lock/vm-<vmid>
 
 sub lock_vm {
