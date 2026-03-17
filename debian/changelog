@@ -1,3 +1,30 @@
+ open-e-joviandss-proxmox-plugin (0.11.2-0) stable; urgency=medium
+
+    * New: Per-VM concurrent locking (OpenEJovianDSS/Lock.pm) — replaces
+      storage-wide lock with fine-grained per-VM locks; concurrent operations
+      on different VMs no longer block each other
+    * New: Cluster-wide lock via pmxcfs atomic mkdir for shared storage;
+      node-local flock for non-shared storage
+    * New: Dual per-VM locking in clone_image (ordered by vmid) to prevent
+      deadlock when source and destination VMs differ
+    * New: 8-character hex request ID (reqid) in all debug log lines for
+      per-operation log correlation
+    * New: udev rule 50-joviandss-scsi-skip-dm.rules to prevent kernel
+      scanning of JovianDSS device-mapper devices as raw SCSI disks
+    * Fix: NFS plugin crash "JovianDSS data addresses are not provided" —
+      NFSCommon.pm updated for $ctx refactoring in Common.pm
+    * Fix: iSCSI target deletion now re-checks target presence to ensure
+      complete removal before returning
+    * Fix: rescan-scsi-bus.sh timeout no longer aborts the scan loop;
+      error is logged and iteration continues
+    * Fix: Remove trailing comma in rest.py that caused malformed REST requests
+    * Fix: Remove recursive snapshot flag for NAS volumes to prevent
+      unintended child dataset snapshots
+    * Fix: apt-get --reinstall and --allow-downgrades moved after 'install'
+      subcommand in install.pl
+
+   -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>, Claude Code (Anthropic AI)Tue, 17 Mar 2026 00:00:00 -0400
+
 open-e-joviandss-proxmox-plugin (0.11.1-0) stable; urgency=medium
 
   * Fix: Remove volume info caching in alloc_image to eliminate race condition
