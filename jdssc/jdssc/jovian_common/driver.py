@@ -1019,7 +1019,20 @@ class JovianDSSDriver(object):
             for lun in luns:
                 if 'name' in lun and lun['name'] == vname:
                     if len(luns) == 1:
-                        self.ra.delete_target(t)
+                        self.ra.detach_target_vol(t, vname)
+                        for i in range(3):
+                            try:
+                                self.ra.delete_target(t)
+                            except jexc.JDSSResourceNotFoundException:
+                                return
+                            except Exception:
+                                pass
+
+                            try:
+                                self.ra.get_target(tname)
+                            except jexc.JDSSResourceNotFoundException:
+                                return
+
                     else:
                         self.ra.detach_target_vol(t, vname)
                     return
@@ -1220,6 +1233,9 @@ class JovianDSSDriver(object):
                     self._set_target_credentials(tname, chap_cred)
 
                 except jexc.JDSSException as jerr:
+                    # TODO: consider case of multi volume target
+                    # what if single volume fails?
+                    # should we delete target?
                     self.ra.delete_target(tname)
                     raise jerr
 
