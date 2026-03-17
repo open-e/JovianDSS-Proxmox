@@ -1601,14 +1601,16 @@ sub volume_stage_iscsi {
         # rescans create massive SCSI bus congestion.  The first 2 attempts
         # just wait — the devices often appear without a forced rescan.
         if ( $i % 3 == 0 && $lunid =~ /^\A\d+\z$/ ) {
-            my $cmd = [ '/usr/bin/rescan-scsi-bus.sh', '--sparselun', '--reportlun2', '--largelun', "--luns=${lunid}", '-a'];
-            run_command(
-                $cmd,
-                outfunc  => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                errfunc  => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-                timeout  => 60,
-                noerr    => 1
-            );
+            eval {
+                my $cmd = [ '/usr/bin/rescan-scsi-bus.sh', '--sparselun', '--reportlun2', '--largelun', "--luns=${lunid}", '-a'];
+                run_command(
+                    $cmd,
+                    outfunc  => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                    errfunc  => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+                    timeout  => 60,
+                    noerr    => 1
+                );
+            };
         } elsif ( $lunid !~ /^\A\d+\z$/ ) {
             debugmsg( $ctx, "warn", "Lun id ${lunid} contains non digit symbols" );
         }
