@@ -54,12 +54,12 @@ Possible source of issues: routing problems. If you encounter connectivity issue
 Install latest plugin on all nodes in a cluster by running following command on any Proxmox VE server:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes --add-default-multipath-config
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes
 ```
 
 To check latest `pre-release` run:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --pre --all-nodes --add-default-multipath-config
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --pre --all-nodes
 ```
 
 Restart the pvedaemon service to load the newly installed plugin:

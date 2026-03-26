@@ -44,8 +44,6 @@ my $ALL_NODES_OPERATION = 0;
 my $SSH_USER = "root";
 my $REMOVE_PLUGIN = 0;
 my $HELP = 0;
-my $ADD_DEFAULT_MULTIPATH_CONFIG = 0;
-my $FORCE_MULTIPATH_CONFIG = 0;
 my $USE_REINSTALL = 0;  # Default to NOT using --reinstall flag
 my $ALLOW_DOWNGRADES = 0;  # Default to NOT allowing downgrades
 my $VERBOSE = 0;  # Default to non-verbose output
@@ -68,8 +66,6 @@ GetOptions(
     "user=s"        => \$SSH_USER,
     "ssh-flags=s"   => \$SSH_FLAGS,
     "remove"        => \$REMOVE_PLUGIN,
-    "add-default-multipath-config" => \$ADD_DEFAULT_MULTIPATH_CONFIG,
-    "force-multipath-config" => \$FORCE_MULTIPATH_CONFIG,
     "reinstall"     => \$USE_REINSTALL,
     "allow-downgrades" => \$ALLOW_DOWNGRADES,
     "assume-yes"    => \$ASSUME_YES,
@@ -129,8 +125,6 @@ General:
   --sudo                     Use sudo for commands (default: run without sudo)
   --restart                  Restart pvedaemon after install/remove
   --dry-run                  Show what would be done without doing it
-  --add-default-multipath-config  Install default multipath configuration
-  --force-multipath-config   Overwrite existing multipath config files
   --reinstall                Use --reinstall apt flag (default: disabled)
   --allow-downgrades         Allow installing older package versions
   --assume-yes               Automatic yes to prompts (non-interactive mode)
@@ -153,12 +147,6 @@ Examples:
 
   # Install using sudo (when not running as root)
   $prog --sudo
-
-  # Install with default multipath config on all nodes
-  $prog --all-nodes --add-default-multipath-config
-
-  # Force overwrite existing multipath configs
-  $prog --all-nodes --add-default-multipath-config --force-multipath-config
 
   # Remove plugin from local node only
   $prog --remove
@@ -405,138 +393,6 @@ sub execute_command {
         return run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, $cmd_str, $opts);
     }
 }
-
-sub handle_multipath_config {
-    my $is_local = shift;
-    my $ip = shift;
-
-    return 1 unless $ADD_DEFAULT_MULTIPATH_CONFIG;
-
-    my $template_file = "/etc/joviandss/multipath-open-e-joviandss.conf.example";
-    my $target_file = "/etc/multipath/conf.d/open-e-joviandss.conf";
-
-    # Get display name for local vs remote
-    my $node_name;
-    if ($is_local) {
-        $node_name = $ip || "local node";
-    } else {
-        $node_name = get_node_display_name($ip);
-    }
-
-    if ($DRY_RUN) {
-        my $prefix = $is_local ? "" : "[$node_name] ";
-        say "[dry-run] ${prefix}Checking for multipath template: $template_file";
-        say "[dry-run] ${prefix}Would check for existing SCST vendor devices in multipath configs";
-        say "[dry-run] ${prefix}Would install multipath config to: $target_file";
-        return 1;
-    }
-
-    # Check if template exists
-    unless (execute_command($is_local, $ip, "test", "-f", $template_file, { outfunc => undef, errfunc => sub {} })) {
-        warn "[$node_name] ✗ Multipath template not found: $template_file (older package version?)\n";
-        return 0;
-    }
-
-    # Check if target exists
-    my $target_exists = execute_command($is_local, $ip, "test", "-f", $target_file, { outfunc => undef, errfunc => sub {} });
-
-    if ($target_exists && !$FORCE_MULTIPATH_CONFIG) {
-        push @WARNING_NODES, "$node_name: Multipath config already exists, use --force-multipath-config to overwrite";
-        say "⚠ Warning on $node_name: Multipath config file already exists, skipping";
-        return 1;  # Not an error, just skipped
-    }
-
-    # Check for existing SCST vendor devices in multipath configuration
-    my $scst_warning_shown = 0;
-    my $multipath_config_files = [
-        "/etc/multipath.conf",
-        "/etc/multipath/multipath.conf"
-    ];
-
-    # Check individual config files
-    for my $config_file (@$multipath_config_files) {
-        # Check if config file exists using the same pattern as template check
-        if (execute_command($is_local, $ip, "test", "-f", $config_file, { outfunc => undef, errfunc => sub {} })) {
-            # Search for SCST vendor entries in the config file
-            my $scst_collector = create_output_collector();
-            if (execute_command($is_local, $ip, "grep", "-i", "vendor.*scst", $config_file, { 
-                outfunc => $scst_collector->{collector}, 
-                errfunc => sub {} 
-            })) {
-                my @scst_entries = $scst_collector->{get_lines}();
-                if (@scst_entries && !$scst_warning_shown) {
-                    say "⚠ Warning on $node_name: Found existing SCST vendor device configurations in multipath config";
-                    say "  Installing default multipath config may affect operation of existing SCST devices";
-                    say "  Consider reviewing multipath configuration after installation";
-                    push @WARNING_NODES, "$node_name: SCST vendor devices found in multipath config, review after installation";
-                    $scst_warning_shown = 1;
-                    last;
-                }
-            }
-        }
-    }
-
-    # Check conf.d directory files if no SCST found yet
-    unless ($scst_warning_shown) {
-        # Check if conf.d directory exists first
-        if (execute_command($is_local, $ip, "test", "-d", "/etc/multipath/conf.d", { outfunc => undef, errfunc => sub {} })) {
-            # List .conf files in the directory using ls instead of find
-            my $conf_collector = create_output_collector();
-            if (execute_command($is_local, $ip, "ls", "/etc/multipath/conf.d/", { 
-                outfunc => $conf_collector->{collector}, 
-                errfunc => sub {} 
-            })) {
-                my @all_files = $conf_collector->{get_lines}();
-
-                # Check all files in the directory regardless of suffix
-                for my $file (@all_files) {
-                    chomp $file;
-                    next unless $file; # Skip empty lines
-                    next if $file eq '.' || $file eq '..'; # Skip directory entries
-                    next if $file eq 'open-e-joviandss.conf'; # Skip our own config file - handled separately
-
-                    my $full_path = "/etc/multipath/conf.d/$file";
-
-                    # Search for SCST vendor entries
-                    my $scst_collector = create_output_collector();
-                    if (execute_command($is_local, $ip, "grep", "-i", "vendor.*scst", $full_path, {
-                        outfunc => $scst_collector->{collector},
-                        errfunc => sub {}
-                    })) {
-                        my @scst_entries = $scst_collector->{get_lines}();
-                        if (@scst_entries) {
-                            say "⚠ Warning on $node_name: Found existing SCST vendor device configurations in multipath config";
-                            say "  Installing default multipath config may affect operation of existing SCST devices";
-                            say "  Consider reviewing multipath configuration after installation";
-                            push @WARNING_NODES, "$node_name: SCST vendor devices found in multipath config, review after installation";
-                            last;
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    # Create target directory and copy file
-    unless (execute_command($is_local, $ip, "mkdir", "-p", "/etc/multipath/conf.d", { outfunc => undef })) {
-        warn "[$node_name] ✗ Failed to create multipath config directory\n";
-        return 0;
-    }
-
-    unless (execute_command($is_local, $ip, "cp", $template_file, $target_file, { outfunc => undef })) {
-        warn "[$node_name] ✗ Failed to copy multipath config\n";
-        return 0;
-    }
-
-    # Reconfigure multipathd
-    unless (execute_command($is_local, $ip, "multipathd", "-k", "reconfigure")) {
-        say "[$node_name] ⚠ Warning: Failed to reconfigure multipathd (may not be running)";
-    }
-
-    say "[$node_name] ✓ Multipath configuration installed";
-    return 1;
-}
-
 
 sub remote_sudo_prefix {
     if ($USE_SUDO) {
@@ -978,18 +834,6 @@ sub install_node {
         } else {
             warn "[$ip] ✗ Failed to install package\n";
             return 0;
-        }
-    }
-
-    # Handle multipath configuration after package installation
-    unless (handle_multipath_config($is_local, $is_local ? $display_name : $ip)) {
-        if ($ADD_DEFAULT_MULTIPATH_CONFIG) {
-            if ($is_local) {
-                die "Error: Multipath configuration failed on local node\n";
-            } else {
-                warn "[$ip] ✗ Multipath configuration failed\n";
-                return 0;
-            }
         }
     }
 

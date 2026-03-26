@@ -47,7 +47,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.11.2';
+my $PLUGIN_VERSION = '0.11.3';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -1575,17 +1575,24 @@ sub on_add_hook {
         }
     }
     if (exists($sensitive{user_password}) ) {
-        OpenEJovianDSS::Common::password_file_set_password($sensitive{user_password}, $storeid);
+        OpenEJovianDSS::Common::password_file_set_password($sensitive{user_password}, $ctx);
     }
+}
+
+sub on_delete_hook {
+    my ($class, $storeid, $scfg) = @_;
+    my $ctx = new_ctx($scfg, $storeid);
+    OpenEJovianDSS::Common::password_file_delete($ctx);
 }
 
 sub on_update_hook {
     my ($class, $storeid, $scfg, %sensitive) = @_;
+    my $ctx = new_ctx($scfg, $storeid);
     if ( exists($sensitive{user_password}) ) {
         if (defined($sensitive{user_password})) {
-            OpenEJovianDSS::Common::password_file_set_password($sensitive{user_password}, $storeid);
+            OpenEJovianDSS::Common::password_file_set_password($sensitive{user_password}, $ctx);
         } else {
-            OpenEJovianDSS::Common::password_file_delete($storeid);
+            OpenEJovianDSS::Common::password_file_delete($ctx);
         }
     }
     return undef;

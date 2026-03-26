@@ -975,9 +975,10 @@ sub volume_has_feature {
 
 sub on_add_hook {
     my ($class, $storeid, $scfg, %sensitive) = @_;
+    my $ctx = new_ctx($scfg, $storeid);
 
-    if (OpenEJovianDSS::Common::get_create_base_path($scfg)) {
-        my $path = OpenEJovianDSS::Common::get_path($scfg);
+    if (OpenEJovianDSS::Common::get_create_base_path($ctx)) {
+        my $path = OpenEJovianDSS::Common::get_path($ctx);
         if (! -d $path) {
             File::Path::make_path($path,
               { owner => 'root', group => 'root' });
@@ -988,6 +989,11 @@ sub on_add_hook {
         OpenEJovianDSS::NFSCommon::password_file_set_password(
             $sensitive{user_password}, $storeid);
     }
+}
+
+sub on_delete_hook {
+    my ($class, $storeid, $scfg) = @_;
+    OpenEJovianDSS::NFSCommon::password_file_delete($storeid);
 }
 
 sub on_update_hook {

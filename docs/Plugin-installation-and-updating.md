@@ -18,7 +18,7 @@ Therefore, using the `--restart` flag in the Web UI shell will abruptly terminat
 **Install on all cluster nodes over `ssh`**
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes --add-default-multipath-config --restart
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes --restart
 ```
 
 **Install on all cluster nodes with [Proxmox Web UI shell](https://pve.proxmox.com/wiki/Graphical_User_Interface#:~:text=syntax%2E-,Shell)**
@@ -26,7 +26,7 @@ curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/insta
 If installing from the [Proxmox Web UI shell](https://pve.proxmox.com/wiki/Graphical_User_Interface#:~:text=syntax%2E-,Shell), do not use the `--restart` flag:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes --add-default-multipath-config
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes
 ```
 
 Once installation is complete, restart the Proxmox `pvedaemon` service on all cluster nodes:

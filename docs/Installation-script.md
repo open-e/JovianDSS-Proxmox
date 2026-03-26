@@ -29,20 +29,7 @@ the Proxmox Web UI as `--restart` will restart the shell interfaces provided by 
 curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes --restart
 ```
 
-The installation script `install.pl` can also provide recommended multipath configurations by placing the `open-e-joviandss.conf` file
-in the `/etc/multipath/conf.d/` folder.
-To do so, add `--add-default-multipath-config` as an argument to the `install.pl` script.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes --add-default-multipath-config
-```
-
-If you already have `open-e-joviandss.conf` installed but want to reinstall it,
-add the `--force-multipath-config` flag to the arguments.
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes --add-default-multipath-config --force-multipath-config
-```
+The recommended multipath configuration file `open-e-joviandss.conf` is automatically installed to `/etc/multipath/conf.d/` as part of the plugin package.
 
 ## Removal
 
@@ -182,32 +169,7 @@ Node discovery methods (in order of preference):
 
 Remove the plugin instead of installing it. Can be combined with `--all-nodes` to remove from all cluster nodes.
 
-### add-default-multipath-config
-
-**Default**: `False`
-
-Install the default multipath configuration file during installation. This copies the template from `/etc/joviandss/multipath-open-e-joviandss.conf.example` to `/etc/multipath/conf.d/open-e-joviandss.conf`.
-
-The installer checks for existing SCST vendor device configurations and warns if conflicts are detected.
-
-### force-multipath-config
-
-**Default**: `False`
-
-Overwrite existing multipath configuration files when used with `--add-default-multipath-config`. By default, the installer skips multipath configuration if the target file already exists.
-
 ## Notes
-
-### Multipath Configuration
-
-When using `--add-default-multipath-config`, the installer:
-
-- Copies template from `/etc/joviandss/multipath-open-e-joviandss.conf.example`
-- Installs to `/etc/multipath/conf.d/open-e-joviandss.conf`
-- Checks for conflicting SCST vendor configurations
-- Reconfigures multipathd service
-
-**Warning**: The installer warns if existing SCST vendor devices are detected in multipath configuration, as the default config may affect their operation.
 
 ### Verification
 
