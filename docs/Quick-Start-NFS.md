@@ -63,6 +63,8 @@ Restart the pvedaemon service to load the newly installed plugin:
 
 ```bash
 systemctl restart pvedaemon
+systemctl restart pve-ha-lrm.service
+systemctl restart pve-ha-crm.service
 ```
 
 To check the current version of the installed plugin, run the following script:
@@ -94,11 +96,16 @@ pvesm add joviandss-nfs <storage_pool_name> \
   --path <directory_path> \
   --user_name <rest_api_username> \
   --user_password <rest_api_password> \
-  --control_addresses <rest_api_vips> \
-  --data_addresses <rest_api_vips> \
   --ssl_cert_verify 0 \
   --content images,rootdir \
   --shared 1
+```
+
+User password is stored in `password file` located in `/etc/pve/priv/storage/joviandss-nfs/<storage_pool_name>.pw`
+
+In format:
+```
+user_password <rest_api_password>
 ```
 
 #### Understanding the parameters
@@ -133,8 +140,6 @@ pvesm add joviandss-nfs jdss-nfs-01 \
   --path /mnt/pve/jdss-nfs-01 \
   --user_name admin \
   --user_password admin \
-  --control_addresses 192.168.31.152 \
-  --data_addresses 192.168.31.152 \
   --ssl_cert_verify 0 \
   --content images,rootdir \
   --shared 1
@@ -152,11 +157,14 @@ joviandss-nfs: jdss-nfs-01
         export /Pools/Pool-1/datastore-pve-01
         path /mnt/pve/jdss-nfs-01
         user_name admin
-        control_addresses 192.168.31.152
-        data_addresses 192.168.31.152
         ssl_cert_verify 0
         content images,rootdir
         shared 1
+```
+User password should appear in `/etc/pve/priv/storage/joviandss-nfs/jdss-nfs-01.pw`
+
+```
+user_password admin
 ```
 
 **Note:** The `user_password` line will not appear in `storage.cfg` as passwords are now stored securely in separate files for enhanced security.
@@ -210,8 +218,6 @@ joviandss-nfs: jdss-nfs-01
         export /Pools/Pool-1/datastore-pve-01
         path /mnt/pve/jdss-nfs-01
         user_name admin
-        control_addresses 192.168.31.152
-        data_addresses 192.168.31.152
         ssl_cert_verify 0
         content images,rootdir
         shared 1
@@ -225,9 +231,9 @@ The JovianDSS NFS plugin supports ZFS-backed VM snapshots and rollback through t
 
 When you take a Proxmox VM snapshot, the plugin creates a ZFS snapshot of the NAS volume on JovianDSS and temporarily clones it as a read-only NFS share so Proxmox can access disk images at the snapshot point.
 
-When you roll back to a snapshot, the plugin uses the JovianDSS REST API to atomically restore the volume to the chosen snapshot state, removing any newer snapshots in the process.
+When you roll back Proxmox VM to a snapshot, the plugin uses the JovianDSS REST API to attach snapshot and restore specific Proxmox VM disk by using `dd` from snapshot.
 
-> **Note:** Snapshot operations require valid REST API credentials (`user_name` / `user_password`) and working `control_addresses` connectivity from all Proxmox nodes.
+> **Note:** Snapshot operations require valid REST API credentials (user_name / user_password) and connectivity from all Proxmox nodes.
 
 ## Further reading
 

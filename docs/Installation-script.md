@@ -19,7 +19,7 @@ Cluster-wide installation can be done by:
 curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes
 ```
 
-It is recommended to restart the `pvedaemon` service on every Proxmox server where the plugin was installed.
+It is recommended to restart the `pvedaemon`, `pve-ha-lrm` and `pve-ha-crm` service on every Proxmox server where the plugin was installed.
 Automatic restart can be done by adding the `--restart` argument.
 
 But it is **IMPORTANT** to remember that the `install.pl` script with `--restart` should **NOT** be called from
@@ -81,7 +81,7 @@ Use sudo for commands when not running as root. This flag is useful when the scr
 **Default**: `False`
 
 
-Automatically restart the `pvedaemon` service after installation or removal.
+Automatically restart the `pvedaemon`, `pve-ha-lrm` and `pve-ha-crm` service after installation or removal.
 
 **Important**: Do not use this flag when running the script from the Proxmox Web UI, as it will restart the shell interfaces provided by the Web UI.
 
@@ -106,10 +106,6 @@ Use the `--reinstall` apt flag during package installation. This forces reinstal
 
 Allow installing older package versions. By default, apt prevents downgrading packages as it can cause compatibility issues. Use this flag when you need to roll back to a previous version.
 
-**Use cases**:
-- Rolling back from a buggy version to a stable previous release
-- Testing specific versions for compatibility
-- Reverting from pre-release to stable
 
 Example:
 ```bash

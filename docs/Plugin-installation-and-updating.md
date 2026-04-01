@@ -29,10 +29,12 @@ If installing from the [Proxmox Web UI shell](https://pve.proxmox.com/wiki/Graph
 curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes
 ```
 
-Once installation is complete, restart the Proxmox `pvedaemon` service on all cluster nodes:
+Once installation is complete, restart the Proxmox VE services on all cluster nodes:
 
 ```bash
 systemctl restart pvedaemon
+systemctl restart pve-ha-lrm.service
+systemctl restart pve-ha-crm.service
 ```
 
 ### Additional Options
@@ -111,14 +113,14 @@ curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/insta
 
 ```bash
 apt install ./open-e-joviandss-proxmox-plugin_0.10.0.deb
-
-systemctl restart pvedaemon
 ```
 
-After installation  restart the Proxmox `pvedaemon` service.
+After installation  restart the Proxmox VE services to make them aware of plugin.
 
 ```bash
 systemctl restart pvedaemon
+systemctl restart pve-ha-lrm.service
+systemctl restart pve-ha-crm.service
 ```
 
 To remove the plugin call:

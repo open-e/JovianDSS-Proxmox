@@ -1,20 +1,20 @@
-This guide shows you how to set up the JovianDSS Proxmox plugin on a ProxmoxVE cluster in just a few steps.
+This guide shows you how to set up the Open-E JovianDSS Proxmox plugin on a ProxmoxVE cluster in just a few steps.
 
-## JovianDSS preparation
+## Open-E JovianDSS preparation
 
 ### Enable REST API
-Ensure `REST` services are enabled on your JovianDSS storage.
+Ensure `REST` services are enabled on your Open-E JovianDSS storage.
 You’ll find the REST settings under `System Settings > Administration`.
 Configure a username and password for REST API access.
 This guide uses admin/admin, but choose a stronger password at setup.
 
-By default, the JovianDSS `REST API` listens on port 82, and this guide assumes you retain that setting.
+By default, the storage `REST API` listens on port 82, and this guide assumes you retain that setting.
 The `REST API` communicates over `SSL/TLS` only, so changing the port won’t switch to an unencrypted connection.
 If you choose to proceed with an insecure connection because the certificate is self-signed, disable certificate verification by setting the `ssl_cert_verify` property to `0`, see [Options](#options)
 
 
 ### Create pool
-The JovianDSS Proxmox plugin manages existing JovianDSS `Pools`.
+The Open-E JovianDSS Proxmox plugin manages existing JovianDSS `Pools`.
 You must ensure at least one pool exists.
 For instructions on creating a pool, see:
 
@@ -26,7 +26,7 @@ In this guide, we assume that `Pool-0` already exists and that the Proxmox Jovia
 
 ### Assign VIP to Pool
 
-JovianDSS’s Proxmox plugin creates volumes on the JovianDSS side and exports them over iSCSI.
+Open-E JovianDSS’s Proxmox plugin creates volumes on the JovianDSS side and exports them over iSCSI.
 It transfers iSCSI data only over `VIP` addresses assigned to a JovianDSS 'Pool'.
 To use the plugin, assign at least one `VIP` address to the `Pool` you created or referenced earlier.
 
@@ -62,11 +62,18 @@ To check latest `pre-release` run:
 curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --pre --all-nodes
 ```
 
-Restart the pvedaemon service to load the newly installed plugin:
+Restart Proxmox VE services to make them aware of the newly installed plugin:
 
 ```bash
 systemctl restart pvedaemon
+systemctl restart pve-ha-lrm.service
+systemctl restart pve-ha-crm.service
 ```
+
+Alternatively, user can call installation script *over SSH* with [`--restart`](https://github.com/open-e/JovianDSS-Proxmox/wiki/Installation-script#restart) flag to tell `install` script to restart `pvedaemon`, `pve-ha-lrm` and `pve-ha-crm` services.
+
+It is IMPORTANT to remember that the install.pl script with `--restart` should NOT be called from the Proxmox Web UI as `--restart` will restart the shell interfaces provided by the Proxmox Web UI.
+
 
 To check the current version of the installed plugin, run the following script:
 ```bash
@@ -77,7 +84,8 @@ To update to a newest version, the user must re-run the installation script.
 
 The script will automatically install the latest release, or a pre-release version if specified.
 
-To downgrade, the current plugin must be removed first.
+To downgrade, the current plugin use `--allow-downgrades` flag.
+
 For more information, please refer to the [Installation script](https://github.com/open-e/JovianDSS-Proxmox/wiki/Installation-script).
 
 
@@ -112,7 +120,7 @@ pvesm add joviandss <storage_pool_name> \
 
 Below are explanations for each parameter used in the command above:
 - **storage_pool_name** - Name as it appears in Proxmox VE UI and CLI (choose something concise like `jdss-Pool-0`)
-- [pool_name](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#pool_name) with **<joviandss_pool_name>** - Pool name that exists on your JovianDSS storage system (e.g., `Pool-0`)
+- [pool_name](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#pool_name) with **<joviandss_pool_name>** - Pool name that exists on your Open-E JovianDSS storage system (e.g., `Pool-0`)
 - [user_name](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#user_name)/[user_password](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#user_password) with **<rest_api_username/rest_api_password>** - Credentials configured in JovianDSS REST API settings. Both of them must be identical across all nodes in the [High Availability Cluster](https://www.open-e.com/products/open-e-joviandss/open-e-joviandss-advanced-metro-high-availability-cluster-feature-pack/) that share same [pool_name](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#pool_name) for failover to function correctly
 - [content](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#content) with **images,rootdir** - Types of data to store (`images` for VM disks, `rootdir` for containers)
 - [ssl_cert_verify](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#ssl_cert_verify) with **0** - Set to `0` to accept self-signed certificates
@@ -176,7 +184,7 @@ Alternatively, you can manually edit `/etc/pve/storage.cfg` and add the above co
 
 [More about ProxmoxVE storage configuration can be found here](https://pve.proxmox.com/wiki/Storage)
 
-[More about JovianDSS Proxmox plugin configuration can be found here](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
+[More about Open-E JovianDSS Proxmox plugin configuration can be found here](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
 
 
 ## Troubleshooting
