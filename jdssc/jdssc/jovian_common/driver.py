@@ -40,7 +40,7 @@ class JovianDSSDriver(object):
 
     def __init__(self, config):
 
-        self.VERSION = "0.11.3"
+        self.VERSION = "0.11.4-xcopy"
 
         self.configuration = config
         self._pool = self.configuration.get('jovian_pool', 'Pool-0')
@@ -1679,6 +1679,9 @@ class JovianDSSDriver(object):
         ret = {'name': name,
                'size': data['volsize']}
 
+        if 'volblocksize' in data:
+            ret['volblocksize'] = data['volblocksize']
+
         if 'san:volume_id' in data:
             ret['san_scsi_id'] = data['san:volume_id']
 
@@ -2402,7 +2405,10 @@ class JovianDSSDriver(object):
 
                 vid = jcom.vid_from_sname(r['name'])
                 if vid == volume_name or vid is None:
-                    ret.append({'name': jcom.sid_from_sname(r['name'])})
+                    entry = {'name': jcom.sid_from_sname(r['name'])}
+                    if 'creation' in r:
+                        entry['creation'] = r['creation']
+                    ret.append(entry)
 
             except Exception:
                 continue

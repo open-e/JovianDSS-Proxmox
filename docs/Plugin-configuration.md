@@ -354,6 +354,24 @@ Supported values are: 4K, 8K, 16K, 32K, 64K, 128K, 256K, 512K, and 1M.
 
 This setting does not affect volumes created before it is applied.
 
+### xcopy_size
+
+**Default**: `16`
+
+**Type**: *int*
+
+**Required**: `False`
+
+Initial XCOPY chunk size in GiB for non-destructive snapshot rollback. When rolling back a snapshot that has newer snapshots after it, the plugin uses SCSI EXTENDED COPY (XCOPY) to copy the snapshot data to the live volume block-by-block, preserving all snapshots.
+
+The adaptive loop starts with `xcopy_size` GiB per `sg_xcopy` invocation and halves the chunk on timeout until the copy succeeds or the minimum granularity is reached. Reduce this value if `sg_xcopy` times out frequently on the first chunk.
+
+```
+joviandss: jdss-Pool-0
+        ...
+        xcopy_size 16
+        ...
+```
 
 ### debug
 

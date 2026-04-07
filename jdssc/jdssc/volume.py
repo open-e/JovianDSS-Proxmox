@@ -86,6 +86,12 @@ class Volume():
                                action='store_true',
                                default=False,
                                help='Print volume size')
+        get_print.add_argument('-b',
+                               '--block-size',
+                               dest='volume_block_size',
+                               action='store_true',
+                               default=False,
+                               help='Print ZFS volblocksize in bytes')
 
         clone = parsers.add_parser('clone')
         clone.add_argument('--snapshot',
@@ -203,6 +209,15 @@ class Volume():
                         time.sleep(1)
                         continue
                 break
+
+            if self.args['volume_block_size']:
+                bsize = d.get('volblocksize')
+                if bsize is None:
+                    LOG.error("volblocksize not available for volume %s",
+                              self.args['volume_name'])
+                    exit(1)
+                print(bsize)
+                return
 
             if self.args['volume_size']:
                 print(int(d['size']))

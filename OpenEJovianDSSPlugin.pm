@@ -42,12 +42,12 @@ use PVE::Storage::Plugin;
 #use PVE::SafeSyslog;
 
 use OpenEJovianDSS::Common qw(:all);
-use OpenEJovianDSS::Lock   qw(lock_vm lock_storage);
+use OpenEJovianDSS::Lock   qw(lock_renew lock_vm lock_storage);
 use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.11.3';
+my $PLUGIN_VERSION = '0.11.4-xcopy';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -189,6 +189,15 @@ sub properties {
             type    => 'int',
             default => 600,
         },
+        xcopy_size => {
+            description =>
+              "Initial XCOPY chunk size in GiB for non-destructive snapshot "
+              . "rollback (default 16). The adaptive loop starts with this "
+              . "size and halves it on timeout. Reduce this if sg_xcopy "
+              . "times out frequently on the first chunk.",
+            type    => 'int',
+            default => 16,
+        },
         control_addresses => {
             description =>
 "Coma separated list of ip addresses, that will be used to send control REST requests to JovianDSS storage",
@@ -250,6 +259,7 @@ sub options {
         luns_per_target    => { optional => 1 },
         ssl_cert_verify    => { optional => 1 },
         delete_timeout     => { optional => 1 },
+        xcopy_size         => { optional => 1 },
         user_name          => { },
         user_password      => { optional => 1 },
         control_addresses  => { optional => 1 },
@@ -950,62 +960,205 @@ sub _volume_snapshot_rollback_lock {
     return $res;
 }
 
+sub _vm_is_running {
+    my ($vmid) = @_;
+    return 0 unless defined $vmid;
+    return PVE::QemuServer::check_running($vmid)
+        || eval { require PVE::LXC; PVE::LXC::check_running($vmid) } // 0;
+}
+
 sub _volume_snapshot_rollback {
     my ( $class, $ctx, $volname, $snap ) = @_;
 
     my $pool = get_pool($ctx);
-
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
-    print "Rollback: starting rollback of ${volname} to snapshot ${snap}\n";
-    debugmsg( $ctx, "debug",
-            "Volume ${volname} "
-          . safe_var_print( "snapshot", $snap )
-          . " rollback start" );
+    print "starting rollback of ${volname} to snapshot ${snap}\n";
+    debugmsg( $ctx, 'debug',
+        "Volume ${volname} " . safe_var_print( 'snapshot', $snap ) . " rollback start" );
 
-    # Determine virtualisation type from config file presence — instant file
-    # check, no pvesh call needed.  Used only for remove_vm_snapshot_config
-    # when blocker snapshots are cleaned up from the Proxmox config.
-    my $virt_type =
-        -f "/etc/pve/qemu-server/${vmid}.conf" ? 'qemu' :
-        -f "/etc/pve/lxc/${vmid}.conf"         ? 'lxc'  : undef;
+    my $zfs_ok = eval {
+        volume_rollback_check( $ctx, $vmid, $volname, $snap, undef, 0 )
+    };
+    my $check_err = $@;
 
-    # Always use --force-snapshots: volume_rollback_is_possible already
-    # verified this rollback is safe.  For VMs without the force_rollback tag,
-    # no blockers exist at this point so --force-snapshots is a no-op.
-    # For force_rollback VMs the JovianDSS REST API atomically deletes all
-    # newer snapshot blockers before restoring the volume.
-    # Deleted blocker names are returned as "snap:<name>" tokens; we call
-    # remove_vm_snapshot_config for each — it is idempotent, so calling it for
-    # unmanaged snapshots is harmless.
-    my $deleted_raw = joviandss_cmd(
-        $ctx,
-        [
-            'pool',     $pool, 'volume',   $volname,
-            'snapshot', $snap, 'rollback', 'do',
-            '--force-snapshots',
-        ]
-    );
+    # volume_rollback_check dies for two reasons:
+    #   1. Backend/command failure (snapshot missing, appliance unreachable,
+    #      jdssc error) — prefixed with "Unable to rollback".
+    #   2. Blockers exist (newer snapshots or clones prevent ZFS rollback).
+    # Only case 2 should fall through to XCOPY.  Case 1 must be re-raised
+    # immediately — proceeding with XCOPY on a backend error could overwrite
+    # the live volume when the real problem is connectivity or a missing
+    # snapshot.
+    if ( $check_err && $check_err =~ /^Unable to rollback/ ) {
+        die $check_err;
+    }
 
-    foreach my $line ( split /\n/, $deleted_raw ) {
-        foreach my $token ( split /\s+/, $line ) {
-            next unless $token =~ /^snap:(.+)$/;
-            my $deleted = $1;
-            debugmsg( $ctx, "debug",
-                "Rollback: jdssc deleted blocking snapshot '${deleted}'\n" );
-            if ( defined $virt_type ) {
-                remove_vm_snapshot_config(
-                    $ctx, $vmid, $virt_type, $deleted);
+    if ( $zfs_ok ) {
+        # No blockers — fast ZFS metadata rollback.
+        # No snapshots are destroyed; Proxmox snapshot records are untouched.
+        joviandss_cmd(
+            $ctx,
+            [
+                'pool',     $pool, 'volume',   $volname,
+                'snapshot', $snap, 'rollback', 'do',
+            ]
+        );
+    } else {
+        # Blockers exist — block-level XCOPY, all snapshots preserved.
+        die "xcopy rollback: VM ${vmid} is still running; "
+          . "stop the VM before rolling back\n"
+            if _vm_is_running($vmid);
+        die "xcopy rollback: sg_xcopy not found; install sg3-utils\n"
+            unless -x '/usr/bin/sg_xcopy';
+
+        # Closure to extend the per-VM lock by another 60-second window.
+        # Called after each activation, after each successful sg_xcopy
+        # chunk, after each sg_xcopy timeout (before retry), before the
+        # zero-fill loop, and after each successful dd chunk.  Captures
+        # the lock identity from the outer scope so run_xcopy_chunk and
+        # run_zero_chunk do not need to know about locking.
+        my $renew_lock = sub {
+            lock_renew(
+                $ctx->{storeid}, $ctx->{scfg}{path},
+                $ctx->{scfg}{shared}, $vmid,
+            );
+        };
+
+        eval {
+            _activate_volume( $class, $ctx, $volname, undef, {} );
+            $renew_lock->();
+
+            my $vol_til = lun_record_local_get_info_list( $ctx, $volname, undef );
+            die "xcopy rollback: no block device for ${volname}\n"
+                unless @$vol_til;
+            my ( $vtname, $vlunid, undef, $vlr ) = @{ $vol_til->[0] };
+            my $vol_dev = block_device_path_from_lun_rec( $ctx, $vtname, $vlunid, $vlr );
+
+            # If snapshot activation dies the error propagates out of this eval.
+            # The cleanup block below deactivates the live volume (already activated
+            # above) and re-raises the snapshot activation error.
+            _activate_volume( $class, $ctx, $volname, $snap, {} );
+            $renew_lock->();
+
+            my $snap_til = lun_record_local_get_info_list( $ctx, $volname, $snap );
+            die "xcopy rollback: no block device for snapshot ${snap}\n"
+                unless @$snap_til;
+            my ( $stname, $slunid, undef, $slr ) = @{ $snap_til->[0] };
+            my $snap_dev = block_device_path_from_lun_rec( $ctx, $stname, $slunid, $slr );
+
+            # ZFS volblocksize — used as bs= for sg_xcopy and dd.
+            my $bs = clean_word( joviandss_cmd(
+                $ctx,
+                [ 'pool', $pool, 'volume', $volname, 'get', '-b' ],
+                10, 3,
+            ) ) + 0;
+            die "xcopy rollback: failed to get block size for ${volname}\n"
+                unless $bs > 0;
+
+            my $snap_blocks = int( xcopy_getsize64( $ctx, $snap_dev ) / $bs );
+            my $vol_blocks  = int( xcopy_getsize64( $ctx, $vol_dev  ) / $bs );
+
+            # xcopy_size is in GiB; convert to blocks.
+            my $xcopy_gib    = get_xcopy_size($ctx);
+            my $max_chunk    = int( $xcopy_gib * 1024 * 1024 * 1024 / $bs );
+            $max_chunk = 1 if $max_chunk < 1;
+
+            # sg_xcopy requires each segment to transfer a whole number of
+            # 65536-byte granularity units.  Very small volumes (e.g. 528K
+            # EFI vars disks) can fail with "not enough data to read".
+            # Strategy: volumes under 1 MiB skip XCOPY entirely and use dd.
+            my $snap_bytes = $snap_blocks * $bs;
+
+            if ( $snap_bytes < 1048576 ) {
+                # Too small — go straight to dd.
+                print "dd copy ${volname} -> ${snap}: "
+                    . "${snap_blocks} snap blocks (volume too small for "
+                    . "XCOPY, using dd)\n";
+
+                run_dd_copy( $ctx, $snap_dev, $vol_dev, $bs,
+                             $snap_blocks, $renew_lock );
+            } else {
+                print "xcopy ${volname} -> ${snap}: "
+                    . "${snap_blocks} snap blocks, ${vol_blocks} vol blocks, "
+                    . "bs=${bs}, xcopy_size=${xcopy_gib} GiB\n";
+
+                run_xcopy_chunk( $ctx, $snap_dev, $vol_dev, $bs, 0,
+                                 $snap_blocks, $max_chunk, $renew_lock );
             }
+
+            if ( $vol_blocks > $snap_blocks ) {
+                $renew_lock->();
+                # Use 512 MiB chunks for zero-fill so each dd finishes
+                # well within the 60-second lock alarm window even
+                # under IOWeight=10 throttling.  $max_chunk (xcopy_size)
+                # can be up to 16 GiB which would run a single dd for
+                # minutes, causing alarm timeout before lock_renew is
+                # called.  If 512 MiB still times out, run_zero_chunk
+                # will adaptively halve the chunk size.
+                my $zero_chunk = int( 512 * 1024 * 1024 / $bs );
+                $zero_chunk = 1 if $zero_chunk < 1;
+                run_zero_chunk( $ctx, $vol_dev, $bs,
+                    $snap_blocks, $vol_blocks - $snap_blocks,
+                    $zero_chunk, $renew_lock );
+            }
+        };
+        my $err = $@;
+
+        # IMPORTANT: both deactivations MUST be called before leaving the XCOPY
+        # path, regardless of whether the copy succeeded or failed.  The XCOPY
+        # path activates the live volume and the snapshot as iSCSI block devices;
+        # failing to deactivate either one leaves an orphaned iSCSI session on the
+        # host.  Each call is wrapped in its own eval so that a failure of the
+        # first (snapshot) never prevents the second (volume) from running.
+        # _deactivate_volume is idempotent — safe to call even if the corresponding
+        # activation never completed.
+        # Any error from the inner eval is re-raised below after both calls finish.
+        eval { _deactivate_volume( $class, $ctx, $volname, $snap, {}, {} ) };
+        debugmsg( $ctx, 'warn',
+            "xcopy rollback: snapshot deactivation failed: $@\n" ) if $@;
+
+        eval { _deactivate_volume( $class, $ctx, $volname, undef, {}, {} ) };
+        debugmsg( $ctx, 'warn',
+            "xcopy rollback: volume deactivation failed: $@\n" ) if $@;
+
+        # Recovery: if the copy failed, the live volume may be partially
+        # overwritten.  Roll back to the most recent snapshot to restore it
+        # to a clean state.  The most recent snapshot has no newer snapshots
+        # after it, so ZFS rollback needs no -r and destroys nothing.
+        if ( $err ) {
+            eval {
+                my $latest_snap = clean_word( joviandss_cmd(
+                    $ctx,
+                    [ 'pool', $pool, 'volume', $volname,
+                      'snapshots', 'list', '--latest' ],
+                    10, 3,
+                ) );
+                if ( $latest_snap ) {
+                    debugmsg( $ctx, 'warn',
+                        "xcopy rollback failed; recovering volume via "
+                      . "ZFS rollback to latest snapshot ${latest_snap}\n" );
+                    joviandss_cmd(
+                        $ctx,
+                        [
+                            'pool',     $pool,        'volume',   $volname,
+                            'snapshot', $latest_snap, 'rollback', 'do',
+                        ]
+                    );
+                    print "recovery rollback to ${latest_snap} "
+                        . "complete — volume restored\n";
+                }
+            };
+            debugmsg( $ctx, 'warn',
+                "xcopy rollback: recovery rollback failed: $@\n" ) if $@;
+
+            die $err;  # re-raises activation, copy, or zero-fill failures
         }
     }
 
-    print "Rollback: ${volname} to snapshot ${snap} complete\n";
-    debugmsg( $ctx, "debug",
-            "Volume ${volname} "
-          . safe_var_print( "snapshot", $snap )
-          . " rollback done" );
-
+    print "${volname} to snapshot ${snap} rollback complete\n";
+    debugmsg( $ctx, 'debug',
+        "Volume ${volname} " . safe_var_print( 'snapshot', $snap ) . " rollback done" );
 }
 
 sub volume_rollback_is_possible {
@@ -1014,6 +1167,7 @@ sub volume_rollback_is_possible {
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
+    # HA guard: the only condition that prevents rollback.
     my $managed_by_ha = ha_state_is_defined($ctx, $vmid);
     if ($managed_by_ha) {
         my $hastate = ha_state_get($ctx, $vmid);
@@ -1022,25 +1176,18 @@ sub volume_rollback_is_possible {
             my $resource_type = ha_type_get($ctx, $vmid);
             print "vmid ${vmid}: HA check failed — managed by HA (state: ${hastate})\n";
             my $msg =
-            "Rollback blocked: ${resource_type}:${vmid} is controlled by High Availability (state: ${hastate}).\n"
-            . "Rollback requires temporary manual control to prevent HA from restarting or moving the resource.\n"
-            . "Disable HA management before retrying:\n"
-            . "Web UI: Datacenter -> HA -> Resources -> set state to ignored\n"
-            . "CLI: ha-manager set ${resource_type}:${vmid} --state ignored\n";
+              "Rollback blocked: ${resource_type}:${vmid} is controlled by"
+              . " High Availability (state: ${hastate}).\n"
+              . "Rollback requires temporary manual control to prevent HA"
+              . " from restarting or moving the resource.\n"
+              . "Disable HA management before retrying:\n"
+              . "Web UI: Datacenter -> HA -> Resources -> set state to ignored\n"
+              . "CLI: ha-manager set ${resource_type}:${vmid} --state ignored\n";
             die $msg;
         }
     }
 
-    # Compute force_rollback once here so volume_rollback_check does not need
-    # to spawn its own pvesh subprocess for the same information.
-    my $force_rollback = vm_tag_force_rollback_is_set(
-        $ctx, $vmid);
-
-    my $ok = volume_rollback_check(
-        $ctx, $vmid, $volname, $snap, $blockers,
-        $force_rollback);
-
-    return $ok;
+    return 1;
 }
 
 sub volume_snapshot_delete {

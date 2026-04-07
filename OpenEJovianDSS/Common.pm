@@ -76,6 +76,7 @@ our @EXPORT_OK = qw(
   get_data_addresses
   get_data_port
   get_delete_timeout
+  get_xcopy_size
   get_user_name
   get_user_password
   get_block_size
@@ -111,6 +112,11 @@ our @EXPORT_OK = qw(
   get_active_target_name
   get_vm_target_group_name
   get_content_target_group_name
+
+  xcopy_getsize64
+  run_xcopy_chunk
+  run_dd_copy
+  run_zero_chunk
 
   volume_get_size
   volume_update_size
@@ -270,6 +276,276 @@ sub get_delete_timeout {
     my $scfg = $ctx->{scfg};
 
     return $scfg->{delete_timeout} || 600;
+}
+
+sub get_xcopy_size {
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
+
+    my $val = $scfg->{xcopy_size} || 16;
+    return $val < 1 ? 1 : $val;
+}
+
+# ---------------------------------------------------------------------------
+# XCOPY rollback helpers
+# ---------------------------------------------------------------------------
+
+# xcopy_getsize64($ctx, $dev) — device size in bytes via blockdev --getsize64.
+sub xcopy_getsize64 {
+    my ( $ctx, $dev ) = @_;
+    my $size;
+    my $cmd = [ '/sbin/blockdev', '--getsize64', $dev ];
+    run_command(
+        $cmd,
+        outfunc => sub {
+            die "unexpected output from blockdev --getsize64: $_[0]\n"
+                unless $_[0] =~ /^(\d+)$/;
+            $size = int($1);
+        },
+        errfunc => sub { debugmsg( $ctx, 'warn', "blockdev: $_[0]\n" ) },
+    );
+    die "blockdev --getsize64 produced no output for ${dev}\n"
+        unless defined $size;
+    return $size;
+}
+
+# run_xcopy_chunk($ctx, $src_dev, $dst_dev, $bs, $skip, $count,
+#                 $max_chunk, $renew_lock)
+#
+# Copies $count blocks from $src_dev to $dst_dev, starting at block offset
+# $skip in both source and destination.  $bs is the ZFS volblocksize in bytes.
+# $max_chunk is the initial chunk size in blocks (from xcopy_size config
+# property, GiB→blocks conversion done by the caller).
+# $renew_lock is a callback (coderef) that extends the per-VM lock by another
+# 60-second window; called after each successful chunk and after each timeout
+# (before retry, since the timed-out call consumed most of the alarm budget).
+#
+# The copy runs in an adaptive loop: each sg_xcopy call is bounded by a
+# 50-second timeout.  On timeout the chunk size is halved (rounded down to
+# the nearest granularity-aligned boundary) and the same offset is retried.
+# The reduced chunk size is permanent for all subsequent offsets.
+# On any non-timeout error the function dies immediately.
+sub run_xcopy_chunk {
+    my ( $ctx, $src_dev, $dst_dev, $bs, $skip, $count,
+         $max_chunk, $renew_lock ) = @_;
+
+    my $timeout = 50;  # seconds per sg_xcopy invocation
+
+    # XCOPY Data segment granularity: each segment must transfer a multiple
+    # of 65536 bytes.  Keep chunk sizes aligned to this boundary.
+    my $gran_blocks = int( 65536 / $bs );
+    $gran_blocks = 1 if $gran_blocks < 1;          # bs >= 65536
+
+    # Start with $max_chunk (from xcopy_size property) or $count, whichever
+    # is smaller.  Align to granularity.
+    my $chunk_size = $max_chunk < $count ? $max_chunk : $count;
+    $chunk_size = int( $chunk_size / $gran_blocks ) * $gran_blocks;
+    $chunk_size = $gran_blocks if $chunk_size < $gran_blocks;
+    my $offset     = $skip;
+    my $end        = $skip + $count;
+    my $total      = $count || 1;                    # avoid division by zero
+
+    while ( $offset < $end ) {
+        my $remaining  = $end - $offset;
+        my $this_chunk = $chunk_size < $remaining ? $chunk_size : $remaining;
+
+        my $pct = int( ( $offset - $skip ) * 100 / $total );
+        print "xcopy ${pct}% (block ${offset}/${end})\n";
+
+        # --on_dst (default): XCOPY command sent to the destination LUN.
+        # Both LUNs are on the same JovianDSS appliance; the appliance is
+        # expected to perform the copy internally (storage-side offload).
+        my @cmd = (
+            'sg_xcopy',
+            "if=${src_dev}",
+            "of=${dst_dev}",
+            "bs=${bs}",
+            "skip=${offset}",
+            "seek=${offset}",
+            "count=${this_chunk}",
+            'time=1',
+            'prio=0',
+        );
+
+        debugmsg( $ctx, 'debug', "xcopy: " . join( ' ', @cmd ) . "\n" );
+
+        my $ok = eval {
+            run_command(
+                \@cmd,
+                timeout => $timeout,
+                outfunc => sub { debugmsg( $ctx, 'debug', "sg_xcopy: $_[0]\n" ) },
+                errfunc => sub { debugmsg( $ctx, 'warn',  "sg_xcopy: $_[0]\n" ) },
+            );
+            1;
+        };
+
+        if ( $ok ) {
+            debugmsg( $ctx, 'debug',
+                "xcopy: offset ${offset} count ${this_chunk} complete\n" );
+            $renew_lock->() if $renew_lock;
+            $offset += $this_chunk;
+            next;
+        }
+
+        # Timeout — halve chunk size, keep granularity alignment, retry.
+        if ( $@ =~ /got timeout/ ) {
+            my $new_chunk = int( $chunk_size / 2 );
+            # Round down to nearest multiple of gran_blocks.
+            $new_chunk = int( $new_chunk / $gran_blocks ) * $gran_blocks;
+            $new_chunk = $gran_blocks if $new_chunk < $gran_blocks;
+
+            if ( $new_chunk >= $chunk_size ) {
+                # Already at minimum — cannot reduce further.
+                die "xcopy rollback: timeout at offset ${offset}; chunk size "
+                  . "${chunk_size} blocks is already at the granularity "
+                  . "minimum (${gran_blocks}); giving up\n";
+            }
+
+            $chunk_size = $new_chunk;
+            debugmsg( $ctx, 'warn',
+                "xcopy: timeout at offset ${offset}, "
+              . "reducing chunk to ${chunk_size} blocks\n" );
+            # Renew lock before retrying — the timed-out sg_xcopy consumed
+            # up to 50 s of the 60 s alarm window; without renewal the
+            # retry would SIGALRM almost immediately.
+            $renew_lock->() if $renew_lock;
+            next;   # retry same offset with smaller chunk
+        }
+
+        # Non-timeout error — propagate immediately.
+        die $@;
+    }
+
+    print "xcopy 100% (${total} blocks copied)\n";
+}
+
+# run_dd_copy($ctx, $src_dev, $dst_dev, $bs, $count, $renew_lock)
+#
+# Copies $count blocks from $src_dev to $dst_dev using dd.  Used as a
+# fallback when the volume is too small for sg_xcopy (under 1 MiB).
+#
+# Unlike run_xcopy_chunk this is a single dd invocation — small volumes
+# complete instantly and do not need adaptive chunking.
+sub run_dd_copy {
+    my ( $ctx, $src_dev, $dst_dev, $bs, $count, $renew_lock ) = @_;
+
+    my @cmd = (
+        'dd',
+        "if=${src_dev}",
+        "of=${dst_dev}",
+        "bs=${bs}",
+        "count=${count}",
+        'iflag=direct',
+        'oflag=direct',
+    );
+
+    debugmsg( $ctx, 'debug', "dd copy: " . join( ' ', @cmd ) . "\n" );
+
+    run_command(
+        \@cmd,
+        outfunc => sub { debugmsg( $ctx, 'debug', "dd: $_[0]\n" ) },
+        errfunc => sub { debugmsg( $ctx, 'warn',  "dd: $_[0]\n" ) },
+    );
+
+    $renew_lock->() if $renew_lock;
+    print "dd copy 100% (${count} blocks copied)\n";
+}
+
+# run_zero_chunk($ctx, $dev, $bs, $seek, $count, $max_chunk, $renew_lock)
+#
+# Writes $count blocks of zeros to $dev starting at block offset $seek.
+# Used when the live volume grew after the snapshot was taken.
+#
+# Same adaptive-chunking algorithm as run_xcopy_chunk: each dd invocation
+# writes at most $max_chunk blocks with a 50 s timeout.  On timeout the
+# chunk size is halved and the same offset is retried.  After each
+# successful chunk (or timeout) the per-VM lock is renewed so the 60 s
+# alarm window never expires mid-write.
+#
+# $bs         — ZFS volblocksize in bytes.
+# $seek       — destination offset in blocks.
+# $count      — number of blocks to zero.
+# $max_chunk  — maximum blocks per dd invocation (default 512 MiB in blocks).
+# $renew_lock — callback to extend per-VM lock by 60 s.
+sub run_zero_chunk {
+    my ( $ctx, $dev, $bs, $seek, $count, $max_chunk, $renew_lock ) = @_;
+
+    my $timeout = 50;  # seconds per dd invocation
+
+    my $chunk_size = $max_chunk < $count ? $max_chunk : $count;
+    my $offset     = $seek;
+    my $end        = $seek + $count;
+    my $total      = $count || 1;
+
+    # Minimum chunk: 1 block.
+    my $min_chunk  = 1;
+
+    while ( $offset < $end ) {
+        my $remaining  = $end - $offset;
+        my $this_chunk = $chunk_size < $remaining ? $chunk_size : $remaining;
+
+        my $pct = int( ( $offset - $seek ) * 100 / $total );
+        print "zero-fill ${pct}% (block ${offset}/${end})\n";
+
+        # systemd-run --scope -p IOWeight=10: run dd in a transient systemd
+        # scope with low I/O weight so zero-fill does not starve other I/O
+        # on the host.  dd oflag=direct bypasses page cache, ensuring data
+        # reaches the LUN.
+        my @cmd = (
+            'systemd-run', '--scope', '-p', 'IOWeight=10',
+            'dd',
+            'if=/dev/zero',
+            "of=${dev}",
+            "bs=${bs}",
+            "seek=${offset}",
+            "count=${this_chunk}",
+            'oflag=direct',
+        );
+
+        debugmsg( $ctx, 'debug', "zero: " . join( ' ', @cmd ) . "\n" );
+
+        my $ok = eval {
+            run_command(
+                \@cmd,
+                timeout => $timeout,
+                outfunc => sub { debugmsg( $ctx, 'debug', "dd: $_[0]\n" ) },
+                errfunc => sub { debugmsg( $ctx, 'warn',  "dd: $_[0]\n" ) },
+            );
+            1;
+        };
+
+        if ( $ok ) {
+            debugmsg( $ctx, 'debug',
+                "zero: offset ${offset} count ${this_chunk} complete\n" );
+            $renew_lock->() if $renew_lock;
+            $offset += $this_chunk;
+            next;
+        }
+
+        # Timeout — halve chunk size and retry same offset.
+        if ( $@ =~ /got timeout/ ) {
+            my $new_chunk = int( $chunk_size / 2 );
+            $new_chunk = $min_chunk if $new_chunk < $min_chunk;
+
+            if ( $new_chunk >= $chunk_size ) {
+                die "zero-fill rollback: timeout at offset ${offset}; "
+                  . "chunk size ${chunk_size} blocks is already at "
+                  . "minimum; giving up\n";
+            }
+
+            $chunk_size = $new_chunk;
+            debugmsg( $ctx, 'warn',
+                "zero: timeout at offset ${offset}, "
+              . "reducing chunk to ${chunk_size} blocks\n" );
+            $renew_lock->() if $renew_lock;
+            next;   # retry same offset with smaller chunk
+        }
+
+        # Non-timeout error — propagate immediately.
+        die $@;
+    }
+
+    print "zero-fill 100% (${total} blocks zeroed)\n";
 }
 
 sub get_control_addresses {
@@ -3063,12 +3339,12 @@ sub volume_activate {
         my $local_cleanup = 0;
 
 
-        # Logout iSCSI BEFORE removing multipath — same rationale as
-        # in the normal deactivation path (see volume_deactivate).
-        if ( $iscsi_staged ) {
-            volume_unstage_iscsi_device( $ctx, $targetname, $lunid, $hosts );
-        }
-
+        # Remove multipath BEFORE iSCSI paths.  If iSCSI paths are
+        # deleted first, the kernel emits change events on the dm device;
+        # udev-worker opens it to probe, but I/O stalls (~30s SCSI
+        # timeout) because the underlying paths are already gone.
+        # Removing the dm device first (while paths are still up) lets
+        # udev finish instantly, then iSCSI path removal is clean.
         if ($multipath_staged) {
             eval {
                 volume_unstage_multipath( $ctx, $scsiid );
@@ -3078,6 +3354,10 @@ sub volume_activate {
                 $local_cleanup = 1;
                 warn "volume_unstage_multipath failed: $@" if $@;
             }
+        }
+
+        if ( $iscsi_staged ) {
+            volume_unstage_iscsi_device( $ctx, $targetname, $lunid, $hosts );
         }
 
         # volume_unstage_iscsi call is moved to lun_record_local_delete
@@ -3247,13 +3527,12 @@ sub volume_deactivate {
         return 1;
     }
 
-    # Logout iSCSI BEFORE removing multipath.  If we remove multipath
-    # first, the `multipath $scsiid` refresh commands in the removal
-    # function recreate the device because iSCSI paths are still active.
-    # By logging out iSCSI first, the underlying paths disappear and
-    # multipath removal succeeds cleanly.
-    volume_unstage_iscsi_device ( $ctx, $targetname, $lunid, $lunrecord->{hosts} );
-
+    # Remove multipath BEFORE iSCSI paths.  If iSCSI paths are
+    # deleted first, the kernel emits change events on the dm device;
+    # udev-worker opens it to probe, but I/O stalls (~30s SCSI
+    # timeout) because the underlying paths are already gone.
+    # Removing the dm device first (while paths are still up) lets
+    # udev finish instantly, then iSCSI path removal is clean.
     if ( $lunrecord->{multipath} ) {
         eval {
             volume_unstage_multipath( $ctx, $lunrecord->{scsiid} );
@@ -3264,6 +3543,8 @@ sub volume_deactivate {
             warn "volume_unstage_multipath failed: $@" if $@;
         }
     }
+
+    volume_unstage_iscsi_device ( $ctx, $targetname, $lunid, $lunrecord->{hosts} );
 
     my $cerr;
     if ( $snapname ) {
@@ -3360,15 +3641,44 @@ sub lun_record_update_device {
             );
         };
 
+        foreach my $iscsi_block_device ( @{ $iscsi_block_devices } ) {
+            eval {
+                my $bdp;
+                my $cmd = [ "readlink", "-f", $iscsi_block_device ];
+                run_command(
+                    $cmd,
+                    outfunc => sub { $bdp = shift; },
+                    errfunc => sub {
+                        cmd_log_output($ctx, 'error', $cmd, shift);
+                    },
+                    noerr   => 1
+                );
+                $bdp = clean_word($bdp);
+                my $bdn = basename($bdp);
+                next unless ( $bdn =~ /^[a-z0-9]+$/ );
+
+                $cmd = [ 'udevadm', 'trigger', '--action=change', "/sys/block/${bdn}" ];
+                run_command( $cmd,
+                    outfunc => sub { },
+                    errmsg =>
+                      "Failed to update udev device ${bdn} after iscsi target attachment",
+                    noerr   => 1,
+                    timeout  => 20,
+                );
+            };
+        }
+
         eval {
-            my $cmd = [ 'udevadm', 'trigger', '-t', 'all' ];
+            my $cmd = [ 'udevadm', 'settle' ];
             run_command( $cmd,
                 outfunc => sub { },
                 errmsg =>
-                  "Failed to update udev devices after iscsi target attachment",
-                noerr   => 1
+                  "Failed to settle udev after iscsi target attachment",
+                noerr   => 1,
+                timeout  => 30,
               );
         };
+
         if ( get_multipath($ctx) ) {
 
             unless ($lunrec->{multipath}) {

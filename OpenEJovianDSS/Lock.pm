@@ -26,6 +26,7 @@ use PVE::Cluster ();
 use PVE::Tools  qw(lock_file);
 
 our @EXPORT_OK = qw(
+    lock_renew
     lock_storage
     lock_vm
 );
@@ -243,6 +244,33 @@ sub _node_lock {
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+
+# lock_renew($storeid, $path, $shared, $vmid)
+#
+# Extends the per-VM (or per-storage) lock's lifetime by another 60 seconds.
+# Must be called from within the code block executing under the lock.
+#
+# For cluster-wide (shared) locks:
+#   - Resets alarm(60) to prevent SIGALRM.
+#   - Touches the pmxcfs lock directory to prevent stale-entry cleanup.
+#
+# For node-local (flock) locks:
+#   - Resets alarm(60).  The flock has no mtime-based expiry, so no
+#     filesystem touch is needed.
+sub lock_renew {
+    my ( $storeid, $path, $shared, $vmid ) = @_;
+
+    alarm(60);
+
+    if ( $shared ) {
+        my $lockid = defined $vmid
+            ? "vm-" . _sanitize_lockid($vmid)
+            : 'storage';
+        my $sid = _sanitize_lockid($storeid);
+        my $lockpath = _cluster_lockdir() . "/joviandss-${sid}-${lockid}";
+        utime( undef, undef, $lockpath );
+    }
+}
 
 # lock_storage($storeid, $path, $shared, $timeout, $code, @param)
 #

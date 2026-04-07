@@ -68,6 +68,11 @@ class Snapshots():
                           action='store_true',
                           default=False,
                           help='Add guid to output')
+        list.add_argument('--latest',
+                          dest='latest_only',
+                          action='store_true',
+                          default=False,
+                          help='Print only the name of the most recent snapshot')
         kargs, ukargs = parser.parse_known_args(args)
 
         if kargs.snapshots_action is None:
@@ -95,6 +100,15 @@ class Snapshots():
         volume = self.args['volume_name']
 
         data = self.jdss.list_snapshots(volume)
+
+        if self.args.get('latest_only'):
+            if not data:
+                LOG.error("No snapshots found for volume %s", volume)
+                exit(1)
+            latest = max(data, key=lambda s: s.get('creation', ''))
+            print(latest['name'])
+            return
+
         for s in data:
             line = "{}".format(s['name'])
             if self.args['guid']:

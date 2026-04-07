@@ -24,10 +24,12 @@ Python CLI with two new flags: `-b` on `volume get` to expose the ZFS
 `volblocksize`, and `--latest` on `snapshots list` to retrieve the most recent
 snapshot name for failure recovery.
 
-The XCOPY copy runs in an adaptive loop: each `sg_xcopy` invocation is bounded by
-a 50-second timeout; on timeout the chunk size is halved and the same offset is
-retried. If the copy fails despite retries, a recovery ZFS rollback to the volume's
-most recent snapshot restores it to a clean state.
+The XCOPY copy runs in an adaptive loop with a configurable initial chunk size
+(`xcopy_size` property, default 16 GiB): each `sg_xcopy` invocation is bounded
+by a 50-second timeout; on timeout the per-VM lock is renewed, the chunk size
+is halved, and the same offset is retried. The reduced chunk size applies to
+all subsequent offsets. If the copy fails despite retries, a recovery ZFS
+rollback to the volume's most recent snapshot restores it to a clean state.
 
 The rollback method is selected automatically: if no blocking snapshots exist the
 existing fast ZFS path is used unchanged; if blockers are present the XCOPY path is
@@ -347,8 +349,19 @@ exposes just the latest one.
 
 **`jdssc/jdssc/jovian_common/driver.py` — `list_snapshots`**
 
-No change required. The existing method already returns snapshots with
-`creation` timestamps from the REST API.
+Include `creation` in the returned dict. The REST API returns `creation`
+timestamps via `_list_volume_snapshots`, but `list_snapshots` previously
+stripped all fields except `name`. Without `creation`, the `--latest` flag
+in `snapshots.py` cannot determine which snapshot is most recent.
+
+```python
+vid = jcom.vid_from_sname(r['name'])
+if vid == volume_name or vid is None:
+    entry = {'name': jcom.sid_from_sname(r['name'])}
+    if 'creation' in r:
+        entry['creation'] = r['creation']
+    ret.append(entry)
+```
 
 **`jdssc/jdssc/snapshots.py` — `list` subparser**
 
@@ -418,26 +431,42 @@ avoids the complexity of cross-phase state management.
   Since there are no blockers, no snapshots are destroyed and Proxmox snapshot
   records need no patching.
 
-- Dies (blockers exist) → **XCOPY path**: the snapshot and live volume are each
-  activated as independent block devices, `sg_xcopy` copies the snapshot content
-  to the live volume in an adaptive loop (see §Adaptive chunking below), and
-  both the snapshot and the live volume are deactivated on exit (unconditionally,
-  whether copy succeeded or failed). If the copy fails for any reason, a recovery
-  ZFS rollback to the volume's most recent snapshot is performed after
-  deactivation to undo any partial writes. All snapshots on the appliance
-  survive.
+- Dies with backend/command error (snapshot missing, appliance unreachable,
+  `jdssc` failure) → **re-raised immediately**. The error message from
+  `volume_rollback_check` is prefixed with "Unable to rollback"; this prefix
+  is used to distinguish backend failures from blocker detection. XCOPY is
+  never attempted when the check itself fails.
+
+- Dies with blocker message (newer snapshots or clones prevent ZFS rollback) →
+  **XCOPY path**: the snapshot and live volume are each activated as independent
+  block devices, `sg_xcopy` copies the snapshot content to the live volume in
+  an adaptive loop (see §Adaptive chunking below), and both the snapshot and
+  the live volume are deactivated on exit (unconditionally, whether copy
+  succeeded or failed). If the copy fails for any reason, a recovery ZFS
+  rollback to the volume's most recent snapshot is performed after deactivation
+  to undo any partial writes. All snapshots on the appliance survive.
 
 No configuration flag controls this selection. The path is determined entirely
 by the runtime state of the snapshot chain.
 
 ### Adaptive chunking
 
-`run_xcopy_chunk` copies the snapshot data to the live volume in a loop. Each
-`sg_xcopy` invocation is bounded by a 50-second timeout. If a timeout fires,
-the chunk size is halved (rounded down to the nearest granularity-aligned block
-count) and the same offset is retried with the smaller chunk. The process
-repeats until all blocks are copied or the chunk size cannot be reduced further,
-at which point the function dies.
+`run_xcopy_chunk` copies the snapshot data to the live volume in a loop. The
+initial chunk size is derived from the `xcopy_size` storage property (default
+16 GiB), converted to blocks by the caller (`xcopy_size * 1 GiB / bs`).
+`run_xcopy_chunk` aligns the initial chunk size to the XCOPY granularity
+internally. If the total block count is smaller than this value, the total
+count is used instead.
+
+Each `sg_xcopy` invocation is bounded by a 50-second timeout. If a timeout
+fires, the per-VM lock is renewed (the timed-out invocation consumed up to
+50 s of the 60 s alarm window), the chunk size is halved (rounded down to the
+nearest granularity-aligned block count), and the same offset is retried with
+the smaller chunk. The reduced chunk size is permanent — all subsequent offsets
+use the smaller size, since a timeout indicates the storage cannot sustain the
+larger transfer within the time budget. The process repeats until all blocks
+are copied or the chunk size cannot be reduced further, at which point the
+function dies.
 
 The minimum chunk size is derived from the XCOPY Data segment granularity
 (65 536 bytes): `gran_blocks = max(1, 65536 / bs)`. Chunk sizes are always
@@ -507,12 +536,18 @@ lock identity (storeid, path, shared flag, vmid) and passes it to
 - After each `_activate_volume` call (activation involves REST + iscsiadm
   login and can consume a significant portion of the 60-second window).
 - After each successful `sg_xcopy` chunk inside the adaptive loop.
-- Before `run_zero_chunk` (the zero-fill may itself take significant time
-  for large resize deltas).
+- After each `sg_xcopy` timeout, before retrying with a smaller chunk (the
+  timed-out invocation consumed up to 50 s of the 60 s alarm window;
+  without renewal the retry would `SIGALRM` almost immediately).
+- Before `run_zero_chunk` (at the caller level, before entering the zero-fill
+  loop).
+- After each successful `dd` chunk inside `run_zero_chunk`.
+- After each `dd` timeout inside `run_zero_chunk`, before retrying with a
+  smaller chunk (same rationale as the `sg_xcopy` timeout case).
 
 Each call extends the lock by another 60-second window. Individual operations
-(one activation call, one `sg_xcopy` chunk, one `run_zero_chunk` call) must
-still complete within 60 seconds — only the cumulative duration is unbounded.
+(one activation call, one `sg_xcopy` chunk, one `dd` chunk) must still
+complete within 60 seconds — only the cumulative duration is unbounded.
 
 ---
 
@@ -542,14 +577,21 @@ sub lock_renew {
     alarm(60);
 
     if ( $shared ) {
-        my $lockid = defined $vmid ? "vm-${vmid}" : 'storage';
-        my $lockpath = "/etc/pve/priv/lock/joviandss-${storeid}-${lockid}";
+        my $lockid = defined $vmid
+            ? "vm-" . _sanitize_lockid($vmid)
+            : 'storage';
+        my $sid = _sanitize_lockid($storeid);
+        my $lockpath = _cluster_lockdir() . "/joviandss-${sid}-${lockid}";
         utime( undef, undef, $lockpath );
     }
 }
 ```
 
-The function must be added to `@EXPORT` in `Lock.pm` so callers in `Plugin.pm`
+The lockpath construction reuses `_cluster_lockdir()` and `_sanitize_lockid()` — the
+same helpers used by `_cluster_lock` — to guarantee the path matches the directory
+created during lock acquisition.
+
+The function must be added to `@EXPORT_OK` in `Lock.pm` so callers in `Plugin.pm`
 and `Common.pm` can invoke it without a package prefix.
 
 ### Adapting `volume_rollback_is_possible`
@@ -575,14 +617,18 @@ sub volume_rollback_is_possible {
     my $managed_by_ha = ha_state_is_defined($ctx, $vmid);
     if ($managed_by_ha) {
         my $hastate = ha_state_get($ctx, $vmid);
-        if ( $hastate ne 'ignored' ) {
+
+        if (($hastate ne 'ignored')) {
             my $resource_type = ha_type_get($ctx, $vmid);
             print "vmid ${vmid}: HA check failed — managed by HA (state: ${hastate})\n";
             my $msg =
               "Rollback blocked: ${resource_type}:${vmid} is controlled by"
               . " High Availability (state: ${hastate}).\n"
+              . "Rollback requires temporary manual control to prevent HA"
+              . " from restarting or moving the resource.\n"
               . "Disable HA management before retrying:\n"
-              . "  ha-manager set ${resource_type}:${vmid} --state ignored\n";
+              . "Web UI: Datacenter -> HA -> Resources -> set state to ignored\n"
+              . "CLI: ha-manager set ${resource_type}:${vmid} --state ignored\n";
             die $msg;
         }
     }
@@ -604,13 +650,26 @@ sub _volume_snapshot_rollback {
     my $pool = get_pool($ctx);
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
-    print "Rollback: starting rollback of ${volname} to snapshot ${snap}\n";
+    print "starting rollback of ${volname} to snapshot ${snap}\n";
     debugmsg( $ctx, 'debug',
         "Volume ${volname} " . safe_var_print( 'snapshot', $snap ) . " rollback start" );
 
     my $zfs_ok = eval {
         volume_rollback_check( $ctx, $vmid, $volname, $snap, undef, 0 )
     };
+    my $check_err = $@;
+
+    # volume_rollback_check dies for two reasons:
+    #   1. Backend/command failure (snapshot missing, appliance unreachable,
+    #      jdssc error) — prefixed with "Unable to rollback".
+    #   2. Blockers exist (newer snapshots or clones prevent ZFS rollback).
+    # Only case 2 should fall through to XCOPY.  Case 1 must be re-raised
+    # immediately — proceeding with XCOPY on a backend error could overwrite
+    # the live volume when the real problem is connectivity or a missing
+    # snapshot.
+    if ( $check_err && $check_err =~ /^Unable to rollback/ ) {
+        die $check_err;
+    }
 
     if ( $zfs_ok ) {
         # No blockers — fast ZFS metadata rollback.
@@ -631,9 +690,11 @@ sub _volume_snapshot_rollback {
             unless -x '/usr/bin/sg_xcopy';
 
         # Closure to extend the per-VM lock by another 60-second window.
-        # Called after each activation, after each sg_xcopy chunk, and
-        # before zero-fill.  Captures the lock identity from the outer
-        # scope so run_xcopy_chunk does not need to know about locking.
+        # Called after each activation, after each successful sg_xcopy
+        # chunk, after each sg_xcopy timeout (before retry), before the
+        # zero-fill loop, and after each successful dd chunk.  Captures
+        # the lock identity from the outer scope so run_xcopy_chunk and
+        # run_zero_chunk do not need to know about locking.
         my $renew_lock = sub {
             lock_renew(
                 $ctx->{storeid}, $ctx->{scfg}{path},
@@ -672,20 +733,51 @@ sub _volume_snapshot_rollback {
             die "xcopy rollback: failed to get block size for ${volname}\n"
                 unless $bs > 0;
 
-            my $snap_blocks = int( _getsize64( $ctx, $snap_dev ) / $bs );
-            my $vol_blocks  = int( _getsize64( $ctx, $vol_dev  ) / $bs );
+            my $snap_blocks = int( xcopy_getsize64( $ctx, $snap_dev ) / $bs );
+            my $vol_blocks  = int( xcopy_getsize64( $ctx, $vol_dev  ) / $bs );
 
-            print "Rollback: xcopy ${volname} \x{2192} ${snap}: "
-                . "${snap_blocks} snap blocks, ${vol_blocks} vol blocks, "
-                . "bs=${bs}\n";
+            # xcopy_size is in GiB; convert to blocks.
+            my $xcopy_gib    = get_xcopy_size($ctx);
+            my $max_chunk    = int( $xcopy_gib * 1024 * 1024 * 1024 / $bs );
+            $max_chunk = 1 if $max_chunk < 1;
 
-            run_xcopy_chunk( $ctx, $snap_dev, $vol_dev, $bs, 0,
+            # sg_xcopy requires each segment to transfer a whole number of
+            # 65536-byte granularity units.  Very small volumes (e.g. 528K
+            # EFI vars disks) can fail with "not enough data to read".
+            # Strategy: volumes under 1 MiB skip XCOPY entirely and use dd.
+            my $snap_bytes = $snap_blocks * $bs;
+
+            if ( $snap_bytes < 1048576 ) {
+                # Too small — go straight to dd.
+                print "dd copy ${volname} -> ${snap}: "
+                    . "${snap_blocks} snap blocks (volume too small for "
+                    . "XCOPY, using dd)\n";
+
+                run_dd_copy( $ctx, $snap_dev, $vol_dev, $bs,
                              $snap_blocks, $renew_lock );
+            } else {
+                print "xcopy ${volname} -> ${snap}: "
+                    . "${snap_blocks} snap blocks, ${vol_blocks} vol blocks, "
+                    . "bs=${bs}, xcopy_size=${xcopy_gib} GiB\n";
+
+                run_xcopy_chunk( $ctx, $snap_dev, $vol_dev, $bs, 0,
+                                 $snap_blocks, $max_chunk, $renew_lock );
+            }
 
             if ( $vol_blocks > $snap_blocks ) {
                 $renew_lock->();
+                # Use 512 MiB chunks for zero-fill so each dd finishes
+                # well within the 60-second lock alarm window even
+                # under IOWeight=10 throttling.  $max_chunk (xcopy_size)
+                # can be up to 16 GiB which would run a single dd for
+                # minutes, causing alarm timeout before lock_renew is
+                # called.  If 512 MiB still times out, run_zero_chunk
+                # will adaptively halve the chunk size.
+                my $zero_chunk = int( 512 * 1024 * 1024 / $bs );
+                $zero_chunk = 1 if $zero_chunk < 1;
                 run_zero_chunk( $ctx, $vol_dev, $bs,
-                    $snap_blocks, $vol_blocks - $snap_blocks );
+                    $snap_blocks, $vol_blocks - $snap_blocks,
+                    $zero_chunk, $renew_lock );
             }
         };
         my $err = $@;
@@ -730,7 +822,7 @@ sub _volume_snapshot_rollback {
                             'snapshot', $latest_snap, 'rollback', 'do',
                         ]
                     );
-                    print "Rollback: recovery rollback to ${latest_snap} "
+                    print "recovery rollback to ${latest_snap} "
                         . "complete — volume restored\n";
                 }
             };
@@ -741,7 +833,7 @@ sub _volume_snapshot_rollback {
         }
     }
 
-    print "Rollback: ${volname} to snapshot ${snap} complete\n";
+    print "${volname} to snapshot ${snap} rollback complete\n";
     debugmsg( $ctx, 'debug',
         "Volume ${volname} " . safe_var_print( 'snapshot', $snap ) . " rollback done" );
 }
@@ -775,29 +867,38 @@ stopped.
 
 Copies a contiguous block range from a source device to a destination device
 using `sg_xcopy` in an adaptive loop. Each `sg_xcopy` invocation is bounded by
-a 50-second timeout. On timeout the chunk size is halved (granularity-aligned)
-and the same offset is retried. On success the per-VM lock is renewed via the
-`$renew_lock` callback (see §Lock renewal during XCOPY), the offset advances,
-and the next chunk is issued. The function dies if the chunk size cannot be
-reduced further or on any non-timeout error.
+a 50-second timeout. On timeout the per-VM lock is renewed (to recover the
+alarm budget consumed by the timed-out call), the chunk size is halved
+(granularity-aligned), and the same offset is retried. On success the per-VM
+lock is renewed via the `$renew_lock` callback (see §Lock renewal during
+XCOPY), the offset advances, and the next chunk is issued. The function dies
+if the chunk size cannot be reduced further or on any non-timeout error.
 
 `$bs` is the ZFS volblocksize in bytes; `$skip` and `$count` are in units of
-`$bs`. `$renew_lock` is a coderef that extends the per-VM lock by 60 seconds.
+`$bs`. `$max_chunk` is the initial (maximum) chunk size in blocks, derived from
+the `xcopy_size` storage property (GiB converted to blocks by the caller).
+`$renew_lock` is a coderef that extends the per-VM lock by 60 seconds.
 
 ```perl
-# run_xcopy_chunk($ctx, $src_dev, $dst_dev, $bs, $skip, $count, $renew_lock)
+# run_xcopy_chunk($ctx, $src_dev, $dst_dev, $bs, $skip, $count,
+#                 $max_chunk, $renew_lock)
 #
 # Copies $count blocks from $src_dev to $dst_dev, starting at block offset
 # $skip in both source and destination.  $bs is the ZFS volblocksize in bytes.
+# $max_chunk is the initial chunk size in blocks (from xcopy_size config
+# property, GiB→blocks conversion done by the caller).
 # $renew_lock is a callback (coderef) that extends the per-VM lock by another
-# 60-second window; called after each successful chunk.
+# 60-second window; called after each successful chunk and after each timeout
+# (before retry, since the timed-out call consumed most of the alarm budget).
 #
 # The copy runs in an adaptive loop: each sg_xcopy call is bounded by a
 # 50-second timeout.  On timeout the chunk size is halved (rounded down to
 # the nearest granularity-aligned boundary) and the same offset is retried.
+# The reduced chunk size is permanent for all subsequent offsets.
 # On any non-timeout error the function dies immediately.
 sub run_xcopy_chunk {
-    my ( $ctx, $src_dev, $dst_dev, $bs, $skip, $count, $renew_lock ) = @_;
+    my ( $ctx, $src_dev, $dst_dev, $bs, $skip, $count,
+         $max_chunk, $renew_lock ) = @_;
 
     my $timeout = 50;  # seconds per sg_xcopy invocation
 
@@ -806,13 +907,21 @@ sub run_xcopy_chunk {
     my $gran_blocks = int( 65536 / $bs );
     $gran_blocks = 1 if $gran_blocks < 1;          # bs >= 65536
 
-    my $chunk_size = $count;                         # start with full range
+    # Start with $max_chunk (from xcopy_size property) or $count, whichever
+    # is smaller.  Align to granularity.
+    my $chunk_size = $max_chunk < $count ? $max_chunk : $count;
+    $chunk_size = int( $chunk_size / $gran_blocks ) * $gran_blocks;
+    $chunk_size = $gran_blocks if $chunk_size < $gran_blocks;
     my $offset     = $skip;
     my $end        = $skip + $count;
+    my $total      = $count || 1;                    # avoid division by zero
 
     while ( $offset < $end ) {
         my $remaining  = $end - $offset;
         my $this_chunk = $chunk_size < $remaining ? $chunk_size : $remaining;
+
+        my $pct = int( ( $offset - $skip ) * 100 / $total );
+        print "xcopy ${pct}% (block ${offset}/${end})\n";
 
         # --on_dst (default): XCOPY command sent to the destination LUN.
         # Both LUNs are on the same JovianDSS appliance; the appliance is
@@ -826,6 +935,7 @@ sub run_xcopy_chunk {
             "seek=${offset}",
             "count=${this_chunk}",
             'time=1',
+            'prio=0',
         );
 
         debugmsg( $ctx, 'debug', "xcopy: " . join( ' ', @cmd ) . "\n" );
@@ -866,29 +976,98 @@ sub run_xcopy_chunk {
             debugmsg( $ctx, 'warn',
                 "xcopy: timeout at offset ${offset}, "
               . "reducing chunk to ${chunk_size} blocks\n" );
+            # Renew lock before retrying — the timed-out sg_xcopy consumed
+            # up to 50 s of the 60 s alarm window; without renewal the
+            # retry would SIGALRM almost immediately.
+            $renew_lock->() if $renew_lock;
             next;   # retry same offset with smaller chunk
         }
 
         # Non-timeout error — propagate immediately.
         die $@;
     }
+
+    print "xcopy 100% (${total} blocks copied)\n";
 }
 ```
 
-### `_getsize64` and `run_zero_chunk` helpers in `Common.pm`
+### `run_dd_copy` helper in `Common.pm`
 
-`_getsize64` is a minimal wrapper around `blockdev --getsize64`. The same
+Copies `$count` blocks from a source device to a destination device using a
+single `dd` invocation with `iflag=direct oflag=direct`. Used as a fallback
+when the volume is too small for `sg_xcopy` (under 1 MiB). Unlike
+`run_xcopy_chunk` this is a single invocation — small volumes complete
+instantly and do not need adaptive chunking or timeout handling.
+
+```perl
+# run_dd_copy($ctx, $src_dev, $dst_dev, $bs, $count, $renew_lock)
+#
+# Copies $count blocks from $src_dev to $dst_dev using dd.  Used as a
+# fallback when the volume is too small for sg_xcopy.
+#
+# Unlike run_xcopy_chunk this is a single dd invocation — small volumes
+# complete instantly and do not need adaptive chunking.
+sub run_dd_copy {
+    my ( $ctx, $src_dev, $dst_dev, $bs, $count, $renew_lock ) = @_;
+
+    my @cmd = (
+        'dd',
+        "if=${src_dev}",
+        "of=${dst_dev}",
+        "bs=${bs}",
+        "count=${count}",
+        'iflag=direct',
+        'oflag=direct',
+    );
+
+    debugmsg( $ctx, 'debug', "dd copy: " . join( ' ', @cmd ) . "\n" );
+
+    run_command(
+        \@cmd,
+        outfunc => sub { debugmsg( $ctx, 'debug', "dd: $_[0]\n" ) },
+        errfunc => sub { debugmsg( $ctx, 'warn',  "dd: $_[0]\n" ) },
+    );
+    # run_command throws on non-zero exit.
+
+    $renew_lock->() if $renew_lock;
+    print "dd copy 100% (${count} blocks copied)\n";
+}
+```
+
+**Why 1 MiB threshold?**
+
+`sg_xcopy` fails with "not enough data to read (min 65536 bytes)" on very
+small volumes. The XCOPY Data segment granularity is 65536 bytes; with a
+typical `volblocksize` of 16384, the granularity alignment rounds down block
+counts (e.g. 33 blocks → 32) and the resulting transfer can be rejected by
+`sg_xcopy`. Rather than trying to predict the exact minimum viable XCOPY
+size (which depends on the interaction between `volblocksize`, device logical
+sector size, and the XCOPY implementation), a conservative 1 MiB threshold
+avoids the issue entirely. Volumes under 1 MiB are tiny (EFI vars, small
+config disks) and copy instantly via `dd`.
+
+### `xcopy_getsize64` and `run_zero_chunk` helpers in `Common.pm`
+
+`xcopy_getsize64` is a minimal wrapper around `blockdev --getsize64`. The same
 invocation already exists inline in `Common.pm` (the size-wait loop at
 `volume_stage_wait_size`); this extracts it as a reusable sub. It is called in
 `_volume_snapshot_rollback` to read snapshot and volume sizes.
 
-`run_zero_chunk` writes a fixed block range of zeros to a device using `dd`. It is
-the zero-fill counterpart to `run_xcopy_chunk`, used when the live volume is larger
-than the snapshot.
+`run_zero_chunk` writes a block range of zeros to a device using `dd` in a chunked
+loop. It is the zero-fill counterpart to `run_xcopy_chunk`, used when the live
+volume is larger than the snapshot. It uses the same adaptive-chunking algorithm
+as `run_xcopy_chunk`: each `dd` invocation is bounded by a 50-second timeout; on
+timeout the chunk size is halved and the same offset is retried. After each
+successful chunk (or timeout) the per-VM lock is renewed so the 60-second alarm
+window never expires mid-write.
+
+The caller passes a default chunk size of 512 MiB (in blocks: `512 * 1024 * 1024
+/ $bs`). This fits comfortably within the 50-second timeout even with the
+`IOWeight=10` cgroup throttling applied via `systemd-run --scope`.
 
 ```perl
-# _getsize64($ctx, $dev) — device size in bytes via blockdev --getsize64.
-sub _getsize64 {
+# xcopy_getsize64($ctx, $dev) — device size in bytes via blockdev --getsize64.
+sub xcopy_getsize64 {
     my ( $ctx, $dev ) = @_;
     my $size;
     my $cmd = [ '/sbin/blockdev', '--getsize64', $dev ];
@@ -906,39 +1085,95 @@ sub _getsize64 {
     return $size;
 }
 
-# run_zero_chunk($ctx, $dev, $bs, $seek, $count)
+# run_zero_chunk($ctx, $dev, $bs, $seek, $count, $max_chunk, $renew_lock)
 #
 # Writes $count blocks of zeros to $dev starting at block offset $seek.
 # Used when the live volume grew after the snapshot was taken.
 #
-# $bs    — ZFS volblocksize in bytes (same value used in run_xcopy_chunk).
-# $seek  — destination offset in blocks.
-# $count — number of blocks to zero.
+# Same adaptive-chunking algorithm as run_xcopy_chunk: each dd invocation
+# writes at most $max_chunk blocks with a 50 s timeout.  On timeout the
+# chunk size is halved and the same offset is retried.  After each
+# successful chunk (or timeout) the per-VM lock is renewed so the 60 s
+# alarm window never expires mid-write.
+#
+# $bs         — ZFS volblocksize in bytes.
+# $seek       — destination offset in blocks.
+# $count      — number of blocks to zero.
+# $max_chunk  — maximum blocks per dd invocation (default 512 MiB in blocks).
+# $renew_lock — callback to extend per-VM lock by 60 s.
 sub run_zero_chunk {
-    my ( $ctx, $dev, $bs, $seek, $count ) = @_;
+    my ( $ctx, $dev, $bs, $seek, $count, $max_chunk, $renew_lock ) = @_;
 
-    # systemd-run --scope -p IOWeight=10: run dd in a transient systemd scope
-    # with low I/O weight so zero-fill does not starve other I/O on the host.
-    # dd oflag=direct bypasses page cache, ensuring data reaches the LUN.
-    my @cmd = (
-        'systemd-run', '--scope', '-p', 'IOWeight=10',
-        'dd',
-        'if=/dev/zero',
-        "of=${dev}",
-        "bs=${bs}",
-        "seek=${seek}",
-        "count=${count}",
-        'oflag=direct',
-    );
+    my $timeout = 50;  # seconds per dd invocation
 
-    debugmsg( $ctx, 'debug', "zero: " . join( ' ', @cmd ) . "\n" );
+    my $chunk_size = $max_chunk < $count ? $max_chunk : $count;
+    my $offset     = $seek;
+    my $end        = $seek + $count;
+    my $total      = $count || 1;
 
-    run_command(
-        \@cmd,
-        outfunc => sub { debugmsg( $ctx, 'debug', "dd: $_[0]\n" ) },
-        errfunc => sub { debugmsg( $ctx, 'warn',  "dd: $_[0]\n" ) },
-    );
-    # run_command throws on non-zero exit.
+    my $min_chunk  = 1;
+
+    while ( $offset < $end ) {
+        my $remaining  = $end - $offset;
+        my $this_chunk = $chunk_size < $remaining ? $chunk_size : $remaining;
+
+        my $pct = int( ( $offset - $seek ) * 100 / $total );
+        print "zero-fill ${pct}% (block ${offset}/${end})\n";
+
+        # systemd-run --scope -p IOWeight=10: run dd in a transient systemd
+        # scope with low I/O weight so zero-fill does not starve other I/O
+        # on the host.  dd oflag=direct bypasses page cache, ensuring data
+        # reaches the LUN.
+        my @cmd = (
+            'systemd-run', '--scope', '-p', 'IOWeight=10',
+            'dd',
+            'if=/dev/zero',
+            "of=${dev}",
+            "bs=${bs}",
+            "seek=${offset}",
+            "count=${this_chunk}",
+            'oflag=direct',
+        );
+
+        debugmsg( $ctx, 'debug', "zero: " . join( ' ', @cmd ) . "\n" );
+
+        my $ok = eval {
+            run_command(
+                \@cmd,
+                timeout => $timeout,
+                outfunc => sub { debugmsg( $ctx, 'debug', "dd: $_[0]\n" ) },
+                errfunc => sub { debugmsg( $ctx, 'warn',  "dd: $_[0]\n" ) },
+            );
+            1;
+        };
+
+        if ( $ok ) {
+            $renew_lock->() if $renew_lock;
+            $offset += $this_chunk;
+            next;
+        }
+
+        # Timeout — halve chunk size and retry same offset.
+        if ( $@ =~ /got timeout/ ) {
+            my $new_chunk = int( $chunk_size / 2 );
+            $new_chunk = $min_chunk if $new_chunk < $min_chunk;
+
+            if ( $new_chunk >= $chunk_size ) {
+                die "zero-fill rollback: timeout at offset ${offset}; "
+                  . "chunk size ${chunk_size} blocks is already at "
+                  . "minimum; giving up\n";
+            }
+
+            $chunk_size = $new_chunk;
+            $renew_lock->() if $renew_lock;
+            next;   # retry same offset with smaller chunk
+        }
+
+        # Non-timeout error — propagate immediately.
+        die $@;
+    }
+
+    print "zero-fill 100% (${total} blocks zeroed)\n";
 }
 ```
 
@@ -973,8 +1208,8 @@ sub _vm_is_running {
 }
 ```
 
-`run_xcopy_chunk`, `run_zero_chunk`, and `_getsize64` are defined in `Common.pm`
-and must be added to its `@EXPORT` list so `Plugin.pm` can call them without a
+`run_xcopy_chunk`, `run_dd_copy`, `run_zero_chunk`, and `xcopy_getsize64` are defined in `Common.pm`
+and must be added to its `@EXPORT_OK` list so `Plugin.pm` can call them without a
 package prefix, consistent with the existing exported helpers (`debugmsg`,
 `joviandss_cmd`, `get_pool`, etc.).
 
@@ -998,6 +1233,12 @@ Proxmox Web UI / CLI
               └── _volume_snapshot_rollback()
                     │
                     ├── eval { volume_rollback_check(..., force=0) }
+                    │
+                    ├── [check_err =~ /^Unable to rollback/]
+                    │     └── die $check_err
+                    │           (backend/command failure: snapshot missing,
+                    │            appliance unreachable, jdssc error —
+                    │            never fall through to XCOPY)
                     │
                     ├── [zfs_ok=1: no blockers]
                     │     └── joviandss_cmd rollback do
@@ -1033,18 +1274,28 @@ Proxmox Web UI / CLI
                           │       + block_device_path_from_lun_rec()   → snap_dev
                           │
                           │     joviandss_cmd volume get -b            → bs (ZFS volblocksize)
+                          │     get_xcopy_size($ctx)                   → xcopy_gib
+                          │     max_chunk = xcopy_gib * 1 GiB / bs     (gran-aligned inside run_xcopy_chunk)
                           │
-                          │     _getsize64(snap_dev) → snap_blocks
-                          │     _getsize64(vol_dev)  → vol_blocks
+                          │     xcopy_getsize64(snap_dev) → snap_blocks
+                          │     xcopy_getsize64(vol_dev)  → vol_blocks
+                          │     snap_bytes = snap_blocks * bs
                           │
-                          │     run_xcopy_chunk(snap_dev, vol_dev, bs, 0, snap_blocks, $renew_lock)
+                          │     [snap_bytes < 1 MiB?]
+                          │       ├── YES: run_dd_copy(snap_dev, vol_dev, bs,
+                          │       │                    snap_blocks, $renew_lock)
+                          │       │          └── dd if=<snap> of=<vol> bs=<bs> count=<N>
+                          │       │
+                          │       └── NO:  run_xcopy_chunk(snap_dev, vol_dev, bs, 0,
+                          │                               snap_blocks, max_chunk, $renew_lock)
                           │       ┌── adaptive loop ──────────────────────────────────┐
                           │       │ sg_xcopy if=<snap> of=<vol> bs=<bs>              │
                           │       │         skip=<offset> seek=<offset>              │
                           │       │         count=<chunk>  timeout=50s               │
                           │       │                                                  │
                           │       │ [success]  → $renew_lock->(); offset += chunk   │
-                          │       │ [timeout]  → chunk /= 2 (gran-aligned)          │
+                          │       │ [timeout]  → $renew_lock->()                    │
+                          │       │              chunk /= 2 (gran-aligned, permanent)│
                           │       │              retry same offset                    │
                           │       │ [error]    → die immediately                     │
                           │       │ [chunk < min] → die "giving up"                  │
@@ -1056,27 +1307,45 @@ Proxmox Web UI / CLI
                           │
                           │     [vol_blocks > snap_blocks]
                           │       $renew_lock->()              — extend lock before zero-fill
-                          │       run_zero_chunk(vol_dev, bs, snap_blocks, vol_blocks-snap_blocks)
-                          │         systemd-run --scope -p IOWeight=10
-                          │           dd if=/dev/zero of=<vol_dev> bs=<bs>
-                          │              seek=<snap_blocks> count=<delta> oflag=direct
+                          │       zero_chunk = 512 MiB / bs    — separate from xcopy max_chunk
+                          │       run_zero_chunk(vol_dev, bs, snap_blocks,
+                          │                      vol_blocks-snap_blocks, zero_chunk, $renew_lock)
+                          │         ┌── adaptive loop ─────────────────────────────────┐
+                          │         │ systemd-run --scope -p IOWeight=10              │
+                          │         │   dd if=/dev/zero of=<vol_dev> bs=<bs>          │
+                          │         │      seek=<offset> count=<chunk> oflag=direct   │
+                          │         │      timeout=50s                                │
+                          │         │                                                  │
+                          │         │ [success]  → $renew_lock->(); offset += chunk   │
+                          │         │ [timeout]  → $renew_lock->()                    │
+                          │         │              chunk /= 2 (min 1 block, permanent) │
+                          │         │              retry same offset                   │
+                          │         │ [error]    → die immediately                     │
+                          │         │ [chunk < min] → die "giving up"                  │
+                          │         └──────────────────────────────────────────────────┘
                           │   };
                           │   $err = $@
                           │
                           ├── eval { _deactivate_volume(volname, snap=<snapname>) }
                           │     └── volume_deactivate()              [Common.pm]
-                          │           ├── iscsiadm logout (snap target)
-                          │           ├── volume_unstage_multipath()   — (if multipath=1)
+                          │           ├── volume_unstage_multipath()   — (if multipath=1) BEFORE iSCSI
+                          │           ├── volume_unstage_iscsi_device()— remove iSCSI paths
                           │           ├── volume_unpublish(snapname)   — REST: remove snap target
-                          │           └── lun_record_local_delete()
+                          │           │     (snapshots are unpublished on deactivation because they
+                          │           │      are not involved in live migration)
+                          │           └── lun_record_local_delete()    — cleanup local state + session
                           │           deactivation error → logged at warn, not re-raised
                           │
                           ├── eval { _deactivate_volume(volname, snap=undef) }
                           │     └── volume_deactivate()              [Common.pm]
-                          │           ├── iscsiadm logout (volume target)
-                          │           ├── volume_unstage_multipath()   — (if multipath=1)
-                          │           ├── volume_unpublish()           — REST: remove volume target
-                          │           └── lun_record_local_delete()
+                          │           ├── volume_unstage_multipath()   — (if multipath=1) BEFORE iSCSI
+                          │           ├── volume_unstage_iscsi_device()— remove iSCSI paths
+                          │           ├── (no volume_unpublish)        — volume target is kept on the
+                          │           │     appliance; unpublishing during deactivation would race
+                          │           │     with live migration which re-attaches the same target
+                          │           │     on the destination node. Only volume deletion triggers
+                          │           │     unpublish.
+                          │           └── lun_record_local_delete()    — cleanup local state + session
                           │           deactivation error → logged at warn, not re-raised
                           │
                           ├── [err set] → recovery ZFS rollback
@@ -1130,7 +1399,7 @@ The snapshot represents the volume state at snapshot time. If the volume was res
 after the snapshot:
 
 - **Volume grew after snapshot**: `_volume_snapshot_rollback` reads `$snap_blocks`
-  and `$vol_blocks` separately via `_getsize64`. The `run_xcopy_chunk` call is
+  and `$vol_blocks` separately via `xcopy_getsize64`. The copy call is
   bounded by `$snap_blocks`; no block beyond the snapshot boundary is touched by
   XCOPY. After XCOPY completes, `run_zero_chunk` writes zeros over the trailing
   region so the live volume presents a clean image.
@@ -1175,8 +1444,10 @@ No copy or zero-fill is attempted.
 ### `sg_xcopy` timeout — adaptive retry
 
 `run_command` throws on timeout (50 seconds). `run_xcopy_chunk` catches the timeout,
-halves the chunk size (rounded down to the nearest granularity-aligned boundary),
-and retries the same offset. This repeats until:
+renews the per-VM lock (the timed-out call consumed up to 50 s of the 60 s alarm
+window), halves the chunk size (rounded down to the nearest granularity-aligned
+boundary; the reduction is permanent for all subsequent offsets), and retries the
+same offset. This repeats until:
 
 - The chunk completes within the timeout → offset advances, next chunk is issued.
 - The chunk size reaches the granularity minimum and still times out →
@@ -1194,12 +1465,25 @@ latest snapshot (undoes partial writes). `die $err` re-raises.
 The snapshot chain is completely intact. The operator can retry the XCOPY rollback
 from the beginning after investigating the failure.
 
+**Note — small volumes:** One known cause of non-timeout `sg_xcopy` failure is
+very small volumes (observed: 528 KiB OVMF EFI vars disk, exit code 99, "not
+enough data to read (min 65536 bytes)"). These are prevented by the 1 MiB
+threshold check before the copy — volumes under 1 MiB use `run_dd_copy`
+instead of `run_xcopy_chunk`, so this `sg_xcopy` error path should not be
+reached in practice.
+
 ### Zero-fill fails
 
-`run_zero_chunk` throws. The exception is caught by the inner eval as above.
-Both deactivations run. Recovery rollback restores the volume to the latest snapshot,
-undoing both the completed XCOPY blocks and the partial zero-fill. The volume is
-returned to a clean, consistent state.
+`run_zero_chunk` throws — either a `dd` error or a timeout that cannot be
+resolved by halving the chunk size (already at minimum). On timeout,
+`run_zero_chunk` uses the same adaptive retry as `run_xcopy_chunk`: the chunk
+size is halved and the same offset is retried. If the chunk is already at the
+minimum (1 block), the function gives up and dies.
+
+The exception is caught by the inner eval as above. Both deactivations run.
+Recovery rollback restores the volume to the latest snapshot, undoing both the
+completed XCOPY blocks and the partial zero-fill. The volume is returned to a
+clean, consistent state.
 
 **Note:** If recovery rollback succeeds, the volume is fully restored and no manual
 intervention is needed. If recovery rollback also fails (both errors are logged),
@@ -1273,11 +1557,11 @@ this traffic; `run_zero_chunk` is isolated for easy substitution.
 | Blocker check in `volume_rollback_is_possible` | Required | Not performed — blockers are handled transparently (ZFS or XCOPY path) |
 | Temporary iSCSI targets | No | Yes — snapshot and live volume both activated at XCOPY start and unconditionally deactivated at XCOPY exit |
 | Volume grew after snapshot | ZFS rollback handles naturally | XCOPY copies snapshot range; trailing blocks zeroed by `run_zero_chunk` |
-| XCOPY timeout handling | N/A | Adaptive chunking: 50 s timeout per sg_xcopy call; chunk halved on timeout; dies at granularity minimum |
+| XCOPY timeout handling | N/A | Adaptive chunking: initial chunk from `xcopy_size` property (default 16 GiB); 50 s timeout per sg_xcopy call; lock renewed and chunk halved permanently on timeout; dies at granularity minimum |
 | jdssc changes | None | New `-b` flag on `volume get`; new `--latest` flag on `snapshots list` |
 | Residual state on failure | None | Both sessions deactivated; recovery ZFS rollback to latest snapshot restores volume to clean state |
-| Lock per operation | One lock for entire rollback | One lock for entire rollback (same as ZFS path); `lock_renew` called after each activation and each XCOPY chunk to prevent 60 s expiry |
-| Progress reporting | None | Printed before xcopy and zero-fill calls |
+| Lock per operation | One lock for entire rollback | One lock for entire rollback (same as ZFS path); `lock_renew` called after each activation, after each successful XCOPY chunk, after each XCOPY timeout (before retry), before the zero-fill loop, and after each zero-fill chunk to prevent 60 s expiry |
+| Progress reporting | None | Percentage progress printed per chunk for both XCOPY and zero-fill |
 
 ---
 
@@ -1319,18 +1603,34 @@ this traffic; `run_zero_chunk` is isolated for easy substitution.
    rollback invocations. If the entire rollback fails and is retried, the copy
    restarts from offset 0.
 
+9. **Small volumes use `dd` fallback.** `sg_xcopy` fails on very small volumes
+   (observed on a 528 KiB OVMF EFI vars disk: exit code 99, "not enough data to
+   read (min 65536 bytes)"). The XCOPY Data segment granularity (65536 bytes)
+   combined with `volblocksize`-based block alignment causes `sg_xcopy` to reject
+   transfers that are technically above 65536 bytes but below its internal minimum
+   after alignment. Volumes under 1 MiB bypass `sg_xcopy` entirely and are copied
+   via `run_dd_copy` — a single `dd` invocation with `iflag=direct oflag=direct`.
+   These volumes are tiny (EFI vars, config disks) and copy in under a second.
+
+10. **Zero-fill runs under `IOWeight=10` throttling.** The `dd` zero-fill uses
+    `systemd-run --scope -p IOWeight=10` to avoid starving host I/O. Combined
+    with direct I/O over iSCSI, this means zero-fill throughput is significantly
+    lower than unthrottled writes. The adaptive chunking (default 512 MiB, halved
+    on timeout) ensures the operation completes even under heavy I/O contention,
+    but large extended regions (tens of GiB) will take proportionally longer.
+
 ---
 
 ## Files
 
 | File | Changes |
 |---|---|
-| `OpenEJovianDSSPlugin.pm` | Adapt `volume_rollback_is_possible` (HA guard only; always returns 1); unified `_volume_snapshot_rollback` (ZFS and XCOPY paths, `$renew_lock` closure, recovery rollback on failure); new `_vm_is_running` helper |
-| `OpenEJovianDSS/Common.pm` | New `run_xcopy_chunk` (adaptive loop with timeout and lock renewal), `run_zero_chunk`, `_getsize64` helpers (exported) |
+| `OpenEJovianDSSPlugin.pm` | New `xcopy_size` property (initial XCOPY chunk size in GiB, default 16); adapt `volume_rollback_is_possible` (HA guard only; always returns 1); unified `_volume_snapshot_rollback` (ZFS and XCOPY paths, `$renew_lock` closure, recovery rollback on failure); new `_vm_is_running` helper |
+| `OpenEJovianDSS/Common.pm` | New `get_xcopy_size` getter; new `run_xcopy_chunk` (adaptive loop with configurable initial chunk, timeout, and lock renewal), `run_dd_copy` (small-volume fallback), `run_zero_chunk` (adaptive chunking with 50 s timeout, matching `run_xcopy_chunk`), `xcopy_getsize64` helpers (exported); `lun_record_update_device` uses targeted `udevadm trigger --action=change /sys/block/<dev>` + `udevadm settle` instead of `udevadm trigger -t all`; deactivation order reversed to multipath-first in `lun_record_local_delete` and error cleanup path |
 | `OpenEJovianDSS/Lock.pm` | New `lock_renew` function (exported): resets `alarm(60)` and touches pmxcfs lock directory |
 | `jdssc/jdssc/volume.py` | New `-b` / `--block-size` flag in `get` subparser and `get` action |
 | `jdssc/jdssc/snapshots.py` | New `--latest` flag in `list` subparser and `list` action |
-| `jdssc/jdssc/jovian_common/driver.py` | `get_volume` returns `volblocksize` from REST response |
+| `jdssc/jdssc/jovian_common/driver.py` | `get_volume` returns `volblocksize` from REST response; `list_snapshots` includes `creation` timestamp in returned dicts (required by `--latest` flag) |
 
 ---
 
@@ -1343,9 +1643,233 @@ this traffic; `run_zero_chunk` is isolated for easy substitution.
 | `deactivate_volume` / `_deactivate_volume` | Tear down snapshot and volume iSCSI sessions on XCOPY exit (unconditional, each in its own eval) | Existing method, no changes |
 | `lun_record_local_get_info_list` | Locate LUN record after activation | Existing `Common.pm` function |
 | `block_device_path_from_lun_rec` | Resolve block device path from LUN record | Existing `Common.pm` function |
+| `xcopy_size` property | Initial XCOPY chunk size in GiB (default 16); converted to blocks by the caller | New storage property in `Plugin.pm`, getter in `Common.pm` |
 | `jdssc volume get -b` | Retrieve ZFS `volblocksize` for `bs=` in `sg_xcopy` and `dd` | New flag, minimal jdssc change |
 | `jdssc snapshots list --latest` | Retrieve name of the most recent snapshot for recovery rollback | New flag, minimal jdssc change |
 | `lock_renew` | Extend per-VM lock lifetime during long-running XCOPY; resets `alarm(60)` and touches pmxcfs lock directory | New function in `Lock.pm` (exported) |
 | `PVE::Tools::run_command` | Execute `sg_xcopy` and `systemd-run … dd` as subprocesses | Standard Proxmox tool |
-| `blockdev --getsize64` | Read block device size in bytes for snap and volume size calculation | Already used in `Common.pm`; extracted into `_getsize64` |
+| `blockdev --getsize64` | Read block device size in bytes for snap and volume size calculation | Already used in `Common.pm`; extracted into `xcopy_getsize64` |
 | `systemd-run --scope -p IOWeight=10 dd` | Zero-fill trailing blocks when volume grew post-snapshot | `systemd-run` part of `systemd`; `dd` part of `coreutils`; both universally available on Proxmox VE |
+
+---
+
+## Testing Findings
+
+Testing was performed on the pve-91 cluster (3 nodes: pve-91-1, pve-91-2, pve-91-3)
+with JovianDSS storage and multipath enabled.
+
+### Test environment — VM 103 on pve-91-2
+
+VM 103 has three disks of different sizes, exercising different code paths:
+
+| Disk | Size | volblocksize | Blocks | Copy method |
+|---|---|---|---|---|
+| `vm-103-disk-0` | 32 GiB | 16384 | 2,097,152 | XCOPY (normal path) |
+| `vm-103-disk-1` | 528 KiB | 16384 | 33 | dd fallback (< 1 MiB) |
+| `vm-103-disk-2` | 4 MiB | 16384 | 256 | XCOPY (small but above 1 MiB threshold) |
+
+### Finding 1: `sg_xcopy` fails on very small volumes
+
+**Observed:** `sg_xcopy` exit code 99 on `vm-103-disk-1` (528 KiB OVMF EFI vars
+disk) with error "not enough data to read (min 65536 bytes)".
+
+**Root cause:** The XCOPY Data segment granularity is 65536 bytes. With
+`volblocksize=16384`, `gran_blocks = 65536/16384 = 4`. The volume has 33 blocks;
+granularity alignment rounds this to 32 blocks (524288 bytes). Despite being well
+above 65536 bytes, `sg_xcopy` rejects the transfer — the "min 65536 bytes" message
+appears to refer to an internal `sg_xcopy` calculation that considers the device's
+logical sector size (512 bytes) independently of the `bs=` parameter.
+
+**Fix:** Volumes under 1 MiB (`snap_bytes < 1048576`) bypass `sg_xcopy` entirely
+and use `run_dd_copy` — a single `dd if=<snap> of=<vol> bs=<bs> count=<N>
+iflag=direct oflag=direct` invocation. The 1 MiB threshold is conservative;
+volumes this small copy in under a second via `dd`.
+
+### Finding 2: Recovery rollback on XCOPY failure works correctly
+
+When the initial `sg_xcopy` attempt failed on `vm-103-disk-1`, the recovery path
+attempted a ZFS rollback to the latest snapshot. On the first attempt this also
+failed because the volume and snapshot iSCSI sessions were not properly cleaned up.
+After fixing the deactivation ordering (both deactivations run unconditionally
+before recovery), the recovery rollback works correctly.
+
+### Finding 3: Stale lock on failed rollback
+
+A failed rollback leaves a `lock: rollback` on the VM config. Proxmox refuses
+subsequent rollback attempts until the lock is cleared with `qm unlock <vmid>`.
+This is standard Proxmox behavior — not a bug in the XCOPY implementation.
+
+### Finding 4: udev-worker blocks deactivation for ~30-40 seconds
+
+During deactivation after XCOPY, the plugin's `lsof` polling loop
+(`_volume_unstage_multipath_wait_unused`) repeatedly detects a `udev-worker`
+process holding the `/dev/mapper/<scsiid>` device open, producing many lines:
+
+```
+Block device with SCSI 26363303966303966 is used by 1587101
+Multipath device with scsi id 26363303966303966, is used by (udev-worker) with pid 1587101
+```
+
+The PID is the same across all iterations (single worker, not respawning), and
+the stall lasts ~30-40 seconds per deactivated multipath device. The XCOPY
+rollback deactivates 2 devices per disk (snapshot + volume), making the delay
+very visible.
+
+**Root cause analysis (via `udevadm monitor`):**
+
+1. During **activation**, `lun_record_update_device()` (Common.pm line ~3607)
+   calls `udevadm trigger -t all`, which fires a synthetic `change` event on
+   **every** block device on the system — including dm-* multipath devices.
+
+2. udev-worker spawns to process the `change` event on the newly created dm
+   device. The rules chain includes `55-dm.rules` (sets `DM_NAME`, `DM_UUID`),
+   multipath rules (sets `MPATH_DEVICE_READY`), `60-persistent-storage.rules`
+   (runs `blkid` unless `UDEV_DISABLE_PERSISTENT_STORAGE_BLKID_FLAG` is set),
+   and `69-lvm.rules` (runs `pvscan`).
+
+3. These probes open the dm device and issue I/O. With the snapshot LUN exposed
+   via SCST iSCSI, SCSI probes can be slow (the target may need to service
+   concurrent XCOPY I/O).
+
+4. After the XCOPY copy completes, the plugin **deactivates** the snapshot by
+   deleting iSCSI paths (`/sys/block/.../device/delete`). This removes the
+   underlying sd paths from the multipath device.
+
+5. The udev-worker spawned in step 2 may still be processing — now with dead
+   underlying paths, its I/O stalls until the SCSI timeout expires (~30 s).
+
+6. `_volume_unstage_multipath_wait_unused` polls with `lsof` every 1 second,
+   detecting the stuck worker each time.
+
+**Evidence from `udevadm monitor` (dm-6, first rollback disk):**
+
+| Timestamp | Event | Notes |
+|---|---|---|
+| 3348920.50 | KERNEL add dm-6 | Snapshot activation |
+| 3348922.46 | KERNEL change dm-6 | `udevadm trigger -t all` synthetic event |
+| 3348924.57 | KERNEL change dm-6 (DM_COOKIE) | multipath reconfiguration |
+| 3348924.68 | KERNEL change dm-6 | Last kernel event before gap |
+| 3349045.54 | UDEV change dm-6 | **121 seconds later** — udev-worker finishes |
+| 3349048.27 | KERNEL remove dm-6 | Device finally removed |
+
+The 121-second gap (3348924 → 3349045) is the udev-worker stuck processing the
+change event while the underlying iSCSI paths are removed.
+
+**What was tested and did NOT fix the issue:**
+
+- `udevadm settle` before multipath removal — runs too early, before
+  deactivation triggers new events
+- `UDEV_DISABLE_PERSISTENT_STORAGE_BLKID_FLAG=1` on dm-* devices — blkid is
+  not the stalling rule; the stall comes from multipath path checker or LVM
+  probes
+- Both approaches were reverted after testing showed no improvement
+
+**Impact:** Cosmetic — deactivation eventually succeeds. No data integrity
+impact. The 60-iteration polling loop (1 s sleep each) waits out the stuck
+worker and then `multipath -f` / `dmsetup remove` succeed. However, each
+affected disk adds ~30-40 seconds to the total rollback time.
+
+**Fix (implemented):** Two changes resolved this issue:
+
+1. **Targeted udev triggers in `lun_record_update_device()`:** Replaced
+   `udevadm trigger -t all` with a loop that triggers only the specific sd
+   block devices involved: `udevadm trigger --action=change /sys/block/<bdn>`
+   for each iSCSI block device. A `udevadm settle` call follows to wait for
+   processing to complete. This eliminates synthetic change events on unrelated
+   dm devices during activation.
+
+2. **Reversed deactivation order:** Changed the unstage sequence from
+   "iSCSI paths first, then multipath" to "multipath first, then iSCSI paths".
+   The old order caused the problem: deleting SCSI paths emitted kernel change
+   events on the dm device; udev-worker opened the dm device to probe it, but
+   I/O stalled (~30 s SCSI timeout) because the paths were already gone.
+   Removing the dm device first (while iSCSI paths are still up) lets any
+   udev probes complete instantly on a functional device, then iSCSI path
+   removal generates no dm events since the dm device is already gone.
+   Applied at both call sites in `Common.pm` (error cleanup path and normal
+   deactivation in `lun_record_local_delete`).
+
+**Testing confirmed:** Zero "is used by" messages after both fixes. Rollback of
+3× 1 GiB disks (VM 104) completes without delays. The `multipath -f` flush
+succeeds cleanly before iSCSI paths are removed.
+
+### Finding 5: `jdssc volume get -b` required implementation
+
+The `-b` / `--block-size` flag was designed but not initially present in the
+`jdssc` codebase. It required changes to:
+- `jdssc/jdssc/volume.py` — add `-b` to the `get` subparser's mutually exclusive group
+- `jdssc/jdssc/jovian_common/driver.py` — include `volblocksize` in the dict returned
+  by `get_volume`
+
+### Finding 6: `lock_renew` lockpath must use `_sanitize_lockid`
+
+The `lock_renew` function must construct the lockpath identically to `_cluster_lock`.
+Both use `_sanitize_lockid($storeid)` and `_cluster_lockdir()` to build the path.
+An early implementation bug used the raw `$storeid` without sanitization, which would
+have caused `utime` to target a non-existent path — silently failing to renew the lock.
+
+### Finding 7: Zero-fill timeout on extended volumes
+
+When a volume is extended after a snapshot (e.g. 32 GiB → 37 GiB), the
+zero-fill phase must write zeros to the 5 GiB extended region. The original
+`run_zero_chunk` used a single `dd` invocation for the entire region with no
+timeout, running under `systemd-run --scope -p IOWeight=10` (minimum cgroup
+I/O priority).
+
+**Problem:** `IOWeight=10` severely throttles `dd` — writing 5 GiB via direct
+I/O to iSCSI at minimum priority took longer than the 60-second `alarm()`
+window set by `lock_renew`. When the alarm fired, Perl SIGALRM unwound the
+stack to the error handler, which started deactivation cleanup. But the `dd`
+subprocess (under `systemd-run --scope`) was still running, holding the
+multipath device open. The `lsof` polling loop then showed "is used by dd"
+for 60 iterations before `dd` was eventually killed.
+
+**Fix:** Applied the same adaptive-chunking algorithm as `run_xcopy_chunk`:
+- Default chunk size set to 512 MiB (in blocks: `512 * 1024 * 1024 / $bs`)
+  by the caller in `OpenEJovianDSSPlugin.pm`
+- Each `dd` invocation has a 50-second `timeout` on `run_command`
+- On timeout, chunk size is halved and the same offset is retried
+- `lock_renew` is called after each successful chunk or timeout, keeping the
+  alarm window fresh
+- `systemd-run --scope -p IOWeight=10` is preserved to avoid starving host I/O
+
+**Testing:** VM 103 (32 GiB disk extended to 37 GiB) — 5 GiB zero-fill
+completed in 10 chunks of ~512 MiB each with smooth 0–100% progress, no
+timeouts at the 512 MiB chunk size.
+
+### Finding 8: VM 104 clean rollback (3× 1 GiB, multipath)
+
+VM 104 on pve-91-1 with 3× 1 GiB disks was used to verify the deactivation
+order fix (Finding 4). Rollback to snap1 and snap3 both completed cleanly:
+zero "is used by" messages in syslog, no udev-worker stalls, multipath flush
+succeeded before iSCSI path removal.
+
+### Successful rollback output (VM 103, all 3 disks, with zero-fill)
+
+```
+starting rollback of vm-103-disk-0 to snapshot snap1
+xcopy vm-103-disk-0 -> snap1: 2097152 snap blocks, 2424832 vol blocks, bs=16384, xcopy_size=16 GiB
+xcopy 0% (block 0/2097152)
+xcopy 100% (2097152 blocks copied)
+zero-fill 0% (block 2097152/2424832)
+zero-fill 10% (block 2129920/2424832)
+zero-fill 20% (block 2162688/2424832)
+zero-fill 30% (block 2195456/2424832)
+zero-fill 40% (block 2228224/2424832)
+zero-fill 50% (block 2260992/2424832)
+zero-fill 60% (block 2293760/2424832)
+zero-fill 70% (block 2326528/2424832)
+zero-fill 80% (block 2359296/2424832)
+zero-fill 90% (block 2392064/2424832)
+zero-fill 100% (327680 blocks zeroed)
+vm-103-disk-0 to snapshot snap1 rollback complete
+starting rollback of vm-103-disk-1 to snapshot snap1
+dd copy vm-103-disk-1 -> snap1: 33 snap blocks (volume too small for XCOPY, using dd)
+dd copy 100% (33 blocks copied)
+vm-103-disk-1 to snapshot snap1 rollback complete
+starting rollback of vm-103-disk-2 to snapshot snap1
+xcopy vm-103-disk-2 -> snap1: 256 snap blocks, 256 vol blocks, bs=16384, xcopy_size=16 GiB
+xcopy 0% (block 0/256)
+xcopy 100% (256 blocks copied)
+vm-103-disk-2 to snapshot snap1 rollback complete
+```
