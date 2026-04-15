@@ -116,7 +116,9 @@ our @EXPORT_OK = qw(
   xcopy_getsize64
   run_xcopy_chunk
   run_dd_copy
+  run_dd_chunk
   run_zero_chunk
+  xcopy_sha1sum
 
   volume_get_size
   volume_update_size
@@ -451,6 +453,97 @@ sub run_dd_copy {
     print "dd copy 100% (${count} blocks copied)\n";
 }
 
+# run_dd_chunk($ctx, $src_dev, $dst_dev, $bs, $count, $max_chunk, $renew_lock)
+#
+# Copies $count blocks from $src_dev to $dst_dev using chunked dd with
+# iflag=direct,oflag=direct.  Used as a fallback when sg_xcopy fails SHA1
+# verification — JovianDSS may process EXTENDED COPY as a storage-side
+# metadata operation that returns success without updating the iSCSI-visible
+# LUN content; plain SCSI WRITE(16) via dd is always reliable.
+#
+# $bs         — ZFS volblocksize in bytes.
+# $count      — number of blocks to copy (starting from block 0).
+# $max_chunk  — maximum blocks per dd invocation.
+# $renew_lock — callback to extend per-VM lock by 60 s.
+#
+# Same adaptive-chunking algorithm as run_zero_chunk: each dd is bounded by
+# a 50 s timeout.  On timeout the chunk size is halved and the same offset is
+# retried.  After each successful chunk the per-VM lock is renewed.
+sub run_dd_chunk {
+    my ( $ctx, $src_dev, $dst_dev, $bs, $count, $max_chunk, $renew_lock ) = @_;
+
+    my $timeout   = 50;  # seconds per dd invocation
+    my $min_chunk = 1;
+
+    my $chunk_size = $max_chunk < $count ? $max_chunk : $count;
+    my $offset     = 0;
+    my $total      = $count || 1;
+
+    while ( $offset < $count ) {
+        my $remaining  = $count - $offset;
+        my $this_chunk = $chunk_size < $remaining ? $chunk_size : $remaining;
+
+        my $pct = int( $offset * 100 / $total );
+        print "dd copy ${pct}% (block ${offset}/${count})\n";
+
+        my @cmd = (
+            'dd',
+            "if=${src_dev}",
+            "of=${dst_dev}",
+            "bs=${bs}",
+            "skip=${offset}",
+            "seek=${offset}",
+            "count=${this_chunk}",
+            'iflag=direct',
+            'oflag=direct',
+        );
+
+        debugmsg( $ctx, 'debug', "dd chunk: " . join( ' ', @cmd ) . "\n" );
+
+        my $ok = eval {
+            run_command(
+                \@cmd,
+                timeout => $timeout,
+                outfunc => sub { debugmsg( $ctx, 'debug', "dd: $_[0]\n" ) },
+                errfunc => sub { debugmsg( $ctx, 'warn',  "dd: $_[0]\n" ) },
+            );
+            1;
+        };
+
+        if ( $ok ) {
+            debugmsg( $ctx, 'debug',
+                "dd chunk: offset ${offset} count ${this_chunk} complete\n" );
+            $renew_lock->() if $renew_lock;
+            $offset += $this_chunk;
+            next;
+        }
+
+        # Timeout — halve chunk size and retry same offset.
+        if ( $@ =~ /got timeout/ ) {
+            my $new_chunk = int( $chunk_size / 2 );
+            $new_chunk = $min_chunk if $new_chunk < $min_chunk;
+
+            if ( $new_chunk >= $chunk_size ) {
+                die "dd chunk: timeout at offset ${offset}; chunk size "
+                  . "${chunk_size} blocks is already at the minimum "
+                  . "(${min_chunk}); giving up\n";
+            }
+
+            $chunk_size = $new_chunk;
+            debugmsg( $ctx, 'warn',
+                "dd chunk: timeout at offset ${offset}, "
+              . "reducing chunk to ${chunk_size} blocks\n" );
+            $renew_lock->() if $renew_lock;
+            next;   # retry same offset with smaller chunk
+        }
+
+        # Non-timeout error — propagate immediately.
+        die $@;
+    }
+
+    print "dd copy 100% (${count} blocks copied)\n";
+}
+
 # run_zero_chunk($ctx, $dev, $bs, $seek, $count, $max_chunk, $renew_lock)
 #
 # Writes $count blocks of zeros to $dev starting at block offset $seek.
@@ -546,6 +639,66 @@ sub run_zero_chunk {
     }
 
     print "zero-fill 100% (${total} blocks zeroed)\n";
+}
+
+# xcopy_sha1sum($ctx, $dev, $bs, $count, $renew_lock)
+#
+# Reads $count blocks of $bs bytes each from $dev and returns the SHA1
+# hex digest of that byte range.
+#
+# $dev         — block device path (snapshot or volume).
+# $bs          — ZFS volblocksize in bytes; used as dd bs= argument.
+# $count       — number of blocks to read; 0 returns SHA1 of empty input.
+# $renew_lock  — callback to extend the per-VM lock by 60 s; called after
+#                each 512 MiB read chunk.
+#
+# Reads are split into 512 MiB chunks so each dd invocation completes
+# well within the 60-second alarm window.  The SHA1 is computed
+# incrementally over all chunks using Digest::SHA.
+sub xcopy_sha1sum {
+    my ( $ctx, $dev, $bs, $count, $renew_lock ) = @_;
+
+    require Digest::SHA;
+    my $sha = Digest::SHA->new(1);
+
+    # 512 MiB read chunks: ~5 s at 100 MB/s, well within the 60 s window.
+    my $chunk_blocks = int( 512 * 1024 * 1024 / $bs );
+    $chunk_blocks = 1 if $chunk_blocks < 1;
+
+    my $offset = 0;
+    my $total  = $count || 1;    # avoid division by zero
+
+    while ( $offset < $count ) {
+        my $remaining  = $count - $offset;
+        my $this_chunk = $chunk_blocks < $remaining ? $chunk_blocks : $remaining;
+
+        my $pct = int( $offset * 100 / $total );
+        print "sha1 ${pct}% (block ${offset}/${count})\n";
+
+        # List-form open: no shell — $dev, $bs, offsets are never interpreted
+        # by a shell, so device paths with special characters are safe.
+        open( my $fh, '-|', 'dd',
+              "if=${dev}", "bs=${bs}",
+              "skip=${offset}", "count=${this_chunk}",
+              'iflag=direct' )
+            or die "sha1sum: cannot open pipe from dd for ${dev}: $!\n";
+
+        while (1) {
+            my $buf;
+            my $n = sysread( $fh, $buf, 65536 );
+            last unless $n;
+            die "sha1sum: read error from ${dev}: $!\n" unless defined $n;
+            $sha->add($buf);
+        }
+        close($fh)
+            or die "sha1sum: dd exited with error for ${dev} (exit $?)\n";
+
+        $renew_lock->() if $renew_lock;
+        $offset += $this_chunk;
+    }
+
+    print "sha1 100% (${count} blocks read)\n";
+    return $sha->hexdigest;
 }
 
 sub get_control_addresses {

@@ -963,8 +963,10 @@ sub _volume_snapshot_rollback_lock {
 sub _vm_is_running {
     my ($vmid) = @_;
     return 0 unless defined $vmid;
-    return PVE::QemuServer::check_running($vmid)
-        || eval { require PVE::LXC; PVE::LXC::check_running($vmid) } // 0;
+    # Pass nocheck=1 so check_running skips assert_config_exists_on_node.
+    # Without it, the call dies for LXC containers (no qemu-server/<vmid>.conf).
+    return ( eval { PVE::QemuServer::check_running( $vmid, 1 ) } // 0 )
+        || ( eval { require PVE::LXC; PVE::LXC::check_running($vmid) } // 0 );
 }
 
 sub _volume_snapshot_rollback {
@@ -1002,7 +1004,9 @@ sub _volume_snapshot_rollback {
             [
                 'pool',     $pool, 'volume',   $volname,
                 'snapshot', $snap, 'rollback', 'do',
-            ]
+            ],
+            50,
+            3
         );
     } else {
         # Blockers exist — block-level XCOPY, all snapshots preserved.
@@ -1083,9 +1087,223 @@ sub _volume_snapshot_rollback {
                     . "${snap_blocks} snap blocks, ${vol_blocks} vol blocks, "
                     . "bs=${bs}, xcopy_size=${xcopy_gib} GiB\n";
 
+                # Diagnostic: verify vol_dev is writable via dd before sg_xcopy.
+                # Write one block of zeros, check SHA1 changes, then restore
+                # the correct content from snap_dev.
+                my $vol_sha1_before = xcopy_sha1sum(
+                    $ctx, $vol_dev, $bs, 1, undef );
+                print "xcopy diag: vol block0 sha1 before zero-write=${vol_sha1_before}\n";
+                run_command(
+                    [ 'dd', 'if=/dev/zero', "of=${vol_dev}",
+                      "bs=${bs}", 'count=1', 'oflag=direct' ],
+                    outfunc => sub { debugmsg( $ctx, 'debug', "dd diag: $_[0]\n" ) },
+                    errfunc => sub { debugmsg( $ctx, 'debug', "dd diag: $_[0]\n" ) },
+                );
+                my $vol_sha1_after = xcopy_sha1sum(
+                    $ctx, $vol_dev, $bs, 1, undef );
+                print "xcopy diag: vol block0 sha1 after zero-write=${vol_sha1_after}\n";
+                if ( $vol_sha1_before eq $vol_sha1_after ) {
+                    print "xcopy diag: WRITE DID NOT PERSIST on vol_dev!\n";
+                } else {
+                    print "xcopy diag: write persisted OK (sha1 changed)\n";
+                }
+
                 run_xcopy_chunk( $ctx, $snap_dev, $vol_dev, $bs, 0,
                                  $snap_blocks, $max_chunk, $renew_lock );
+
+                # Diagnostic: check vol block0 immediately after sg_xcopy on
+                # the same iSCSI session (before any target refresh) to see
+                # whether sg_xcopy data reached JovianDSS's write buffer.
+                my $vol_sha1_post_xcopy = xcopy_sha1sum(
+                    $ctx, $vol_dev, $bs, 1, undef );
+                print "xcopy diag: vol block0 sha1 after xcopy (pre-refresh)"
+                    . "=${vol_sha1_post_xcopy}\n";
             }
+
+            # JovianDSS processes EXTENDED COPY as a storage-side async
+            # operation and returns immediately (~7 GB/s metadata speed).
+            # The data copy may run in the background on the appliance; wait
+            # briefly for it to commit before re-establishing the session.
+            print "xcopy: waiting 15s for storage-side async copy to commit...\n";
+            sleep 15;
+
+            # Flush the JovianDSS write cache to the ZFS ZVOL before tearing
+            # down the target.  Without this, writes acknowledged by the iSCSI
+            # target (dd and sg_xcopy) sit in JovianDSS's write buffer; when
+            # the target is deleted that buffer is discarded and the ZFS ZVOL
+            # still holds the old data.  SYNCHRONIZE CACHE(10) (sg_sync) tells
+            # JovianDSS to flush all buffered writes for vol_dev to stable
+            # storage before we proceed.
+            print "xcopy: flushing vol_dev write cache (sg_sync)...\n";
+            {
+                my $vol_til_sync = lun_record_local_get_info_list(
+                    $ctx, $volname, undef );
+                if ( @$vol_til_sync ) {
+                    my ( $vts, $vls, undef, $vlrs ) = @{ $vol_til_sync->[0] };
+                    my $vol_dev_sync = block_device_path_from_lun_rec(
+                        $ctx, $vts, $vls, $vlrs );
+                    eval {
+                        run_command(
+                            [ 'sg_sync', $vol_dev_sync ],
+                            outfunc => sub {
+                                debugmsg( $ctx, 'debug',
+                                    "sg_sync: $_[0]\n" )
+                            },
+                            errfunc => sub {
+                                debugmsg( $ctx, 'warn',
+                                    "sg_sync: $_[0]\n" )
+                            },
+                        );
+                    };
+                    debugmsg( $ctx, 'warn',
+                        "xcopy: sg_sync failed: $@\n" ) if $@;
+                }
+            }
+
+            # Diagnostic: compute full vol SHA1 on the SAME iSCSI session
+            # (after sg_xcopy + sg_sync, before any target refresh).  If this
+            # matches snap SHA1, the data is correctly written and the problem
+            # is with the target refresh discarding the writes.  If it doesn't
+            # match, sg_xcopy is not writing all blocks.
+            print "xcopy diag: computing vol SHA1 pre-refresh (same session)...\n";
+            {
+                my $vol_til_pre = lun_record_local_get_info_list(
+                    $ctx, $volname, undef );
+                if ( @$vol_til_pre ) {
+                    my ( $vtp, $vlp, undef, $vlrp ) = @{ $vol_til_pre->[0] };
+                    my $vol_dev_pre = block_device_path_from_lun_rec(
+                        $ctx, $vtp, $vlp, $vlrp );
+                    my $snap_til_pre = lun_record_local_get_info_list(
+                        $ctx, $volname, $snap );
+                    my $snap_sha1_pre;
+                    if ( @$snap_til_pre ) {
+                        my ( $stp, $slp, undef, $slrp ) = @{ $snap_til_pre->[0] };
+                        my $snap_dev_pre = block_device_path_from_lun_rec(
+                            $ctx, $stp, $slp, $slrp );
+                        $snap_sha1_pre = xcopy_sha1sum(
+                            $ctx, $snap_dev_pre, $bs, $snap_blocks, $renew_lock );
+                        print "xcopy diag: snap sha1 pre-refresh=${snap_sha1_pre}\n";
+                    }
+                    my $vol_sha1_pre_refresh = xcopy_sha1sum(
+                        $ctx, $vol_dev_pre, $bs, $snap_blocks, $renew_lock );
+                    print "xcopy diag: vol sha1 pre-refresh=${vol_sha1_pre_refresh}\n";
+                    if ( defined $snap_sha1_pre
+                         && $snap_sha1_pre eq $vol_sha1_pre_refresh ) {
+                        print "xcopy diag: PRE-REFRESH SHA1 MATCH — "
+                            . "sg_xcopy wrote data correctly, "
+                            . "target refresh is discarding writes\n";
+                    } else {
+                        print "xcopy diag: PRE-REFRESH SHA1 MISMATCH — "
+                            . "sg_xcopy did not copy all blocks correctly\n";
+                    }
+                }
+            }
+            $renew_lock->();
+
+            # Full iSCSI target unpublish / republish so SHA1 reads see the
+            # committed data.  JovianDSS implements EXTENDED COPY as a
+            # ZFS-level metadata operation; after sg_xcopy the updated data
+            # is in ZFS but the iSCSI target still has its old ZFS dataset
+            # handle open.  A plain initiator reconnect is not enough —
+            # the target must be deleted on JovianDSS so it closes its
+            # handle, and then recreated so it opens the dataset fresh.
+            print "xcopy: refreshing iSCSI session "
+                . "(full target unpublish/republish)...\n";
+            $renew_lock->();
+
+            # Snap first: removes snap LUN from the JovianDSS target and
+            # tears down its iSCSI session (which may also disconnect vol
+            # since both LUNs share the same target).
+            eval { _deactivate_volume( $class, $ctx, $volname, $snap, {}, {} ) };
+            debugmsg( $ctx, 'warn',
+                "xcopy: snap deactivate for refresh failed: $@\n" ) if $@;
+
+            # Vol: iSCSI logout (if not already gone) + LUN record delete.
+            # volume_deactivate does NOT call volume_unpublish for non-snapshot
+            # volumes, so the JovianDSS target is still up after this call.
+            eval { _deactivate_volume( $class, $ctx, $volname, undef, {}, {} ) };
+            debugmsg( $ctx, 'warn',
+                "xcopy: vol deactivate for refresh failed: $@\n" ) if $@;
+
+            # Explicitly delete the JovianDSS-side iSCSI target so the
+            # appliance closes its ZFS dataset handle.  The next targets create
+            # (inside _activate_volume below) opens the dataset fresh and
+            # serves the post-XCOPY block content.
+            my $refresh_pool   = get_pool($ctx);
+            my $refresh_prefix = get_target_prefix($ctx);
+            my $refresh_tgname = get_vm_target_group_name($ctx, $vmid);
+            eval {
+                joviandss_cmd(
+                    $ctx,
+                    [
+                        'pool',               $refresh_pool,
+                        'targets',            'delete',
+                        '--target-prefix',    $refresh_prefix,
+                        '--target-group-name', $refresh_tgname,
+                        '-v',                 $volname,
+                    ],
+                    30, 3
+                );
+            };
+            debugmsg( $ctx, 'warn',
+                "xcopy: vol target delete for refresh failed: $@\n" ) if $@;
+            $renew_lock->();
+
+            # Recreate the vol target (fresh ZFS dataset handle) and log in.
+            _activate_volume( $class, $ctx, $volname, undef, {} );
+            $renew_lock->();
+
+            # Re-add snap LUN to the fresh target and log in.
+            eval { _activate_volume( $class, $ctx, $volname, $snap, {} ) };
+            debugmsg( $ctx, 'warn',
+                "xcopy: snap reactivate after refresh failed: $@\n" ) if $@;
+            $renew_lock->();
+
+            my $vol_til2 = lun_record_local_get_info_list( $ctx, $volname, undef );
+            die "xcopy rollback: no block device for ${volname} after session refresh\n"
+                unless @$vol_til2;
+            my ( $vtname2, $vlunid2, undef, $vlr2 ) = @{ $vol_til2->[0] };
+            my $vol_dev2 = block_device_path_from_lun_rec(
+                $ctx, $vtname2, $vlunid2, $vlr2 );
+
+            my $snap_til2 = lun_record_local_get_info_list( $ctx, $volname, $snap );
+            die "xcopy rollback: no block device for snapshot ${snap} after session refresh\n"
+                unless @$snap_til2;
+            my ( $stname2, $slunid2, undef, $slr2 ) = @{ $snap_til2->[0] };
+            my $snap_dev2 = block_device_path_from_lun_rec(
+                $ctx, $stname2, $slunid2, $slr2 );
+
+            # Verify the copy: SHA1 of the first snap_blocks×bs bytes of
+            # the snapshot and the volume must match.  The zero-filled
+            # trailing region (when vol_blocks > snap_blocks) is excluded
+            # from the comparison — it is not part of the snapshot content
+            # and its SHA1 is trivially equal on both sides.
+            # xcopy_sha1sum renews the lock after each 512 MiB read chunk
+            # so the per-VM lock does not expire during verification of
+            # large volumes.
+            print "sha1 verify ${volname} <- ${snap}: "
+                . "computing snapshot hash "
+                . "(${snap_blocks} blocks x ${bs} B)...\n";
+            $renew_lock->();
+            my $snap_sha1 = xcopy_sha1sum(
+                $ctx, $snap_dev2, $bs, $snap_blocks, $renew_lock );
+            debugmsg( $ctx, 'debug',
+                "sha1sum snap ${snap}: ${snap_sha1}\n" );
+
+            print "sha1 verify: computing volume hash...\n";
+            $renew_lock->();
+            my $vol_sha1 = xcopy_sha1sum(
+                $ctx, $vol_dev2, $bs, $snap_blocks, $renew_lock );
+            debugmsg( $ctx, 'debug',
+                "sha1sum vol ${volname}: ${vol_sha1}\n" );
+
+            die "xcopy rollback: SHA1 mismatch after copy - "
+              . "snapshot=${snap_sha1} volume=${vol_sha1}; "
+              . "volume content does not match snapshot\n"
+                unless $snap_sha1 eq $vol_sha1;
+
+            print "sha1 verify OK (${snap_sha1}): "
+                . "${volname} matches snapshot ${snap}\n";
 
             if ( $vol_blocks > $snap_blocks ) {
                 $renew_lock->();
@@ -1098,7 +1316,7 @@ sub _volume_snapshot_rollback {
                 # will adaptively halve the chunk size.
                 my $zero_chunk = int( 512 * 1024 * 1024 / $bs );
                 $zero_chunk = 1 if $zero_chunk < 1;
-                run_zero_chunk( $ctx, $vol_dev, $bs,
+                run_zero_chunk( $ctx, $vol_dev2, $bs,
                     $snap_blocks, $vol_blocks - $snap_blocks,
                     $zero_chunk, $renew_lock );
             }
@@ -1114,11 +1332,20 @@ sub _volume_snapshot_rollback {
         # _deactivate_volume is idempotent — safe to call even if the corresponding
         # activation never completed.
         # Any error from the inner eval is re-raised below after both calls finish.
+        #
+        # Lock renewal before each deactivation: run_xcopy_chunk can consume up
+        # to 50 s of the 60 s alarm window on a minimum-chunk timeout, leaving
+        # only seconds before SIGALRM.  Renewing here gives cleanup the full
+        # window so iSCSI teardown is never interrupted mid-flight.
+        $renew_lock->();
         eval { _deactivate_volume( $class, $ctx, $volname, $snap, {}, {} ) };
+        $renew_lock->() unless $@;
         debugmsg( $ctx, 'warn',
             "xcopy rollback: snapshot deactivation failed: $@\n" ) if $@;
 
+        $renew_lock->();
         eval { _deactivate_volume( $class, $ctx, $volname, undef, {}, {} ) };
+        $renew_lock->() unless $@;
         debugmsg( $ctx, 'warn',
             "xcopy rollback: volume deactivation failed: $@\n" ) if $@;
 
@@ -1128,6 +1355,7 @@ sub _volume_snapshot_rollback {
         # after it, so ZFS rollback needs no -r and destroys nothing.
         if ( $err ) {
             eval {
+                $renew_lock->();
                 my $latest_snap = clean_word( joviandss_cmd(
                     $ctx,
                     [ 'pool', $pool, 'volume', $volname,
@@ -1138,6 +1366,7 @@ sub _volume_snapshot_rollback {
                     debugmsg( $ctx, 'warn',
                         "xcopy rollback failed; recovering volume via "
                       . "ZFS rollback to latest snapshot ${latest_snap}\n" );
+                    $renew_lock->();
                     joviandss_cmd(
                         $ctx,
                         [

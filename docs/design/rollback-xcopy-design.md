@@ -531,19 +531,61 @@ actions:
 
 `_volume_snapshot_rollback` creates a `$renew_lock` closure that captures the
 lock identity (storeid, path, shared flag, vmid) and passes it to
-`run_xcopy_chunk`. The closure is called:
+`run_xcopy_chunk`. The closure is called **both before and after** every
+`joviandss_cmd`-involving operation — activations, direct `joviandss_cmd`
+calls, deactivations, and recovery calls. The pattern is:
 
-- After each `_activate_volume` call (activation involves REST + iscsiadm
-  login and can consume a significant portion of the 60-second window).
-- After each successful `sg_xcopy` chunk inside the adaptive loop.
+```perl
+$renew_lock->();     # before: reset alarm to give the full 60-second window
+<joviandss_cmd …>;  # the operation itself
+$renew_lock->();     # after:  reset again so the next operation also starts fresh
+```
+
+**Why before, not just after?** `joviandss_cmd` carries its own timeout and
+retry parameters (e.g., `10 s × 3 retries`). If only a few seconds remain on
+the alarm window when the call is made, `SIGALRM` fires mid-execution and
+kills the entire rollback. Calling `$renew_lock` immediately before each
+operation resets `alarm(60)` and guarantees the full 60-second budget is
+available for that one call. The post-call renewal then resets the window again
+for whatever comes next, preventing accumulated drift from previous work from
+reducing the budget of the subsequent operation.
+
+**Why after as well?** A jdssc call that succeeds near the end of its allotted
+time leaves only the remaining seconds on the alarm. The following operation —
+another jdssc call, a `blockdev --getsize64`, or the entry into
+`run_xcopy_chunk` — starts without a full window unless the alarm is reset
+after the previous call completes.
+
+The complete list of renewal points in `_volume_snapshot_rollback`:
+
+- **Before and after** `_activate_volume(volname, undef)` (live volume
+  activation — involves REST target creation and `iscsiadm` login).
+- **Before and after** `_activate_volume(volname, snap)` (snapshot activation
+  — same REST + iSCSI sequence).
+- **Before** `joviandss_cmd volume get -b` (resets alarm before the jdssc
+  call; post-call renewal is provided by the `xcopy_sha1sum` pre-call below).
+- **Before** each `xcopy_sha1sum` call — the hash read spans the full snapshot
+  byte range, which can take minutes for large volumes. `xcopy_sha1sum` also
+  calls `$renew_lock` after each internal read chunk (see §`xcopy_sha1sum`
+  helper below).
+- **Before** `run_zero_chunk` (renews before entering the zero-fill loop, after
+  the hash verification completes).
+- **Before and after** `_deactivate_volume(volname, snap)` (cleanup —
+  involves REST target removal and iSCSI logout).
+- **Before and after** `_deactivate_volume(volname, undef)` (cleanup — same).
+- **Before** each `joviandss_cmd` in the recovery block (`snapshots list
+  --latest` and `snapshot rollback do`).
+
+Inside the adaptive loops:
+
+- After each successful `sg_xcopy` chunk (`run_xcopy_chunk`).
 - After each `sg_xcopy` timeout, before retrying with a smaller chunk (the
   timed-out invocation consumed up to 50 s of the 60 s alarm window;
   without renewal the retry would `SIGALRM` almost immediately).
-- Before `run_zero_chunk` (at the caller level, before entering the zero-fill
-  loop).
-- After each successful `dd` chunk inside `run_zero_chunk`.
-- After each `dd` timeout inside `run_zero_chunk`, before retrying with a
-  smaller chunk (same rationale as the `sg_xcopy` timeout case).
+- After each successful read chunk inside `xcopy_sha1sum`.
+- After each successful `dd` chunk (`run_zero_chunk`).
+- After each `dd` timeout, before retrying with a smaller chunk (same
+  rationale as the `sg_xcopy` timeout case).
 
 Each call extends the lock by another 60-second window. Individual operations
 (one activation call, one `sg_xcopy` chunk, one `dd` chunk) must still
@@ -690,11 +732,14 @@ sub _volume_snapshot_rollback {
             unless -x '/usr/bin/sg_xcopy';
 
         # Closure to extend the per-VM lock by another 60-second window.
-        # Called after each activation, after each successful sg_xcopy
-        # chunk, after each sg_xcopy timeout (before retry), before the
-        # zero-fill loop, and after each successful dd chunk.  Captures
-        # the lock identity from the outer scope so run_xcopy_chunk and
-        # run_zero_chunk do not need to know about locking.
+        # Called BEFORE and AFTER every joviandss_cmd-involving operation
+        # (activations, direct jdssc calls, deactivations, recovery calls).
+        # "Before" resets alarm(60) to give the full window to the upcoming
+        # call.  "After" resets it again so the next operation also starts
+        # with a full budget.  Also called after each sg_xcopy/dd chunk
+        # success or timeout inside the adaptive loops.  Captures the lock
+        # identity from the outer scope so helpers do not need to know about
+        # locking.
         my $renew_lock = sub {
             lock_renew(
                 $ctx->{storeid}, $ctx->{scfg}{path},
@@ -703,6 +748,7 @@ sub _volume_snapshot_rollback {
         };
 
         eval {
+            $renew_lock->();
             _activate_volume( $class, $ctx, $volname, undef, {} );
             $renew_lock->();
 
@@ -715,6 +761,7 @@ sub _volume_snapshot_rollback {
             # If snapshot activation dies the error propagates out of this eval.
             # The cleanup block below deactivates the live volume (already activated
             # above) and re-raises the snapshot activation error.
+            $renew_lock->();
             _activate_volume( $class, $ctx, $volname, $snap, {} );
             $renew_lock->();
 
@@ -725,6 +772,9 @@ sub _volume_snapshot_rollback {
             my $snap_dev = block_device_path_from_lun_rec( $ctx, $stname, $slunid, $slr );
 
             # ZFS volblocksize — used as bs= for sg_xcopy and dd.
+            # Renew before the jdssc call so it starts with a full 60-second
+            # alarm window regardless of time consumed by activations above.
+            $renew_lock->();
             my $bs = clean_word( joviandss_cmd(
                 $ctx,
                 [ 'pool', $pool, 'volume', $volname, 'get', '-b' ],
@@ -764,6 +814,38 @@ sub _volume_snapshot_rollback {
                                  $snap_blocks, $max_chunk, $renew_lock );
             }
 
+            # Verify the copy: SHA1 of the first snap_blocks×bs bytes of
+            # the snapshot and the volume must match.  The zero-filled
+            # trailing region (when vol_blocks > snap_blocks) is excluded
+            # from the comparison — it is not part of the snapshot content
+            # and its SHA1 is trivially equal on both sides.
+            # xcopy_sha1sum renews the lock after each 512 MiB read chunk
+            # so the per-VM lock does not expire during verification of
+            # large volumes.
+            print "sha1 verify ${volname} <- ${snap}: "
+                . "computing snapshot hash "
+                . "(${snap_blocks} blocks × ${bs} B)...\n";
+            $renew_lock->();
+            my $snap_sha1 = xcopy_sha1sum(
+                $ctx, $snap_dev, $bs, $snap_blocks, $renew_lock );
+            debugmsg( $ctx, 'debug',
+                "sha1sum snap ${snap}: ${snap_sha1}\n" );
+
+            print "sha1 verify: computing volume hash...\n";
+            $renew_lock->();
+            my $vol_sha1 = xcopy_sha1sum(
+                $ctx, $vol_dev, $bs, $snap_blocks, $renew_lock );
+            debugmsg( $ctx, 'debug',
+                "sha1sum vol ${volname}: ${vol_sha1}\n" );
+
+            die "xcopy rollback: SHA1 mismatch after copy — "
+              . "snapshot=${snap_sha1} volume=${vol_sha1}; "
+              . "volume content does not match snapshot\n"
+                unless $snap_sha1 eq $vol_sha1;
+
+            print "sha1 verify OK (${snap_sha1}): "
+                . "${volname} matches snapshot ${snap}\n";
+
             if ( $vol_blocks > $snap_blocks ) {
                 $renew_lock->();
                 # Use 512 MiB chunks for zero-fill so each dd finishes
@@ -791,11 +873,17 @@ sub _volume_snapshot_rollback {
         # _deactivate_volume is idempotent — safe to call even if the corresponding
         # activation never completed.
         # Any error from the inner eval is re-raised below after both calls finish.
+        # Lock is renewed before and after each deactivation — deactivation involves
+        # REST calls and iSCSI logout which can consume much of the 60-second window.
+        $renew_lock->();
         eval { _deactivate_volume( $class, $ctx, $volname, $snap, {}, {} ) };
+        $renew_lock->() unless $@;
         debugmsg( $ctx, 'warn',
             "xcopy rollback: snapshot deactivation failed: $@\n" ) if $@;
 
+        $renew_lock->();
         eval { _deactivate_volume( $class, $ctx, $volname, undef, {}, {} ) };
+        $renew_lock->() unless $@;
         debugmsg( $ctx, 'warn',
             "xcopy rollback: volume deactivation failed: $@\n" ) if $@;
 
@@ -805,6 +893,7 @@ sub _volume_snapshot_rollback {
         # after it, so ZFS rollback needs no -r and destroys nothing.
         if ( $err ) {
             eval {
+                $renew_lock->();
                 my $latest_snap = clean_word( joviandss_cmd(
                     $ctx,
                     [ 'pool', $pool, 'volume', $volname,
@@ -815,6 +904,7 @@ sub _volume_snapshot_rollback {
                     debugmsg( $ctx, 'warn',
                         "xcopy rollback failed; recovering volume via "
                       . "ZFS rollback to latest snapshot ${latest_snap}\n" );
+                    $renew_lock->();
                     joviandss_cmd(
                         $ctx,
                         [
@@ -845,15 +935,25 @@ activation failure. Each is wrapped in its own `eval` so that a failure of the f
 tried. `_deactivate_volume` is idempotent: if the volume or snapshot was never
 activated, the call is a no-op.
 
-If the inner eval caught an error (`$err` is set), the cleanup block performs a
-**recovery ZFS rollback** after both deactivations. It queries the most recent
-snapshot via `jdssc snapshots list --latest` and calls `joviandss_cmd rollback do`
-with that snapshot name. Because the most recent snapshot has no newer snapshots
-after it, the ZFS rollback requires no `-r` flag and destroys nothing — it simply
-undoes the partial XCOPY writes, restoring the volume to its state at the time of
-the latest snapshot. The recovery rollback is wrapped in its own `eval` so that a
-failure does not suppress the original error. After recovery (or recovery failure),
-`die $err` re-raises the original error.
+Each deactivation is bracketed by `$renew_lock->()` calls — before to give the full
+60-second alarm window for the REST + iSCSI logout sequence, and after (on success
+only; on failure the deactivation error is logged and the next `$renew_lock` call
+before the following deactivation covers the reset) so the subsequent operation
+also starts with a fresh window.
+
+If the inner eval caught an error (`$err` is set) — including a SHA1 mismatch
+— the cleanup block performs a **recovery ZFS rollback** after both
+deactivations. It queries the most recent snapshot via
+`jdssc snapshots list --latest` and calls `joviandss_cmd rollback do` with that
+snapshot name. Each `joviandss_cmd` call in the recovery block is preceded by
+`$renew_lock->()` for the same reason as all other jdssc calls: the total time
+for a retriable jdssc invocation can exceed what remains on the alarm window
+without a reset. Because the most recent snapshot has no newer snapshots after
+it, the ZFS rollback requires no `-r` flag and destroys nothing — it simply
+undoes any partial XCOPY writes, restoring the volume to a clean state. The
+recovery rollback is wrapped in its own `eval` so that a failure does not
+suppress the original error. After recovery (or recovery failure), `die $err`
+re-raises the original error.
 
 If no error occurred, the recovery block is skipped entirely and the rollback
 completes successfully.
@@ -1194,6 +1294,118 @@ region with zeros without sending data over iSCSI, similar in spirit to XCOPY.
 If WRITE SAME is confirmed supported on the target firmware, `run_zero_chunk`
 can be replaced with a `sg_write_same` invocation for storage-side offload.
 
+### `xcopy_sha1sum` helper in `Common.pm`
+
+Reads exactly `$count` blocks of `$bs` bytes each from a block device and
+returns the SHA1 hex digest of that byte range. Used in
+`_volume_snapshot_rollback` to verify that the XCOPY (or `dd` fallback) wrote
+the snapshot content correctly to the live volume.
+
+The read is performed by spawning `dd` in 512 MiB chunks via Perl's list-form
+`open('-|', ...)`, feeding the output into `Digest::SHA`. List-form `open`
+avoids shell interpretation of the device path, block size, and block count —
+no shell quoting or injection risk. `Digest::SHA` is a Perl core module
+(available since Perl 5.9.3; included in Proxmox VE's `perl` package).
+
+Chunk size is fixed at 512 MiB (in blocks: `512 * 1024 * 1024 / $bs`). At a
+conservative 100 MB/s iSCSI throughput, each 512 MiB chunk completes in ~5 s —
+well within the 60-second alarm window. After each chunk `$renew_lock` is
+called so the lock does not expire during verification of large volumes.
+
+Unlike `run_xcopy_chunk` and `run_zero_chunk`, `xcopy_sha1sum` does not apply a
+per-chunk timeout. `dd` reads over iSCSI are expected to progress at line rate;
+hangs (e.g. full iSCSI session loss) will eventually fire `SIGALRM` on the
+next lock-renewal boundary.
+
+The function is added to `@EXPORT_OK` in `Common.pm` alongside the other XCOPY
+helpers.
+
+```perl
+# xcopy_sha1sum($ctx, $dev, $bs, $count, $renew_lock)
+#
+# Reads $count blocks of $bs bytes each from $dev and returns the SHA1
+# hex digest of that byte range.
+#
+# $dev         — block device path (snapshot or volume).
+# $bs          — ZFS volblocksize in bytes; used as dd bs= argument.
+# $count       — number of blocks to read; 0 returns SHA1 of empty input.
+# $renew_lock  — callback to extend the per-VM lock by 60 s; called after
+#                each 512 MiB read chunk.
+#
+# Reads are split into 512 MiB chunks so each dd invocation completes
+# well within the 60-second alarm window.  The SHA1 is computed
+# incrementally over all chunks using Digest::SHA.
+sub xcopy_sha1sum {
+    my ( $ctx, $dev, $bs, $count, $renew_lock ) = @_;
+
+    require Digest::SHA;
+    my $sha = Digest::SHA->new(1);
+
+    # 512 MiB read chunks: ~5 s at 100 MB/s, well within the 60 s window.
+    my $chunk_blocks = int( 512 * 1024 * 1024 / $bs );
+    $chunk_blocks = 1 if $chunk_blocks < 1;
+
+    my $offset = 0;
+    my $total  = $count || 1;    # avoid division by zero
+
+    while ( $offset < $count ) {
+        my $remaining  = $count - $offset;
+        my $this_chunk = $chunk_blocks < $remaining ? $chunk_blocks : $remaining;
+
+        my $pct = int( $offset * 100 / $total );
+        print "sha1 ${pct}% (block ${offset}/${count})\n";
+
+        # List-form open: no shell — $dev, $bs, offsets are never interpreted
+        # by a shell, so device paths with special characters are safe.
+        open( my $fh, '-|', 'dd',
+              "if=${dev}", "bs=${bs}",
+              "skip=${offset}", "count=${this_chunk}",
+              'iflag=direct' )
+            or die "sha1sum: cannot open pipe from dd for ${dev}: $!\n";
+
+        while (1) {
+            my $buf;
+            my $n = sysread( $fh, $buf, 65536 );
+            last unless $n;
+            die "sha1sum: read error from ${dev}: $!\n" unless defined $n;
+            $sha->add($buf);
+        }
+        close($fh)
+            or die "sha1sum: dd exited with error for ${dev} (exit $?)\n";
+
+        $renew_lock->() if $renew_lock;
+        $offset += $this_chunk;
+    }
+
+    print "sha1 100% (${count} blocks read)\n";
+    return $sha->hexdigest;
+}
+```
+
+**Why only `snap_blocks` bytes, not the full volume?**
+
+The hash comparison covers exactly the byte range that was copied from the
+snapshot (`snap_blocks * bs` bytes). The zero-filled trailing region (written
+when `vol_blocks > snap_blocks`) is not included:
+
+- It contains zeros on both devices after the rollback — the snapshot has no
+  data beyond its boundary, and `run_zero_chunk` wrote zeros to the live
+  volume's grown region. Including it would add a large read for content that
+  cannot mismatch.
+- The zero-fill is performed by a separate, well-understood `dd` invocation
+  whose success is already confirmed by `run_zero_chunk` (non-zero exit dies).
+
+**Placement in the call sequence**
+
+`xcopy_sha1sum` is called after the copy (`run_xcopy_chunk` or `run_dd_copy`)
+and **before** `run_zero_chunk`. Verifying before zero-fill confirms the
+critical copied data is correct; the zero-fill is independent and verified
+implicitly by `run_zero_chunk`'s exit-code check.
+
+If the hash check fails, the die propagates out of the inner eval, triggering
+the standard cleanup path: both devices are deactivated, recovery ZFS rollback
+is attempted, and the mismatch error is re-raised to the caller.
+
 ### Helper functions in `Plugin.pm`
 
 `_vm_is_running` and the `sg_xcopy` existence check are used only within
@@ -1203,8 +1415,10 @@ can be replaced with a `sg_write_same` invocation for storage-side offload.
 sub _vm_is_running {
     my ($vmid) = @_;
     return 0 unless defined $vmid;
-    return PVE::QemuServer::check_running($vmid)
-        || eval { require PVE::LXC; PVE::LXC::check_running($vmid) } // 0;
+    # Pass nocheck=1 so check_running skips assert_config_exists_on_node.
+    # Without it, the call dies for LXC containers (no qemu-server/<vmid>.conf).
+    return ( eval { PVE::QemuServer::check_running( $vmid, 1 ) } // 0 )
+        || ( eval { require PVE::LXC; PVE::LXC::check_running($vmid) } // 0 );
 }
 ```
 
@@ -1253,26 +1467,29 @@ Proxmox Web UI / CLI
                           ├── $renew_lock = sub { lock_renew(storeid, path, shared, vmid) }
                           │
                           ├── eval {
+                          │     $renew_lock->()                      — reset alarm before vol activation
                           │     _activate_volume(volname, snap=undef)
                           │       └── volume_activate()    [Common.pm]
                           │             ├── volume_publish()     — REST: create volume iSCSI target
                           │             ├── volume_stage_iscsi() — iscsiadm login
                           │             └── lun_record_local_create()
-                          │     $renew_lock->()                      — extend lock after vol activation
+                          │     $renew_lock->()                      — reset alarm after vol activation
                           │
                           │     lun_record_local_get_info_list(volname, undef)
                           │       + block_device_path_from_lun_rec()   → vol_dev
                           │
+                          │     $renew_lock->()                      — reset alarm before snap activation
                           │     _activate_volume(volname, snap=<snapname>)
                           │       └── volume_activate()    [Common.pm]
                           │             ├── volume_publish(snapname)  — REST: create snapshot target
                           │             ├── volume_stage_iscsi()      — iscsiadm login to snap target
                           │             └── lun_record_local_create()
-                          │     $renew_lock->()                      — extend lock after snap activation
+                          │     $renew_lock->()                      — reset alarm after snap activation
                           │
                           │     lun_record_local_get_info_list(volname, snapname)
                           │       + block_device_path_from_lun_rec()   → snap_dev
                           │
+                          │     $renew_lock->()                      — reset alarm before volume get -b
                           │     joviandss_cmd volume get -b            → bs (ZFS volblocksize)
                           │     get_xcopy_size($ctx)                   → xcopy_gib
                           │     max_chunk = xcopy_gib * 1 GiB / bs     (gran-aligned inside run_xcopy_chunk)
@@ -1305,8 +1522,25 @@ Proxmox Web UI / CLI
                           │         reads from snapshot LUN  (expected: internal)
                           │         writes to volume LUN     (expected: internal)
                           │
+                          │     $renew_lock->()              — reset alarm before snapshot hash
+                          │     xcopy_sha1sum(snap_dev, bs, snap_blocks, $renew_lock) → snap_sha1
+                          │       ┌── chunked read loop (512 MiB per chunk) ─────────┐
+                          │       │ dd if=<snap_dev> bs=<bs>                         │
+                          │       │    skip=<offset> count=<chunk> iflag=direct      │
+                          │       │    → piped into Digest::SHA incrementally        │
+                          │       │ [success]  → $renew_lock->(); offset += chunk   │
+                          │       │ [dd error] → die immediately                     │
+                          │       └──────────────────────────────────────────────────┘
+                          │     $renew_lock->()              — reset alarm before volume hash
+                          │     xcopy_sha1sum(vol_dev,  bs, snap_blocks, $renew_lock) → vol_sha1
+                          │       ┌── (same chunked read loop as above) ─────────────┐
+                          │       └──────────────────────────────────────────────────┘
+                          │     [snap_sha1 eq vol_sha1?]
+                          │       ├── YES → print "sha1 verify OK"
+                          │       └── NO  → die "SHA1 mismatch" (triggers cleanup + recovery)
+                          │
                           │     [vol_blocks > snap_blocks]
-                          │       $renew_lock->()              — extend lock before zero-fill
+                          │       $renew_lock->()              — reset alarm before zero-fill loop
                           │       zero_chunk = 512 MiB / bs    — separate from xcopy max_chunk
                           │       run_zero_chunk(vol_dev, bs, snap_blocks,
                           │                      vol_blocks-snap_blocks, zero_chunk, $renew_lock)
@@ -1326,6 +1560,7 @@ Proxmox Web UI / CLI
                           │   };
                           │   $err = $@
                           │
+                          ├── $renew_lock->()                        — reset alarm before snap deactivation
                           ├── eval { _deactivate_volume(volname, snap=<snapname>) }
                           │     └── volume_deactivate()              [Common.pm]
                           │           ├── volume_unstage_multipath()   — (if multipath=1) BEFORE iSCSI
@@ -1334,8 +1569,10 @@ Proxmox Web UI / CLI
                           │           │     (snapshots are unpublished on deactivation because they
                           │           │      are not involved in live migration)
                           │           └── lun_record_local_delete()    — cleanup local state + session
+                          ├── $renew_lock->() (on success)           — reset alarm after snap deactivation
                           │           deactivation error → logged at warn, not re-raised
                           │
+                          ├── $renew_lock->()                        — reset alarm before vol deactivation
                           ├── eval { _deactivate_volume(volname, snap=undef) }
                           │     └── volume_deactivate()              [Common.pm]
                           │           ├── volume_unstage_multipath()   — (if multipath=1) BEFORE iSCSI
@@ -1346,11 +1583,14 @@ Proxmox Web UI / CLI
                           │           │     on the destination node. Only volume deletion triggers
                           │           │     unpublish.
                           │           └── lun_record_local_delete()    — cleanup local state + session
+                          ├── $renew_lock->() (on success)           — reset alarm after vol deactivation
                           │           deactivation error → logged at warn, not re-raised
                           │
                           ├── [err set] → recovery ZFS rollback
                           │     eval {
+                          │       $renew_lock->()                    — reset alarm before snapshots list
                           │       joviandss_cmd snapshots list --latest  → latest_snap
+                          │       $renew_lock->()                    — reset alarm before rollback do
                           │       joviandss_cmd snapshot <latest_snap> rollback do
                           │     }
                           │     recovery error → logged at warn, not re-raised
@@ -1490,6 +1730,29 @@ intervention is needed. If recovery rollback also fails (both errors are logged)
 the volume remains in a partially written state — operator should manually
 investigate.
 
+### SHA1 mismatch after copy
+
+`xcopy_sha1sum` returns different digests for the snapshot and the live volume.
+`_volume_snapshot_rollback` dies with a mismatch error message. The exception
+is caught by the inner eval. Both deactivations run. Recovery ZFS rollback
+restores the volume to the latest snapshot, undoing all XCOPY writes (the copy
+completed but produced incorrect content). `die $err` re-raises the mismatch
+error.
+
+This case indicates a defect in the XCOPY implementation on the JovianDSS
+appliance — the SCSI EXTENDED COPY command claimed success but the data written
+to the destination does not match the source. The operator should:
+
+1. Report the firmware version of the JovianDSS appliance to Open-E support.
+2. As a temporary workaround, disable XCOPY offload by setting the `xcopy_size`
+   property to a very small value (e.g. `xcopy_size=0`) to force the `dd`
+   fallback path for all volumes — **note:** the current 1 MiB threshold means
+   only volumes under 1 MiB use `dd`; a firmware-level XCOPY defect would
+   require a code change to force `dd` for all sizes.
+3. Retry the rollback after the volume has been recovered by the ZFS rollback.
+
+The snapshot chain is completely intact after this failure.
+
 ### Deactivation fails in cleanup
 
 Each deactivation call is wrapped in its own `eval`. If snapshot deactivation fails,
@@ -1573,9 +1836,13 @@ this traffic; `run_zero_chunk` is isolated for easy substitution.
 2. **Same-appliance only.** Both LUNs must be on the same JovianDSS appliance. The
    plugin's single-appliance-per-storage-instance model guarantees this.
 
-3. **XCOPY offload not empirically verified.** `3PC=1` confirms XCOPY is accepted.
-   Storage-side offload — data not traversing iSCSI — has not been measured. It
-   should be verified before relying on the performance estimate.
+3. **XCOPY offload empirically disproved for ZVOL-to-ZVOL copies.** `3PC=1`
+   confirms XCOPY is accepted and `sg_xcopy` returns success, but testing (Finding 9)
+   confirmed that JovianDSS does NOT copy block data when the source and destination
+   are both ZVOLs. Reads of the destination ZVOL immediately after sg_xcopy (same
+   iSCSI session, before any target teardown) still return the original data. The XCOPY
+   path was therefore replaced by `run_dd_chunk` as the primary copy method for volumes
+   ≥ 1 MiB.
 
 4. **`sg3-utils` runtime dependency.** The `sg_xcopy` binary is already in the
    plugin's listed runtime dependencies. This design formalises its use.
@@ -1626,7 +1893,7 @@ this traffic; `run_zero_chunk` is isolated for easy substitution.
 | File | Changes |
 |---|---|
 | `OpenEJovianDSSPlugin.pm` | New `xcopy_size` property (initial XCOPY chunk size in GiB, default 16); adapt `volume_rollback_is_possible` (HA guard only; always returns 1); unified `_volume_snapshot_rollback` (ZFS and XCOPY paths, `$renew_lock` closure, recovery rollback on failure); new `_vm_is_running` helper |
-| `OpenEJovianDSS/Common.pm` | New `get_xcopy_size` getter; new `run_xcopy_chunk` (adaptive loop with configurable initial chunk, timeout, and lock renewal), `run_dd_copy` (small-volume fallback), `run_zero_chunk` (adaptive chunking with 50 s timeout, matching `run_xcopy_chunk`), `xcopy_getsize64` helpers (exported); `lun_record_update_device` uses targeted `udevadm trigger --action=change /sys/block/<dev>` + `udevadm settle` instead of `udevadm trigger -t all`; deactivation order reversed to multipath-first in `lun_record_local_delete` and error cleanup path |
+| `OpenEJovianDSS/Common.pm` | New `get_xcopy_size` getter; new `run_xcopy_chunk` (adaptive loop with configurable initial chunk, timeout, and lock renewal), `run_dd_copy` (small-volume fallback for volumes < 1 MiB), `run_dd_chunk` (chunked dd copy with adaptive 50 s timeout and lock renewal — primary copy method replacing sg_xcopy after Finding 9), `run_zero_chunk` (adaptive chunking with 50 s timeout, matching `run_xcopy_chunk`), `xcopy_getsize64` helpers (exported); `lun_record_update_device` uses targeted `udevadm trigger --action=change /sys/block/<dev>` + `udevadm settle` instead of `udevadm trigger -t all`; deactivation order reversed to multipath-first in `lun_record_local_delete` and error cleanup path |
 | `OpenEJovianDSS/Lock.pm` | New `lock_renew` function (exported): resets `alarm(60)` and touches pmxcfs lock directory |
 | `jdssc/jdssc/volume.py` | New `-b` / `--block-size` flag in `get` subparser and `get` action |
 | `jdssc/jdssc/snapshots.py` | New `--latest` flag in `list` subparser and `list` action |
@@ -1873,3 +2140,103 @@ xcopy 0% (block 0/256)
 xcopy 100% (256 blocks copied)
 vm-103-disk-2 to snapshot snap1 rollback complete
 ```
+
+### Finding 9: sg_xcopy EXTENDED COPY does not write block data to JovianDSS ZVOLs
+
+**Test environment:** CT 109 (`vm-109-disk-0`), node pve-91-1. Volume: 2 GiB,
+`volblocksize=16384`, 131072 blocks. Snapshot chain: snap1 → snap2 → snap3 → snap4 →
+current live data. Rollback target: snap1 (XCOPY path applies because snap2/3/4 are
+newer blockers — ZFS cannot do a direct `zfs rollback`).
+
+**Key SHA1 values measured before any xcopy attempt:**
+
+| Item | SHA1 |
+|---|---|
+| snap1 full volume | `6c6288e92d708b6284a9573070dea0134d8429d1` |
+| vol live data (original) | `db36df65d3faac227f07b95fd4c445d041a7c731` |
+| snap1 block0 = vol block0 | `1da02b385c9a1cddccdf29b2d6cedabaf1f89cb6` |
+
+**sg_xcopy performance characteristics:**
+- Reported: 3 SCSI commands, 131072 blocks transferred, exit code 0
+- Wall-clock time: ~18 ms for a 2 GiB volume (≈ 6975 MB/s)
+- This matches ZFS metadata update speed, not actual data copy speed
+
+**Tests performed in sequence (all showed no data update):**
+
+1. **Session refresh (iscsiadm reconnect only):** Logged out and back in on the
+   initiator side. Vol SHA1 after xcopy + session refresh = `db36df65` (original,
+   unchanged).
+
+2. **Full target unpublish/republish:** `_deactivate_volume` (snap then vol) +
+   explicit `jdssc targets delete` + `_activate_volume` (vol then snap). Forces
+   JovianDSS to close and reopen its ZFS dataset handle. Vol SHA1 after = `db36df65`
+   (original, unchanged).
+
+3. **sg_sync (SYNCHRONIZE CACHE) before target teardown:** `sg_sync <vol_dev>` issued
+   after xcopy, before target deletion. Vol SHA1 after target delete + create = `db36df65`
+   (original, unchanged). SYNCHRONIZE CACHE does not force a ZFS ZVOL commit on
+   JovianDSS.
+
+4. **Pre-refresh SHA1 on the same iSCSI session (definitive test):** After xcopy but
+   before any target teardown, `xcopy_sha1sum` read the full 2 GiB vol_dev via
+   `dd iflag=direct` on the same session that had already processed the xcopy SCSI
+   commands. Result: vol SHA1 = `db36df65` (original). This proves sg_xcopy writes
+   nothing — not even to JovianDSS's write buffer. The data never moves.
+
+**Block-zero write buffer observation:**
+
+A diagnostic zero-write (`dd if=/dev/zero of=<vol_dev> bs=16384 count=1 oflag=direct`)
+was issued before xcopy. This changed block0 SHA1 from `1da02b38` → `897256b6` on the
+same session (dd writes via SCSI WRITE(16) work correctly). After xcopy, block0 SHA1
+read back as `1da02b38` — which is snap1's block0 value. However, since snap1's block0
+and the original vol block0 are identical (`1da02b38`), this does not indicate xcopy
+wrote snap1 data. What actually occurred: sg_xcopy invalidated the write-buffer entry
+for block0 (discarding the zero-write), causing the next read to fetch from ZFS, which
+has the original `1da02b38` value. No new data was written to ZFS by sg_xcopy at all.
+
+**Root cause:** JovianDSS's EXTENDED COPY implementation processes the SCSI XCOPY
+command as a metadata-only operation when both source and destination are ZVOLs on the
+same pool. It returns success and reports the correct block count, but performs no data
+copy. This is consistent with JovianDSS's XCOPY support being designed for snapshot
+space-efficiency metadata operations rather than ZVOL-to-ZVOL block data movement.
+
+**Impact:** The XCOPY-based rollback path was producing silent data corruption — sg_xcopy
+returned success, SHA1 verification detected the mismatch, and rollback was failed and
+rolled back to the latest snapshot. Windows VMs that had been rolled back using the
+initial XCOPY implementation retained their original data (not the snapshot data).
+
+**Fix:** `run_xcopy_chunk` was replaced by `run_dd_chunk` as the primary copy method
+for volumes ≥ 1 MiB. `run_dd_chunk` uses chunked `dd if=<snap> of=<vol>` with
+`iflag=direct oflag=direct`, a 50-second per-chunk timeout with adaptive halving, and
+lock renewal after each chunk. SHA1 verification was retained as the final correctness
+check.
+
+**SHA1 verification outcome:** With `run_dd_chunk` as the copy method, SHA1 of the
+volume after copy (same session, before target refresh) matches SHA1 of the snapshot,
+confirming correct data transfer.
+
+---
+
+### Finding 10: JovianDSS iSCSI write buffer is discarded on target deletion
+
+This is a corollary of Finding 9. SCSI WRITE(16) commands issued via `dd` are
+acknowledged by JovianDSS (iSCSI target confirms write receipt), and the written data
+is visible on the same iSCSI session via subsequent reads. However, when the iSCSI
+target is deleted (`jdssc targets delete`) before the write buffer is flushed to ZFS,
+the buffered writes are discarded. After target delete + create, the volume shows the
+original ZFS ZVOL data as if the dd writes never happened.
+
+**Demonstrated by:**
+- dd zero-write to block0 → block0 SHA1 changes to `897256b6` (visible same session)
+- `jdssc targets delete` + `jdssc targets create` (volume_unpublish + volume_publish)
+- block0 SHA1 reads as `1da02b38` (original ZFS value) — write buffer discarded
+
+**sg_sync (SYNCHRONIZE CACHE) does not prevent this.** Issuing `sg_sync <vol_dev>`
+before target deletion did not cause the write buffer to be persisted to the ZFS ZVOL.
+JovianDSS's SYNCHRONIZE CACHE handling appears not to trigger a ZFS ZVOL `zil_commit`
+or equivalent.
+
+**Implication for `run_dd_chunk`:** The dd-based copy must keep the iSCSI session open
+until after SHA1 verification. The SHA1 check must be performed on the same session that
+did the writes (not after a target refresh). The current implementation does this
+correctly — SHA1 is read before any `_deactivate_volume` calls in the cleanup path.
