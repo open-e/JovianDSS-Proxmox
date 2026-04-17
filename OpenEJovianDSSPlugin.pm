@@ -543,8 +543,7 @@ sub _create_base {
     my $newname = joviandss_cmd( $ctx,
         [ "pool", $pool, "volumes", "getfreename", "--prefix", $newnameprefix ]
     );
-    chomp($newname);
-    $newname =~ s/[^[:ascii:]]//;
+    $newname = clean_word($newname);
 
     # Call _rename_volume directly for the same reason.
     _rename_volume( $class, $ctx, $volname, $vmid, $newname );
@@ -1129,10 +1128,8 @@ sub volume_size_info {
 
     my $size = joviandss_cmd( $ctx,
         [ "pool", $pool, "volume", $volname, "get", "-s" ], 80, 3 );
-    chomp($size);
-    $size =~ s/[^[:ascii:]]//;
 
-    return $size;
+    return clean_word($size);
 }
 
 sub status {

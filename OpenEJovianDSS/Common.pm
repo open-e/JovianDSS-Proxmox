@@ -550,7 +550,7 @@ sub clean_word {
     #    confess "Undefined word for cleaning\n";
     #}
     chomp($word);
-    $word =~ s/[^[:ascii:]]//;
+    $word =~ s/[^[:ascii:]]//g;
 
     return $word;
 }
