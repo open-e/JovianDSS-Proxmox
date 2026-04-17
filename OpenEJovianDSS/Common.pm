@@ -369,7 +369,7 @@ sub get_password_file_name {
 }
 
 sub password_file_set_password {
-    my ($password, $ctx) = @_;
+    my ($ctx, $password) = @_;
     my $storeid = $ctx->{storeid};
     my $pwfile = get_password_file_name($ctx);
 

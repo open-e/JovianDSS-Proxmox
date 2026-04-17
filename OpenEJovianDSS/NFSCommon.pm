@@ -744,14 +744,15 @@ sub dataset_name_get {
 my $NFS_PASSWORD_DIR = '/etc/pve/priv/storage/joviandss-nfs';
 
 sub get_password_file_name {
-    my ($storeid) = @_;
+    my ($ctx) = @_;
+    my $storeid = $ctx->{storeid};
     return "${NFS_PASSWORD_DIR}/${storeid}.pw";
 }
 
 sub get_user_password {
-    my ($storeid) = @_;
+    my ($ctx) = @_;
 
-    my $pwfile = get_password_file_name($storeid);
+    my $pwfile = get_password_file_name($ctx);
     return undef if ! -f $pwfile;
 
     my $content = file_get_contents($pwfile);
@@ -767,9 +768,9 @@ sub get_user_password {
 }
 
 sub password_file_set_password {
-    my ($password, $storeid) = @_;
+    my ($ctx, $password) = @_;
 
-    my $pwfile = get_password_file_name($storeid);
+    my $pwfile = get_password_file_name($ctx);
     if (! -d $NFS_PASSWORD_DIR) {
         File::Path::make_path($NFS_PASSWORD_DIR, { mode => 0700 });
     }
@@ -777,15 +778,15 @@ sub password_file_set_password {
 }
 
 sub password_file_delete {
-    my ($storeid) = @_;
-    my $pwfile = get_password_file_name($storeid);
+    my ($ctx) = @_;
+    my $pwfile = get_password_file_name($ctx);
     unlink $pwfile;
 }
 
 sub joviandss_cmd {
     my ( $scfg, $storeid, $cmd, $timeout, $retries, $force_debug_level ) = @_;
-    my $password = get_user_password($storeid);
     my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
+    my $password = get_user_password($ctx);
     return OpenEJovianDSS::Common::joviandss_cmd(
         $ctx, $cmd, $timeout, $retries, $force_debug_level, $password);
 }

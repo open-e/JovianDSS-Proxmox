@@ -1571,8 +1571,10 @@ sub on_add_hook {
             chmod 0755, $path;
         }
     }
-    if (exists($sensitive{user_password}) ) {
-        OpenEJovianDSS::Common::password_file_set_password($sensitive{user_password}, $ctx);
+    if (exists($sensitive{user_password})) {
+        if (defined($sensitive{user_password})) {
+            OpenEJovianDSS::Common::password_file_set_password($ctx, $sensitive{user_password});
+        }
     }
 }
 
@@ -1583,23 +1585,17 @@ sub on_delete_hook {
 }
 
 sub on_update_hook {
-    my ($class, $storeid, $scfg, %sensitive) = @_;
+    my ($class, $storeid, $scfg, %param) = @_;
+
     my $ctx = new_ctx($scfg, $storeid);
-    if ( exists($sensitive{user_password}) ) {
-        if (defined($sensitive{user_password})) {
-            OpenEJovianDSS::Common::password_file_set_password($sensitive{user_password}, $ctx);
+    if ( exists($param{user_password}) ) {
+        if (defined($param{user_password})) {
+            OpenEJovianDSS::Common::password_file_set_password($ctx, $param{user_password});
         } else {
             OpenEJovianDSS::Common::password_file_delete($ctx);
         }
     }
     return undef;
 }
-
-sub on_update_hook_full {
-    my ($class, $storeid, $scfg, $update, $delete, $sensitive) = @_;
-
-    return $class->on_update_hook($storeid, $update, $sensitive->%*);
-}
-
 
 1;

@@ -986,42 +986,38 @@ sub on_add_hook {
         }
     }
     if (exists($sensitive{user_password})) {
-        OpenEJovianDSS::NFSCommon::password_file_set_password(
-            $sensitive{user_password}, $storeid);
+        if (defined($sensitive{user_password})) {
+            OpenEJovianDSS::NFSCommon::password_file_set_password(
+                $ctx, $sensitive{user_password});
+        }
     }
 }
 
 sub on_delete_hook {
     my ($class, $storeid, $scfg) = @_;
-    OpenEJovianDSS::NFSCommon::password_file_delete($storeid);
+    my $ctx = new_ctx($scfg, $storeid);
+    OpenEJovianDSS::NFSCommon::password_file_delete($ctx);
 }
 
 sub on_update_hook {
-    my ($class, $storeid, $scfg, %sensitive) = @_;
+    my ($class, $storeid, $scfg, %param) = @_;
 
-    if (exists($sensitive{user_password})) {
-        if (defined($sensitive{user_password})) {
+    my $ctx = new_ctx($scfg, $storeid);
+    if (exists($param{user_password})) {
+        if (defined($param{user_password})) {
             OpenEJovianDSS::NFSCommon::password_file_set_password(
-                $sensitive{user_password}, $storeid);
+                $ctx, $param{user_password});
         } else {
-            OpenEJovianDSS::NFSCommon::password_file_delete($storeid);
+            OpenEJovianDSS::NFSCommon::password_file_delete($ctx);
         }
     }
     return undef;
-}
-
-sub on_update_hook_full {
-    my ($class, $storeid, $scfg, $update, $delete, $sensitive) = @_;
-
-    return $class->on_update_hook($storeid, $scfg, $sensitive->%*);
 }
 
 sub volume_qemu_snapshot_method {
     my ($class, $storeid, $scfg, $volname) = @_;
     return 'storage';
 }
-
-
 
 sub alloc_image {
     my ( $class, $storeid, $scfg, $vmid, $fmt, $name, $size ) = @_;
