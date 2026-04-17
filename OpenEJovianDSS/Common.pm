@@ -1780,8 +1780,9 @@ sub volume_stage_multipath {
                 };
             }
 
+            $mpath = clean_word($mpath);
             if ( -b $mpath ) {
-                return clean_word($mpath);
+                return $mpath;
             }
 
             debugmsg( $ctx,
@@ -1836,8 +1837,9 @@ sub volume_stage_multipath {
         die "Invalid characters in scsiid: ${scsiid}";
     }
 
+    $mpath = clean_word($mpath);
     if ( -b $mpath ) {
-        return clean_word($mpath);
+        return $mpath;
     }
 
     die "Unable to identify the multipath name for scsiid ${scsiid}\n";
@@ -1886,6 +1888,7 @@ sub block_device_path_from_lun_rec {
             my $id = $1;
             my $is_multipath = 1;
             $block_device_path = block_device_path_from_serial( $id, $is_multipath );
+            return $block_device_path;
         } else {
             die "Incorrect symbols in scsi id $lunrec->{scsiid}\n";
         }
