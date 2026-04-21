@@ -1305,7 +1305,7 @@ sub block_device_iscsi_paths {
         if ( -b $path ) {
             debugmsg( $ctx, "debug", "Target ${target} mapped to ${path}\n" );
             $path = clean_word($path);
-            ($path) = $path =~ m{^(/dev/disk/by-path/[\w\-\.:/]+)$} or die "Tainted path: $path";
+            ($path) = $path =~ m{^(/dev/disk/by-path/[\:\-\@\w\./]+)$} or die "Tainted path: $path";
             push( @targets_block_devices, $path );
         }
     }
@@ -2197,6 +2197,10 @@ sub volume_unstage_iscsi_device {
                     errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); }
                 );
             }
+            unless ( defined $bdp ) {
+                debugmsg($ctx, 'warn', "Could not resolve block device path for ${idp}, skipping\n");
+                next;
+            }
             my $block_device_name = File::Basename::basename($bdp);
             unless ( $block_device_name =~ /^[a-z0-9]+$/ ) {
                 die "Invalid block device name ${block_device_name} " .
@@ -2933,7 +2937,13 @@ sub lun_record_local_delete {
     if ( -d $ltldir ) {
         if ( rmdir( $ltldir ) ) {
             my $dh;
-            opendir( $dh, $ltdir );
+            unless ( opendir( $dh, $ltdir ) ) {
+                if ( $!{ENOENT} ) {
+                    debugmsg($ctx, 'debug', "Target dir ${ltdir} already gone, skipping iSCSI unstage\n");
+                    return 1;
+                }
+                die "Cannot open target dir ${ltdir}: $!\n";
+            }
             my @entries = grep { $_ ne '.' && $_ ne '..' } readdir $dh;
             closedir $dh;
 
