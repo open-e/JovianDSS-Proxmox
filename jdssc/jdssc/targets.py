@@ -95,6 +95,16 @@ class Targets():
                             default=False,
                             help='Use real volume name')
 
+        create.add_argument('--chap-user',
+                            dest='chap_user',
+                            default=None,
+                            help='CHAP initiator username')
+
+        create.add_argument('--chap-password',
+                            dest='chap_password',
+                            default=None,
+                            help='CHAP initiator password')
+
         delete = parsers.add_parser('delete')
         delete.add_argument('--target-prefix',
                             dest='target_prefix',
@@ -193,6 +203,15 @@ class Targets():
 
         target_group_name = self.args['target_group_name']
 
+        provider_auth = None
+        if self.args.get('chap_user') and self.args.get('chap_password'):
+            provider_auth = 'CHAP {} {}'.format(
+                self.args['chap_user'], self.args['chap_password'])
+        else:
+            if self.args.get('chap_user') or self.args.get('chap_password'):
+                LOG.error("Both chap user name and password have to be "
+                          " provided to enable CHAP for target")
+                exit(1)
         try:
             if self.args['snapshot_name']:
 
@@ -201,14 +220,14 @@ class Targets():
                     target_group_name,
                     self.args['snapshot_name'],
                     self.args['volume_name'],
-                    None,
+                    provider_auth,
                     luns_per_target=self.args['luns_per_target'])
             else:
                 tinfo = self.jdss.ensure_target_volume(
                     target_prefix,
                     target_group_name,
                     self.args['volume_name'],
-                    None,
+                    provider_auth,
                     direct_mode=self.args['direct_mode'],
                     luns_per_target=self.args['luns_per_target'])
         except jexc.JDSSVIPNotFoundException as jerr:
@@ -278,6 +297,7 @@ class Targets():
         if tinfo is None:
             LOG.debug("volume %s is not attached to any target",
                       self.args['volume_name'])
+            return
         LOG.debug("volumes %s target info %s",
                   self.args['volume_name'],
                   tinfo)

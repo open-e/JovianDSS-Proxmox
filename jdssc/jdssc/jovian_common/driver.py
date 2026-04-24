@@ -973,6 +973,7 @@ class JovianDSSDriver(object):
         volume_info['vips'] = list(conforming_vips.values())
         volume_info['target'] = tname
         volume_info['lun'] = lun_id
+        return volume_info
 
     def _detach_volume(self, vname, target_name=None):
         """detach volume from target it is attached to
@@ -1220,24 +1221,26 @@ class JovianDSSDriver(object):
 
                 try:
                     users = self.ra.get_target_user(tname)
-                    if len(users) == 1:
-                        if users[0]['name'] == chap_cred['name']:
-                            return volume_publication_info
-                        self.ra.delete_target_user(
-                            tname,
-                            users[0]['name'])
-                    for user in users:
-                        self.ra.delete_target_user(
-                            tname,
-                            user['name'])
-                    self._set_target_credentials(tname, chap_cred)
-
+                    if not (len(users) == 1 and
+                            users[0]['name'] == chap_cred['name']):
+                        for user in users:
+                            self.ra.delete_target_user(tname, user['name'])
+                        self._set_target_credentials(tname, chap_cred)
                 except jexc.JDSSException as jerr:
-                    # TODO: consider case of multi volume target
-                    # what if single volume fails?
-                    # should we delete target?
                     self.ra.delete_target(tname)
                     raise jerr
+
+                if not target_data.get('incoming_users_active', False):
+                    self.ra.set_target_incoming_users_active(tname, True)
+            else:
+                if target_data.get('incoming_users_active', False):
+                    self.ra.set_target_incoming_users_active(tname, False)
+                try:
+                    users = self.ra.get_target_user(tname)
+                    for user in users:
+                        self.ra.delete_target_user(tname, user['name'])
+                except jexc.JDSSResourceNotFoundException:
+                    pass
 
         except jexc.JDSSResourceNotFoundException:
             LOG.debug("Target %s vanished during ensure, recreating", tname)
@@ -1553,6 +1556,58 @@ class JovianDSSDriver(object):
             target_names.append(t['name'])
 
         return target_names
+
+    def get_target(self, target_name):
+        """Return target data dict for target_name.
+
+        :raises JDSSResourceNotFoundException: if target does not exist
+        """
+        return self.ra.get_target(target_name)
+
+    def delete_target(self, target_name):
+        """Delete an iSCSI target by IQN.
+
+        :raises JDSSResourceNotFoundException: if target does not exist
+        """
+        self.ra.delete_target(target_name)
+
+    def update_target(self, target_name, provider_auth=None):
+        """Update CHAP credentials on an existing named iSCSI target.
+
+        Unlike _ensure_target_volume_lun, always replaces credentials
+        regardless of username match so that password-only rotation takes
+        effect immediately.
+
+        :param str target_name: full iSCSI target IQN
+        :param str provider_auth: 'CHAP <user> <pass>' to set/replace
+                                  credentials; None to disable CHAP
+        :raises JDSSResourceNotFoundException: if target does not exist
+        """
+        target_data = self.ra.get_target(target_name)
+
+        if provider_auth is not None:
+            (__, auth_username, auth_secret) = provider_auth.split()
+            chap_cred = {"name": auth_username, "password": auth_secret}
+
+            try:
+                users = self.ra.get_target_user(target_name)
+            except jexc.JDSSResourceNotFoundException:
+                users = []
+            for user in users:
+                self.ra.delete_target_user(target_name, user['name'])
+            self.ra.create_target_user(target_name, chap_cred)
+
+            if not target_data.get('incoming_users_active', False):
+                self.ra.set_target_incoming_users_active(target_name, True)
+        else:
+            if target_data.get('incoming_users_active', False):
+                self.ra.set_target_incoming_users_active(target_name, False)
+            try:
+                users = self.ra.get_target_user(target_name)
+                for user in users:
+                    self.ra.delete_target_user(target_name, user['name'])
+            except jexc.JDSSResourceNotFoundException:
+                pass
 
     def list_target_luns(self, target):
         luns = self.ra.get_target_luns(target)

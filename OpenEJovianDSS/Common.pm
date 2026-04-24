@@ -78,6 +78,9 @@ our @EXPORT_OK = qw(
   get_delete_timeout
   get_user_name
   get_user_password
+  get_chap_enabled
+  get_chap_user_name
+  get_chap_user_password
   get_block_size
   get_block_size_bytes
   get_thin_provisioning
@@ -95,8 +98,10 @@ our @EXPORT_OK = qw(
   get_debug
 
   password_file_set_password
+  password_file_set_chap_password
 
   password_file_delete
+  password_file_delete_chap_password
 
   safe_var_print
   safe_word
@@ -340,53 +345,123 @@ sub get_user_name {
     return $scfg->{user_name} || $default_user_name;
 }
 
-sub get_user_password {
-    my ($ctx) = @_;
-    my $storeid = $ctx->{storeid};
-    my $pwfile = get_password_file_name($ctx);
-
-    return undef if ! -f $pwfile;
-
-    my $content = PVE::Tools::file_get_contents($pwfile);
-    my $config = {};
-
-    foreach my $line (split /\n/, $content) {
-        $line =~ s/^\s+|\s+$//g;
-        next if $line =~ /^#/ || $line eq '';
-
-        if ($line =~ /^(\S+)\s+(.+)$/) {
-            $config->{$1} = $2;
-        }
-    }
-
-    return $config->{user_password};
-}
-
 sub get_password_file_name {
     my ($ctx) = @_;
     my $storeid = $ctx->{storeid};
     return "/etc/pve/priv/storage/joviandss/${storeid}.pw";
 }
 
-sub password_file_set_password {
-    my ($ctx, $password) = @_;
-    my $storeid = $ctx->{storeid};
+sub _password_file_get_key {
+    my ($ctx, $key) = @_;
     my $pwfile = get_password_file_name($ctx);
 
-    # Create directory with full path
-    my $dir = "/etc/pve/priv/storage/joviandss";
-    if (! -d $dir) {
-        File::Path::make_path($dir, { mode => 0700 });
+    return undef if ! -f $pwfile;
+
+    my $content = PVE::Tools::file_get_contents($pwfile);
+    foreach my $line (split /\n/, $content) {
+        $line =~ s/^\s+|\s+$//g;
+        next if $line =~ /^#/ || $line eq '';
+        if ($line =~ /^(\S+)\s+(.+)$/ && $1 eq $key) {
+            return $2;
+        }
+    }
+    return undef;
+}
+
+sub _password_file_set_key {
+    my ($ctx, $key, $value) = @_;
+
+    my $dir    = "/etc/pve/priv/storage/joviandss";
+    my $pwfile = get_password_file_name($ctx);
+
+    File::Path::make_path($dir, { mode => 0700 }) if ! -d $dir;
+
+    my %config;
+    if (-f $pwfile) {
+        my $content = PVE::Tools::file_get_contents($pwfile);
+        foreach my $line (split /\n/, $content) {
+            $line =~ s/^\s+|\s+$//g;
+            next if $line =~ /^#/ || $line eq '';
+            $config{$1} = $2 if $line =~ /^(\S+)\s+(.+)$/;
+        }
     }
 
-    PVE::Tools::file_set_contents($pwfile, "user_password $password\n", 0600, 1);
+    $config{$key} = $value;
+
+    my $out = '';
+    for my $k (sort keys %config) {
+        $out .= "$k $config{$k}\n";
+    }
+    PVE::Tools::file_set_contents($pwfile, $out, 0600, 1);
+}
+
+sub _password_file_delete_key {
+    my ($ctx, $key) = @_;
+
+    my $pwfile = get_password_file_name($ctx);
+    return unless -f $pwfile;
+
+    my %config;
+    my $content = PVE::Tools::file_get_contents($pwfile);
+    foreach my $line (split /\n/, $content) {
+        $line =~ s/^\s+|\s+$//g;
+        next if $line =~ /^#/ || $line eq '';
+        $config{$1} = $2 if $line =~ /^(\S+)\s+(.+)$/;
+    }
+
+    return unless exists $config{$key};
+    delete $config{$key};
+
+    if (%config) {
+        my $out = '';
+        for my $k (sort keys %config) {
+            $out .= "$k $config{$k}\n";
+        }
+        PVE::Tools::file_set_contents($pwfile, $out, 0600, 1);
+    } else {
+        unlink $pwfile;
+    }
+}
+
+sub get_user_password {
+    my ($ctx) = @_;
+    return _password_file_get_key($ctx, 'user_password');
+}
+
+sub get_chap_enabled {
+    my ($ctx) = @_;
+    return $ctx->{scfg}{chap_enabled} // 0;
+}
+
+sub get_chap_user_name {
+    my ($ctx) = @_;
+    return $ctx->{scfg}{chap_user_name};
+}
+
+sub get_chap_user_password {
+    my ($ctx) = @_;
+    return _password_file_get_key($ctx, 'chap_user_password');
+}
+
+sub password_file_set_password {
+    my ($ctx, $password) = @_;
+    _password_file_set_key($ctx, 'user_password', $password);
+}
+
+sub password_file_set_chap_password {
+    my ($ctx, $password) = @_;
+    _password_file_set_key($ctx, 'chap_user_password', $password);
 }
 
 sub password_file_delete {
     my ($ctx) = @_;
-    my $storeid = $ctx->{storeid};
     my $pwfile = get_password_file_name($ctx);
     unlink $pwfile;
+}
+
+sub password_file_delete_chap_password {
+    my ($ctx) = @_;
+    _password_file_delete_key($ctx, 'chap_user_password');
 }
 
 sub get_block_size {
@@ -1389,6 +1464,16 @@ sub volume_publish {
         }
     }
 
+    if ( get_chap_enabled($ctx) ) {
+        my $chap_user = get_chap_user_name($ctx);
+        my $chap_pass = get_chap_user_password($ctx);
+        die "chap_user_name is required when chap_enabled is set\n"
+            unless defined $chap_user && length($chap_user);
+        die "chap_user_password is required when chap_enabled is set\n"
+            unless defined $chap_pass;
+        push @$create_target_cmd, '--chap-user', $chap_user, '--chap-password', $chap_pass;
+    }
+
     my $out = joviandss_cmd( $ctx, $create_target_cmd, 180, 5 );
     my ( $targetname, $lunid, $ips ) = split( ' ', $out );
 
@@ -1408,6 +1493,80 @@ sub volume_publish {
           . "hosts @{iplist}");
 
     return \%tinfo;
+}
+
+sub target_update_chap {
+    my ($ctx, $targetname) = @_;
+
+    my $pool = get_pool($ctx);
+    my $cmd  = ['pool', $pool, 'target', $targetname, 'update'];
+
+    if (get_chap_enabled($ctx)) {
+        my $chap_user = get_chap_user_name($ctx);
+        my $chap_pass = get_chap_user_password($ctx);
+        die "chap_user_name is required when chap_enabled is set\n"
+            unless defined $chap_user && length($chap_user);
+        die "chap_user_password is required when chap_enabled is set\n"
+            unless defined $chap_pass;
+        push @$cmd, '--chap-user', $chap_user, '--chap-password', $chap_pass;
+    } else {
+        push @$cmd, '--no-chap';
+    }
+
+    my $last_err;
+    for my $attempt (1 .. 2) {
+        eval { joviandss_cmd($ctx, $cmd, 30); };
+        last unless $@;
+        $last_err = $@;
+        debugmsg($ctx, 'warn',
+            "target_update_chap attempt ${attempt} failed for "
+            . "${targetname}: ${last_err}");
+    }
+    die $last_err if $last_err;
+}
+
+sub _iscsiadm_set_chap {
+    my ($ctx, $host, $targetname, $chap_user, $chap_pass) = @_;
+    for my $update (
+        [ 'node.session.auth.authmethod', 'CHAP'      ],
+        [ 'node.session.auth.username',   $chap_user  ],
+        [ 'node.session.auth.password',   $chap_pass  ],
+    ) {
+        my ($param, $value) = @$update;
+        my $cmd = [
+            $ISCSIADM, '--mode', 'node',
+            '-p', $host, '--targetname', $targetname,
+            '-o', 'update', '-n', $param, '-v', $value,
+        ];
+        run_command(
+            $cmd,
+            outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+            errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+            timeout => 10,
+        );
+    }
+}
+
+sub _iscsiadm_clear_chap {
+    my ($ctx, $host, $targetname) = @_;
+    for my $update (
+        [ 'node.session.auth.authmethod', 'None' ],
+        [ 'node.session.auth.username',   ''     ],
+        [ 'node.session.auth.password',   ''     ],
+    ) {
+        my ($param, $value) = @$update;
+        my $cmd = [
+            $ISCSIADM, '--mode', 'node',
+            '-p', $host, '--targetname', $targetname,
+            '-o', 'update', '-n', $param, '-v', $value,
+        ];
+        run_command(
+            $cmd,
+            outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+            errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+            timeout => 10,
+        );
+    }
 }
 
 sub volume_stage_iscsi {
@@ -1524,9 +1683,22 @@ sub volume_stage_iscsi {
                 );
             };
 
+            # Configure CHAP credentials in the node DB before login.
+            # Must happen after -o new and before --login.
+            if ( get_chap_enabled($ctx) ) {
+                my $chap_user = get_chap_user_name($ctx);
+                my $chap_pass = get_chap_user_password($ctx);
+                die "chap_user_name is required when chap_enabled is set\n"
+                    unless defined $chap_user && length($chap_user);
+                die "chap_user_password is required when chap_enabled is set\n"
+                    unless defined $chap_pass;
+                _iscsiadm_set_chap($ctx, $host, $targetname, $chap_user, $chap_pass);
+            }
+
             # Attempt login — capture exit code via eval so the real error
             # is logged instead of being silently swallowed.
             my $already_present = 0;
+            my $chap_auth_err   = 0;
             eval {
                 my $cmd = [
                     $ISCSIADM, '--mode', 'node',
@@ -1538,6 +1710,7 @@ sub volume_stage_iscsi {
                     errfunc => sub {
                         my $line = shift;
                         $already_present = 1 if $line =~ /already present/i;
+                        $chap_auth_err   = 1 if $line =~ /authorization failure/i;
                         cmd_log_output($ctx,
                             $already_present ? 'debug' : 'warn', $cmd, $line);
                     }
@@ -1550,6 +1723,45 @@ sub volume_stage_iscsi {
                         "iSCSI session already present for host ${host} "
                         . "target ${targetname}, treating as success");
                     $host_has_session{$host} = 1;
+                } elsif ($chap_auth_err) {
+                    debugmsg($ctx, 'warn',
+                        "CHAP authorization failure for target ${targetname} "
+                        . "on ${host}, refreshing CHAP state and retrying\n");
+                    target_update_chap($ctx, $targetname);
+                    if (get_chap_enabled($ctx)) {
+                        my $chap_user = get_chap_user_name($ctx);
+                        my $chap_pass = get_chap_user_password($ctx);
+                        _iscsiadm_set_chap($ctx, $host, $targetname, $chap_user, $chap_pass);
+                    } else {
+                        _iscsiadm_clear_chap($ctx, $host, $targetname);
+                    }
+                    $already_present = 0;
+                    eval {
+                        my $cmd = [
+                            $ISCSIADM, '--mode', 'node',
+                            '-p', $host, '--targetname', $targetname, '--login'
+                        ];
+                        run_command(
+                            $cmd,
+                            outfunc => sub { },
+                            errfunc => sub {
+                                my $line = shift;
+                                $already_present = 1 if $line =~ /already present/i;
+                                cmd_log_output($ctx,
+                                    $already_present ? 'debug' : 'warn', $cmd, $line);
+                            }
+                        );
+                        $host_has_session{$host} = 1;
+                    };
+                    if ($@) {
+                        if ($already_present) {
+                            $host_has_session{$host} = 1;
+                        } else {
+                            die "CHAP authentication failed for target ${targetname} "
+                                . "on ${host} after credential refresh — "
+                                . "check CHAP configuration\n";
+                        }
+                    }
                 } else {
                     debugmsg($ctx, 'warn',
                         "iSCSI login attempt ${attempt}/${max_login_attempts} "
@@ -2198,8 +2410,7 @@ sub volume_unstage_iscsi_device {
                 );
             }
             unless ( defined $bdp ) {
-                debugmsg($ctx, 'warn', "Could not resolve block device path for ${idp}, skipping\n");
-                next;
+                die "Could not resolve block device path for ${idp}: path contains invalid characters\n";
             }
             my $block_device_name = File::Basename::basename($bdp);
             unless ( $block_device_name =~ /^[a-z0-9]+$/ ) {
@@ -3027,7 +3238,7 @@ sub volume_activate {
             $ctx,
             $targetname,
             $lunid,
-            $hosts
+            $hosts,
         );
         $block_devs = $tbdlist;
 

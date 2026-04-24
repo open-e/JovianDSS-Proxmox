@@ -23,6 +23,7 @@ import jdssc.nasvolume as nasvolume
 import jdssc.nasvolumes as nasvolumes
 import jdssc.shares as shares
 import jdssc.share as share
+import jdssc.target as target
 import jdssc.targets as targets
 import jdssc.volume as volume
 import jdssc.volumes as volumes
@@ -44,6 +45,7 @@ class Pools():
                    'nas_volumes': self.nasvolumes,
                    'share': self.share,
                    'shares': self.shares,
+                   'target': self.target,
                    'targets': self.targets,
                    'volume': self.volume,
                    'volumes': self.volumes}
@@ -76,6 +78,7 @@ class Pools():
         parsers.add_parser('nas_volumes', add_help=False)
         parsers.add_parser('share', add_help=False)
         parsers.add_parser('shares', add_help=False)
+        parsers.add_parser('target', add_help=False)
         parsers.add_parser('targets', add_help=False)
         parsers.add_parser('volume', add_help=False)
         parsers.add_parser('volumes', add_help=False)
@@ -128,6 +131,9 @@ class Pools():
 
     def volumes(self):
         volumes.Volumes(self.args, self.uargs, self.jdss)
+
+    def target(self):
+        target.Target(self.args, self.uargs, self.jdss)
 
     def targets(self):
         targets.Targets(self.args, self.uargs, self.jdss)

@@ -134,7 +134,8 @@ sub plugindata {
         ],
         format => [ { raw => 1, subvol => 0 }, 'raw' ],
         'sensitive-properties' => {
-            'user_password' => 1,
+            'user_password'      => 1,
+            'chap_user_password' => 1,
         },
     };
 }
@@ -223,6 +224,19 @@ sub properties {
             type        => 'boolean',
             default     => 1,
         },
+        chap_enabled => {
+            description => 'Enable CHAP authentication for iSCSI targets',
+            type        => 'boolean',
+            default     => 0,
+        },
+        chap_user_name => {
+            description => 'CHAP initiator username presented to iSCSI targets',
+            type        => 'string',
+        },
+        chap_user_password => {
+            description => 'CHAP initiator password for iSCSI authentication',
+            type        => 'string',
+        },
         debug => {
             description => "Allow debug prints",
             type        => 'boolean',
@@ -258,6 +272,9 @@ sub options {
         data_port          => { optional => 1 },
         block_size         => { optional => 1 },
         thin_provisioning  => { optional => 1 },
+        chap_enabled       => { optional => 1 },
+        chap_user_name     => { optional => 1 },
+        chap_user_password => { optional => 1 },
         log_file           => { optional => 1 },
         'create-subdirs'   => { optional => 1 },
         'create-base-path' => { optional => 1 },
@@ -1576,6 +1593,17 @@ sub on_add_hook {
             OpenEJovianDSS::Common::password_file_set_password($ctx, $sensitive{user_password});
         }
     }
+    if (exists($sensitive{chap_user_password})) {
+        if (defined($sensitive{chap_user_password})) {
+            OpenEJovianDSS::Common::password_file_set_chap_password($ctx, $sensitive{chap_user_password});
+        }
+    }
+    if (OpenEJovianDSS::Common::get_chap_enabled($ctx)) {
+        die "chap_user_name is required when chap_enabled is set\n"
+            unless defined $scfg->{chap_user_name} && length($scfg->{chap_user_name});
+        die "chap_user_password is required when chap_enabled is set\n"
+            unless defined OpenEJovianDSS::Common::get_chap_user_password($ctx);
+    }
 }
 
 sub on_delete_hook {
@@ -1592,8 +1620,21 @@ sub on_update_hook {
         if (defined($param{user_password})) {
             OpenEJovianDSS::Common::password_file_set_password($ctx, $param{user_password});
         } else {
-            OpenEJovianDSS::Common::password_file_delete($ctx);
+            die "user_password cannot be cleared; provide a new value or remove the storage\n";
         }
+    }
+    if (exists($param{chap_user_password})) {
+        if (defined($param{chap_user_password})) {
+            OpenEJovianDSS::Common::password_file_set_chap_password($ctx, $param{chap_user_password});
+        } else {
+            OpenEJovianDSS::Common::password_file_delete_chap_password($ctx);
+        }
+    }
+    if (OpenEJovianDSS::Common::get_chap_enabled($ctx)) {
+        die "chap_user_name is required when chap_enabled is set\n"
+            unless defined $scfg->{chap_user_name} && length($scfg->{chap_user_name});
+        die "chap_user_password is required when chap_enabled is set\n"
+            unless defined OpenEJovianDSS::Common::get_chap_user_password($ctx);
     }
     return undef;
 }

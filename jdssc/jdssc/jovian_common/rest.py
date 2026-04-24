@@ -632,6 +632,29 @@ class JovianRESTAPI(object):
             raise jexc.JDSSResourceNotFoundException(res=target_name)
         self._general_error(req, resp)
 
+    def set_target_incoming_users_active(self, target_name, active):
+        """Update incoming_users_active flag on an existing target.
+
+        PUT /san/iscsi/targets/<target_name>
+
+        :param target_name: target name
+        :param active: True to require CHAP, False to disable
+        """
+        req = "/san/iscsi/targets/%s" % target_name
+        jdata = {"name": target_name, "incoming_users_active": active}
+
+        LOG.debug("set iSCSI target %s incoming_users_active=%s",
+                  target_name, active)
+
+        resp = self.rproxy.pool_request('PUT', req, json_data=jdata, apiv=4)
+
+        if resp['error'] is None and resp['code'] in (200, 201, 204):
+            return
+
+        if resp['code'] == 404:
+            raise jexc.JDSSResourceNotFoundException(res=target_name)
+        self._general_error(req, resp)
+
     def set_target_assigned_vips(self, target_name, assigned_vips):
         """set target assigned vips
 
@@ -742,7 +765,7 @@ class JovianRESTAPI(object):
 
         resp = self.rproxy.pool_request('DELETE', req)
 
-        if resp["error"] is None and resp["code"] == 204:
+        if resp.get("error") is None and resp["code"] == 204:
             return
 
         if resp['code'] == 404:
