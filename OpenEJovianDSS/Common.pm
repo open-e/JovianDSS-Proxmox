@@ -140,8 +140,11 @@ our @EXPORT_OK = qw(
 
 our %EXPORT_TAGS = ( all => [@EXPORT_OK], );
 
-my $PLUGIN_LOCAL_STATE_DIR = '/etc/joviandss/state';
-my $PLUGIN_GLOBAL_STATE_DIR = '/etc/pve/priv/joviandss/state';
+use constant {
+    PLUGIN_LOCAL_STATE_DIR          => '/etc/joviandss/state',
+    PLUGIN_GLOBAL_STATE_DIR         => '/etc/pve/priv/joviandss/state',
+    PLUGIN_GLOBAL_PASSWORD_FILE_DIR => '/etc/pve/priv/storage/joviandss',
+};
 
 
 my $ISCSIADM = '/usr/bin/iscsiadm';
@@ -345,19 +348,19 @@ sub get_user_name {
     return $scfg->{user_name} || $default_user_name;
 }
 
-sub get_password_file_name {
+sub get_password_file_path {
     my ($ctx) = @_;
     my $storeid = $ctx->{storeid};
-    return "/etc/pve/priv/storage/joviandss/${storeid}.pw";
+    return PLUGIN_GLOBAL_PASSWORD_FILE_DIR . "/${storeid}.pw";
 }
 
 sub _password_file_get_key {
     my ($ctx, $key) = @_;
-    my $pwfile = get_password_file_name($ctx);
+    my $pwfile_path = get_password_file_path($ctx);
 
-    return undef if ! -f $pwfile;
+    return undef if ! -f $pwfile_path;
 
-    my $content = PVE::Tools::file_get_contents($pwfile);
+    my $content = PVE::Tools::file_get_contents($pwfile_path);
     foreach my $line (split /\n/, $content) {
         $line =~ s/^\s+|\s+$//g;
         next if $line =~ /^#/ || $line eq '';
@@ -371,14 +374,14 @@ sub _password_file_get_key {
 sub _password_file_set_key {
     my ($ctx, $key, $value) = @_;
 
-    my $dir    = "/etc/pve/priv/storage/joviandss";
-    my $pwfile = get_password_file_name($ctx);
+    my $dir = PLUGIN_GLOBAL_PASSWORD_FILE_DIR;
+    my $pwfile_path = get_password_file_path($ctx);
 
     File::Path::make_path($dir, { mode => 0700 }) if ! -d $dir;
 
     my %config;
-    if (-f $pwfile) {
-        my $content = PVE::Tools::file_get_contents($pwfile);
+    if (-f $pwfile_path) {
+        my $content = PVE::Tools::file_get_contents($pwfile_path);
         foreach my $line (split /\n/, $content) {
             $line =~ s/^\s+|\s+$//g;
             next if $line =~ /^#/ || $line eq '';
@@ -392,17 +395,17 @@ sub _password_file_set_key {
     for my $k (sort keys %config) {
         $out .= "$k $config{$k}\n";
     }
-    PVE::Tools::file_set_contents($pwfile, $out, 0600, 1);
+    PVE::Tools::file_set_contents($pwfile_path, $out, 0600, 1);
 }
 
 sub _password_file_delete_key {
     my ($ctx, $key) = @_;
 
-    my $pwfile = get_password_file_name($ctx);
-    return unless -f $pwfile;
+    my $pwfile_path = get_password_file_path($ctx);
+    die "password file '$pwfile_path' does not exist\n" unless -f $pwfile_path;
 
     my %config;
-    my $content = PVE::Tools::file_get_contents($pwfile);
+    my $content = PVE::Tools::file_get_contents($pwfile_path);
     foreach my $line (split /\n/, $content) {
         $line =~ s/^\s+|\s+$//g;
         next if $line =~ /^#/ || $line eq '';
@@ -413,13 +416,13 @@ sub _password_file_delete_key {
     delete $config{$key};
 
     if (%config) {
-        my $out = '';
+        my $password_file_data = '';
         for my $k (sort keys %config) {
-            $out .= "$k $config{$k}\n";
+            $password_file_data .= "$k $config{$k}\n";
         }
-        PVE::Tools::file_set_contents($pwfile, $out, 0600, 1);
+        PVE::Tools::file_set_contents($pwfile_path, $password_file_data, 0600, 1);
     } else {
-        unlink $pwfile;
+        unlink $pwfile_path;
     }
 }
 
@@ -455,8 +458,8 @@ sub password_file_set_chap_password {
 
 sub password_file_delete {
     my ($ctx) = @_;
-    my $pwfile = get_password_file_name($ctx);
-    unlink $pwfile;
+    my $pwfile_path = get_password_file_path($ctx);
+    unlink $pwfile_path;
 }
 
 sub password_file_delete_chap_password {
@@ -1573,14 +1576,14 @@ sub volume_stage_iscsi {
     my ( $ctx, $targetname, $lunid, $hosts ) = @_;
 
     debugmsg( $ctx, "debug", "Stage target ${targetname} lun ${lunid} over addresses @$hosts\n" );
-    my $targets_block_devices =
-      block_device_iscsi_paths( $ctx, $targetname, $lunid, $hosts );
 
+    # Fast path: all block devices already present.
+    my $targets_block_devices = block_device_iscsi_paths( $ctx, $targetname, $lunid, $hosts );
     if ( @$targets_block_devices == @$hosts ) {
         return $targets_block_devices;
     }
 
-    # Helper: update %host_has_session by querying iscsiadm --mode session.
+    # Helper: refresh %host_has_session from iscsiadm --mode session output.
     my %host_has_session;
     my $refresh_sessions = sub {
         eval {
@@ -1615,28 +1618,29 @@ sub volume_stage_iscsi {
             "iSCSI session already exists for target ${targetname} on host ${host}");
     }
 
-    # Retry login for hosts that do not yet have a session.
-    # Up to 10 attempts; at least one host must succeed before we can
-    # proceed to block-device detection.
+    my %host_db_ready;
+    my $chap_recovery_done = 0;
     my $max_login_attempts = 10;
+
     for my $attempt (1 .. $max_login_attempts) {
-        # Re-check sessions on retries: a prior login that returned a transient
-        # error (e.g. PDU timeout) may have actually established the session in
-        # the background by the time we get here.  The session can be in a
-        # FAILED/IN-LOGIN recovery cycle managed by iscsid, briefly disappearing
-        # between retry intervals.  Poll a few times with short gaps so we catch
-        # it in the up-phase of the cycle.
+
+        # On retries: poll for sessions that may have appeared in the background
+        # during iscsid's FAILED->IN-LOGIN->LOGGED-IN recovery cycle.
         if ($attempt > 1) {
-            my %had_session = map { $_ => 1 } grep { $host_has_session{$_} } @$hosts;
+            my %had_session;
+            for my $host (@$hosts) {
+                $had_session{$host} = 1 if $host_has_session{$host};
+            }
             my $max_session_polls = 5;
             for my $poll (1 .. $max_session_polls) {
                 $refresh_sessions->();
                 my @still_pending = grep { !$host_has_session{$_} } @$hosts;
                 last unless @still_pending;
-                last if $poll == $max_session_polls;
+                last if $poll >= $max_session_polls;
                 sleep(2);
             }
-            for my $host (grep { $host_has_session{$_} && !$had_session{$_} } @$hosts) {
+            for my $host (@$hosts) {
+                next unless $host_has_session{$host} && !$had_session{$host};
                 debugmsg($ctx, 'debug',
                     "refresh_sessions: session for ${host} target ${targetname} "
                     . "appeared between login attempts");
@@ -1650,53 +1654,69 @@ sub volume_stage_iscsi {
             "iSCSI login attempt ${attempt}/${max_login_attempts} "
             . "for hosts: @pending target ${targetname}");
 
+        # Step 1: Read CHAP desired state.
+        # Inside the loop so the next attempt after step 4 recovery automatically
+        # picks up credentials that target_update_chap may have just synced.
+        my $chap_enabled = get_chap_enabled($ctx);
+        my ($chap_user, $chap_pass);
+        if ($chap_enabled) {
+            $chap_user = get_chap_user_name($ctx);
+            $chap_pass = get_chap_user_password($ctx);
+            die "chap_user_name is required when chap_enabled is set\n"
+                unless defined $chap_user && length($chap_user);
+            die "chap_user_password is required when chap_enabled is set\n"
+                unless defined $chap_pass;
+        }
+
+        # Step 2: Configure iscsiadm node DB for each pending host.
+        #
+        # Node DB entry (-o new, login timeout) is created once per host and
+        # reused across retry attempts.
+        # CHAP state is written every attempt: credentials may have changed after
+        # a step 4 recovery on the previous attempt.
         for my $host (@pending) {
-            # Create node db entry — ignore errors, already-existing is normal.
-            eval {
-                my $cmd = [
-                    $ISCSIADM, '--mode', 'node',
-                    '-p', $host, '--targetname', $targetname, '-o', 'new'
-                ];
-                run_command(
-                    $cmd,
-                    outfunc => sub { },
-                    errfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                    noerr   => 1
-                );
-            };
-
-            # Set a short login timeout so each failed attempt fails quickly,
-            # leaving room for more retries. JovianDSS may take time to fully
-            # initialize a newly-created iSCSI target under concurrent load.
-            eval {
-                my $cmd = [
-                    $ISCSIADM, '--mode', 'node',
-                    '-p', $host, '--targetname', $targetname,
-                    '-o', 'update',
-                    '-n', 'node.conn[0].timeo.login_timeout', '-v', '30'
-                ];
-                run_command(
-                    $cmd,
-                    outfunc => sub { },
-                    errfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                    noerr   => 1
-                );
-            };
-
-            # Configure CHAP credentials in the node DB before login.
-            # Must happen after -o new and before --login.
-            if ( get_chap_enabled($ctx) ) {
-                my $chap_user = get_chap_user_name($ctx);
-                my $chap_pass = get_chap_user_password($ctx);
-                die "chap_user_name is required when chap_enabled is set\n"
-                    unless defined $chap_user && length($chap_user);
-                die "chap_user_password is required when chap_enabled is set\n"
-                    unless defined $chap_pass;
-                _iscsiadm_set_chap($ctx, $host, $targetname, $chap_user, $chap_pass);
+            unless ($host_db_ready{$host}) {
+                eval {
+                    my $cmd = [
+                        $ISCSIADM, '--mode', 'node',
+                        '-p', $host, '--targetname', $targetname, '-o', 'new'
+                    ];
+                    run_command(
+                        $cmd,
+                        outfunc => sub { },
+                        errfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                        noerr   => 1
+                    );
+                };
+                eval {
+                    my $cmd = [
+                        $ISCSIADM, '--mode', 'node',
+                        '-p', $host, '--targetname', $targetname,
+                        '-o', 'update',
+                        '-n', 'node.conn[0].timeo.login_timeout', '-v', '30'
+                    ];
+                    run_command(
+                        $cmd,
+                        outfunc => sub { },
+                        errfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                        noerr   => 1
+                    );
+                };
+                $host_db_ready{$host} = 1;
             }
 
-            # Attempt login — capture exit code via eval so the real error
-            # is logged instead of being silently swallowed.
+            if ($chap_enabled) {
+                _iscsiadm_set_chap($ctx, $host, $targetname, $chap_user, $chap_pass);
+            } else {
+                _iscsiadm_clear_chap($ctx, $host, $targetname);
+            }
+        }
+
+        # Step 3: Attempt login for each pending host.
+        # No server-side calls here — purely initiator-side iscsiadm operations.
+        # CHAP auth failures are collected and handled once in step 4.
+        my @chap_failed;
+        for my $host (@pending) {
             my $already_present = 0;
             my $chap_auth_err   = 0;
             eval {
@@ -1725,43 +1745,9 @@ sub volume_stage_iscsi {
                     $host_has_session{$host} = 1;
                 } elsif ($chap_auth_err) {
                     debugmsg($ctx, 'warn',
-                        "CHAP authorization failure for target ${targetname} "
-                        . "on ${host}, refreshing CHAP state and retrying\n");
-                    target_update_chap($ctx, $targetname);
-                    if (get_chap_enabled($ctx)) {
-                        my $chap_user = get_chap_user_name($ctx);
-                        my $chap_pass = get_chap_user_password($ctx);
-                        _iscsiadm_set_chap($ctx, $host, $targetname, $chap_user, $chap_pass);
-                    } else {
-                        _iscsiadm_clear_chap($ctx, $host, $targetname);
-                    }
-                    $already_present = 0;
-                    eval {
-                        my $cmd = [
-                            $ISCSIADM, '--mode', 'node',
-                            '-p', $host, '--targetname', $targetname, '--login'
-                        ];
-                        run_command(
-                            $cmd,
-                            outfunc => sub { },
-                            errfunc => sub {
-                                my $line = shift;
-                                $already_present = 1 if $line =~ /already present/i;
-                                cmd_log_output($ctx,
-                                    $already_present ? 'debug' : 'warn', $cmd, $line);
-                            }
-                        );
-                        $host_has_session{$host} = 1;
-                    };
-                    if ($@) {
-                        if ($already_present) {
-                            $host_has_session{$host} = 1;
-                        } else {
-                            die "CHAP authentication failed for target ${targetname} "
-                                . "on ${host} after credential refresh — "
-                                . "check CHAP configuration\n";
-                        }
-                    }
+                        "CHAP authorization failure for host ${host} "
+                        . "target ${targetname}");
+                    push @chap_failed, $host;
                 } else {
                     debugmsg($ctx, 'warn',
                         "iSCSI login attempt ${attempt}/${max_login_attempts} "
@@ -1772,6 +1758,26 @@ sub volume_stage_iscsi {
                     "iSCSI login succeeded for host ${host} "
                     . "target ${targetname} on attempt ${attempt}/${max_login_attempts}");
             }
+        }
+
+        # Step 4: CHAP recovery.
+        # target_update_chap is a single REST call that syncs the JovianDSS target
+        # to current config — called at most once per invocation regardless of how
+        # many hosts failed. The outer loop retries with fresh credentials on the
+        # next attempt (step 1 re-reads them at the top of each iteration).
+        # If auth failure persists after recovery, credentials are genuinely wrong —
+        # die immediately rather than retrying further.
+        if (@chap_failed) {
+            if ($chap_recovery_done) {
+                die "CHAP authentication failed for target ${targetname} "
+                    . "on hosts @chap_failed after credential refresh — "
+                    . "check CHAP configuration\n";
+            }
+            debugmsg($ctx, 'warn',
+                "CHAP authorization failure on hosts @chap_failed "
+                . "for target ${targetname}, refreshing target CHAP state");
+            target_update_chap($ctx, $targetname);
+            $chap_recovery_done = 1;
         }
 
         sleep(1) if $attempt < $max_login_attempts
@@ -1808,13 +1814,16 @@ sub volume_stage_iscsi {
 
         sleep(1);
 
-        # Run rescan-scsi-bus only every 3rd attempt.  Under concurrent
-        # load (many clones), each rescan takes minutes and 19 concurrent
-        # rescans create massive SCSI bus congestion.  The first 2 attempts
-        # just wait — the devices often appear without a forced rescan.
+        # Run rescan-scsi-bus only every 3rd attempt — under concurrent load
+        # each rescan takes minutes and many concurrent rescans cause SCSI bus
+        # congestion.
         if ( $i % 3 == 0 && $lunid =~ /^\A\d+\z$/ ) {
             eval {
-                my $cmd = [ '/usr/bin/rescan-scsi-bus.sh', '--sparselun', '--reportlun2', '--largelun', "--luns=${lunid}", '-a'];
+                my $cmd = [
+                    '/usr/bin/rescan-scsi-bus.sh',
+                    '--sparselun', '--reportlun2', '--largelun',
+                    "--luns=${lunid}", '-a'
+                ];
                 run_command(
                     $cmd,
                     outfunc  => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
@@ -1829,7 +1838,8 @@ sub volume_stage_iscsi {
     }
 
     log_dir_content($ctx, '/dev/disk/by-path');
-    debugmsg( $ctx, "warn", "Unable to identify iscsi block device location @{ $targets_block_devices }\n" );
+    debugmsg( $ctx, "warn",
+        "Unable to identify iscsi block device location @{ $targets_block_devices }\n" );
 
     die "Unable to locate target ${targetname} block device location.\n";
 }
@@ -2912,7 +2922,7 @@ sub lun_record_local_create {
     ) = @_;
     my $storeid = $ctx->{storeid};
 
-    my $ltldir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR,
+    my $ltldir = File::Spec->catdir( PLUGIN_LOCAL_STATE_DIR,
                                      $storeid, $targetname, $lunid );
     make_path $ltldir, { owner => 'root', group => 'root' };
 
@@ -2949,7 +2959,7 @@ sub lun_record_local_update {
     ) = @_;
     my $storeid = $ctx->{storeid};
 
-    my $ltldir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR,
+    my $ltldir = File::Spec->catdir( PLUGIN_LOCAL_STATE_DIR,
                                      $storeid, $targetname, $lunid );
     $ltldir = clean_word($ltldir);
     unless ( -d $ltldir) {
@@ -2988,7 +2998,7 @@ sub lun_record_local_get_info_list {
 
     my $name = $volname;
 
-    my $ldir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR, $storeid );
+    my $ldir = File::Spec->catdir( PLUGIN_LOCAL_STATE_DIR, $storeid );
 
     unless( -d $ldir ){
         die "Unable to locate folder containing ${ ldir } plugin state\n";
@@ -3043,7 +3053,7 @@ sub lun_record_local_get_by_target {
     ) = @_;
     my $storeid = $ctx->{storeid};
 
-    my $ltldir = File::Spec->catfile( $PLUGIN_LOCAL_STATE_DIR,
+    my $ltldir = File::Spec->catfile( PLUGIN_LOCAL_STATE_DIR,
                                       $storeid, $targetname, $lunid, $volname);
     unless ( -d $ltldir ) {
         return undef;
@@ -3117,7 +3127,7 @@ sub lun_record_local_delete {
         . "\n");
 
     debugmsg($ctx, 'debug', "delete lun record check\n");
-    my $ltdir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR,
+    my $ltdir = File::Spec->catdir( PLUGIN_LOCAL_STATE_DIR,
                                     $storeid, $targetname );
     unless ( -d $ltdir ) {
         eval {
@@ -3134,7 +3144,7 @@ sub lun_record_local_delete {
     }
 
     # Local Target Lun Directory
-    my $ltldir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR,
+    my $ltldir = File::Spec->catdir( PLUGIN_LOCAL_STATE_DIR,
                                      $storeid, $targetname, $lunid );
 
     my $ltlfile = File::Spec->catfile( $ltldir, $volname );
@@ -3711,7 +3721,7 @@ sub store_settup {
 
     my $path = get_content_path($ctx);
 
-    my $lldir = File::Spec->catdir( $PLUGIN_LOCAL_STATE_DIR, $storeid );
+    my $lldir = File::Spec->catdir( PLUGIN_LOCAL_STATE_DIR, $storeid );
 
     unless ( -d $lldir) {
         make_path $lldir, { owner => 'root', group => 'root' };

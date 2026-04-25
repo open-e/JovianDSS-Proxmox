@@ -57,7 +57,7 @@ our @EXPORT_OK = qw(
     parse_export_path
     nas_private_mounts_volname_snapname
 
-    get_password_file_name
+    get_password_file_path
     get_user_password
     password_file_set_password
     password_file_delete
@@ -743,7 +743,7 @@ sub dataset_name_get {
 
 my $NFS_PASSWORD_DIR = '/etc/pve/priv/storage/joviandss-nfs';
 
-sub get_password_file_name {
+sub get_password_file_path {
     my ($ctx) = @_;
     my $storeid = $ctx->{storeid};
     return "${NFS_PASSWORD_DIR}/${storeid}.pw";
@@ -752,10 +752,10 @@ sub get_password_file_name {
 sub get_user_password {
     my ($ctx) = @_;
 
-    my $pwfile = get_password_file_name($ctx);
-    return undef if ! -f $pwfile;
+    my $pwfile_path = get_password_file_path($ctx);
+    return undef if ! -f $pwfile_path;
 
-    my $content = file_get_contents($pwfile);
+    my $content = file_get_contents($pwfile_path);
     my $config = {};
     foreach my $line (split /\n/, $content) {
         $line =~ s/^\s+|\s+$//g;
@@ -770,17 +770,17 @@ sub get_user_password {
 sub password_file_set_password {
     my ($ctx, $password) = @_;
 
-    my $pwfile = get_password_file_name($ctx);
+    my $pwfile_path = get_password_file_path($ctx);
     if (! -d $NFS_PASSWORD_DIR) {
         File::Path::make_path($NFS_PASSWORD_DIR, { mode => 0700 });
     }
-    file_set_contents($pwfile, "user_password $password\n", 0600, 1);
+    file_set_contents($pwfile_path, "user_password $password\n", 0600, 1);
 }
 
 sub password_file_delete {
     my ($ctx) = @_;
-    my $pwfile = get_password_file_name($ctx);
-    unlink $pwfile;
+    my $pwfile_path = get_password_file_path($ctx);
+    unlink $pwfile_path;
 }
 
 sub joviandss_cmd {

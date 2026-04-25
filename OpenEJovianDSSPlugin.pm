@@ -630,34 +630,60 @@ sub _clone_image {
     my $clone_name = $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt );
 
     my $size = joviandss_cmd( $ctx,
-        [ "pool", $pool, "volume", $volname, "get", "-s" ], 80, 3 );
+        [ "pool", $pool, "volume", $volname, "get", "-s" ], 50, 3 );
     $size = clean_word($size);
 
-    debugmsg( $ctx, "debug",
-            "Clone ${volname} with size ${size} to ${clone_name}"
-          . safe_var_print( " with snapshot", $snap )
-          . "\n" );
-    if ($snap) {
-        joviandss_cmd(
-            $ctx,
-            [
-                "pool",  $pool,    "volume", $volname,
-                "clone", "--size", $size,    "--snapshot",
-                $snap,   "-n",     $clone_name
-            ],
-            80, 3
-        );
-    }
-    else {
-        joviandss_cmd(
-            $ctx,
-            [
-                "pool",  $pool,    "volume", $volname,
-                "clone", "--size", $size,    "-n",
-                $clone_name
-            ],
-            80, 3
-        );
+    my $max_retries = 10;
+    for my $attempt ( 1 .. $max_retries ) {
+        if ( $attempt > 1 ) {
+            $clone_name = $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt );
+            debugmsg( $ctx, "warn",
+                "clone_image retry ${attempt}/${max_retries}: retrying with new candidate name ${clone_name}\n" );
+        }
+
+        debugmsg( $ctx, "debug",
+                "Clone ${volname} with size ${size} to ${clone_name}"
+              . safe_var_print( " with snapshot", $snap )
+              . "\n" );
+
+        my $err;
+        eval {
+            if ($snap) {
+                joviandss_cmd(
+                    $ctx,
+                    [
+                        "pool",  $pool,    "volume", $volname,
+                        "clone", "--size", $size,    "--snapshot",
+                        $snap,   "-n",     $clone_name
+                    ],
+                    50, 3
+                );
+            }
+            else {
+                joviandss_cmd(
+                    $ctx,
+                    [
+                        "pool",  $pool,    "volume", $volname,
+                        "clone", "--size", $size,    "-n",
+                        $clone_name
+                    ],
+                    50, 3
+                );
+            }
+        };
+        $err = $@;
+        last unless $err;
+        if ( $err =~ /already exists/i && $attempt < $max_retries ) {
+            my $delay = 1 + rand(3);
+            debugmsg( $ctx, "warn",
+                "clone_image: volume ${clone_name} already exists "
+              . "(JovianDSS stale list under load), "
+              . sprintf( "retrying in %.1fs (attempt %d/%d)\n",
+                         $delay, $attempt, $max_retries - 1 ) );
+            select( undef, undef, undef, $delay );
+            next;
+        }
+        die $err;
     }
     return $clone_name;
 }

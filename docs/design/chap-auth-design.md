@@ -152,10 +152,10 @@ refactored to use it:
 sub _password_file_get_key {
     my ($ctx, $key) = @_;
 
-    my $pwfile = get_password_file_name($ctx);
-    return undef if ! -f $pwfile;
+    my $pwfile_path = get_password_file_path($ctx);
+    return undef if ! -f $pwfile_path;
 
-    my $content = PVE::Tools::file_get_contents($pwfile);
+    my $content = PVE::Tools::file_get_contents($pwfile_path);
     foreach my $line (split /\n/, $content) {
         $line =~ s/^\s+|\s+$//g;
         next if $line =~ /^#/ || $line eq '';
@@ -183,13 +183,13 @@ atomically:
 sub _password_file_set_key {
     my ($ctx, $key, $value) = @_;
 
-    my $pwfile = get_password_file_name($ctx);
-    my $dir    = "/etc/pve/priv/storage/joviandss";
+    my $pwfile_path = get_password_file_path($ctx);
+    my $dir = PLUGIN_GLOBAL_PASSWORD_FILE_DIR;
     File::Path::make_path($dir, { mode => 0700 }) if ! -d $dir;
 
     my %config;
-    if (-f $pwfile) {
-        my $content = PVE::Tools::file_get_contents($pwfile);
+    if (-f $pwfile_path) {
+        my $content = PVE::Tools::file_get_contents($pwfile_path);
         foreach my $line (split /\n/, $content) {
             $line =~ s/^\s+|\s+$//g;
             next if $line =~ /^#/ || $line eq '';
@@ -200,17 +200,17 @@ sub _password_file_set_key {
     $config{$key} = $value;
 
     my $out = join('', map { "$_ $config{$_}\n" } sort keys %config);
-    PVE::Tools::file_set_contents($pwfile, $out, 0600, 1);
+    PVE::Tools::file_set_contents($pwfile_path, $out, 0600, 1);
 }
 
 sub _password_file_delete_key {
     my ($ctx, $key) = @_;
 
-    my $pwfile = get_password_file_name($ctx);
-    return unless -f $pwfile;
+    my $pwfile_path = get_password_file_path($ctx);
+    die "password file '$pwfile_path' does not exist\n" unless -f $pwfile_path;
 
     my %config;
-    my $content = PVE::Tools::file_get_contents($pwfile);
+    my $content = PVE::Tools::file_get_contents($pwfile_path);
     foreach my $line (split /\n/, $content) {
         $line =~ s/^\s+|\s+$//g;
         next if $line =~ /^#/ || $line eq '';
@@ -221,10 +221,13 @@ sub _password_file_delete_key {
     delete $config{$key};
 
     if (%config) {
-        my $out = join('', map { "$_ $config{$_}\n" } sort keys %config);
-        PVE::Tools::file_set_contents($pwfile, $out, 0600, 1);
+        my $password_file_data = '';
+        for my $k (sort keys %config) {
+            $password_file_data .= "$k $config{$k}\n";
+        }
+        PVE::Tools::file_set_contents($pwfile_path, $password_file_data, 0600, 1);
     } else {
-        unlink $pwfile;
+        unlink $pwfile_path;
     }
 }
 ```
@@ -393,85 +396,71 @@ rewrite, `update_target`) are covered in the Target Update Command section.
 
 ## iSCSI Login — `volume_stage_iscsi`
 
-The login sequence for each host inside the retry loop is:
+Each outer retry attempt runs four steps in sequence:
 
 ```
-1. iscsiadm -o new          — create node DB entry (must exist before any -o update)
-2. iscsiadm -o update       — set login_timeout
-3. iscsiadm -o update ×3    — set CHAP authmethod / username / password   ← NEW
-4. iscsiadm --login         — establish session (CHAP handshake happens here)
+Step 1 — read CHAP state (once per attempt, before per-host work)
+    get_chap_enabled / get_chap_user_name / get_chap_user_password
+
+Step 2 — configure iscsiadm node DB for each pending host
+    iscsiadm -o new      — create node DB entry (once per host, skipped on retry)
+    iscsiadm -o update   — set login_timeout    (once per host, skipped on retry)
+    _iscsiadm_set_chap   — write CHAP credentials  (every attempt, if enabled)
+    _iscsiadm_clear_chap — clear CHAP parameters   (every attempt, if disabled)
+
+Step 3 — attempt login for each pending host
+    iscsiadm --login     — CHAP handshake occurs here if target requires it
+    collect @chap_failed for step 4
+
+Step 4 — CHAP recovery (at most once per invocation)
+    target_update_chap   — one REST call, syncs JovianDSS target to current config
+    $chap_recovery_done = 1 — outer loop retries; step 1 re-reads credentials
 ```
 
-CHAP parameters **must** be written to the node DB after step 1 and before
-step 4. `iscsiadm -o update` requires the node record to be present; `--login`
-reads the auth parameters from the node DB at connection time. Configuring
-credentials after login has no effect on the already-established session.
+CHAP parameters must be written to the node DB (step 2) before login (step 3).
+`iscsiadm -o update` requires the node record to exist; `--login` reads auth
+parameters from the node DB at connection time.
 
-The complete per-host block with CHAP added:
+The node DB entry (`-o new`, `login_timeout`) is created once per host and
+tracked with `%host_db_ready`. CHAP set/clear runs every attempt so that
+credentials are always current when the session is established, including after
+a step 4 recovery on the previous attempt.
+
+The per-host login block (step 3):
 
 ```perl
+my @chap_failed;
 for my $host (@pending) {
-    # Step 1 — create node DB entry (errors suppressed; already-existing is normal)
-    eval {
-        my $cmd = [
-            $ISCSIADM, '--mode', 'node',
-            '-p', $host, '--targetname', $targetname, '-o', 'new'
-        ];
-        run_command($cmd, outfunc => sub { }, errfunc => sub { }, noerr => 1);
-    };
-
-    # Step 2 — set login timeout
-    eval {
-        my $cmd = [
-            $ISCSIADM, '--mode', 'node',
-            '-p', $host, '--targetname', $targetname,
-            '-o', 'update', '-n', 'node.conn[0].timeo.login_timeout', '-v', '30'
-        ];
-        run_command($cmd, outfunc => sub { }, errfunc => sub { }, noerr => 1);
-    };
-
-    # Step 3 — configure CHAP credentials (must precede --login)
-    if (get_chap_enabled($ctx)) {
-        my $chap_user = get_chap_user_name($ctx);
-        my $chap_pass = get_chap_user_password($ctx);
-        die "chap_user_name not set\n"     unless defined $chap_user;
-        die "chap_user_password not set\n" unless defined $chap_pass;
-
-        for my $update (
-            [ 'node.session.auth.authmethod', 'CHAP'     ],
-            [ 'node.session.auth.username',   $chap_user ],
-            [ 'node.session.auth.password',   $chap_pass ],
-        ) {
-            my ($param, $value) = @$update;
-            my $cmd = [
-                $ISCSIADM, '--mode', 'node',
-                '-p', $host, '--targetname', $targetname,
-                '-o', 'update', '-n', $param, '-v', $value,
-            ];
-            run_command($cmd,
-                outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift) },
-                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift) },
-                timeout => 10,
-            );
-        }
-    }
-
-    # Step 4 — login (CHAP handshake occurs here if target requires it)
+    my $already_present = 0;
+    my $chap_auth_err   = 0;
     eval {
         my $cmd = [
             $ISCSIADM, '--mode', 'node',
             '-p', $host, '--targetname', $targetname, '--login'
         ];
-        run_command($cmd, ...);
+        run_command($cmd,
+            outfunc => sub { },
+            errfunc => sub {
+                my $line = shift;
+                $already_present = 1 if $line =~ /already present/i;
+                $chap_auth_err   = 1 if $line =~ /authorization failure/i;
+                cmd_log_output($ctx, $already_present ? 'debug' : 'warn', $cmd, $line);
+            }
+        );
         $host_has_session{$host} = 1;
     };
+    if ($@) {
+        if    ($already_present) { $host_has_session{$host} = 1; }
+        elsif ($chap_auth_err)   { push @chap_failed, $host; }
+        else                     { debugmsg($ctx, 'warn', "...login failed: $@"); }
+    }
 }
 ```
 
-**Re-login safety:** on each activation the node DB entry is created fresh
-(`-o new`). The CHAP block runs on every iteration, so credentials are always
-present in the node DB before `--login` regardless of whether this is a first
-login or a retry.
+**Node DB reuse:** the `-o new` and `login_timeout` update run once per host
+(`%host_db_ready`). CHAP state is written on every attempt so the node DB
+always reflects current config before login, including after step 4 changes
+credentials on the previous attempt.
 
 ### Authorization Failure — Error and Recovery
 
@@ -503,46 +492,55 @@ Exit code 24 can occur in three mid-flight scenarios:
   24 is not triggered; CHAP will be enforced correctly on the next full
   activation.
 
-When exit code 24 is detected, the plugin performs one recovery attempt before
-failing:
+When exit code 24 is detected, the plugin performs one recovery before
+continuing with the outer retry loop:
 
 ```
+Step 3 (login pass): collect all hosts that failed with exit code 24 into
+  @chap_failed; do not retry inline.
+
+Step 4 (CHAP recovery, once per volume_stage_iscsi invocation):
 1. Call target_update_chap($ctx, $targetname):
      - chap_enabled=1 → jdssc target <name> update --chap-user ... --chap-password ...
      - chap_enabled=0 → jdssc target <name> update --no-chap
    This syncs the JovianDSS target to current config regardless of direction.
-2. Sync the iscsiadm node DB to match:
-     - chap_enabled=1 → _iscsiadm_set_chap (authmethod=CHAP, username, password)
-     - chap_enabled=0 → _iscsiadm_clear_chap (authmethod=None, username='', password='')
-   Without clearing the node DB, the initiator would still present CHAP on
-   retry even though the target no longer enforces it, which can cause
-   implementation-specific login failures.
-3. Retry --login once.
-4. If login fails again, die with a clear message; do not loop.
+   Called at most once ($chap_recovery_done flag). If @chap_failed is non-empty
+   on a subsequent outer attempt, die immediately — credentials are genuinely
+   wrong.
+2. Set $chap_recovery_done = 1; continue to next outer loop iteration.
+
+On the next outer attempt:
+- Step 1 re-reads credentials from the .pw file (which now holds the current
+  password after any rotation).
+- Step 2 calls _iscsiadm_set_chap or _iscsiadm_clear_chap with fresh values.
+- Step 3 retries --login. If CHAP auth fails again → step 4 dies immediately.
 ```
 
-Implementation:
+Implementation (step 3 login pass and step 4):
 
 ```perl
-    } elsif ($chap_auth_err) {
-        debugmsg($ctx, 'warn',
-            "CHAP authorization failure for target ${targetname} "
-            . "on ${host}, refreshing CHAP state and retrying\n");
-        target_update_chap($ctx, $targetname);
-        if (get_chap_enabled($ctx)) {
-            my $chap_user = get_chap_user_name($ctx);
-            my $chap_pass = get_chap_user_password($ctx);
-            _iscsiadm_set_chap($ctx, $host, $targetname, $chap_user, $chap_pass);
-        } else {
-            _iscsiadm_clear_chap($ctx, $host, $targetname);
-        }
-        $already_present = 0;
-        eval { ... retry --login ... };
+    # Step 3: collect CHAP failures
+    my @chap_failed;
+    for my $host (@pending) {
+        my $already_present = 0;
+        my $chap_auth_err   = 0;
+        eval { ... iscsiadm --login ... $host_has_session{$host} = 1; };
         if ($@) {
-            die "CHAP authentication failed for target ${targetname} "
-              . "on ${host} after credential refresh — check CHAP configuration\n"
-              unless $already_present;
+            if    ($already_present) { $host_has_session{$host} = 1; }
+            elsif ($chap_auth_err)   { push @chap_failed, $host; }
+            else                     { debugmsg($ctx, 'warn', "...login failed: $@"); }
         }
+    }
+
+    # Step 4: CHAP recovery — one REST call, then let the outer loop retry
+    if (@chap_failed) {
+        if ($chap_recovery_done) {
+            die "CHAP authentication failed for target ${targetname} "
+                . "on hosts @chap_failed after credential refresh — "
+                . "check CHAP configuration\n";
+        }
+        target_update_chap($ctx, $targetname);
+        $chap_recovery_done = 1;
     }
 ```
 
@@ -550,6 +548,12 @@ The recovery path uses `target_update_chap` (Common.pm) which calls the narrow
 `jdssc target <name> update` command (see "Target Update Command" below) rather
 than the full `volume_publish` flow. It handles both CHAP-enable and
 CHAP-disable transitions transparently.
+
+The node DB (`_iscsiadm_set_chap` / `_iscsiadm_clear_chap`) is updated at the
+top of the next outer iteration (step 2), not inline in the recovery path.
+Credentials are re-read at the top of each iteration (step 1), so the next
+attempt automatically picks up any password that `target_update_chap` just
+synced.
 
 ---
 
@@ -728,19 +732,23 @@ unaffected (CHAP is only checked at login time).
 2. Next activation: `volume_publish` passes new credentials to jdssc. If the
    username is unchanged the name-match skip applies and the JovianDSS target
    still holds the old password.
-3. `volume_stage_iscsi` configures the node DB with the new password and
-   attempts login. If the target still holds the old password login fails with
-   exit code 24, triggering the recovery path: `target_update_chap` pushes the
-   new credentials to JovianDSS, node DB is updated, and login is retried.
-4. On second attempt the credentials match and the session is established.
+3. `volume_stage_iscsi` (step 1) reads the new password from the `.pw` file
+   and configures the node DB (step 2) with it. Login (step 3) fails with
+   exit code 24 because the JovianDSS target still holds the old credential.
+   Step 4 calls `target_update_chap`, which pushes the new password to
+   JovianDSS and sets `$chap_recovery_done = 1`.
+4. The outer loop retries. Step 1 re-reads the `.pw` file (same new password).
+   Step 2 re-applies `_iscsiadm_set_chap` with the new password. Step 3 login
+   succeeds — credentials now match on both sides.
 
 **Rotation mid-flight (password changed while VM start is in progress):**
 
 If the operator updates `chap_user_password` after `volume_stage_iscsi` has
 already read the old password but before `--login` is issued, the login will
-fail with exit code 24. The authorization failure recovery path handles this:
-it re-reads credentials from the `.pw` file (which now holds the new
-password), re-pushes them to the JovianDSS target, and retries login.
+fail with exit code 24. Step 4 calls `target_update_chap`, which pushes the
+new password to JovianDSS. On the next outer iteration, step 1 re-reads the
+`.pw` file (which now holds the new password), step 2 updates the node DB, and
+step 3 login succeeds.
 
 Rotation therefore takes effect automatically in both cases without manual
 intervention.
@@ -860,8 +868,8 @@ required — the existing `PUT` target endpoint already accepts
 | `chap_enabled=1` but `chap_user_name` not set | `die "chap_user_name not set\n"` in `volume_publish` and `volume_stage_iscsi` |
 | `chap_enabled=1` but `chap_user_password` not set (missing .pw entry) | `die "chap_user_password not set\n"` in same locations |
 | `iscsiadm -o update` fails for auth param | `run_command` raises; `volume_stage_iscsi` propagates the error; login is not attempted |
-| `iscsiadm --login` fails with exit code 24 (`authorization failure`) | `target_update_chap` syncs JovianDSS target to current config (credentials or `--no-chap`). If `chap_enabled`, node DB is updated via `_iscsiadm_set_chap`. Login retried once. |
-| Second login attempt fails with exit code 24 | Fatal — `die "CHAP authentication failed ... check CHAP configuration"`. Operator must verify credentials and target state. |
+| `iscsiadm --login` fails with exit code 24 (`authorization failure`) | Host added to `@chap_failed`. After all pending hosts attempted, step 4 calls `target_update_chap` once (sets `$chap_recovery_done = 1`). Outer loop retries; step 1 re-reads credentials, step 2 re-applies node DB update. |
+| Second CHAP auth failure (after `target_update_chap` already ran) | Fatal — `die "CHAP authentication failed ... check CHAP configuration"`. `$chap_recovery_done` flag prevents further `target_update_chap` calls. Operator must verify credentials and target state. |
 | Target exists without CHAP, `chap_enabled` is now true | Next `volume_publish` sets CHAP user and `incoming_users_active: true` on the target. Initiator supplies credentials at next login. No recovery path needed — login succeeds because the target now enforces CHAP and the initiator provides credentials. |
 | Target exists with CHAP, `chap_enabled` is now false | `volume_publish` runs the `else` branch of `_ensure_target_volume_lun`: removes users and clears `incoming_users_active`. If this runs before `volume_stage_iscsi`, login succeeds without credentials. If `volume_publish` ran with the old config (CHAP enabled) and config changed mid-flight, `volume_stage_iscsi` supplies no credentials, target still enforces CHAP, login fails with exit code 24. Recovery: `target_update_chap` issues `--no-chap`, target disables enforcement, retry login succeeds. |
 
@@ -872,7 +880,7 @@ required — the existing `PUT` target endpoint already accepts
 | File | Change |
 |---|---|
 | `OpenEJovianDSSPlugin.pm` | Add `chap_enabled`, `chap_user_name` to `properties()` and `options`; add `chap_user_password` to `sensitive-properties`; extend `on_add_hook` and `on_update_hook` |
-| `OpenEJovianDSS/Common.pm` | Add `_password_file_set_key`, `_password_file_delete_key`, `_password_file_get_key` helpers; refactor existing password functions to use them; add `get_chap_enabled`, `get_chap_user_name`, `get_chap_user_password`, `password_file_set_chap_password`, `password_file_delete_chap_password`; add `target_update_chap` (syncs JovianDSS target CHAP state, handles both enable and disable, retries once on failure); add `_iscsiadm_clear_chap` (resets node DB authmethod to None); extend `volume_publish` and `volume_stage_iscsi`; recovery path (exit code 24) calls `target_update_chap` then `_iscsiadm_set_chap` or `_iscsiadm_clear_chap` depending on current config |
+| `OpenEJovianDSS/Common.pm` | Add `_password_file_set_key`, `_password_file_delete_key`, `_password_file_get_key` helpers; refactor existing password functions to use them; add `get_chap_enabled`, `get_chap_user_name`, `get_chap_user_password`, `password_file_set_chap_password`, `password_file_delete_chap_password`; add `target_update_chap` (syncs JovianDSS target CHAP state, handles both enable and disable); add `_iscsiadm_clear_chap` (resets node DB authmethod to None); extend `volume_publish` and `volume_stage_iscsi`; `volume_stage_iscsi` refactored: credentials read inside outer loop (step 1), `%host_db_ready` avoids redundant node-DB setup, CHAP failures collected in `@chap_failed` (step 3), single `target_update_chap` call in step 4 with `$chap_recovery_done` guard |
 | `jdssc/jdssc/targets.py` | Add `--chap-user` and `--chap-password` arguments to `create` subcommand; construct and pass `provider_auth` to `ensure_target_volume` |
 | `jdssc/jdssc/pool.py` | Add `target` (singular) to dispatch table and subparser so `jdssc pool <pool> target <IQN> <action>` is routable |
 | `jdssc/jdssc/target.py` | Fix `self.va` → `self.ta` dispatch bug; rename class to `Target`; implement `get`, `delete`, `update` methods; add `--chap-user` / `--chap-password` / `--no-chap` flags to `update` |
@@ -881,6 +889,114 @@ required — the existing `PUT` target endpoint already accepts
 
 No changes required to:
 - `OpenEJovianDSSNFSPlugin.pm` — NFS plugin does not use iSCSI targets
+
+---
+
+## Post-Implementation Refactoring
+
+The following changes were applied to `Common.pm` after the initial
+implementation to improve naming clarity and eliminate magic strings.
+
+### Path constants (`use constant`)
+
+Three module-level path variables were converted from `my $VAR` to
+`use constant`:
+
+```perl
+use constant {
+    PLUGIN_LOCAL_STATE_DIR          => '/etc/joviandss/state',
+    PLUGIN_GLOBAL_STATE_DIR         => '/etc/pve/priv/joviandss/state',
+    PLUGIN_GLOBAL_PASSWORD_FILE_DIR => '/etc/pve/priv/storage/joviandss',
+};
+```
+
+`PLUGIN_GLOBAL_PASSWORD_FILE_DIR` was introduced at this point to replace the
+hardcoded string `"/etc/pve/priv/storage/joviandss"` that appeared in
+`get_password_file_path` and `_password_file_set_key`.
+
+### Function rename: `get_password_file_name` → `get_password_file_path`
+
+The function was renamed to reflect that it returns a file path string, not a
+file descriptor or bare filename. Updated in `Common.pm`, `NFSCommon.pm`
+(definition, export list, and all call sites).
+
+### Variable rename: `$pwfile` → `$pwfile_path`
+
+Local variables assigned from `get_password_file_path` were renamed to
+`$pwfile_path` to make it explicit that the value is a path string, not a file
+handle. Applied consistently across all four call sites in `Common.pm` and
+three in `NFSCommon.pm`.
+
+### `_password_file_delete_key`: missing-file guard changed to `die`
+
+The early-return guard on a missing password file was strengthened from a
+silent `return` to a hard `die`:
+
+```perl
+# before
+return unless -f $pwfile_path;
+
+# after
+die "password file '$pwfile_path' does not exist\n" unless -f $pwfile_path;
+```
+
+Deleting a key from a file that does not exist indicates a caller bug (the
+file should have been created by `_password_file_set_key` before this function
+is called). Silently returning masked the problem; `die` surfaces it.
+
+### Variable rename: `$out` → `$password_file_data` in `_password_file_delete_key`
+
+The temporary variable that accumulates the serialised key/value pairs was
+renamed to `$password_file_data` for clarity. The `join`/`map` one-liner was
+also rewritten as an explicit loop to improve readability:
+
+```perl
+# before
+my $out = join('', map { "$_ $config{$_}\n" } sort keys %config);
+PVE::Tools::file_set_contents($pwfile_path, $out, 0600, 1);
+
+# after
+my $password_file_data = '';
+for my $k (sort keys %config) {
+    $password_file_data .= "$k $config{$k}\n";
+}
+PVE::Tools::file_set_contents($pwfile_path, $password_file_data, 0600, 1);
+```
+
+### `volume_stage_iscsi` — server/host call separation
+
+The CHAP recovery logic inside `volume_stage_iscsi` was refactored to cleanly
+separate server-side (JovianDSS REST) calls from per-host (`iscsiadm`) calls:
+
+**Before:** `target_update_chap` was called inline inside the per-host login
+loop, immediately followed by `_iscsiadm_set_chap` / `_iscsiadm_clear_chap`
+and an inline retry `--login`. This mixed a single server-side REST call into a
+loop that ran once per host, and retried login inline without going back through
+the credential-read path.
+
+**After (4-step structure):**
+
+- **Step 1 (credential read):** `get_chap_enabled`, `get_chap_user_name`,
+  `get_chap_user_password` — once per outer attempt, before any per-host work.
+  Placed inside the outer loop so the next iteration automatically picks up
+  credentials synced by `target_update_chap`.
+- **Step 2 (node DB setup):** `iscsiadm -o new` and `-o update` run once per
+  host (`%host_db_ready` flag); `_iscsiadm_set_chap` / `_iscsiadm_clear_chap`
+  run every attempt to keep the node DB current.
+- **Step 3 (login pass):** `iscsiadm --login` for each pending host; CHAP
+  authorization failures collected in `@chap_failed` — no inline recovery.
+- **Step 4 (CHAP recovery):** if `@chap_failed` is non-empty, call
+  `target_update_chap` exactly once (`$chap_recovery_done` guard); if it was
+  already called and auth still fails, `die` immediately.
+
+Key properties of the new design:
+- `target_update_chap` is called at most once per `volume_stage_iscsi`
+  invocation regardless of how many hosts failed.
+- No inline retry loop in step 4; the outer loop handles the retry, ensuring
+  credential re-read and node-DB update happen before the next login attempt.
+- `$chap_recovery_done` prevents repeated REST calls on genuine
+  misconfiguration; instead of silently looping, the function dies after the
+  second CHAP failure.
 
 ---
 
