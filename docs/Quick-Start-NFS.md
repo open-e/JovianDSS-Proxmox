@@ -173,8 +173,14 @@ user_password admin
 
 Alternatively, you can manually edit `/etc/pve/storage.cfg` and add the above configuration block, but using `pvesm add` is recommended as it handles password security automatically.
 
-**Note:** The password for storage pool `jdss-nfs-01` can be found in `/etc/pve/priv/storage/joviandss-nfs/jdss-nfs-01.pw`.
+**Note:** The password for storage `jdss-nfs-01` can be found in `/etc/pve/priv/storage/joviandss-nfs/jdss-nfs-01.pw`.
+**Important** The storage name in storage.cfg must match the password file name. `jdss-nfs-01` and `jdss-nfs-01.pw`
 
+Directory for a password file can be created by executing:
+
+```bash
+mkdir -p /etc/pve/priv/storage/joviandss-nfs
+```
 [More about Proxmox VE storage configuration can be found here](https://pve.proxmox.com/wiki/Storage)
 
 [More about JovianDSS Proxmox plugin configuration can be found here](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
@@ -224,6 +230,15 @@ joviandss-nfs: jdss-nfs-01
         debug 1
         log_file /var/log/joviandss/joviandss-nfs01.log
 ```
+
+If all log files are located in `/var/log/joviandss`, the user can create an archive of these logs and send it to the development team.
+
+The following command will create an archive named `jdss-logs.tar.gz` containing the log files in the current working directory:
+
+```bash
+tar -cvzf ./jdss-logs.tar.gz /var/log/joviandss
+```
+
 
 ## Snapshots and rollback
 

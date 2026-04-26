@@ -53,21 +53,6 @@ joviandss: jdss-Pool-0
 
 **Note**: The `user_password` line does not appear in storage.cfg as passwords are stored securely in `/etc/pve/priv/storage/joviandss/jdss-Pool-0.pw`
 
-### pool_name
-
-**Default**: Pool-0
-
-**Type**: *string*
-
-**Required**: `True`
-
-The `pool_name` property specifies the target storage `pool` on the JovianDSS side.
-It is case-sensitive and must exactly match an existing `pool` created via the JovianDSS GUI or CLI before plugin configuration.
-If the specified `pool` does not exist, the plugin fails.
-
-This property is foundational: all resources managed by the plugin (volumes, snapshots, iSCSI targets) are provisioned within the named `pool`.
-
-Never create multiple storage `pool` records with the same `pool_name`, as doing so may cause race conditions and unpredictable behavior.
 
 ### content
 
@@ -87,6 +72,46 @@ Specifies the types of content stored on this backed. `joviandss` plugin support
 
 To store other content types on JovianDSS, please use the [NFS plugin](https://www.open-e.com/site_media/download/documents/howtoresource/Open-E_Jovian_DSS_with_NFS_for_Proxmox_VE_Best_Practices_Guide_1.00.pdf)
 
+### create-base-path
+
+**Default**: None
+
+**Type**: *bool*
+
+**Required**: `False`
+
+Creates [path](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#path) directory if it does not exists.
+
+
+### path
+
+**Default**: None
+
+**Type**: *string*
+
+**Required**: `False`
+
+The folder associated with the JovianDSS Proxmox plugin—intended to host disks and resources presented to the Proxmox VE system—remains unused.
+
+Instead, the plugin attaches iSCSI block devices and creates multipath devices as needed; once a block device appears under `/dev/...` on the Proxmox node, the plugin registers it with the Proxmox VE storage subsystem.
+
+### pool_name
+
+**Default**: Pool-0
+
+**Type**: *string*
+
+**Required**: `True`
+
+The `pool_name` property specifies the target storage `pool` on the JovianDSS side.
+It is case-sensitive and must exactly match an existing `pool` created via the JovianDSS GUI or CLI before plugin configuration.
+If the specified `pool` does not exist, the plugin fails.
+
+This property is foundational: all resources managed by the plugin (volumes, snapshots, iSCSI targets) are provisioned within the named `pool`.
+
+Never create multiple storage `pool` records with the same `pool_name`, as doing so may cause race conditions and unpredictable behavior.
+
+
 ### target_prefix
 
 **Default**: iqn.2025-04.proxmox.joviandss.iscsi:
@@ -103,6 +128,16 @@ Each target name follows this pattern:
 - <vmID> is the Proxmox VM or container ID.
 - <index> is a sequential number starting at 0, is needed to handle cases when single VM/Container require volume to be active at a same time that is restricted by [luns_per_target](#luns_per_target) property.
 
+**IMPORTANT!**
+During the initial VM startup, all assigned volumes are attached to a target defined by the specified prefix.
+Changing the target prefix afterward may result in errors during live migration and when starting the VM on other nodes in the cluster.
+
+To apply changes to the target, the user must:
+
+1. Turn off the VM or container
+2. Migrate the VM or container to another Proxmox node in offline mode
+3. Manually remove the iSCSI target through the JovianDSS web UI
+
 Example:
 
 If your prefix is `iqn.2025-06.proxmox.pool-2`, the first target for VM 102 would be:
@@ -113,27 +148,7 @@ For instance:  `iqn.2025-06.proxmox.pool-2:vm-102-0`.
 
 
 
-### path
 
-**Default**: None
-
-**Type**: *string*
-
-**Required**: `False`
-
-The folder associated with the JovianDSS Proxmox plugin—intended to host disks and resources presented to the Proxmox VE system—remains unused.
-
-Instead, the plugin attaches iSCSI block devices and creates multipath devices as needed; once a block device appears under `/dev/...` on the Proxmox node, the plugin registers it with the Proxmox VE storage subsystem.
-
-### create-base-path
-
-**Default**: None
-
-**Type**: *bool*
-
-**Required**: `False`
-
-Creates [path](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#path) directory if it does not exists.
 
 
 ### shared
