@@ -1770,7 +1770,7 @@ sub volume_stage_iscsi {
         if (@chap_failed) {
             if ($chap_recovery_done) {
                 die "CHAP authentication failed for target ${targetname} "
-                    . "on hosts @chap_failed after credential refresh — "
+                    . "on hosts @chap_failed after credential refresh - "
                     . "check CHAP configuration\n";
             }
             debugmsg($ctx, 'warn',
