@@ -51,7 +51,73 @@ joviandss: jdss-Pool-0
         log_file /var/log/joviandss/joviandss.log
 ```
 
-**Note**: The `user_password` line does not appear in storage.cfg as passwords are stored securely in `/etc/pve/priv/storage/joviandss/jdss-Pool-0.pw`
+**Note**: The `user_password` and `chap_user_password` lines do not appear in storage.cfg as passwords are stored securely in `/etc/pve/priv/storage/joviandss/jdss-Pool-0.pw`
+
+
+### block_size
+
+**Default**: `16K`
+
+**Type**: *string*
+
+**Required**: `False`
+
+Specifies the block size for newly created volumes.
+
+Supported values are: 4K, 8K, 16K, 32K, 64K, 128K, 256K, 512K, and 1M.
+
+This setting does not affect volumes created before it is applied.
+
+### chap_enabled
+
+**Default**: `0`
+
+**Type**: *boolean*
+
+**Required**: `False`
+
+Enables CHAP (Challenge-Handshake Authentication Protocol) for all iSCSI targets
+managed by this storage instance. When set to `1`, JovianDSS will challenge the
+Proxmox initiator at login time and refuse connections that cannot supply the correct
+credentials.
+
+Requires `chap_user_name` and `chap_user_password` to be set. The plugin enforces
+this at configuration time — enabling `chap_enabled` without both credentials present
+causes `pvesm add` or `pvesm set` to fail immediately.
+
+See [CHAP Authentication](CHAP-Authentication.md) for full configuration instructions.
+
+### chap_user_name
+
+**Default**: None
+
+**Type**: *string*
+
+**Required**: `False` (required when `chap_enabled 1`)
+
+The CHAP initiator username presented to JovianDSS iSCSI targets. Stored in
+`storage.cfg` and replicated to all cluster nodes automatically by Proxmox VE.
+
+Must be set together with `chap_user_password` whenever `chap_enabled` is `1`.
+
+### chap_user_password
+
+**Default**: None
+
+**Type**: *string*
+
+**Required**: `False` (required when `chap_enabled 1`)
+
+**Security Note**: `chap_user_password` is handled as a sensitive parameter and
+stored securely in `/etc/pve/priv/storage/joviandss/<storage-id>.pw` instead of
+appearing in `storage.cfg`.
+
+The CHAP initiator password used for iSCSI authentication against JovianDSS targets.
+Minimum length is 12 characters; maximum is 16 characters (iSCSI RFC 3720 limit).
+
+**Usage**:
+- When using `pvesm add` or `pvesm set`: include `--chap_user_password <password>` and it will be stored securely.
+- To rotate the password: run `pvesm set <storeid> --chap_user_password <new-password>`. Active iSCSI sessions are unaffected; the new password takes effect on the next VM start.
 
 
 ### content
@@ -71,191 +137,6 @@ Specifies the types of content stored on this backed. `joviandss` plugin support
     rootdir — container root-directory disks
 
 To store other content types on JovianDSS, please use the [NFS plugin](https://www.open-e.com/site_media/download/documents/howtoresource/Open-E_Jovian_DSS_with_NFS_for_Proxmox_VE_Best_Practices_Guide_1.00.pdf)
-
-### create-base-path
-
-**Default**: None
-
-**Type**: *bool*
-
-**Required**: `False`
-
-Creates [path](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#path) directory if it does not exists.
-
-
-### path
-
-**Default**: None
-
-**Type**: *string*
-
-**Required**: `False`
-
-The folder associated with the JovianDSS Proxmox plugin—intended to host disks and resources presented to the Proxmox VE system—remains unused.
-
-Instead, the plugin attaches iSCSI block devices and creates multipath devices as needed; once a block device appears under `/dev/...` on the Proxmox node, the plugin registers it with the Proxmox VE storage subsystem.
-
-### pool_name
-
-**Default**: Pool-0
-
-**Type**: *string*
-
-**Required**: `True`
-
-The `pool_name` property specifies the target storage `pool` on the JovianDSS side.
-It is case-sensitive and must exactly match an existing `pool` created via the JovianDSS GUI or CLI before plugin configuration.
-If the specified `pool` does not exist, the plugin fails.
-
-This property is foundational: all resources managed by the plugin (volumes, snapshots, iSCSI targets) are provisioned within the named `pool`.
-
-Never create multiple storage `pool` records with the same `pool_name`, as doing so may cause race conditions and unpredictable behavior.
-
-
-### target_prefix
-
-**Default**: iqn.2025-04.proxmox.joviandss.iscsi:
-
-**Type**: *string*
-
-**Required**: `False`
-
-The `target_prefix` is prepended to every iSCSI target created for a volume in a given storage pool.
-Each target name follows this pattern:
-
- `<target_prefix>:vm-<vmID>-<index>`
-
-- <vmID> is the Proxmox VM or container ID.
-- <index> is a sequential number starting at 0, is needed to handle cases when single VM/Container require volume to be active at a same time that is restricted by [luns_per_target](#luns_per_target) property.
-
-**IMPORTANT!**
-During the initial VM startup, all assigned volumes are attached to a target defined by the specified prefix.
-Changing the target prefix afterward may result in errors during live migration and when starting the VM on other nodes in the cluster.
-
-To apply changes to the target, the user must:
-
-1. Turn off the VM or container
-2. Migrate the VM or container to another Proxmox node in offline mode
-3. Manually remove the iSCSI target through the JovianDSS web UI
-
-Example:
-
-If your prefix is `iqn.2025-06.proxmox.pool-2`, the first target for VM 102 would be:
-
-For instance:  `iqn.2025-06.proxmox.pool-2:vm-102-0`.
-
-    Tip: Include the storage pool name in your `target_prefix` to avoid naming collisions when multiple Proxmox clusters share the same JovianDSS server with different `pools`.
-
-
-
-
-
-
-### shared
-
-**Default**: 0
-
-**Type**: *int*
-
-**Required**: `False`
-
-The `shared` property is part of the [Proxmox VE storage system](https://pve.proxmox.com/wiki/Storage)—not the joviandss plugin—and indicates that volumes created on one node are accessible from other nodes.
-
-It has no impact on the plugin’s operation, since all data (volumes and snapshots) resides on the JovianDSS storage from the start.
-
-Its sole purpose is to inform the Proxmox cluster that VMs and containers can be migrated across nodes.
-
-To enable the `shared` property, set it to `1`.
-
-### multipath
-
-**Default**: 0
-
-**Type**: *int*
-
-**Required**: `False`
-
-After enabling multipathing with `multipath 1`, any volume attached thereafter is presented as a multipath device only on the node where Proxmox attaches it. During live migration, the device may briefly appear on both the source and target nodes, but Proxmox guarantees it won’t be attached to more than one node at a time outside of migration.
-
-Changes to multipath or additions to [data_addresses](#data_addresses) take effect only after a full deactivate–activate cycle of the VM/container:
-- VMs or containers started with `multipath 0` continue using direct iSCSI devices. To enable multipathing for a running VM/container, fully deactivate it (Full stop) and then start it again.
-- VMs or containers started with `multipath 1` continue using multipath block devices. To disable multipathing, perform the same full deactivate–activate cycle, setting `multipath 0` before reactivation.
-- Adding a new [data_address](#data_address) does not add paths to running multipath devices, and removing an existing [data_address](#data_address) does not remove paths from them. The VM/container must undergo the full deactivate–activate cycle for the multipath configuration to pick up any additions or removals in data_addresses.
-
-The plugin interacts with multipath devices but does not configure the host’s multipath services.
-Ensure the `multipathd` service is enabled on every node in a cluster and its configuration [complies with the JovianDSS Proxmox plugin requirements](https://github.com/open-e/JovianDSS-Proxmox/wiki/Multipathing).
-
-### disabled
-
-**Default**: 0
-
-**Type**: *int*
-
-**Required**: `False`
-
-When set to 1, the storage entry remains in the cluster configuration but is effectively taken “offline”:
-- Proxmox will skip mounting or activating that storage on any node.
-- The storage no longer appears in individual node listings, though it stays visible under `Datacenter` → `Storage`.
-- Backups, live-migrations, clones, snapshot jobs, replication tasks, etc., will all ignore this storage.
-- Ideal for planned maintenance or testing: you can disable it temporarily without deleting the definition.
-- Editing out (commenting) the 'storage pool' section risks having your configuration removed by the GUI or the API. Using disable preserves the entry and its metadata safely.
-
-
-### user_name
-
-**Default**: admin
-
-**Type**: *string*
-
-**Required**: `True`
-
-The `user_name` property specifies the JovianDSS REST API user name the plugin uses for authentication and command execution.
-Configure it in the JovianDSS web UI under the REST API settings. For details, see:
-- [Quick Start: Enabling the REST API](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start#enable-rest-api)
-- [Advanced Metro HA Cluster Step-by-Step (2-rings)](https://www.open-e.com/site_media/download/documents/Open-E-JovianDSS-Advanced-Metro-High-Avability-Cluster-Step-by-Step-2rings.pdf)
-
-`user_name` must be identical across all nodes in the [High Availability Cluster](https://www.open-e.com/products/open-e-joviandss/open-e-joviandss-advanced-metro-high-availability-cluster-feature-pack/) that share same [pool_name](#pool_name) for `failover` to function correctly.
-
-### user_password
-
-**Default**: None
-
-**Type**: *string*
-
-**Required**: `True`
-
-**Security Note**: `user_password` property is handled as a sensitive parameter and stored securely in `/etc/pve/priv/storage/joviandss/<storage-id>.pw` instead of appearing in the main `storage.cfg` file.
-
-The `user_password` property specifies the JovianDSS REST API password the plugin uses for authentication and command execution. Configure it in the JovianDSS web UI under the REST API settings. `user_password` must be identical across all nodes in the [High Availability Cluster](https://www.open-e.com/products/open-e-joviandss/open-e-joviandss-advanced-metro-high-availability-cluster-feature-pack/) that share same [pool_name](#pool_name) for `failover` to function correctly.
-
-**Usage**:
-- When using `pvesm add` command: Include `--user_password <password>` and it will be automatically stored securely
-- When manually editing storage.cfg: The password line will not appear in the file after being processed
-- To view the stored password: Check `/etc/pve/priv/storage/joviandss/<storage-id>.pw`
-
-For details on REST API configuration, see:
-- [Quick Start: Enabling the REST API](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start#enable-rest-api)
-- [Advanced Metro HA Cluster Step-by-Step (2-rings)](https://www.open-e.com/site_media/download/documents/Open-E-JovianDSS-Advanced-Metro-High-Avability-Cluster-Step-by-Step-2rings.pdf)
-
-
-### ssl_cert_verify
-
-**Default**: `1`
-
-**Type**: *int*
-
-**Required**: `False`
-
-Controls the strictness of SSL/TLS certificate verification for connections from Proxmox to JovianDSS.
-
-By default, strict verification is enabled (`ssl_cert_verify 1`), ensuring only certificates the server considers secure are accepted.
-
-To permit self-signed or otherwise `untrusted` certificates (commonly useful during initial evaluation), set `ssl_cert_verify 0`.
-
-
-Check following JovianDSS guides:
-- [Setting a custom HTTPS certificate](https://www.open-e.com/support-and-services/academy/video-tutorials/video/setting-a-custom-https-certificate/)
-- [HTTPS certificate regeneration](https://kb.open-e.com/jdss-https-certificate-regeneration_3121.html)
 
 ### control_addresses
 
@@ -294,6 +175,16 @@ Specifies the TCP port used for REST commands to JovianDSS over all entries in [
 JovianDSS accepts connections only over SSL/TLS; changing this port does not alter the protocol.
 
 
+### create-base-path
+
+**Default**: None
+
+**Type**: *bool*
+
+**Required**: `False`
+
+Creates [path](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#path) directory if it does not exists.
+
 ### data_addresses
 
 **Default**: None
@@ -322,21 +213,43 @@ For more information, see the [Networking](https://github.com/open-e/JovianDSS-P
 Specifies the TCP port for iSCSI data connections to all entries in [data_addresses](#data_addresses).
 If not set, the default port 3260 is used.
 
-### thin_provisioning
+### debug
 
-**Default**: `1`
+**Default**: `0`
 
 **Type**: *boolean*
 
 **Required**: `False`
 
-Controls whether new volumes created on JovianDSS are thin-provisioned.
+Enables verbose logging of plugin operations to the configured [log_file](#log_file).
 
-When enabled, new volumes are created with minimal initial allocation on JovianDSS. Additional space is allocated from the target pool as data is written.
 
-To create thick-provisioned volumes, set `thin_provisioning 0`. This affects only volumes created after the change; thick volumes consume their full capacity at creation time.
+### disabled
 
-Changing this setting does not affect existing volumes.
+**Default**: 0
+
+**Type**: *int*
+
+**Required**: `False`
+
+When set to 1, the storage entry remains in the cluster configuration but is effectively taken “offline”:
+- Proxmox will skip mounting or activating that storage on any node.
+- The storage no longer appears in individual node listings, though it stays visible under `Datacenter` → `Storage`.
+- Backups, live-migrations, clones, snapshot jobs, replication tasks, etc., will all ignore this storage.
+- Ideal for planned maintenance or testing: you can disable it temporarily without deleting the definition.
+- Editing out (commenting) the 'storage pool' section risks having your configuration removed by the GUI or the API. Using disable preserves the entry and its metadata safely.
+
+
+### log_file
+
+**Default**: `/var/log/joviandss/joviandss.log`
+
+**Type**: *string*
+
+**Required**: `False`
+
+Specifies the filesystem path where the plugin writes its log output. By default, the plugin records basic operational events (e.g., volume creation and deletion). To capture detailed debug information, enable the debug flag. The plugin rotates logs, retaining up to six files of 16 MiB each.
+
 
 ### luns_per_target
 
@@ -355,41 +268,177 @@ Targets are named using the format `<target_prefix>:vm-<vmID>-<index>`:
 
 When a VM or container requires more volumes than `luns_per_target` allows, additional targets are created with the same <vmID> and an incremented <index>.
 
-### block_size
+### multipath
 
-**Default**: `16K`
+**Default**: 0
+
+**Type**: *int*
+
+**Required**: `False`
+
+After enabling multipathing with `multipath 1`, any volume attached thereafter is presented as a multipath device only on the node where Proxmox attaches it. During live migration, the device may briefly appear on both the source and target nodes, but Proxmox guarantees it won’t be attached to more than one node at a time outside of migration.
+
+Changes to multipath or additions to [data_addresses](#data_addresses) take effect only after a full deactivate–activate cycle of the VM/container:
+- VMs or containers started with `multipath 0` continue using direct iSCSI devices. To enable multipathing for a running VM/container, fully deactivate it (Full stop) and then start it again.
+- VMs or containers started with `multipath 1` continue using multipath block devices. To disable multipathing, perform the same full deactivate–activate cycle, setting `multipath 0` before reactivation.
+- Adding a new [data_address](#data_address) does not add paths to running multipath devices, and removing an existing [data_address](#data_address) does not remove paths from them. The VM/container must undergo the full deactivate–activate cycle for the multipath configuration to pick up any additions or removals in data_addresses.
+
+The plugin interacts with multipath devices but does not configure the host’s multipath services.
+Ensure the `multipathd` service is enabled on every node in a cluster and its configuration [complies with the JovianDSS Proxmox plugin requirements](https://github.com/open-e/JovianDSS-Proxmox/wiki/Multipathing).
+
+
+### path
+
+**Default**: None
 
 **Type**: *string*
 
 **Required**: `False`
 
-Specifies the block size for newly created volumes.
+The folder associated with the JovianDSS Proxmox plugin—intended to host disks and resources presented to the Proxmox VE system—remains unused.
 
-Supported values are: 4K, 8K, 16K, 32K, 64K, 128K, 256K, 512K, and 1M.
+Instead, the plugin attaches iSCSI block devices and creates multipath devices as needed; once a block device appears under `/dev/...` on the Proxmox node, the plugin registers it with the Proxmox VE storage subsystem.
 
-This setting does not affect volumes created before it is applied.
+### pool_name
+
+**Default**: Pool-0
+
+**Type**: *string*
+
+**Required**: `True`
+
+The `pool_name` property specifies the target storage `pool` on the JovianDSS side.
+It is case-sensitive and must exactly match an existing `pool` created via the JovianDSS GUI or CLI before plugin configuration.
+If the specified `pool` does not exist, the plugin fails.
+
+This property is foundational: all resources managed by the plugin (volumes, snapshots, iSCSI targets) are provisioned within the named `pool`.
+
+Never create multiple storage `pool` records with the same `pool_name`, as doing so may cause race conditions and unpredictable behavior.
+
+### shared
+
+**Default**: 0
+
+**Type**: *int*
+
+**Required**: `False`
+
+The `shared` property is part of the [Proxmox VE storage system](https://pve.proxmox.com/wiki/Storage)—not the joviandss plugin—and indicates that volumes created on one node are accessible from other nodes.
+
+It has no impact on the plugin’s operation, since all data (volumes and snapshots) resides on the JovianDSS storage from the start.
+
+Its sole purpose is to inform the Proxmox cluster that VMs and containers can be migrated across nodes.
+
+To enable the `shared` property, set it to `1`.
 
 
-### debug
+### ssl_cert_verify
 
-**Default**: `0`
+**Default**: `1`
+
+**Type**: *int*
+
+**Required**: `False`
+
+Controls the strictness of SSL/TLS certificate verification for connections from Proxmox to JovianDSS.
+
+By default, strict verification is enabled (`ssl_cert_verify 1`), ensuring only certificates the server considers secure are accepted.
+
+To permit self-signed or otherwise `untrusted` certificates (commonly useful during initial evaluation), set `ssl_cert_verify 0`.
+
+
+Check following JovianDSS guides:
+- [Setting a custom HTTPS certificate](https://www.open-e.com/support-and-services/academy/video-tutorials/video/setting-a-custom-https-certificate/)
+- [HTTPS certificate regeneration](https://kb.open-e.com/jdss-https-certificate-regeneration_3121.html)
+
+### target_prefix
+
+**Default**: iqn.2025-04.proxmox.joviandss.iscsi:
+
+**Type**: *string*
+
+**Required**: `False`
+
+The `target_prefix` is prepended to every iSCSI target created for a volume in a given storage pool.
+Each target name follows this pattern:
+
+ `<target_prefix>:vm-<vmID>-<index>`
+
+- <vmID> is the Proxmox VM or container ID.
+- <index> is a sequential number starting at 0, is needed to handle cases when single VM/Container require volume to be active at a same time that is restricted by [luns_per_target](#luns_per_target) property.
+
+**IMPORTANT!**
+During the initial VM startup, all assigned volumes are attached to a target defined by the specified prefix.
+Changing the target prefix afterward may result in errors during live migration and when starting the VM on other nodes in the cluster.
+
+To apply changes to the target, the user must:
+
+1. Turn off the VM or container
+2. Migrate the VM or container to another Proxmox node in offline mode
+3. Manually remove the iSCSI target through the JovianDSS web UI
+
+Example:
+
+If your prefix is `iqn.2025-06.proxmox.pool-2`, the first target for VM 102 would be:
+
+For instance:  `iqn.2025-06.proxmox.pool-2:vm-102-0`.
+
+    Tip: Include the storage pool name in your `target_prefix` to avoid naming collisions when multiple Proxmox clusters share the same JovianDSS server with different `pools`.
+
+
+### thin_provisioning
+
+**Default**: `1`
 
 **Type**: *boolean*
 
 **Required**: `False`
 
-Enables verbose logging of plugin operations to the configured [log_file](#log_file).
+Controls whether new volumes created on JovianDSS are thin-provisioned.
+
+When enabled, new volumes are created with minimal initial allocation on JovianDSS. Additional space is allocated from the target pool as data is written.
+
+To create thick-provisioned volumes, set `thin_provisioning 0`. This affects only volumes created after the change; thick volumes consume their full capacity at creation time.
+
+Changing this setting does not affect existing volumes.
 
 
-### log_file
 
-**Default**: `/var/log/joviandss/joviandss.log`
+### user_name
+
+**Default**: admin
 
 **Type**: *string*
 
-**Required**: `False`
+**Required**: `True`
 
-Specifies the filesystem path where the plugin writes its log output. By default, the plugin records basic operational events (e.g., volume creation and deletion). To capture detailed debug information, enable the debug flag. The plugin rotates logs, retaining up to six files of 16 MiB each.
+The `user_name` property specifies the JovianDSS REST API user name the plugin uses for authentication and command execution.
+Configure it in the JovianDSS web UI under the REST API settings. For details, see:
+- [Quick Start: Enabling the REST API](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start#enable-rest-api)
+- [Advanced Metro HA Cluster Step-by-Step (2-rings)](https://www.open-e.com/site_media/download/documents/Open-E-JovianDSS-Advanced-Metro-High-Avability-Cluster-Step-by-Step-2rings.pdf)
+
+`user_name` must be identical across all nodes in the [High Availability Cluster](https://www.open-e.com/products/open-e-joviandss/open-e-joviandss-advanced-metro-high-availability-cluster-feature-pack/) that share same [pool_name](#pool_name) for `failover` to function correctly.
+
+### user_password
+
+**Default**: None
+
+**Type**: *string*
+
+**Required**: `True`
+
+**Security Note**: `user_password` property is handled as a sensitive parameter and stored securely in `/etc/pve/priv/storage/joviandss/<storage-id>.pw` instead of appearing in the main `storage.cfg` file.
+
+The `user_password` property specifies the JovianDSS REST API password the plugin uses for authentication and command execution. Configure it in the JovianDSS web UI under the REST API settings. `user_password` must be identical across all nodes in the [High Availability Cluster](https://www.open-e.com/products/open-e-joviandss/open-e-joviandss-advanced-metro-high-availability-cluster-feature-pack/) that share same [pool_name](#pool_name) for `failover` to function correctly.
+
+**Usage**:
+- When using `pvesm add` command: Include `--user_password <password>` and it will be automatically stored securely
+- When manually editing storage.cfg: The password line will not appear in the file after being processed
+- To view the stored password: Check `/etc/pve/priv/storage/joviandss/<storage-id>.pw`
+
+For details on REST API configuration, see:
+- [Quick Start: Enabling the REST API](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start#enable-rest-api)
+- [Advanced Metro HA Cluster Step-by-Step (2-rings)](https://www.open-e.com/site_media/download/documents/Open-E-JovianDSS-Advanced-Metro-High-Avability-Cluster-Step-by-Step-2rings.pdf)
 
 
 ## Examples
@@ -547,3 +596,41 @@ joviandss: jdss-Pool-2
 ```
 
 For further details on multipathing behavior and best practices, see the [multipathing article](https://github.com/open-e/JovianDSS-Proxmox/wiki/Multipathing).
+
+## CHAP Authentication
+
+Enable CHAP by adding `chap_enabled`, `chap_user_name`, and `chap_user_password`
+to the storage pool record. The password is stored in the private `.pw` file and
+never appears in `storage.cfg`.
+
+```bash
+pvesm set jdss-Pool-0 \
+    --chap_enabled 1 \
+    --chap_user_name chapuser \
+    --chap_user_password <chap-password>
+```
+
+The resulting `storage.cfg` entry:
+
+```
+joviandss: jdss-Pool-0
+        pool_name Pool-0
+        content rootdir,images
+        control_addresses 192.168.28.100
+        control_port 82
+        data_addresses 192.168.29.100
+        luns_per_target 8
+        shared 1
+        ssl_cert_verify 0
+        thin_provisioning 1
+        user_name admin
+        chap_enabled 1
+        chap_user_name chapuser
+        log_file /var/log/joviandss/jdss-Pool-0.log
+```
+
+Note that `chap_user_password` does not appear in the file above — it is written
+to `/etc/pve/priv/storage/joviandss/jdss-Pool-0.pw` alongside `user_password`.
+
+For full details on password rotation, automatic recovery, and troubleshooting,
+see [CHAP Authentication](CHAP-Authentication.md).
