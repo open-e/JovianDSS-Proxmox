@@ -48,7 +48,6 @@ our @EXPORT_OK = qw(
   block_device_path_from_rest
 
   clean_word
-  safe_ford
   cmd_log_output
 
   get_default_control_port
@@ -125,7 +124,7 @@ our @EXPORT_OK = qw(
 
   volume_activate
   volume_deactivate
-  store_settup
+  store_setup
 
   lun_record_local_get_info_list
   lun_record_update_device
@@ -284,7 +283,7 @@ sub get_control_addresses {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
     if ( defined( $scfg->{control_addresses} ) ) {
-        if ( length( $scfg->{control_addresses} ) > 4 ) {
+        if ( length( $scfg->{control_addresses} ) > 2 ) {
             return $scfg->{control_addresses};
         }
     }
@@ -629,6 +628,7 @@ sub clean_word {
     #}
     chomp($word);
     $word =~ s/[^[:ascii:]]//g;
+    $word =~ s/^\s+|\s+$//g;
 
     return $word;
 }
@@ -3715,7 +3715,7 @@ sub volume_get_size {
     return $size;
 }
 
-sub store_settup {
+sub store_setup {
     my ( $ctx ) = @_;
     my $storeid = $ctx->{storeid};
 
@@ -3766,7 +3766,7 @@ sub vm_tag_force_rollback_is_set {
     my @tags = split(/[,;]/, $conf->{tags});
 
     foreach my $tag (@tags) {
-        if ($tag eq 'force_rollback') {
+        if (clean_word($tag) eq 'force_rollback') {
             return 1;
         }
     }

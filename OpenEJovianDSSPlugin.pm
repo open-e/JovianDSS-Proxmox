@@ -406,7 +406,6 @@ sub path {
               . safe_var_print( "snapshot", $snapname )
               . "\nFound records:\n${records_info}"
             );
-            sleep(3);
             die "Resource ${volname}"
               . safe_var_print( "snapshot", $snapname )
               . " have multiple records:\n${records_info}";
@@ -1226,7 +1225,7 @@ sub activate_storage {
     debugmsg( $ctx, "debug",
         "Activate storage ${storeid}\n" );
 
-    store_settup( $ctx );
+    store_setup( $ctx );
 
     return undef if !defined( $ctx->{scfg}{content} );
 
