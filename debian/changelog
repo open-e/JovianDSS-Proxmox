@@ -1,3 +1,32 @@
+open-e-joviandss-proxmox-plugin (0.11.4-0) stable; urgency=medium
+
+    * New: CHAP authentication for iSCSI targets — enable per-storage CHAP via
+      chap_enabled, chap_user_name, chap_user_password in storage configuration;
+      password stored securely in .pw file
+    * New: Clone operation retried automatically when JovianDSS reports volume
+      name conflict under concurrent load; up to 10 attempts with backoff
+    * Fix: VM clone fails when a stale snapshot from a previous partial clone
+      exists on JovianDSS — conflicting snapshot is now removed and recreated
+    * Fix: Deleting a volume with dependent clones could crash instead of
+      reporting a clear error when recursive deletion was not requested
+    * Fix: force_rollback VM tag ignored when Proxmox stores tags with spaces
+      after the delimiter (e.g. "backup; force_rollback")
+    * Fix: Short IPv6 addresses (e.g. ::1) incorrectly rejected as
+      control_addresses
+    * Fix: iSCSI CHAP enforcement flag (incoming_users_active) not updated on
+      JovianDSS when enabling or disabling CHAP on an existing target — target
+      could accept unauthenticated connections despite CHAP users being set
+    * Fix: VM path lookup stalled for 3 seconds before reporting error when
+      multiple LUN records were found
+    * Fix: pvesm set could silently clear user_password when called without
+      providing a new value
+    * Fix: Non-ASCII characters in volume names and sizes not fully stripped —
+      only first occurrence was removed instead of all occurrences
+    * Fix: jdssc clone operation logged a fatal error instead of reporting
+      the actual failure when snapshot deletion was attempted during cleanup
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>, Claude Code (Anthropic AI)  Sun, 27 Apr 2026 00:00:00 +0200
+
 open-e-joviandss-proxmox-plugin (0.11.3-0) stable; urgency=medium
 
     * Fix: pvesm add crash in iSCSI plugin — password_file_set_password and
