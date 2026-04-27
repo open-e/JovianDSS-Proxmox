@@ -1007,7 +1007,7 @@ class JovianRESTAPI(object):
         if force_umount:
             jbody['force_umount'] = True
 
-        LOG.info(("delete snapshot: %(snap) for volume: %(vol)s"
+        LOG.info(("delete snapshot: %(snap)s for volume: %(vol)s"
                   " recursively" if recursively_children else ""
                   " with unmounting" if force_umount else ""),
                  {'vol': jcom.idname(volume_name),

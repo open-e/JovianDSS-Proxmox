@@ -221,6 +221,12 @@ class JovianDSSDriver(object):
             self.ra.delete_lun(vname,
                                force_umount=True,
                                recursively_children=recursive)
+
+        except jexc.JDSSResourceIsBusyException as jerr:
+            LOG.debug('unable to conduct direct volume %s deletion', vname)
+            if recursive is False:
+                raise jerr
+
         except jexc.JDSSResourceNotFoundException:
             LOG.debug('volume %s do not exists, it was already '
                       'deleted', vname)
@@ -411,9 +417,8 @@ class JovianDSSDriver(object):
         try:
             # First we try to delete lun, if it has no snapshots deletion will
             # succeed
-            self.ra.delete_lun(vname,
-                               force_umount=True,
-                               recursively_children=cascade)
+            self._delete_vol_with_source_snap( vname, recursive=cascade)
+
         except jexc.JDSSResourceIsBusyException as jerr:
             LOG.debug('unable to conduct direct volume %s deletion', vname)
             if cascade is False:
@@ -565,7 +570,24 @@ class JovianDSSDriver(object):
             sparse = self.jovian_sparse
 
         if create_snapshot:
-            self.ra.create_snapshot(ovname, sname)
+            try:
+                self.ra.create_snapshot(ovname, sname)
+            except jexc.JDSSSnapshotExistsException as seerr:
+                try:
+                    if jcom.is_volume(sname):
+                        self.ra.delete_snapshot(ovname,
+                                                sname,
+                                                recursively_children=False,
+                                                force_umount=False)
+                        self.ra.create_snapshot(ovname, sname)
+                    else:
+                        raise seerr
+                except jexc.JDSSException as jerrd:
+                    LOG.warning("Because of %s physical snapshot %s of volume"
+                                " %s have to be removed manually",
+                                jerrd,
+                                sname,
+                                ovname)
         try:
             self.ra.create_volume_from_snapshot(
                 cvname,
