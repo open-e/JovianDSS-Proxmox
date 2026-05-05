@@ -1474,6 +1474,11 @@ sub volume_publish {
             unless defined $chap_user && length($chap_user);
         die "chap_user_password is required when chap_enabled is set\n"
             unless defined $chap_pass;
+        # TODO: credentials are passed as argv and are visible in /proc/<pid>/cmdline
+        # for the duration of the jdssc process. Fix: add --chap-credentials-file <path>
+        # to jdssc targets create, write credentials to a 0600 tempfile (File::Temp,
+        # UNLINK=>1), pass the path instead of the values. Same change needed in
+        # target_update_chap below and in the jdssc targets.py / target.py parsers.
         push @$create_target_cmd, '--chap-user', $chap_user, '--chap-password', $chap_pass;
     }
 
@@ -1511,16 +1516,18 @@ sub target_update_chap {
             unless defined $chap_user && length($chap_user);
         die "chap_user_password is required when chap_enabled is set\n"
             unless defined $chap_pass;
+        # TODO: same argv exposure as in volume_publish above — move to
+        # --chap-credentials-file once jdssc target update supports it.
         push @$cmd, '--chap-user', $chap_user, '--chap-password', $chap_pass;
     } else {
         push @$cmd, '--no-chap';
     }
 
     my $last_err;
-    for my $attempt (1 .. 2) {
+    for my $attempt (1 .. 3) {
         eval { joviandss_cmd($ctx, $cmd, 30); };
-        last unless $@;
         $last_err = $@;
+        return unless $last_err;
         debugmsg($ctx, 'warn',
             "target_update_chap attempt ${attempt} failed for "
             . "${targetname}: ${last_err}");
