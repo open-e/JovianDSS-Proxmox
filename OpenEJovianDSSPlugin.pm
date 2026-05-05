@@ -556,13 +556,33 @@ sub _create_base {
 
     my $newnameprefix = join '', 'base-', $vmid, '-disk-';
 
-    my $newname = joviandss_cmd( $ctx,
-        [ "pool", $pool, "volumes", "getfreename", "--prefix", $newnameprefix ]
-    );
-    $newname = clean_word($newname);
+    my $max_retries = 10;
+    my $newname;
+    for my $attempt ( 1 .. $max_retries ) {
+        $newname = joviandss_cmd( $ctx,
+            [ "pool", $pool, "volumes", "getfreename", "--prefix", $newnameprefix ]
+        );
+        $newname = clean_word($newname);
 
-    # Call _rename_volume directly for the same reason.
-    _rename_volume( $class, $ctx, $volname, $vmid, $newname );
+        my $err;
+        eval {
+            # Call _rename_volume directly for the same reason.
+            _rename_volume( $class, $ctx, $volname, $vmid, $newname );
+        };
+        $err = $@;
+        last unless $err;
+        if ( $err =~ /already exists/i && $attempt < $max_retries ) {
+            my $delay = 1 + rand(3);
+            debugmsg( $ctx, "warn",
+                "create_base: volume ${newname} already exists "
+              . "(JovianDSS stale list under load), "
+              . sprintf( "retrying in %.1fs (attempt %d/%d)\n",
+                         $delay, $attempt, $max_retries - 1 ) );
+            select( undef, undef, undef, $delay );
+            next;
+        }
+        die $err;
+    }
 
     return $newname;
 }
