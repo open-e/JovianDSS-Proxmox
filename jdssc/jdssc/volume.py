@@ -133,6 +133,11 @@ class Volume():
 
         rename = parsers.add_parser('rename')
         rename.add_argument('new_name', type=str, help='New volume name')
+        rename.add_argument('--idempotent',
+                            dest='idempotent',
+                            action='store_true',
+                            default=False,
+                            help='Succeed if volume is already renamed')
 
         resize = parsers.add_parser('resize')
         resize.add_argument('--add',
@@ -275,7 +280,8 @@ class Volume():
     def rename(self):
 
         self.jdss.rename_volume(self.args['volume_name'],
-                                self.args['new_name'])
+                                self.args['new_name'],
+                                idempotent=self.args['idempotent'])
 
     def resize(self):
 

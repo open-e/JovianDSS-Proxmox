@@ -504,9 +504,21 @@ sub _rename_volume {
     volume_unpublish( $ctx,
         $original_vmid, $original_volname, undef, undef );
 
-    joviandss_cmd( $ctx,
-        [ "pool", $pool, "volume", $original_volname, "rename", $new_volname ]
-    );
+    #TODO: Lock file have to be updated here
+    my $last_err;
+    for my $attempt (1 .. 3) {
+        eval {
+            joviandss_cmd( $ctx,
+                [ "pool", $pool,
+                  "volume", $original_volname,
+                  "rename", $new_volname, "--idempotent" ],
+                55);
+        };
+        $last_err = $@;
+        return unless $last_err;
+        debugmsg($ctx, 'warn', "volume $original_volname rename to ${new_volname} failed: ${last_err}");
+    }
+    die $last_err if $last_err;
 
     my $newname = "${storeid}:${new_volname}";
     return $newname;
