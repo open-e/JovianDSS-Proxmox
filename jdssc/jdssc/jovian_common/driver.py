@@ -2264,13 +2264,27 @@ class JovianDSSDriver(object):
         vname = jcom.vname(volume_name)
         nvname = jcom.vname(new_volume_name)
         prop = {'name': nvname}
-        try:
-            self.ra.modify_lun(vname, prop)
-        except jexc.JDSSException as err:
-            emsg="Failed to rename volume %(vol)s to %(new_name)s" % {
-                'vol': vname,
-                'new_name': nvname}
-            raise Exception(emsg) from err
+
+        for i in range(3):
+            try:
+                self.ra.modify_lun(vname, prop)
+                return
+            except jexc.JDSSCfgParserException as jcperr:
+                LOG.debug("Internal config handling error: %s", str(jcperr))
+                pass
+            except jexc.JDSSException as err:
+                emsg="Failed to rename volume %(vol)s to %(new_name)s" % {
+                    'vol': vname,
+                    'new_name': nvname}
+                raise Exception(emsg) from err
+
+
+            old_vol = self.ra.is_lun(vname)
+            new_vol = self.ra.is_lun(nvname)
+
+            if old_vol == False and new_vol == True:
+                return
+
 
     def _list_all_snapshots(self, f=None):
         resp = []

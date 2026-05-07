@@ -57,6 +57,9 @@ class JovianRESTAPI(object):
         self.zfs_cmd_error_class = (
             re.compile(r'^zfslib.wrap.zfs.ZfsCmdError$'))
 
+        self.class_cfg_parser_error = (
+            re.compile(r'^opene\.cfgparser\.CfgParserError$'))
+
         self.class_werkzeug_notfound = (
             re.compile(r'werkzeug.exceptions.NotFound'))
 
@@ -360,11 +363,22 @@ class JovianRESTAPI(object):
             LOG.debug("volume %s updated", volume_name)
             return
 
-        if resp["code"] == 500:
-            if resp["error"] is not None:
-                if resp["error"]["errno"] == 1:
-                    raise jexc.JDSSResourceNotFoundException(
-                        res=volume_name)
+        if 'code' in resp and 'error' in resp:
+            if resp["code"] == 500 and resp["error"] is not None:
+                if 'errno' in resp['error']:
+                    if resp["error"]["errno"] == 1:
+                        raise jexc.JDSSResourceNotFoundException(
+                            res=volume_name)
+                    elif resp["error"]["errno"] == 13:
+                        if 'class' in resp['error']:
+                            if self.class_cfg_parser_error.match(
+                                    resp['error']['class']):
+                                if 'message' in resp['error']:
+                                    raise jexc.JDSSCfgParserException(
+                                        resp['error']['message'])
+                                else:
+                                    raise jexc.JDSSCfgParserException(
+                                        "Unknown cfg error")
 
         self._general_error(req, resp)
 
