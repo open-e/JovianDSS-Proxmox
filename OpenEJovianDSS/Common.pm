@@ -3096,7 +3096,7 @@ sub lun_record_local_get_by_path {
         die "Unexpected content in $path";
     }
 
-    for my $key (qw(scsiid volname snapname size multipath hosts multipath shared)) {
+    for my $key (qw(scsiid volname snapname size multipath hosts shared)) {
         die "Local lun record ${path} is missing '$key'"
             unless exists $jdata->{$key};
     }

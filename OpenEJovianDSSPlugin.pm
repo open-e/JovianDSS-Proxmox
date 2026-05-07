@@ -1407,7 +1407,7 @@ sub _deactivate_volume {
     debugmsg( $ctx, "debug",
             "Deactivate volume ${volname}"
           . safe_var_print( "snapshot", $snapname )
-          . "start" );
+          . " start" );
     my $pool   = get_pool($ctx);
     my $prefix = get_target_prefix($ctx);
 
