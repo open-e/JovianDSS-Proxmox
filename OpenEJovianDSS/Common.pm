@@ -1806,7 +1806,7 @@ sub volume_stage_iscsi {
             . " hosts for target ${targetname}");
     }
 
-    for ( my $i = 1 ; $i <= 30 ; $i++ ) {
+    for ( my $i = 1 ; $i <= 60 ; $i++ ) {
         $targets_block_devices =
             block_device_iscsi_paths( $ctx, $targetname, $lunid, \@logged_in );
 
