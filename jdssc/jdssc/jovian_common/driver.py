@@ -2256,7 +2256,7 @@ class JovianDSSDriver(object):
                 'ptype': provisioning})
             raise Exception(emsg) from err
 
-    def rename_volume(self, volume_name, new_volume_name, idempotent=False):
+    def rename_volume(self, volume_name, new_volume_name, idempotent=None):
         LOG.debug("Rename volume %s to %s",
                   volume_name,
                   new_volume_name)
@@ -2265,26 +2265,139 @@ class JovianDSSDriver(object):
         nvname = jcom.vname(new_volume_name)
         prop = {'name': nvname}
 
+        new_volume_info = None
+        old_volume_info = None
         for i in range(3):
+            if idempotent is not None:
+                for i in range(3):
+                    try:
+                        # new volume
+                        vd = {'id': new_volume_name}
+                        new_volume_info = self.get_volume(vd)
+                    except jexc.JDSSVolumeNotFoundException:
+                        break
+                    except jexc.JDSSException:
+                        continue
+
+                    if new_volume_info is not None:
+                        nvsi = None
+
+                        if (('scsi_id' in new_volume_info) and
+                                (new_volume_info['scsi_id'] is not None)):
+                            nvsi = ''.join(['{:x}'.format(ord(c))
+                                   for c in new_volume_info['scsi_id']])
+                        elif (('san_scsi_id' in new_volume_info) and
+                                (new_volume_info['san_scsi_id'] is not None)):
+                            nvsi = ''.join(['{:x}'.format(ord(c))
+                                   for c in new_volume_info['san_scsi_id'][:16]])
+
+
+                        if str(nvsi).lower() == str(idempotent).lower():
+                            return
+                        else:
+                            LOG.error(("Idempotent renaming is impossible since %(new_vol)s "
+                                       "scsi id %(new_vol_scsi)s differ from source volume %(old_vol)s "
+                                       "scsi id %(old_vol_scsi)s"),
+                                      {'new_vol': new_volume_name,
+                                       'new_vol_scsi': nvsi,
+                                       'old_vol': volume_name,
+                                       'old_vol_scsi': idempotent})
+                            raise Exception(("Idempotent renaming is impossible since %(new_vol)s "
+                                       "scsi id %(new_vol_scsi)s differ from source volume %(old_vol)s "
+                                       "scsi id %(old_vol_scsi)s"),
+                                      {'new_vol': new_volume_name,
+                                       'new_vol_scsi': nvsi,
+                                       'old_vol': volume_name,
+                                       'old_vol_scsi': idempotent})
+                    break
+
             try:
-                if idempotent:
-                    old_vol = self.ra.is_lun(vname)
-                    new_vol = self.ra.is_lun(nvname)
+                # original volume
+                vd = {'id': volume_name}
+                old_volume_info = self.get_volume(vd)
+            except jexc.JDSSVolumeNotFoundException:
+                # That is strange, target volume is not present
+                # yet old volume is absent
+                time.sleep(1)
+                continue
+            except jexc.JDSSException:
+                continue
 
-                    if old_vol is False and new_vol is True:
-                        return
+            if idempotent is not None:
 
-                self.ra.modify_lun(vname, prop)
+                ovsi = None
+
+                if (('scsi_id' in old_volume_info) and
+                        (old_volume_info['scsi_id'] is not None)):
+                    ovsi = ''.join(['{:x}'.format(ord(c))
+                                   for c in old_volume_info['scsi_id']])
+                elif (('san_scsi_id' in old_volume_info) and
+                        (old_volume_info['san_scsi_id'] is not None)):
+                    ovsi = ''.join(['{:x}'.format(ord(c))
+                                   for c in old_volume_info['san_scsi_id'][:16]])
+
+                if str(ovsi).lower() == str(idempotent).lower():
+                    try:
+                        self.ra.modify_lun(vname, prop)
+                    except jexc.JDSSCfgParserException as jcperr:
+                        LOG.debug("Internal config handling error: %s",
+                                  str(jcperr))
+                        pass
+                    except jexc.JDSSException as err:
+                        emsg = ("Failed to rename volume %(vol)s "
+                                "to %(new_name)s") % {
+                            'vol': vname,
+                            'new_name': nvname}
+                        raise Exception(emsg) from err
+                else:
+                    LOG.error(("Idempotent renaming is impossible since "
+                               "requested idempotent scsi id "
+                               "%(idempotent_scsi)s differ from "
+                               "current volume %(cur_vol)s"
+                               "scsi id %(cur_vol_scsi)s"),
+                              {
+                               'idempotent_scsi': idempotent,
+                               'cur_vol': volume_name,
+                               'cur_vol_scsi': idempotent})
+                    raise Exception(("Idempotent renaming is impossible since "
+                                     "requested idempotent"
+                                     "scsi id %(idempotent_scsi)s differ from "
+                                     "current volume %(cur_vol)s "
+                                     "scsi id %(cur_vol_scsi)s"),
+                                    {'idempotent_scsi_id': idempotent,
+                                     'cur_vol': volume_name,
+                                     'cur_vol_scsi': idempotent})
+            # Idempotent is None
+            else:
+                try:
+                    self.ra.modify_lun(vname, prop)
+                except jexc.JDSSCfgParserException as jcperr:
+                    LOG.debug("Internal config handling error: %s",
+                              str(jcperr))
+                    pass
+                except jexc.JDSSException as err:
+                    emsg = ("Failed to rename volume %(vol)s "
+                            "to %(new_name)s") % {
+                        'vol': vname,
+                        'new_name': nvname}
+                    raise Exception(emsg) from err
+
+            rename_confirmed = False
+            for i in range(51):
+                new_vol = self.ra.is_lun(nvname)
+                if new_vol is True:
+                    rename_confirmed = True
+                    break
+                LOG.debug("Volume %s renaming have not completed",
+                          str(nvname))
+                time.sleep(1)
+
+            if rename_confirmed:
                 return
-            except jexc.JDSSCfgParserException as jcperr:
-                LOG.debug("Internal config handling error: %s", str(jcperr))
-                pass
-            except jexc.JDSSException as err:
-
-                emsg="Failed to rename volume %(vol)s to %(new_name)s" % {
-                    'vol': vname,
-                    'new_name': nvname}
-                raise Exception(emsg) from err
+            else:
+                LOG.error("Unable to confirm sucessfull volume renaming %(vol)s",
+                          {"vol": volume_name})
+                raise Exception(('Failed to list snapshots %s.') % volume_name)
 
 
     def _list_all_snapshots(self, f=None):

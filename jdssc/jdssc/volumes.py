@@ -95,6 +95,11 @@ class Volumes():
                               required=True,
                               dest='volume_prefix',
                               help='Prefix for the new volume')
+        # TODO: implement suffix support
+        freename.add_argument('--suffix',
+                              required=False,
+                              dest='volume_suffix',
+                              help='Suffix for the new volume')
 
         listp = parsers.add_parser('list')
         listp.add_argument('--vmid',
@@ -226,8 +231,16 @@ class Volumes():
         for i in range(0, sys.maxsize):
             nname = volume_prefix + str(i)
             if nname not in present_volumes:
-                print(nname)
-                return
+
+                vd = {'id': nname}
+                try:
+                    data = self.jdss.get_volume(vd)
+                except jexc.JDSSVolumeNotFoundException:
+                    print(nname)
+                    return
+                except jexc.JDSSResourceNotFoundException:
+                    print(nname)
+                    return
         raise Exception("Unable to find free volume name")
 
     def list(self):

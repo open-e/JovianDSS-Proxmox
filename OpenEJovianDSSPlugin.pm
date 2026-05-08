@@ -504,21 +504,24 @@ sub _rename_volume {
     volume_unpublish( $ctx,
         $original_vmid, $original_volname, undef, undef );
 
+    my $jscsiid = joviandss_cmd(
+            $ctx,
+            [
+                "pool",   $pool,
+                "volume", $original_volname,
+                "get", "-i"
+            ],
+            40, 5
+        );
+
+    $jscsiid = OpenEJovianDSS::Common::clean_word($jscsiid);
+    $jscsiid = OpenEJovianDSS::Common::safe_word($jscsiid);
     #TODO: Lock file have to be updated here
-    my $last_err;
-    for my $attempt (1 .. 3) {
-        eval {
-            joviandss_cmd( $ctx,
-                [ "pool", $pool,
-                  "volume", $original_volname,
-                  "rename", $new_volname, "--idempotent" ],
-                55);
-        };
-        $last_err = $@;
-        return unless $last_err;
-        debugmsg($ctx, 'warn', "volume $original_volname rename to ${new_volname} failed: ${last_err}");
-    }
-    die $last_err if $last_err;
+    joviandss_cmd( $ctx,
+            [ "pool", $pool,
+              "volume", $original_volname,
+              "rename", $new_volname, "--idempotent-scsi-id", $jscsiid ],
+            55, 3);
 
     my $newname = "${storeid}:${new_volname}";
     return $newname;
@@ -718,6 +721,31 @@ sub _clone_image {
     }
     return $clone_name;
 }
+
+sub find_free_diskname {
+    my ($class, $storeid, $scfg, $vmid, $fmt, $add_fmt_suffix) = @_;
+
+    my $ctx = new_ctx($scfg, $storeid);
+    my $pool = get_pool($ctx);
+
+    $fmt //= '';
+    my $prefix = ($fmt eq 'subvol') ? 'subvol-' : 'vm-';
+    my $suffix = $add_fmt_suffix ? ".$fmt" : '';
+
+    # TODO: implement suffix support needed for qcow
+    my $newnameprefix = join '', $prefix, $vmid, '-disk-';
+    my $newname = joviandss_cmd( $ctx,
+        [ "pool", $pool, "volumes", "getfreename",
+            '--prefix', $newnameprefix, '--suffix', $suffix ]
+    );
+
+    $newname = OpenEJovianDSS::Common::clean_word($newname);
+    $newname = OpenEJovianDSS::Common::safe_word($newname);
+    return $newname;
+
+    die "unable to allocate an image name for VM $vmid in storage '$storeid'\n";
+}
+
 
 sub alloc_image {
     my ( $class, $storeid, $scfg, $vmid, $fmt, $name, $size ) = @_;
