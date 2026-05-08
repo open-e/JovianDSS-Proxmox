@@ -1505,23 +1505,59 @@ sub _volume_resize {
     my ( $class, $ctx, $volname, $size, $running ) = @_;
 
     my $pool = get_pool($ctx);
-
+    my $resizeok = 0;
     debugmsg( $ctx, "debug",
         "Resize volume ${volname} to size ${size}" );
 
-    joviandss_cmd( $ctx,
-        [ "pool", "${pool}", "volume", "${volname}", "resize", "${size}" ] );
+    eval {
+        joviandss_cmd( $ctx,
+            [ "pool", "${pool}", "volume", "${volname}", "resize", "${size}" ], 55 );
+    };
+    my $rerr = $@;
+    if (defined($rerr) && $rerr !~ /got timeout/ ) {
+        die $rerr;
+    }
+    my $retry_count = 0;
 
-    my $til =
-      lun_record_local_get_info_list( $ctx,
-        $volname, undef );
-    if ( @$til == 1 ) {
-        my ( $targetname, $lunid, $lunrecpath, $lunrecord ) = @{ $til->[0] };
-        lun_record_update_device( $ctx,
-            $targetname, $lunid, $lunrecpath, $lunrecord, $size );
+    while ( $retry_count <= 10 ) {
+
+        if ( $rerr ) {
+            debugmsg( $ctx, "debug",
+                "Resize volume ${volname} have error ${rerr}" );
+            if ($rerr =~ /got timeout/ ) {
+                sleep( 10 );
+            }
+        } else {
+            $resizeok = 1;
+            last;
+        }
+        my $cursize = OpenEJovianDSS::Common::volume_get_size( $ctx, $volname );
+        $cursize = OpenEJovianDSS::Common::clean_word($cursize);
+
+        if (int($cursize) >= int($size)) {
+            $resizeok = 1;
+            last;
+        }
+
+        local $@;
+        eval {
+            joviandss_cmd( $ctx,
+                [ "pool", "${pool}", "volume", "${volname}", "resize", "${size}" ], 55 );
+        };
+        $rerr = $@;
+        $retry_count++;
     }
 
-    return 1;
+    if ($resizeok) {
+        my $til = lun_record_local_get_info_list( $ctx, $volname, undef );
+        if ( @$til == 1 ) {
+            my ( $targetname, $lunid, $lunrecpath, $lunrecord ) = @{ $til->[0] };
+            lun_record_update_device( $ctx,
+                $targetname, $lunid, $lunrecpath, $lunrecord, $size );
+        }
+        return 1;
+    }
+    die $rerr;
 }
 
 sub parse_volname {

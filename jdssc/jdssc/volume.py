@@ -308,6 +308,6 @@ class Volume():
             volume = {'id': volume_name}
             d = self.jdss.get_volume(volume,
                                      direct_mode=self.args['direct_mode'])
-            if int(d['size']) != size:
-                time.sleep(1)
-                continue
+            if int(d['size']) >= int(size):
+                return
+            time.sleep(1)
