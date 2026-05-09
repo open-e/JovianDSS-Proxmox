@@ -288,7 +288,7 @@ class Targets():
                     self.args['target_group_name'],
                     self.args['volume_name'],
                     snapshot_name=self.args['snapshot_name'],
-                    direct=self.args['direct_mode'])
+                    direct_mode=self.args['direct_mode'])
             except jexc.JDSSTargetNotFoundException:
                 return
             except jexc.JDSSException as jgerr:
