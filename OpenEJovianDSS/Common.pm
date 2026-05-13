@@ -1483,14 +1483,15 @@ sub volume_publish {
     }
 
     my $out = joviandss_cmd( $ctx, $create_target_cmd, 180, 5 );
-    my ( $targetname, $lunid, $ips ) = split( ' ', $out );
+    my ( $targetname, $lunid, $ips, $scsiid ) = split( ' ', $out );
 
     my @iplist = split /\s*,\s*/, clean_word($ips);
 
     my %tinfo = (
-        target => clean_word($targetname),
-        lunid  => clean_word($lunid),
-        iplist => \@iplist
+        target  => clean_word($targetname),
+        lunid   => clean_word($lunid),
+        iplist  => \@iplist,
+        scsiid  => clean_word($scsiid),
     );
     debugmsg( $ctx, "debug",
             "Publish volume ${volname} "
@@ -1498,7 +1499,8 @@ sub volume_publish {
           . 'acquired '
           . "target ${targetname} "
           . "lun ${lunid} "
-          . "hosts @{iplist}");
+          . "hosts @{iplist} "
+          . "scsiid " . ( $scsiid // 'undef' ) );
 
     return \%tinfo;
 }
@@ -1579,15 +1581,146 @@ sub _iscsiadm_clear_chap {
     }
 }
 
+
+# Runs rescan-scsi-bus.sh for $lunid only when no other instance is active.
+# retrun 0 and skips silently when a concurrent rescan is already in progress
+# return 0 if error happens
+# return 1 if rescan is completed
+sub _scsi_bus_rescan_try {
+    my ($ctx, $lunid) = @_;
+
+    my $busy = 0;
+    eval {
+        my $chk = ['pgrep', '-f', 'rescan-scsi-bus.sh'];
+        run_command(
+            $chk,
+            outfunc => sub { $busy = 1; },
+            errfunc => sub { },
+            noerr   => 1,
+        );
+    };
+
+    if ($busy) {
+        debugmsg($ctx, 'debug',
+            "rescan-scsi-bus.sh already running, skipping rescan for lun ${lunid}\n");
+        return 0;
+    }
+
+    my $cmd = [
+        '/usr/bin/rescan-scsi-bus.sh',
+        '--sparselun', '--reportlun2', '--largelun',
+        "--luns=${lunid}", '-a',
+    ];
+
+    my $errcode = run_command(
+        $cmd,
+        outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+        errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+        timeout => 55,
+        noerr   => 1,
+    );
+    if ($errcode == 0 ) {
+        return 1;
+    }
+    return 0;
+}
+
+
+# _rescan_target_hosts($ctx, $targetname, $lunid)
+#
+# Trigger a SCSI LUN rescan only on the hosts that carry an iSCSI session
+# for $targetname.  Reads the mapping from sysfs:
+#   /sys/class/iscsi_session/session{N}/targetname  -> IQN
+#   /sys/class/iscsi_session/session{N}/device      -> symlink -> host{H}
+#   /sys/class/scsi_host/host{H}/scan               -> write "- - {lun}"
+#
+# Safe to call from multiple parallel processes: each touches only its own
+# session hosts, so there is no cross-VM interference.
+#
+# if targetd rescan is not possible will attempt brorad scsi scan for all targets
+# broad scan will happen only if no other scan scritps are going at the moment
+sub _rescan_target_hosts {
+    my ( $ctx, $targetname, $lunid ) = @_;
+
+    my $session_dir = '/sys/class/iscsi_session';
+    opendir( my $session_dir_desc, $session_dir ) or do {
+        debugmsg( $ctx, 'warn', "Cannot open $session_dir $!\n" );
+
+        # Unable to open iscsi_session folder containing mappings of
+        # iscsi sessions
+        # proceed will broad scan
+
+        _scsi_bus_rescan_try($ctx, $lunid);
+        return;
+    };
+    my @sessions = grep { /^session\d+$/ } readdir($session_dir_desc);
+    closedir($session_dir_desc);
+
+    # Iterate over iscsi sessions projected in /sys/class/iscsi_session folder
+    # to identigy session related to target @targetname
+
+    for my $session (@sessions) {
+        my $targetname_file_path = "$session_dir/$session/targetname";
+
+
+        if ( !-f $targetname_file_path ) {
+            next;
+        }
+
+        open( my $targetfile_desc, '<', $targetname_file_path ) or next;
+
+        my $session_target = <$targetfile_desc>;
+
+        $session_target = clean_word($session_target);
+        $session_target = safe_word($session_target);
+
+        close $targetfile_desc;
+
+        if ( !defined $session_target ) {
+            next;
+        }
+
+        if ( $session_target ne $targetname ) {
+            next;
+        }
+
+        # iscsi $session is related to $targetname
+        my $session_rescan_completed = 0;
+        my $session_device_link = "$session_dir/$session/device";
+        if ( -l $session_device_link ) {
+            my $session_device_path = Cwd::realpath($session_device_link);
+            if ( defined( $session_device_path ) ) {
+                my ( $session_host_name ) = ( $session_device_path =~ m{/(host\d+)/} );
+
+                my $session_scan_path = "/sys/class/scsi_host/$session_host_name/scan";
+                if ( open( my $session_scan_desc, '>', $session_scan_path ) ) {
+                    print $session_scan_desc "- - $lunid\n";
+                    close $session_scan_desc;
+                    $session_rescan_completed = 1;
+                    debugmsg( $ctx, 'debug',
+                        "Targeted rescan: $session_device_path for target $targetname lun $lunid\n" );
+                } else {
+                    debugmsg( $ctx, 'warn', "Cannot write to $session_scan_path: $!\n" );
+                }
+            }
+        }
+        if ( $session_rescan_completed == 0) {
+            debugmsg( $ctx, 'debug',
+                "Because of inability to send targeted rescan for target $targetname lun $lunid, try conducting General rescan across all targets\n" );
+            _scsi_bus_rescan_try($ctx, $lunid);
+        }
+    }
+}
+
 sub volume_stage_iscsi {
-    my ( $ctx, $targetname, $lunid, $hosts ) = @_;
+    my ( $ctx, $targetname, $lunid, $hosts, $scsiid ) = @_;
 
     debugmsg( $ctx, "debug", "Stage target ${targetname} lun ${lunid} over addresses @$hosts\n" );
 
-    # Fast path: all block devices already present.
-    my $targets_block_devices = block_device_iscsi_paths( $ctx, $targetname, $lunid, $hosts );
-    if ( @$targets_block_devices == @$hosts ) {
-        return $targets_block_devices;
+    # Fast path: block device already present.
+    my $serial_path = block_device_path_from_serial( $scsiid, 0 );
+    if ( -b $serial_path ) {
+        return [$serial_path];
     }
 
     # Helper: refresh %host_has_session from iscsiadm --mode session output.
@@ -1807,46 +1940,26 @@ sub volume_stage_iscsi {
     }
 
     for ( my $i = 1 ; $i <= 60 ; $i++ ) {
-        $targets_block_devices =
-            block_device_iscsi_paths( $ctx, $targetname, $lunid, \@logged_in );
-
-        if ( @$targets_block_devices == @logged_in ) {
-            debugmsg( $ctx, "debug", "Stage iSCSI block devices @{ $targets_block_devices }\n" );
-            return $targets_block_devices;
+        if ( -b $serial_path ) {
+            debugmsg( $ctx, "debug", "Stage iSCSI block device ${serial_path}\n" );
+            return [$serial_path];
         }
 
-        debugmsg( $ctx, "debug", "Waiting for block devices: got "
-            . scalar(@$targets_block_devices) . " of " . scalar(@logged_in)
-            . " (attempt ${i}/30)\n" );
+        debugmsg( $ctx, "debug", "Waiting for block device ${serial_path} (attempt ${i}/60)\n" );
 
         sleep(1);
 
         # Run rescan-scsi-bus only every 3rd attempt — under concurrent load
         # each rescan takes minutes and many concurrent rescans cause SCSI bus
         # congestion.
-        if ( $i % 3 == 0 && $lunid =~ /^\A\d+\z$/ ) {
-            eval {
-                my $cmd = [
-                    '/usr/bin/rescan-scsi-bus.sh',
-                    '--sparselun', '--reportlun2', '--largelun',
-                    "--luns=${lunid}", '-a'
-                ];
-                run_command(
-                    $cmd,
-                    outfunc  => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                    errfunc  => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-                    timeout  => 60,
-                    noerr    => 1
-                );
-            };
-        } elsif ( $lunid !~ /^\A\d+\z$/ ) {
-            debugmsg( $ctx, "warn", "Lun id ${lunid} contains non digit symbols" );
+        if ( $i % 3 == 0 ) {
+            _rescan_target_hosts( $ctx, $targetname, $lunid );
         }
     }
 
-    log_dir_content($ctx, '/dev/disk/by-path');
+    #log_dir_content($ctx, '/dev/disk/by-id');
     debugmsg( $ctx, "warn",
-        "Unable to identify iscsi block device location @{ $targets_block_devices }\n" );
+        "Unable to identify block device for scsi id ${scsiid}\n" );
 
     die "Unable to locate target ${targetname} block device location.\n";
 }
@@ -3245,6 +3358,7 @@ sub volume_activate {
             $targetname = $tinfo->{target};
             $lunid = $tinfo->{lunid};
             $hosts = $tinfo->{iplist};
+            $scsiid = $tinfo->{scsiid};
         } else {
             die "Publishing volume ${volname} " . safe_var_print( "snapshot", $snapname ) .
                 " failed to provide target info\n";
@@ -3256,13 +3370,13 @@ sub volume_activate {
             $targetname,
             $lunid,
             $hosts,
+            $scsiid,
         );
         $block_devs = $tbdlist;
 
         unless (scalar(@$block_devs) == scalar(@$hosts)) {
             die "Unable to connect all storage addresses\n";
         }
-        $scsiid = id_serial_from_rest( $ctx, $volname, $snapname );
 
         if (defined( $scsiid ) ) {
             $scsiid_acquired = 1;
