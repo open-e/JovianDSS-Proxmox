@@ -96,9 +96,9 @@ class Target():
 
     def update(self):
         target_name = self.args['target_name']
-        no_chap    = self.args.get('no_chap', False)
-        chap_user  = self.args.get('chap_user')
-        chap_pass  = self.args.get('chap_password')
+        no_chap = self.args.get('no_chap', False)
+        chap_user = self.args.get('chap_user')
+        chap_pass = self.args.get('chap_password')
 
         if no_chap and (chap_user or chap_pass):
             LOG.error("--no-chap cannot be combined with "

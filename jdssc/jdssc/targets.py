@@ -244,10 +244,16 @@ class Targets():
             LOG.error(jgerr.message)
             exit(1)
 
-        out = ('%(target)s %(lun)d %(hosts)s' % {
+        raw_scsi_id = tinfo.get('scsi_id', '')
+        if raw_scsi_id:
+            wwid = '2' + ''.join('{:x}'.format(ord(c)) for c in raw_scsi_id[:8])
+        else:
+            wwid = ''
+        out = ('%(target)s %(lun)d %(hosts)s %(wwid)s' % {
             'target': tinfo['target'],
             'lun': tinfo['lun'],
-            'hosts': ','.join(tinfo['vips'])})
+            'hosts': ','.join(tinfo['vips']),
+            'wwid': wwid})
         print(out)
 
     def delete(self):
@@ -302,9 +308,9 @@ class Targets():
                   self.args['volume_name'],
                   tinfo)
 
-        out = "{tname} {lun} {hosts}\n".format(tname=tinfo['target'],
-                                               lun=tinfo['lun'],
-                                               hosts=tinfo['vips'])
+        out = '{target} {lun} {hosts}'.format(target=tinfo['target'],
+                                             lun=tinfo['lun'],
+                                             hosts=','.join(tinfo['vips']))
         print(out)
 
     def list(self):

@@ -740,6 +740,25 @@ class JovianRESTAPI(object):
 
         self._general_error(req, resp)
 
+    def get_target_by_lun_name(self, volume_name):
+        """Get iSCSI LUN entries for a volume across all targets and pools.
+
+        GET /san/iscsi/luns?where=name=={volume_name}
+
+        :param volume_name: physical volume name to search for
+        :return: list of dicts with keys lun, iscsi_target, pool
+        """
+        req = '/san/iscsi/luns?where=name==%s' % volume_name
+
+        LOG.debug("get luns for volume %s", volume_name)
+
+        resp = self.rproxy.request('GET', req)
+
+        if not resp["error"] and resp["code"] == 200:
+            return resp['data']
+
+        self._general_error(req, resp)
+
     def get_target_user(self, target_name):
         """Get name of CHAP user for accessing target
 
@@ -826,6 +845,31 @@ class JovianRESTAPI(object):
 
         self._general_error(req, resp)
 
+    def get_target_lun(self, target_name, lun_name):
+        """get_target_lun.
+
+        GET /san/iscsi/targets/<target_name>/luns/<lun_name>
+        :param target_name: target name
+        :param lun_name: zvol name attached to target
+        :return: lun data dict
+        """
+        req = '/san/iscsi/targets/%(tar)s/luns/%(lun)s' % {
+            'tar': target_name,
+            'lun': lun_name}
+
+        LOG.debug("get lun info for volume %(vol)s on target %(tar)s",
+                  {'vol': lun_name,
+                   'tar': target_name})
+        resp = self.rproxy.pool_request('GET', req)
+
+        if not resp["error"] and resp["code"] == 200:
+            return resp["data"]
+
+        if resp['code'] == 404:
+            raise jexc.JDSSResourceNotFoundException(res=lun_name)
+
+        self._general_error(req, resp)
+
     def attach_target_vol(self, target_name, lun_name,
                           lun_id=0,
                           mode=None):
@@ -854,7 +898,7 @@ class JovianRESTAPI(object):
         resp = self.rproxy.pool_request('POST', req, json_data=jbody)
 
         if not resp["error"] and resp["code"] == 201:
-            return
+            return resp["data"]
 
         if resp["error"]:
             if ('class' in resp["error"] and

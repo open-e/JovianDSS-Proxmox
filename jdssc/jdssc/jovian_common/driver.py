@@ -759,7 +759,8 @@ class JovianDSSDriver(object):
                     target_name,
                     scname,
                     luns_per_target=luns_per_target)
-            (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
+            (tname, lun_id, volume_attached_flag, new_target_flag,
+             acq_scsi_id) = tvld
 
             if new_target_flag:
                 # TODO: hendle case when volume is already assigned to target
@@ -770,10 +771,11 @@ class JovianDSSDriver(object):
                                                       lun_id,
                                                       provider_auth)
 
-            return self._ensure_target_volume_lun(tname,
-                                                  scname,
-                                                  lun_id,
-                                                  provider_auth)
+            return self._ensure_target_volume_lun(
+                tname, scname, lun_id, provider_auth,
+                volume_attached=volume_attached_flag,
+                new_target=new_target_flag,
+                scsi_id=acq_scsi_id)
 
         except Exception as err:
             self._delete_volume(scname, cascade=True)
@@ -805,7 +807,7 @@ class JovianDSSDriver(object):
         tvld = self._acquire_taget_volume_lun(target_prefix,
                                               target_name,
                                               vname)
-        (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
+        (tname, lun_id, volume_attached_flag, new_target_flag, _) = tvld
 
         if volume_attached_flag:
             try:
@@ -846,7 +848,7 @@ class JovianDSSDriver(object):
         tvld = self._acquire_taget_volume_lun(target_prefix,
                                               target_name,
                                               scname)
-        (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
+        (tname, lun_id, volume_attached_flag, new_target_flag, _) = tvld
 
         try:
             if (volume_attached_flag or (new_target_flag is False)):
@@ -984,7 +986,7 @@ class JovianDSSDriver(object):
                                               target_name,
                                               vname)
 
-        (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
+        (tname, lun_id, volume_attached_flag, new_target_flag, scsi_id) = tvld
 
         if new_target_flag or (volume_attached_flag is False):
             return None
@@ -995,6 +997,7 @@ class JovianDSSDriver(object):
         volume_info['vips'] = list(conforming_vips.values())
         volume_info['target'] = tname
         volume_info['lun'] = lun_id
+        volume_info['scsi_id'] = scsi_id
         return volume_info
 
     def _detach_volume(self, vname, target_name=None):
@@ -1143,7 +1146,8 @@ class JovianDSSDriver(object):
                 pass
 
     def _ensure_target_volume_lun(self, tname, vname, lid, provider_auth,
-                                  ro=False):
+                                  ro=False, volume_attached=False,
+                                  new_target=False, scsi_id=None):
         """Checks if target configured properly and volume is attached to it
             at given lun
 
@@ -1180,6 +1184,7 @@ class JovianDSSDriver(object):
         # first we check if given target exists
         # if not we do not need to run complex checks and
         # and can create it from ground up
+        # target_data will be needed later to confirm vip addresses
         try:
             target_data = self.ra.get_target(tname)
         except jexc.JDSSResourceNotFoundException:
@@ -1204,162 +1209,187 @@ class JovianDSSDriver(object):
                                                   tname,
                                                   lid,
                                                   provider_auth)
-        try:
-            volume_publication_info['target'] = tname
 
-            # Here expected vips is a set of vip by name
-            expected_vips = self._get_conforming_vips()
-            if (('vip_allowed_portals' in target_data) and
-                    (set(target_data['vip_allowed_portals']['assigned_vips']) ==
-                     set(expected_vips.keys()))):
-                pass
-            else:
-                self.ra.set_target_assigned_vips(tname,
-                                                 list(expected_vips.keys()))
+        volume_publication_info['target'] = tname
 
-            volume_publication_info['vips'] = list(expected_vips.values())
-            if not self.ra.is_target_lun(tname, vname, lid):
+        # Ensure vips are set
+        # Here expected vips is a set of vip by name
+        expected_vips = self._get_conforming_vips()
+        if (('vip_allowed_portals' in target_data) and
+                (set(target_data['vip_allowed_portals']['assigned_vips']) ==
+                 set(expected_vips.keys()))):
+            pass
+        else:
+            self.ra.set_target_assigned_vips(tname,
+                                             list(expected_vips.keys()))
+
+        volume_publication_info['vips'] = list(expected_vips.values())
+
+        if not scsi_id:
+            try:
+                lun_info = self.ra.get_target_lun(tname, vname)
+                scsi_id = lun_info['scsi_id']
+            except jexc.JDSSResourceNotFoundException:
                 try:
-                    self._attach_target_volume_lun(tname, vname, lid)
-                except jexc.JDSSResourceIsBusyException:
+                    lun_data = self._attach_target_volume_lun(tname, vname, lid)
+                    if lun_data:
+                        scsi_id = lun_data['scsi_id']
+                    if not scsi_id:
+                        try:
+                            lun_info = self.ra.get_target_lun(tname, vname)
+                            scsi_id = lun_info['scsi_id']
+                        except jexc.JDSSException:
+                            LOG.warning("Unable to retrieve scsi_id for %s "
+                                        "on target %s", vname, tname)
+                except jexc.JDSSResourceIsBusyException as busy_err:
                     # The attach POST may have been processed by a previous
                     # timed-out request.  Re-check before giving up.
-                    if self.ra.is_target_lun(tname, vname, lid):
+                    try:
+                        lun_info = self.ra.get_target_lun(tname, vname)
+                        scsi_id = lun_info['scsi_id']
                         LOG.info("Volume %s attached to target %s "
                                  "by prior request", vname, tname)
-                    else:
-                        raise
+                    except jexc.JDSSResourceNotFoundException:
+                        raise busy_err
 
-            volume_publication_info['lun'] = lid
+        if not scsi_id:
+            raise jexc.JDSSException(
+                "Unable to acquire scsi_id for volume %(vol)s "
+                "on target %(target)s" % {'vol': vname, 'target': tname})
+        volume_publication_info['scsi_id'] = scsi_id
+        volume_publication_info['lun'] = lid
 
-            if provider_auth is not None:
+        if provider_auth is not None:
 
-                (__, auth_username, auth_secret) = provider_auth.split()
-                volume_publication_info['username'] = auth_username
-                volume_publication_info['password'] = auth_secret
+            (__, auth_username, auth_secret) = provider_auth.split()
+            volume_publication_info['username'] = auth_username
+            volume_publication_info['password'] = auth_secret
 
-                chap_cred = {"name": auth_username,
-                             "password": auth_secret}
+            chap_cred = {"name": auth_username,
+                         "password": auth_secret}
 
-                try:
-                    users = self.ra.get_target_user(tname)
-                    if not (len(users) == 1 and
-                            users[0]['name'] == chap_cred['name']):
-                        for user in users:
-                            self.ra.delete_target_user(tname, user['name'])
-                        self._set_target_credentials(tname, chap_cred)
-                except jexc.JDSSException as jerr:
-                    self.ra.delete_target(tname)
-                    raise jerr
-
-                if not target_data.get('incoming_users_active', False):
-                    self.ra.set_target_incoming_users_active(tname, True)
-            else:
-                if target_data.get('incoming_users_active', False):
-                    self.ra.set_target_incoming_users_active(tname, False)
-                try:
-                    users = self.ra.get_target_user(tname)
+            try:
+                users = self.ra.get_target_user(tname)
+                if not (len(users) == 1 and
+                        users[0]['name'] == chap_cred['name']):
                     for user in users:
                         self.ra.delete_target_user(tname, user['name'])
-                except jexc.JDSSResourceNotFoundException:
-                    pass
+                    self._set_target_credentials(tname, chap_cred)
+            except jexc.JDSSException:
+                raise
 
-        except jexc.JDSSResourceNotFoundException:
-            LOG.debug("Target %s vanished during ensure, recreating", tname)
-            return self._create_target_volume_lun(tname, vname, lid,
-                                                  provider_auth)
+            if not target_data.get('incoming_users_active', False):
+                self.ra.set_target_incoming_users_active(tname, True)
+        else:
+            if target_data.get('incoming_users_active', False):
+                self.ra.set_target_incoming_users_active(tname, False)
+            try:
+                users = self.ra.get_target_user(tname)
+                for user in users:
+                    self.ra.delete_target_user(tname, user['name'])
+            except jexc.JDSSResourceNotFoundException:
+                pass
 
         return volume_publication_info
 
     def _acquire_taget_volume_lun(self, target_prefix, target_name, vname,
                                   luns_per_target=8):
-        """Get target name and lun number for given volume
+        """Get target name and lun number for given volume.
 
-        This function acts as replacement for _get_target_name function
-        because with new logic of target name generation we cannot
-        know in advance name of a target for a given volume we have
-        make requests to check existing targets
+        Returns a 5-tuple:
+        (<target_name>, <lun_id>, <volume_attached>, <new_target>, <scsi_id>)
 
-        It returns tuple:
-        (<target_name>, <lun_id>, <volume attached>,<new target>)
-
-        <target_name> is a str of a target shat should be used
-        <lun id> is a int if a lun that should be used
-        <volume attached> is a bool of indicating that given volume
-            already attached and <taget name> and <lun id> depicting
-            target and lun that are used to attach volume
-            if given flag is false then volume is not attached and
-            lun number indicates where volume can be attached to
-        <new target> is a bool that is set to True if and only if
-            target <target_name> do not exists and it is recommended to create
-            one and attache volume to lun with ID specified at <lun_id>
-
-        :return: (<target_name>, <lun_id>, <volume attached>,<new target>)
+        <target_name>    str  - target to use
+        <lun_id>         int  - lun slot to use
+        <volume_attached> bool - True if volume is already attached at the
+                                 returned target/lun; False means the slot
+                                 is free and volume should be attached there
+        <new_target>     bool - True if target does not exist yet and should
+                                 be created before attaching
+        <scsi_id>        str|None - scsi_id when volume_attached is True
         """
         tname = target_prefix + target_name
         if target_prefix[-1] != ':':
             tname = target_prefix + ':' + target_name
 
+        # Fast path: ask the array directly which target+lun carries this
+        # volume.  Filters by pool so results from other pools are ignored.
+        # This also handles the case where the volume was attached under a
+        # different target_prefix (supersedes the old TODO comment).
+        for entry in self.ra.get_target_by_lun_name(vname):
+            if entry.get('pool') != self._pool:
+                continue
+
+            target = None
+            lun_id = None
+            scsi_id = None
+
+            if 'iscsi_target' in entry:
+                target = entry['iscsi_target']['name']
+
+            if 'lun' in entry:
+                lun_id = entry['lun']['lun']
+                scsi_id = entry['lun']['scsi_id']
+
+            if target is None:
+                raise jexc.JDSSException(
+                    "get_target_by_lun_name returned incomplete data "
+                    "for volume %(vol)s, missing target name" % {
+                        'vol': vname})
+
+            if lun_id is None or not scsi_id:
+                lun_info = self.ra.get_target_lun(target, vname)
+                lun_id = lun_info['lun'] if lun_info else None
+                scsi_id = lun_info.get('scsi_id') if lun_info else None
+
+            LOG.debug("Volume %s already attached: target %s lun %s",
+                      vname, target, lun_id)
+            return (target, lun_id, True, False, scsi_id)
+
+        # Volume is not attached — find a free lun slot in an existing
+        # related target, scanning in sorted order.
         tlist = self.list_targets()
         target_re = re.compile(fr'^{tname}-(?P<id>\d+)$')
 
         related_targets = []
         related_targets_indexes = []
-
         for target in tlist:
             m = target_re.match(target)
             if m is not None:
                 related_targets.append(target)
                 related_targets_indexes.append(m.group('id'))
                 LOG.debug("Related target %s with index %s",
-                          target,
-                          m.group('id'))
+                          target, m.group('id'))
 
-        # We found list of targets that might be related to
-        # same volume group that volume of interest
-        candidate_lun = None
-        if related_targets is not None:
-            related_targets.sort()
+        related_targets.sort()
         for target in related_targets:
             try:
                 luns = self.ra.get_target_luns(target)
             except jexc.JDSSResourceNotFoundException:
-                # Target disappeared between list_targets() and get_target_luns()
-                # (concurrent deletion). Skip it and continue scanning.
-                LOG.debug("Target %s vanished during acquisition scan, skipping",
-                          target)
+                LOG.debug("Target %s vanished during scan, skipping", target)
                 continue
-            taken_luns = []
-            # For each target we check if it has volume of interest
-            # already attached
-            for lun in luns:
-                if lun['name'] == vname:
-                    return (target, lun['lun'], True, False)
-                taken_luns.append(int(lun['lun']))
-            if candidate_lun is None:
-                LOG.debug("Target %s has %d luns occupied: %s",
-                          target, len(taken_luns), str(taken_luns))
-                if len(taken_luns) >= luns_per_target:
-                    continue
-                for i in range(luns_per_target):
-                    if i not in taken_luns:
-                        LOG.debug("Found empty lun at target %s lun %d",
-                                  target, i)
-                        candidate_lun = (target, i)
-                        break
-        # TODO: search over all targets, as target prefix might change
+            taken_luns = [int(lun['lun']) for lun in luns]
+            LOG.debug("Target %s has %d luns occupied: %s",
+                      target, len(taken_luns), str(taken_luns))
+            if len(taken_luns) >= luns_per_target:
+                continue
+            for i in range(luns_per_target):
+                if i not in taken_luns:
+                    LOG.debug("Found empty lun at target %s lun %d",
+                              target, i)
+                    return (target, i, False, False, None)
 
-        if candidate_lun is not None:
-            return (candidate_lun[0], candidate_lun[1], False, False)
-
-        for i in range(len(related_targets_indexes) + 1):
-            if i not in related_targets_indexes:
+        # No existing target has a free slot — pick the lowest unused index
+        # and signal the caller to create a new target.
+        existing_indexes = {int(idx) for idx in related_targets_indexes}
+        for i in range(len(existing_indexes) + 1):
+            if i not in existing_indexes:
                 tcandidate = '-'.join([tname, str(i)])
                 try:
                     self.ra.get_target(tcandidate)
                 except jexc.JDSSResourceNotFoundException:
-                    return (tcandidate, 0, False, True)
-        return ('-'.join([tname, '0']), 0, False, True)
+                    return (tcandidate, 0, False, True, None)
+        return ('-'.join([tname, '0']), 0, False, True, None)
 
     def ensure_target_volume(self,
                              target_prefix,
@@ -1410,13 +1440,13 @@ class JovianDSSDriver(object):
         for attempt in range(max_retries):
             try:
                 # target volume lun descriptor of form
-                # (<target_name>, <lun_id>, <volume attached>, <new target>)
+                # (<target_name>, <lun_id>, <volume attached>, <new target>, <scsi_id>)
                 tvld = self._acquire_taget_volume_lun(
                     target_prefix,
                     target_name,
                     vname,
                     luns_per_target=luns_per_target)
-                (tname, lun_id, volume_attached_flag, new_target_flag) = tvld
+                (tname, lun_id, volume_attached_flag, new_target_flag, acq_scsi_id) = tvld
 
                 if new_target_flag:
                     return self._create_target_volume_lun(tname,
@@ -1511,9 +1541,9 @@ class JovianDSSDriver(object):
         LOG.debug("create target %s and assigne volume %s to lun %s",
                   target_name, vid, lid)
 
-        volume_publication_info=dict()
-        conforming_vips=self._get_conforming_vips()
-        volume_publication_info['vips']=list(conforming_vips.values())
+        volume_publication_info = dict()
+        conforming_vips = self._get_conforming_vips()
+        volume_publication_info['vips'] = list(conforming_vips.values())
         # Create target
         try:
             self.ra.create_target(target_name,
@@ -1523,20 +1553,30 @@ class JovianDSSDriver(object):
             # Target may have been created by a prior timed-out request.
             LOG.info("Target %s already exists, proceeding with "
                      "volume attachment", target_name)
-        volume_publication_info['target']=target_name
+        volume_publication_info['target'] = target_name
         try:
             # Attach volume
-            self._attach_target_volume_lun(target_name, vid, lid)
+            lun_data = self._attach_target_volume_lun(target_name, vid, lid)
+            scsi_id = lun_data.get('scsi_id') if lun_data else None
+            if not scsi_id:
+                lun_info = self.ra.get_target_lun(target_name, vid)
+                scsi_id = lun_info.get('scsi_id') if lun_info else None
+            if not scsi_id:
+                raise jexc.JDSSException(
+                    "Unable to acquire scsi_id for volume %(vol)s "
+                    "on target %(target)s" % {
+                        'vol': vid, 'target': target_name})
+            volume_publication_info['scsi_id'] = scsi_id
         except Exception as err:
             raise err
             # TODO: finish this
 
-        volume_publication_info['lun']=lid
+        volume_publication_info['lun'] = lid
         # Set credentials
         if provider_auth is not None:
-            (__, auth_username, auth_secret)=provider_auth.split()
-            volume_publication_info['username']=auth_username
-            volume_publication_info['password']=auth_secret
+            (__, auth_username, auth_secret) = provider_auth.split()
+            volume_publication_info['username'] = auth_username
+            volume_publication_info['password'] = auth_secret
             chap_cred={"name": auth_username,
                          "password": auth_secret}
 
@@ -1547,12 +1587,12 @@ class JovianDSSDriver(object):
     def _list_targets(self):
         """List targets
         """
-        targets=[]
-        i=0
+        targets = []
+        i = 0
         # First we list all volume snapshots page by page
         try:
             while True:
-                tpage=self.ra.get_targets_page(i)
+                tpage = self.ra.get_targets_page(i)
 
                 if len(tpage) > 0:
                     LOG.debug("Page: %s", str(tpage))
@@ -1649,8 +1689,8 @@ class JovianDSSDriver(object):
         max_attempts = 4
         for attempt in range(max_attempts):
             try:
-                self.ra.attach_target_vol(target_name, vname, lun_id=lun)
-                return
+                lun_data = self.ra.attach_target_vol(target_name, vname, lun_id=lun)
+                return lun_data
             except jexc.JDSSResourceIsBusyException:
                 if attempt >= max_attempts - 1:
                     LOG.warning("Volume %s still busy after %d attempts "
