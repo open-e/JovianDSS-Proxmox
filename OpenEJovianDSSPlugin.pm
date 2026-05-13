@@ -898,6 +898,9 @@ sub _free_image {
     my $scfg    = $ctx->{scfg};
     my $storeid = $ctx->{storeid};
 
+    debugmsg( $ctx, "debug",
+        "Deleting volume ${volname} format ${format} start" );
+
     my $pool = get_pool($ctx);
     my ( $vtype, undef, $vmid, undef, undef, undef, $format ) =
       $class->parse_volname($volname);
@@ -906,8 +909,6 @@ sub _free_image {
         return $class->SUPER::free_image( $storeid, $scfg, $volname, $isBase,
             $format );
     }
-    debugmsg( $ctx, "debug",
-        "Deleting volume ${volname} format ${format}\n" );
 
     my $tgname =
       get_vm_target_group_name( $ctx, $vmid );
@@ -938,6 +939,9 @@ sub _free_image {
         ],
         get_delete_timeout($ctx)
     );
+
+    debugmsg( $ctx, "debug",
+        "Deleting volume ${volname} format ${format} done" );
     return undef;
 }
 
@@ -1470,7 +1474,7 @@ sub _deactivate_volume {
     debugmsg( $ctx, "debug",
             "Deactivate volume ${volname}"
           . safe_var_print( "snapshot", $snapname )
-          . "done" );
+          . " done" );
 
     return 1;
 }
