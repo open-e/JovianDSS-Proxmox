@@ -1527,7 +1527,7 @@ sub target_update_chap {
 
     my $last_err;
     for my $attempt (1 .. 3) {
-        eval { joviandss_cmd($ctx, $cmd, 30); };
+        eval { joviandss_cmd($ctx, $cmd, 55,4); };
         $last_err = $@;
         return unless $last_err;
         debugmsg($ctx, 'warn',
@@ -2995,7 +2995,9 @@ sub volume_unpublish {
                 "delete", "-c",  "-p",
                 '--target-prefix', $prefix,
                 '--target-group-name', $tgname
-            ]
+            ],
+            55,
+            4
         );
         my @dsl = split( " ", $delitablesnaps );
 
@@ -3014,7 +3016,9 @@ sub volume_unpublish {
                 '--target-prefix', $prefix,
                 '--target-group-name', $tgname,
                 '-v', $volname
-            ]
+            ],
+            55,
+            4
         );
     }
 
@@ -3027,7 +3031,10 @@ sub volume_unpublish {
                 '--target-prefix', $prefix,
                 '--target-group-name', $tgname,
                 '-v', $volname,
-                '--snapshot', $snapname]);
+                '--snapshot', $snapname],
+            55,
+            4
+        );
     }
     1;
 }
@@ -3167,6 +3174,50 @@ sub lun_record_local_get_info_list {
     return \@matches;
 }
 
+sub lun_record_local_get_snapshot_list {
+    my ($ctx, $volname) = @_;
+    my $storeid = $ctx->{storeid};
+
+    # Returns [ targetname, lunid, path, lunrec ] for every locally-recorded
+    # snapshot activation of $volname (lunrec->{snapname} is defined).
+    # Used by volume_deactivate to clean up snapshot state without calling
+    # jdssc to discover which snapshots were activated on this node.
+
+    my @matches = ();
+
+    my $ldir = File::Spec->catdir( PLUGIN_LOCAL_STATE_DIR, $storeid );
+
+    unless ( -d $ldir ) {
+        die "Unable to locate folder containing plugin state\n";
+    }
+
+    File::Find::find(
+        {
+            no_chdir => 1,
+            wanted   => sub {
+                my $full = $File::Find::name;
+
+                unless ($full =~ m!^\Q$ldir\E/([^/]+)/(\d+)/\Q$volname\E$!) {
+                    return;
+                }
+                my ($targetname, $lunid) = ($1, $2);
+                $targetname = clean_word($targetname);
+                $lunid      = clean_word($lunid);
+
+                my $lunrec = lun_record_local_get_by_path($ctx, $full);
+                return unless $lunrec;
+                return unless $lunrec->{volname} eq $volname;
+                return unless defined($lunrec->{snapname});
+
+                push @matches, [ $targetname, $lunid, $full, $lunrec ];
+            },
+        },
+        $ldir
+    );
+
+    return \@matches;
+}
+
 sub lun_record_local_get_by_target {
     my ($ctx,
         $targetname, $lunid, $volname
@@ -3249,6 +3300,11 @@ sub lun_record_local_delete {
     debugmsg($ctx, 'debug', "delete lun record check\n");
     my $ltdir = File::Spec->catdir( PLUGIN_LOCAL_STATE_DIR,
                                     $storeid, $targetname );
+    if ( $ltdir =~ /^([\:\-\@\w.\/]+)$/ ) {
+        $ltdir = $1;
+    } else {
+        die "Invalid character in target dir path: ${ltdir}\n";
+    }
     unless ( -d $ltdir ) {
         eval {
             volume_unstage_iscsi(
@@ -3266,13 +3322,22 @@ sub lun_record_local_delete {
     # Local Target Lun Directory
     my $ltldir = File::Spec->catdir( PLUGIN_LOCAL_STATE_DIR,
                                      $storeid, $targetname, $lunid );
+    if ( $ltldir =~ /^([\:\-\@\w.\/]+)$/ ) {
+        $ltldir = $1;
+    } else {
+        die "Invalid character in lun dir path: ${ltldir}\n";
+    }
 
     my $ltlfile = File::Spec->catfile( $ltldir, $volname );
-
-    if ( -f $ltlfile ) {
-        unless ( unlink($ltlfile) ) {
-            die "Unable to remove lun file ${ltlfile} because $!\n";
+    if ( $ltlfile =~ /^([\:\-\@\w.\/]+)$/ ) {
+        my $file = $1;
+        if ( -f $file ) {
+            unless ( unlink($file) ) {
+                die "Unable to remove lun file ${file} because $!\n";
+            }
         }
+    } else {
+        die "Invalid character in lun file path: ${ltlfile}\n";
     }
 
     if ( -d $ltldir ) {
@@ -3309,6 +3374,65 @@ sub lun_record_local_delete {
                     "lun ${lunid} because of $!");
         }
     }
+    return 1;
+}
+
+sub volume_deactivate_by_lun_record {
+    my ($ctx, $vmid, $targetname, $lunid, $lunrecord) = @_;
+
+    my $volname  = $lunrecord->{volname};
+    my $snapname = $lunrecord->{snapname};
+
+    debugmsg( $ctx, "debug",
+            "Unpublish lun record target ${targetname} lun ${lunid} "
+          . "volume ${volname} "
+          . safe_var_print( "snapshot", $snapname )
+          . "\n" );
+
+    # Logout iSCSI BEFORE removing multipath.  If we remove multipath
+    # first, the `multipath $scsiid` refresh commands in the removal
+    # function recreate the device because iSCSI paths are still active.
+    # By logging out iSCSI first, the underlying paths disappear and
+    # multipath removal succeeds cleanly.
+    volume_unstage_iscsi_device ( $ctx, $targetname, $lunid, $lunrecord->{hosts} );
+
+
+    if ( $lunrecord->{multipath} ) {
+
+        my $unstage_multipath_done = 0;
+        for my $attempt ( 1 .. 3) {
+            eval {
+                volume_unstage_multipath( $ctx, $lunrecord->{scsiid} );
+            };
+            my $cerr = $@;
+            if ($cerr) {
+                warn "volume_unstage_multipath failed: $@" if $@;
+            } else {
+                $unstage_multipath_done = 1;
+                last;
+            }
+        }
+
+        unless ($unstage_multipath_done ) {
+            die "Unable to unstage multipath device for "
+              . safe_var_print( "volume", $volname )
+              . safe_var_print( "snapshot", $snapname )
+              . "\n";
+        }
+    }
+
+
+
+    if ( defined($snapname) ) {
+        # We do not delete target on joviandss as this will lead to race
+        # condition in case of migration
+        eval {
+            volume_unpublish( $ctx, $vmid, $volname, $snapname, undef );
+        };
+        warn "unpublish_volume failed: $@" if $@;
+    }
+
+    lun_record_local_delete( $ctx, $targetname, $lunid, $volname, $snapname );
     return 1;
 }
 
@@ -3512,8 +3636,6 @@ sub volume_deactivate {
     my $lunrecpath;
     my $lunrecord = undef;
 
-    my $local_cleanup = 0;
-
     my $pool   = get_pool($ctx);
     my $prefix = get_target_prefix($ctx);
 
@@ -3529,22 +3651,35 @@ sub volume_deactivate {
     }
 
     unless( $snapname ) {
-        my $delitablesnaps = joviandss_cmd(
-            $ctx,
-            [
-                "pool",   $pool,
-                "volume", $volname,
-                "delete", "-c",  "-p",
-                '--target-prefix', $prefix,
-                '--target-group-name', $tgname
-            ]
-        );
-        my @dsl = split( " ", $delitablesnaps );
-
-        foreach my $snap (@dsl) {
-            volume_deactivate( $ctx, $vmid,
-                $volname, $snap, undef );
+        my $snap_records = lun_record_local_get_snapshot_list( $ctx, $volname );
+        # We conduct full deactivation by lun record
+        foreach my $snaprec (@$snap_records) {
+            my ($snap_target, $snap_lun, undef, $snap_lunrec) = @$snaprec;
+            volume_deactivate_by_lun_record( $ctx, $vmid, $snap_target, $snap_lun, $snap_lunrec );
         }
+        # here we a making sure that no garbage is left behind
+        eval {
+            my $delitablesnaps = joviandss_cmd(
+                $ctx,
+                [
+                    "pool",   $pool,
+                    "volume", $volname,
+                    "delete", "-c",  "-p",
+                    '--target-prefix', $prefix,
+                    '--target-group-name', $tgname
+                ],
+                55,
+                3
+            );
+            my @dsl = split( " ", $delitablesnaps );
+
+            foreach my $snap (@dsl) {
+                volume_deactivate( $ctx, $vmid,
+                    $volname, $snap, undef );
+            }
+        };
+        warn "Volume $volname snapshot cleanup failed: $@" if $@;
+
     }
     my $lunrecinfolist = lun_record_local_get_info_list( $ctx, $volname, $snapname );
 
@@ -3602,38 +3737,7 @@ sub volume_deactivate {
         return 1;
     }
 
-    # Logout iSCSI BEFORE removing multipath.  If we remove multipath
-    # first, the `multipath $scsiid` refresh commands in the removal
-    # function recreate the device because iSCSI paths are still active.
-    # By logging out iSCSI first, the underlying paths disappear and
-    # multipath removal succeeds cleanly.
-    volume_unstage_iscsi_device ( $ctx, $targetname, $lunid, $lunrecord->{hosts} );
-
-    if ( $lunrecord->{multipath} ) {
-        eval {
-            volume_unstage_multipath( $ctx, $lunrecord->{scsiid} );
-        };
-        my $cerr = $@;
-        if ($cerr) {
-            $local_cleanup = 1;
-            warn "volume_unstage_multipath failed: $@" if $@;
-        }
-    }
-
-    my $cerr;
-    if ( $snapname ) {
-    # We do not delete target on joviandss as this will lead to race condition
-    # in case of migration
-        eval {
-            volume_unpublish( $ctx, $vmid, $volname, $snapname, undef );
-        };
-        $cerr = $@;
-        if ($cerr) {
-            $local_cleanup = 1;
-            warn "unpublish_volume failed: $@" if $@;
-        }
-    }
-    lun_record_local_delete( $ctx, $targetname, $lunid, $volname, $snapname );
+    volume_deactivate_by_lun_record( $ctx, $vmid, $targetname, $lunid, $lunrecord );
     debugmsg( $ctx, "debug",
             "Volume ${volname} deactivate done "
           . safe_var_print( "snapshot", $snapname )

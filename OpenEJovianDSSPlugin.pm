@@ -898,12 +898,12 @@ sub _free_image {
     my $scfg    = $ctx->{scfg};
     my $storeid = $ctx->{storeid};
 
-    debugmsg( $ctx, "debug",
-        "Deleting volume ${volname} format ${format} start" );
-
     my $pool = get_pool($ctx);
     my ( $vtype, undef, $vmid, undef, undef, undef, $format ) =
       $class->parse_volname($volname);
+
+    debugmsg( $ctx, "debug",
+        "Deleting volume ${volname} format ${format} start" );
 
     if ( 'images' cmp "$vtype" ) {
         return $class->SUPER::free_image( $storeid, $scfg, $volname, $isBase,
