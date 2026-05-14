@@ -108,7 +108,7 @@ my $PLUGIN_VERSION = '0.11.5';
 
 sub api {
     my $supported_apiver_min = 9;
-    my $supported_apiver_max = 13;
+    my $supported_apiver_max = 14;
 
     my $api_ver = PVE::Storage::APIVER;
 
@@ -1243,14 +1243,54 @@ sub status {
     my $ctx = new_ctx($scfg, $storeid);
 
     my $pool = get_pool($ctx);
-
-    my $jdssc =
-      joviandss_cmd( $ctx, [ "pool", $pool, "get" ],
-        10, 0, 'info' );
     my $gb = 1024 * 1024 * 1024;
-    my ( $total, $avail, $used ) = split( " ", $jdssc );
 
-    return ( $total * $gb, $avail * $gb, $used * $gb, 1 );
+    for my $attempt (1 .. 3) {
+        my $stats = eval {
+            joviandss_cmd( $ctx, [ "pool", $pool, "get" ], 10, 0 );
+        };
+        if ($@) {
+            debugmsg( $ctx, 'warn', "Storage status check failed (attempt ${attempt}): $@" );
+            next;
+        }
+
+        my ( $pool_name, $pool_id, $total, $avail, $used ) = split( " ", $stats );
+        unless ( defined($total) && defined($avail) && defined($used) ) {
+            debugmsg( $ctx, 'warn', "Unexpected pool info output (attempt ${attempt}): ${stats}\n" );
+            next;
+        }
+
+        return ( $total * $gb, $avail * $gb, $used * $gb, 1 );
+    }
+
+    die "Unable to get storage status for pool ${pool} after 3 attempts\n";
+}
+
+sub get_identity {
+    my ($class, $scfg, $storeid) = @_;
+
+    my $ctx = new_ctx($scfg, $storeid);
+
+    my $pool = get_pool($ctx);
+
+    for my $attempt (1 .. 3) {
+        my $stats = eval {
+            joviandss_cmd( $ctx, [ "pool", $pool, "get" ], 10, 0 );
+        };
+        if ($@) {
+            debugmsg( $ctx, 'warn', "Storage identity check failed (attempt ${attempt}): $@" );
+            next;
+        }
+
+        my ( $pool_name, $pool_id, $total, $avail, $used ) = split( " ", $stats );
+        unless ( defined($total) && defined($avail) && defined($used) ) {
+            debugmsg( $ctx, 'warn', "Unexpected pool info output (attempt ${attempt}): ${stats}\n" );
+            next;
+        }
+        return "${pool_name}-${pool_id}";
+    }
+
+    die "Unable to get storage identity for pool ${pool} after 3 attempts\n";
 }
 
 sub disk_for_target {

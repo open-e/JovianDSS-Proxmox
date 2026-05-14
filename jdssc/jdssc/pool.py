@@ -90,7 +90,7 @@ class Pools():
 
     def get(self):
         try:
-            (total_gb, free_gb) = self.jdss.get_volume_stats()
+            (pool_name, pool_id, total_gb, free_gb) = self.jdss.get_pool_stats()
         except jexc.JDSSResourceNotFoundException as rnferr:
             msg = ("Unable to identify pool {name} on the storage, please "
                    "make sure that you have provided correct pool name and "
@@ -106,8 +106,12 @@ class Pools():
                       {'interfaces': ', '.join(jerr.interfaces)})
             exit(jerr.errcode)
 
-        line = "{total} {free} {used}\n".format(
-            total=total_gb, free=free_gb, used=total_gb-free_gb)
+        line = "{pool} {id} {total} {free} {used}\n".format(
+            pool=pool_name,
+            id=pool_id,
+            total=total_gb,
+            free=free_gb,
+            used=total_gb-free_gb)
         sys.stdout.write(line)
 
     def ip(self):

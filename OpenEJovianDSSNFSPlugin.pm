@@ -54,7 +54,7 @@ my $PLUGIN_VERSION = '0.7.0';
 
 sub api {
     my $supported_apiver_min = 9;
-    my $supported_apiver_max = 13;
+    my $supported_apiver_max = 14;
 
     my $api_ver = PVE::Storage::APIVER;
 
@@ -213,6 +213,35 @@ sub status {
       if !OpenEJovianDSS::NFSCommon::path_is_nfs($scfg, $path, $export, $server );
 
     return $class->SUPER::status($storeid, $scfg, $cache);
+}
+
+sub get_identity {
+    my ($class, $scfg, $storeid) = @_;
+
+    my $datname = OpenEJovianDSS::NFSCommon::dataset_name_get( $scfg );
+
+    my $ctx = new_ctx($scfg, $storeid);
+
+    my $pool = get_pool($ctx);
+
+    for my $attempt (1 .. 3) {
+        my $stats = eval {
+            joviandss_cmd( $ctx, [ "pool", $pool, "get" ], 10, 0 );
+        };
+        if ($@) {
+            debugmsg( $ctx, 'warn', "Storage identity check failed (attempt ${attempt}): $@" );
+            next;
+        }
+
+        my ( $pool_name, $pool_id, $total, $avail, $used ) = split( " ", $stats );
+        unless ( defined($total) && defined($avail) && defined($used) ) {
+            debugmsg( $ctx, 'warn', "Unexpected pool info output (attempt ${attempt}): ${stats}\n" );
+            next;
+        }
+        return "${pool_name}-${pool_id}-${datname}";
+    }
+
+    die "Unable to get identity info for pool ${pool} share ${datname} after 3 attempts\n";
 }
 
 sub activate_storage {

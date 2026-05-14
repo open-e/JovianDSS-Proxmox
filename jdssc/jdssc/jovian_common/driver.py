@@ -2725,7 +2725,7 @@ class JovianDSSDriver(object):
                     return out
         return None
 
-    def _update_volume_stats(self):
+    def _update_pool_stats(self):
         """Retrieve stats info."""
         LOG.debug('Updating volume stats')
 
@@ -2746,6 +2746,14 @@ class JovianDSSDriver(object):
             'host': self.ra.get_active_host()[0],
             'volume': self._pool
         }
+        pool_id = 'unknown'
+        if 'id' in pool_stats:
+            pool_id = pool_stats['id']
+
+        pool_name = self.get_pool_name()
+
+        if 'name' in pool_stats:
+            pool_name = pool_stats['name']
 
         self._stats = {
             'vendor_name': 'Open-E',
@@ -2757,7 +2765,9 @@ class JovianDSSDriver(object):
             'volume_backend_name': self.backend_name,
             'QoS_support': False,
             'location_info': location_info,
-            'multiattach': True
+            'multiattach': False,
+            'id': pool_id,
+            'pool_name': pool_name
         }
 
         LOG.debug('Total capacity: %d, '
@@ -2765,15 +2775,18 @@ class JovianDSSDriver(object):
                   self._stats['total_capacity_gb'],
                   self._stats['free_capacity_gb'])
 
-    def get_volume_stats(self):
+    def get_pool_stats(self):
         """Return information about pool capacity
 
-        return (total_gb, free_gb)
+        return (pool_name, pool_id, total_gb, free_gb)
         """
-        self._update_volume_stats()
+        self._update_pool_stats()
 
-        return (self._stats['total_capacity_gb'],
+        return (self._stats['pool_name'],
+                self._stats['id'],
+                self._stats['total_capacity_gb'],
                 self._stats['free_capacity_gb'])
+
 
     def _list_snapshot_rollback_dependency(self, vname, sname):
         """List snapshot rollback dependency return list of resource that
