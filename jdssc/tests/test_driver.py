@@ -1,0 +1,431 @@
+import pytest
+from unittest.mock import MagicMock
+
+from jdssc.jovian_common.driver import JovianDSSDriver
+from jdssc.jovian_common import exception as jexc
+
+
+PREFIX = "iqn.2025-01.com.open-e:"
+GROUP  = "pool-0-target"
+TBASE  = PREFIX + GROUP
+POOL   = "Pool-0"
+VOL    = "v_vm-100-disk-0"
+SCSI   = "95545635e1780899"
+
+
+@pytest.fixture
+def driver():
+    d = JovianDSSDriver({"jovian_pool": POOL, "san_hosts": []})
+    d.ra = MagicMock()
+    return d
+
+
+def _global_lun_entry(target, lun_id, scsi_id=SCSI, pool=POOL):
+    """Build a get_target_by_lun_name response entry."""
+    return {
+        "lun": {"lun": lun_id, "name": VOL, "scsi_id": scsi_id},
+        "iscsi_target": {"name": target, "active": True},
+        "pool": pool,
+    }
+
+
+def _target_lun(name, lun_id):
+    """Build a get_target_luns list entry."""
+    return {"name": name, "lun": lun_id}
+
+
+def _set_not_attached(driver):
+    driver.ra.get_target_by_lun_name.return_value = []
+
+
+def _set_no_targets(driver):
+    driver.ra.get_targets.return_value = []
+
+
+class TestAcquireTargetVolumeLun:
+
+    # ------------------------------------------------------------------
+    # Fast path: volume already attached (get_target_by_lun_name hit)
+    # ------------------------------------------------------------------
+
+    def test_volume_already_attached_returns_target_and_lun(self, driver):
+        target = TBASE + "-0"
+        driver.ra.get_target_by_lun_name.return_value = [
+            _global_lun_entry(target, 3),
+        ]
+
+        result = driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+        assert result == (target, 3, True, False, SCSI)
+
+    def test_volume_attached_scsi_id_passed_through(self, driver):
+        target = TBASE + "-0"
+        driver.ra.get_target_by_lun_name.return_value = [
+            _global_lun_entry(target, 0, scsi_id="aabbccddeeff0011"),
+        ]
+
+        _, _, _, _, scsi_id = driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+        assert scsi_id == "aabbccddeeff0011"
+
+    def test_volume_attached_entry_for_wrong_pool_is_ignored(self, driver):
+        target = TBASE + "-0"
+        driver.ra.get_target_by_lun_name.return_value = [
+            _global_lun_entry(target, 0, pool="Pool-99"),
+        ]
+        driver.ra.get_targets.return_value = []
+        driver.ra.get_target.side_effect = jexc.JDSSResourceNotFoundException(
+            res=TBASE + "-0",
+        )
+
+        result = driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+        assert result[2] is False   # volume_attached must be False
+        assert result[3] is True    # new_target: fell through to create path
+
+    def test_volume_attached_first_matching_pool_entry_wins(self, driver):
+        t0, t1 = TBASE + "-0", TBASE + "-1"
+        driver.ra.get_target_by_lun_name.return_value = [
+            _global_lun_entry(t0, 0, pool="Pool-99"),   # wrong pool
+            _global_lun_entry(t1, 2, pool=POOL),         # correct pool
+        ]
+
+        result = driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+        assert result == (t1, 2, True, False, SCSI)
+
+    def test_missing_scsi_id_fetched_via_get_target_lun(self, driver):
+        target = TBASE + "-0"
+        driver.ra.get_target_by_lun_name.return_value = [
+            _global_lun_entry(target, 0, scsi_id=None),
+        ]
+        driver.ra.get_target_lun.return_value = {"lun": 0, "scsi_id": SCSI}
+
+        result = driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+        driver.ra.get_target_lun.assert_called_once_with(target, VOL)
+        assert result == (target, 0, True, False, SCSI)
+
+    def test_scsi_id_present_no_extra_request_made(self, driver):
+        target = TBASE + "-0"
+        driver.ra.get_target_by_lun_name.return_value = [
+            _global_lun_entry(target, 0, scsi_id=SCSI),
+        ]
+
+        driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+        driver.ra.get_target_lun.assert_not_called()
+
+    def test_get_target_lun_failure_propagates(self, driver):
+        target = TBASE + "-0"
+        driver.ra.get_target_by_lun_name.return_value = [
+            _global_lun_entry(target, 0, scsi_id=None),
+        ]
+        driver.ra.get_target_lun.side_effect = (
+            jexc.JDSSResourceNotFoundException(res=VOL)
+        )
+
+        with pytest.raises(jexc.JDSSResourceNotFoundException):
+            driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+    def test_missing_target_name_raises(self, driver):
+        driver.ra.get_target_by_lun_name.return_value = [
+            {"pool": POOL, "lun": {"lun": 0, "scsi_id": SCSI}},
+        ]
+
+        with pytest.raises(jexc.JDSSException):
+            driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+    # ------------------------------------------------------------------
+    # Slow path: volume not attached, free slot in existing target
+    # ------------------------------------------------------------------
+
+    def test_free_slot_in_only_target_returned(self, driver):
+        target = TBASE + "-0"
+        _set_not_attached(driver)
+        driver.ra.get_targets.return_value = [{"name": target}]
+        driver.ra.get_target_luns.return_value = [_target_lun("v_other", 0)]
+
+        result = driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+        assert result == (target, 1, False, False, None)
+
+    def test_first_free_lun_is_zero_when_target_is_empty(self, driver):
+        target = TBASE + "-0"
+        _set_not_attached(driver)
+        driver.ra.get_targets.return_value = [{"name": target}]
+        driver.ra.get_target_luns.return_value = []
+
+        result = driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+        assert result == (target, 0, False, False, None)
+
+    def test_first_gap_in_lun_ids_is_chosen(self, driver):
+        target = TBASE + "-0"
+        _set_not_attached(driver)
+        driver.ra.get_targets.return_value = [{"name": target}]
+        # luns 0 and 2 are taken; slot 1 is the first gap
+        driver.ra.get_target_luns.return_value = [
+            _target_lun("v_disk-a", 0),
+            _target_lun("v_disk-b", 2),
+        ]
+
+        result = driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+        assert result == (target, 1, False, False, None)
+
+    def test_full_target_skipped_free_slot_in_second_target_used(self, driver):
+        t0, t1 = TBASE + "-0", TBASE + "-1"
+        _set_not_attached(driver)
+        driver.ra.get_targets.return_value = [{"name": t0}, {"name": t1}]
+        driver.ra.get_target_luns.side_effect = [
+            [_target_lun(f"v_disk-{i}", i) for i in range(8)],  # t0 full
+            [_target_lun("v_disk-x", 0)],                        # t1 has room
+        ]
+
+        result = driver._acquire_taget_volume_lun(
+            PREFIX, GROUP, VOL, luns_per_target=8,
+        )
+
+        assert result == (t1, 1, False, False, None)
+
+    def test_target_vanishing_during_scan_is_skipped(self, driver):
+        t0, t1 = TBASE + "-0", TBASE + "-1"
+        _set_not_attached(driver)
+        driver.ra.get_targets.return_value = [{"name": t0}, {"name": t1}]
+        driver.ra.get_target_luns.side_effect = [
+            jexc.JDSSResourceNotFoundException(res=t0),
+            [_target_lun("v_disk-x", 0)],
+        ]
+
+        result = driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+        assert result == (t1, 1, False, False, None)
+
+    def test_unrelated_targets_not_scanned_for_luns(self, driver):
+        unrelated = "iqn.2025-01.com.other:different-0"
+        _set_not_attached(driver)
+        driver.ra.get_targets.return_value = [{"name": unrelated}]
+        driver.ra.get_target.side_effect = jexc.JDSSResourceNotFoundException(
+            res=TBASE + "-0",
+        )
+
+        driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+        driver.ra.get_target_luns.assert_not_called()
+
+    # ------------------------------------------------------------------
+    # New-target path: no existing target has a free slot
+    # ------------------------------------------------------------------
+
+    def test_no_targets_at_all_returns_new_target_index_0(self, driver):
+        _set_not_attached(driver)
+        _set_no_targets(driver)
+        driver.ra.get_target.side_effect = jexc.JDSSResourceNotFoundException(
+            res=TBASE + "-0",
+        )
+
+        result = driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+        assert result == (TBASE + "-0", 0, False, True, None)
+
+    def test_all_targets_full_returns_next_available_index(self, driver):
+        target = TBASE + "-0"
+        _set_not_attached(driver)
+        driver.ra.get_targets.return_value = [{"name": target}]
+        driver.ra.get_target_luns.return_value = [
+            _target_lun(f"v_disk-{i}", i) for i in range(8)
+        ]
+        driver.ra.get_target.side_effect = jexc.JDSSResourceNotFoundException(
+            res=TBASE + "-1",
+        )
+
+        result = driver._acquire_taget_volume_lun(
+            PREFIX, GROUP, VOL, luns_per_target=8,
+        )
+
+        assert result == (TBASE + "-1", 0, False, True, None)
+
+    def test_index_gap_in_existing_targets_is_filled(self, driver):
+        # Targets 0 and 2 exist and are full; index 1 should be chosen.
+        t0, t2 = TBASE + "-0", TBASE + "-2"
+        _set_not_attached(driver)
+        driver.ra.get_targets.return_value = [{"name": t0}, {"name": t2}]
+        driver.ra.get_target_luns.return_value = [
+            _target_lun(f"v_disk-{i}", i) for i in range(8)
+        ]
+        driver.ra.get_target.side_effect = jexc.JDSSResourceNotFoundException(
+            res=TBASE + "-1",
+        )
+
+        result = driver._acquire_taget_volume_lun(
+            PREFIX, GROUP, VOL, luns_per_target=8,
+        )
+
+        assert result == (TBASE + "-1", 0, False, True, None)
+
+    # ------------------------------------------------------------------
+    # Target prefix handling
+    # ------------------------------------------------------------------
+
+    def test_prefix_without_colon_gets_colon_inserted(self, driver):
+        prefix = "iqn.2025-01.com.open-e"
+        expected_base = prefix + ":" + GROUP
+        _set_not_attached(driver)
+        _set_no_targets(driver)
+        driver.ra.get_target.side_effect = jexc.JDSSResourceNotFoundException(
+            res=expected_base + "-0",
+        )
+
+        result = driver._acquire_taget_volume_lun(prefix, GROUP, VOL)
+
+        assert result[0] == expected_base + "-0"
+
+    def test_prefix_with_colon_produces_no_double_colon(self, driver):
+        _set_not_attached(driver)
+        _set_no_targets(driver)
+        driver.ra.get_target.side_effect = jexc.JDSSResourceNotFoundException(
+            res=TBASE + "-0",
+        )
+
+        result = driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+        assert "::" not in result[0]
+
+    # ------------------------------------------------------------------
+    # Return value shape
+    # ------------------------------------------------------------------
+
+    def test_result_is_always_five_tuple(self, driver):
+        _set_not_attached(driver)
+        _set_no_targets(driver)
+        driver.ra.get_target.side_effect = jexc.JDSSResourceNotFoundException(
+            res=TBASE + "-0",
+        )
+
+        result = driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+        assert len(result) == 5
+
+
+TARGET0 = TBASE + "-0"
+LUN_INFO = {"lun": 0, "scsi_id": SCSI}
+
+
+def _setup_ensure(driver):
+    """Minimal mocks for _ensure_target_volume_lun happy path."""
+    driver.ra.get_target.return_value = {}
+    driver._get_conforming_vips = MagicMock(return_value={})
+    driver.ra.get_target_user.return_value = []
+
+
+class TestEnsureTargetVolumeLun:
+
+    def test_lun_already_attached_scsi_id_returned(self, driver):
+        _setup_ensure(driver)
+        driver.ra.get_target_lun.return_value = LUN_INFO
+
+        result = driver._ensure_target_volume_lun(TARGET0, VOL, 0, None)
+
+        assert result['scsi_id'] == SCSI
+        assert result['lun'] == 0
+
+    def test_lun_not_attached_attach_provides_scsi_id(self, driver):
+        _setup_ensure(driver)
+        driver.ra.get_target_lun.side_effect = (
+            jexc.JDSSResourceNotFoundException(res=VOL)
+        )
+        driver._attach_target_volume_lun = MagicMock(
+            return_value={"scsi_id": SCSI}
+        )
+
+        result = driver._ensure_target_volume_lun(TARGET0, VOL, 0, None)
+
+        assert result['scsi_id'] == SCSI
+
+    def test_lun_not_attached_attach_no_scsi_id_fallback_get(self, driver):
+        _setup_ensure(driver)
+        driver.ra.get_target_lun.side_effect = [
+            jexc.JDSSResourceNotFoundException(res=VOL),
+            LUN_INFO,
+        ]
+        driver._attach_target_volume_lun = MagicMock(return_value=None)
+
+        result = driver._ensure_target_volume_lun(TARGET0, VOL, 0, None)
+
+        assert result['scsi_id'] == SCSI
+
+    def test_all_scsi_id_paths_fail_raises(self, driver):
+        _setup_ensure(driver)
+        driver.ra.get_target_lun.side_effect = [
+            jexc.JDSSResourceNotFoundException(res=VOL),
+            jexc.JDSSException("unavailable"),
+        ]
+        driver._attach_target_volume_lun = MagicMock(return_value=None)
+
+        with pytest.raises(jexc.JDSSException):
+            driver._ensure_target_volume_lun(TARGET0, VOL, 0, None)
+
+    def test_busy_lun_confirmed_by_recheck_returns_scsi_id(self, driver):
+        _setup_ensure(driver)
+        driver.ra.get_target_lun.side_effect = [
+            jexc.JDSSResourceNotFoundException(res=VOL),
+            LUN_INFO,
+        ]
+        driver._attach_target_volume_lun = MagicMock(
+            side_effect=jexc.JDSSResourceIsBusyException(res=VOL)
+        )
+
+        result = driver._ensure_target_volume_lun(TARGET0, VOL, 0, None)
+
+        assert result['scsi_id'] == SCSI
+
+    def test_busy_lun_still_absent_reraises(self, driver):
+        _setup_ensure(driver)
+        driver.ra.get_target_lun.side_effect = [
+            jexc.JDSSResourceNotFoundException(res=VOL),
+            jexc.JDSSResourceNotFoundException(res=VOL),
+        ]
+        driver._attach_target_volume_lun = MagicMock(
+            side_effect=jexc.JDSSResourceIsBusyException(res=VOL)
+        )
+
+        with pytest.raises(jexc.JDSSResourceIsBusyException):
+            driver._ensure_target_volume_lun(TARGET0, VOL, 0, None)
+
+
+def _setup_create(driver):
+    """Minimal mocks for _create_target_volume_lun happy path."""
+    driver._get_conforming_vips = MagicMock(return_value={})
+    driver._attach_target_volume_lun = MagicMock(
+        return_value={"scsi_id": SCSI}
+    )
+    driver._set_target_credentials = MagicMock()
+
+
+class TestCreateTargetVolumeLun:
+
+    def test_attach_provides_scsi_id(self, driver):
+        _setup_create(driver)
+
+        result = driver._create_target_volume_lun(TARGET0, VOL, 0, None)
+
+        assert result['scsi_id'] == SCSI
+        assert result['lun'] == 0
+
+    def test_attach_no_scsi_id_fallback_get_target_lun(self, driver):
+        _setup_create(driver)
+        driver._attach_target_volume_lun = MagicMock(return_value=None)
+        driver.ra.get_target_lun.return_value = LUN_INFO
+
+        result = driver._create_target_volume_lun(TARGET0, VOL, 0, None)
+
+        assert result['scsi_id'] == SCSI
+
+    def test_all_scsi_id_paths_fail_raises(self, driver):
+        _setup_create(driver)
+        driver._attach_target_volume_lun = MagicMock(return_value=None)
+        driver.ra.get_target_lun.return_value = {"lun": 0, "scsi_id": None}
+
+        with pytest.raises(jexc.JDSSException):
+            driver._create_target_volume_lun(TARGET0, VOL, 0, None)
