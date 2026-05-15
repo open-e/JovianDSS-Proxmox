@@ -646,6 +646,28 @@ class JovianRESTAPI(object):
             raise jexc.JDSSResourceNotFoundException(res=target_name)
         self._general_error(req, resp)
 
+    def get_target_sessions(self, target_name):
+        """get_target_sessions
+
+        GET
+        /san/iscsi/targets/<target_name>/sessions
+
+        :param target_name: full iSCSI target IQN
+        :return: list of active session dicts, each with keys:
+            target_name, cid, ip, sid, initiator_name
+        """
+        req = "/san/iscsi/targets/%s/sessions" % target_name
+
+        LOG.debug("get sessions for target %s", target_name)
+        resp = self.rproxy.pool_request('GET', req, apiv=4)
+
+        if resp['error'] is None and resp['code'] == 200:
+            return resp['data']
+
+        if resp['code'] == 404:
+            raise jexc.JDSSResourceNotFoundException(res=target_name)
+        self._general_error(req, resp)
+
     def set_target_incoming_users_active(self, target_name, active):
         """Update incoming_users_active flag on an existing target.
 

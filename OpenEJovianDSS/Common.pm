@@ -206,7 +206,7 @@ sub get_pool {
 
     die "pool name required in storage.cfg \n"
       if !defined( $scfg->{'pool_name'} );
-    return $scfg->{'pool_name'};
+    return safe_word($scfg->{'pool_name'});
 }
 
 sub get_create_base_path {
@@ -254,7 +254,7 @@ sub get_target_prefix {
     my $prefix = $scfg->{target_prefix} || $default_target_prefix;
 
     $prefix =~ s/:$//;
-    return clean_word($prefix);
+    return safe_word( clean_word($prefix) );
 }
 
 sub get_luns_per_target {
@@ -1434,6 +1434,60 @@ sub target_active_info {
         iplist => \@iplist
     );
     return \%tinfo;
+}
+
+sub target_get_sessions {
+    my ( $ctx, $target_name ) = @_;
+
+    debugmsg( $ctx, "debug", "Getting sessions for target ${target_name}\n" );
+
+    my $out = joviandss_cmd( $ctx, [ 'target', $target_name, 'get', '--sessions' ] );
+
+    my %sessions = ();
+    for my $line ( split /\n/, $out ) {
+        $line = clean_word($line);
+        next if $line eq '';
+        my ( $initiator, $ips_str ) = split( /\s+/, $line, 2 );
+        my @ips = split( /,/, $ips_str );
+        $sessions{$initiator} = \@ips;
+    }
+
+    for my $initiator ( keys %sessions ) {
+        debugmsg( $ctx, "debug",
+            "Target ${target_name} session: initiator ${initiator} "
+            . "ips " . join( ',', @{ $sessions{$initiator} } ) . "\n"
+        );
+    }
+
+    return \%sessions;
+}
+
+sub get_local_initiator_name {
+    my ( $ctx ) = @_;
+
+    my $initiatorname_file = '/etc/iscsi/initiatorname.iscsi';
+
+    debugmsg( $ctx, "debug", "Reading local initiator name from ${initiatorname_file}\n" );
+
+    open( my $fh, '<', $initiatorname_file )
+        or die "Cannot open ${initiatorname_file}: $!\n";
+
+    my $initiator_name = undef;
+    while ( my $line = <$fh> ) {
+        chomp $line;
+        if ( $line =~ /^InitiatorName=(.+)$/ ) {
+            $initiator_name = $1;
+            last;
+        }
+    }
+    close($fh);
+
+    die "InitiatorName not found in ${initiatorname_file}\n"
+        unless defined $initiator_name;
+
+    debugmsg( $ctx, "debug", "Local initiator name is ${initiator_name}\n" );
+
+    return $initiator_name;
 }
 
 sub get_vm_target_group_name {
@@ -2983,30 +3037,11 @@ sub volume_unpublish {
         $tgname = get_vm_target_group_name($ctx, $vmid);
     }
 
+    $tgname = safe_word($tgname);
     # Volume deletion will result in deletetion of all its snapshots
     # Therefore we have to detach all volume snapshots that is expected to be
     # removed along side with volume
     unless ( defined($snapname) ) {
-        my $delitablesnaps = joviandss_cmd(
-            $ctx,
-            [
-                "pool",   $pool,
-                "volume", $volname,
-                "delete", "-c",  "-p",
-                '--target-prefix', $prefix,
-                '--target-group-name', $tgname
-            ],
-            55,
-            4
-        );
-        my @dsl = split( " ", $delitablesnaps );
-
-        unless ( $content_volume_flag ) {
-            foreach my $snap (@dsl) {
-                volume_deactivate( $ctx, $vmid,
-                    $volname, $snap, undef );
-            }
-        }
 
         joviandss_cmd(
             $ctx,
@@ -3023,6 +3058,17 @@ sub volume_unpublish {
     }
 
     if ( defined( $snapname ) ) {
+
+        $pool = safe_word($pool);
+        $prefix = safe_word($prefix);
+        $tgname = safe_word($tgname);
+        $volname = safe_word($volname);
+        $snapname = safe_word($snapname);
+
+        debugmsg( $ctx,"debug",
+                "Unpublish volume ${volname} "
+                . safe_var_print( "snapshot", $snapname )
+                . " in check\n");
         joviandss_cmd(
             $ctx,
             [
@@ -3031,11 +3077,13 @@ sub volume_unpublish {
                 '--target-prefix', $prefix,
                 '--target-group-name', $tgname,
                 '-v', $volname,
-                '--snapshot', $snapname],
+                '--snapshot', $snapname,
+            ],
             55,
             4
         );
     }
+
     1;
 }
 
@@ -3384,10 +3432,10 @@ sub volume_deactivate_by_lun_record {
     my $snapname = $lunrecord->{snapname};
 
     debugmsg( $ctx, "debug",
-            "Unpublish lun record target ${targetname} lun ${lunid} "
-          . "volume ${volname} "
-          . safe_var_print( "snapshot", $snapname )
-          . "\n" );
+            "Deactivate volume ${volname} "
+            . safe_var_print( "snapshot", $snapname )
+            . " by lun record target ${targetname} lun ${lunid} "
+          . "start\n" );
 
     # Logout iSCSI BEFORE removing multipath.  If we remove multipath
     # first, the `multipath $scsiid` refresh commands in the removal
@@ -3421,8 +3469,6 @@ sub volume_deactivate_by_lun_record {
         }
     }
 
-
-
     if ( defined($snapname) ) {
         # We do not delete target on joviandss as this will lead to race
         # condition in case of migration
@@ -3433,6 +3479,13 @@ sub volume_deactivate_by_lun_record {
     }
 
     lun_record_local_delete( $ctx, $targetname, $lunid, $volname, $snapname );
+
+
+    debugmsg( $ctx, "debug",
+            "Deactivate volume ${volname} "
+            . safe_var_print( "snapshot", $snapname )
+            . " by lun record target ${targetname} lun ${lunid} "
+          . "done\n" );
     return 1;
 }
 
@@ -3657,29 +3710,6 @@ sub volume_deactivate {
             my ($snap_target, $snap_lun, undef, $snap_lunrec) = @$snaprec;
             volume_deactivate_by_lun_record( $ctx, $vmid, $snap_target, $snap_lun, $snap_lunrec );
         }
-        # here we a making sure that no garbage is left behind
-        eval {
-            my $delitablesnaps = joviandss_cmd(
-                $ctx,
-                [
-                    "pool",   $pool,
-                    "volume", $volname,
-                    "delete", "-c",  "-p",
-                    '--target-prefix', $prefix,
-                    '--target-group-name', $tgname
-                ],
-                55,
-                3
-            );
-            my @dsl = split( " ", $delitablesnaps );
-
-            foreach my $snap (@dsl) {
-                volume_deactivate( $ctx, $vmid,
-                    $volname, $snap, undef );
-            }
-        };
-        warn "Volume $volname snapshot cleanup failed: $@" if $@;
-
     }
     my $lunrecinfolist = lun_record_local_get_info_list( $ctx, $volname, $snapname );
 

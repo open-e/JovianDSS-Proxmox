@@ -371,7 +371,7 @@ sub path {
                     $vmid, $volname, $snapname, undef );
 
                 unless ( defined($bdpl) ) {
-                    die "Unable to identify block device related to ${volname}"
+                    die "Unable to identify block device related to ${volname} "
                       . safe_var_print( "snapshot",
                         $snapname )
                       . "\n";
@@ -390,7 +390,7 @@ sub path {
         # Check if we actually have multiple records or if this is a different error
         if (@$til == 0) {
             # This means volume activation must have failed in the unless block
-            die "Resource ${volname}"
+            die "Resource ${volname} "
               . safe_var_print( "snapshot", $snapname )
               . " activation failed - no LUN records found and unable to create new record\n";
         } elsif (@$til > 1) {
@@ -402,16 +402,16 @@ sub path {
                 my $snap = defined($lr->{snapname}) ? $lr->{snapname} : 'undef';
                 $records_info .= "Record $i: volume=$vol snapshot=$snap target=$targetname lun=$lunid\n";
             }
-            debugmsg($ctx, 'warn', "Failed to identify correct record for ${volname}"
+            debugmsg($ctx, 'warn', "Failed to identify correct record for ${volname} "
               . safe_var_print( "snapshot", $snapname )
               . "\nFound records:\n${records_info}"
             );
-            die "Resource ${volname}"
+            die "Resource ${volname} "
               . safe_var_print( "snapshot", $snapname )
               . " have multiple records:\n${records_info}";
         } else {
             # This should never happen (we already handled @$til == 1 case above)
-            die "Unexpected error in LUN record handling for ${volname}"
+            die "Unexpected error in LUN record handling for ${volname} "
               . safe_var_print( "snapshot", $snapname )
               . "\n";
         }
@@ -676,7 +676,7 @@ sub _clone_image {
         }
 
         debugmsg( $ctx, "debug",
-                "Clone ${volname} with size ${size} to ${clone_name}"
+                "Clone ${volname} with size ${size} to ${clone_name} "
               . safe_var_print( " with snapshot", $snap )
               . "\n" );
 
@@ -1399,7 +1399,7 @@ sub _activate_volume {
     my ( $class, $ctx, $volname, $snapname, $cache ) = @_;
 
     debugmsg( $ctx, "debug",
-            "Activate volume ${volname}"
+            "Activate volume ${volname} "
           . safe_var_print( "snapshot", $snapname )
           . " start" );
 
@@ -1430,7 +1430,7 @@ sub _activate_volume {
 
         unless (-b $pathval) {
             debugmsg( $ctx, "debug",
-                    "Block device with given path ${pathval} for volume ${volname}"
+                    "Block device with given path ${pathval} for volume ${volname} "
                   . safe_var_print( "snapshot", $snapname )
                   . " not found. Re-activating." );
             volume_deactivate( $ctx,
@@ -1454,7 +1454,7 @@ sub _activate_volume {
     }
 
     debugmsg( $ctx, "debug",
-            "Activate volume ${volname}"
+            "Activate volume ${volname} "
           . safe_var_print( "snapshot", $snapname )
           . " done" );
 }
@@ -1489,7 +1489,7 @@ sub _deactivate_volume {
     my ( $class, $ctx, $volname, $snapname, $cache, $hints ) = @_;
 
     debugmsg( $ctx, "debug",
-            "Deactivate volume ${volname}"
+            "Deactivate volume ${volname} "
           . safe_var_print( "snapshot", $snapname )
           . " start" );
     my $pool   = get_pool($ctx);
@@ -1502,17 +1502,53 @@ sub _deactivate_volume {
 
     return 0 if ( 'images' ne "$vtype" );
 
+    # For VM state volumes, capture the target name from lun records before
+    # volume_deactivate may clear them.  Sessions are checked after deactivation
+    # so the local iSCSI logout has already happened and only other nodes' sessions
+    # remain visible.
+    my $state_target_name = undef;
+    if ( $volname =~ m!^vm-(\d+)-state-(.+)$! ) {
+        my $til = lun_record_local_get_info_list($ctx, $volname, $snapname);
+        if (@$til == 1) {
+            ($state_target_name) = @{$til->[0]};
+        }
+    }
+
     volume_deactivate( $ctx, $vmid,
         $volname, $snapname, undef );
 
-    # Unpublish if that is a state of VM
+    # Unpublish VM state volumes only when no other initiator holds an active session
     if ( $volname =~ m!^vm-(\d+)-state-(.+)$! ) {
-        volume_unpublish( $ctx,
-            $vmid, $volname, $snapname, undef );
+        my $do_unpublish = 1;
+
+        #if ( defined ($state_target_name) ) {
+        #    eval {
+        #        my $sessions         = target_get_sessions($ctx, $state_target_name);
+        #        my $local_initiator  = get_local_initiator_name($ctx);
+        #        my @other_initiators = grep { $_ ne $local_initiator } keys %$sessions;
+
+        #        if (@other_initiators) {
+        #            debugmsg($ctx, "debug",
+        #                "Skipping unpublish of ${volname}: target ${state_target_name} "
+        #                . "has active sessions from: "
+        #                . join(', ', @other_initiators) . "\n");
+        #            $do_unpublish = 0;
+        #        }
+        #    };
+        #    if ($@) {
+        #        debugmsg($ctx, "warn",
+        #            "Unable to check sessions for target ${state_target_name}, "
+        #            . "proceeding with unpublish: $@\n");
+        #    }
+        #}
+
+        if ( $do_unpublish && defined($state_target_name) ) {
+            volume_unpublish($ctx, $vmid, $volname, $snapname, undef);
+        }
     }
 
     debugmsg( $ctx, "debug",
-            "Deactivate volume ${volname}"
+            "Deactivate volume ${volname} "
           . safe_var_print( "snapshot", $snapname )
           . " done" );
 

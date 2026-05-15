@@ -37,7 +37,7 @@ class Target():
         self.uargs = argst[1]
         self.jdss = jdss
 
-        if 'target_action' in self.args:
+        if self.args.get('target_action'):
             self.ta[self.args.pop('target_action')]()
         else:
             sys.exit(1)
@@ -49,7 +49,12 @@ class Target():
         parser.add_argument('target_name', help='Full iSCSI target IQN')
         parsers = parser.add_subparsers(dest='target_action')
 
-        parsers.add_parser('get')
+        get = parsers.add_parser('get')
+        get.add_argument('--sessions',
+                         dest='sessions',
+                         action='store_true',
+                         default=False,
+                         help='Show active iSCSI sessions instead of target data')
 
         parsers.add_parser('delete')
 
@@ -73,6 +78,21 @@ class Target():
 
     def get(self):
         target_name = self.args['target_name']
+        if self.args.get('sessions'):
+            try:
+                sessions = self.jdss.get_target_sessions(target_name)
+            except jexc.JDSSResourceNotFoundException:
+                LOG.error("Target %s not found", target_name)
+                sys.exit(1)
+            except jexc.JDSSException as jerr:
+                LOG.error(jerr.message)
+                sys.exit(1)
+            by_initiator = {}
+            for s in sessions:
+                by_initiator.setdefault(s['initiator_name'], []).append(s['ip'])
+            for initiator, ips in by_initiator.items():
+                print("{} {}".format(initiator, ','.join(ips)))
+            return
         try:
             data = self.jdss.get_target(target_name)
         except jexc.JDSSResourceNotFoundException:
@@ -113,6 +133,10 @@ class Target():
             if bool(chap_user) != bool(chap_pass):
                 LOG.error("--chap-user and --chap-password must be "
                           "provided together")
+                sys.exit(1)
+            if ' ' in (chap_user or '') or ' ' in (chap_pass or ''):
+                LOG.error("--chap-user and --chap-password must not "
+                          "contain spaces")
                 sys.exit(1)
 
         provider_auth = (

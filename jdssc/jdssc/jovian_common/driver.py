@@ -795,27 +795,19 @@ class JovianDSSDriver(object):
         if direct_mode:
             vname = volume_name
 
-        if not self.ra.is_lun(vname):
-            LOG.warning(("Abandon detaching as volume %(volume)s does not "
-                        "exist"),
-                        {'volume': volume_name})
-            # Volume is already gone but its target may still be alive
-            # (e.g. interrupted prior delete). Clean up any orphaned targets.
-            self._delete_zombie_targets(target_prefix, target_name)
-            return
-
         tvld = self._acquire_taget_volume_lun(target_prefix,
                                               target_name,
-                                              vname)
+                                              vname,
+                                              current=True)
         (tname, lun_id, volume_attached_flag, new_target_flag, _) = tvld
-
-        if volume_attached_flag:
+        if ((tname is not None) and (volume_attached_flag is True)):
             try:
                 self._detach_target_volume(tname, vname)
             except jexc.JDSSException as jerr:
                 LOG.warning(jerr)
 
-        self._delete_zombie_targets(target_prefix, target_name)
+        if random.randint(1, 100) == 7:
+            self._delete_zombie_targets(target_prefix, target_name)
 
     def remove_export_snapshot(self,
                                target_prefix,
@@ -847,12 +839,14 @@ class JovianDSSDriver(object):
 
         tvld = self._acquire_taget_volume_lun(target_prefix,
                                               target_name,
-                                              scname)
+                                              scname,
+                                              current=True)
         (tname, lun_id, volume_attached_flag, new_target_flag, _) = tvld
 
         try:
             if (volume_attached_flag or (new_target_flag is False)):
-                self._detach_target_volume(tname, scname)
+                if tname is not None:
+                    self._detach_target_volume(tname, scname)
         except jexc.JDSSException as jerr:
             self._delete_volume(scname, cascade=True)
             raise jerr
@@ -953,7 +947,8 @@ class JovianDSSDriver(object):
                           target_name,
                           volume_name,
                           snapshot_name=None,
-                          direct_mode=False):
+                          direct_mode=False,
+                          current=False):
         """Get volume target
         Find target that the volume is attached to
 
@@ -984,9 +979,13 @@ class JovianDSSDriver(object):
 
         tvld = self._acquire_taget_volume_lun(target_prefix,
                                               target_name,
-                                              vname)
+                                              vname,
+                                              current=current)
 
         (tname, lun_id, volume_attached_flag, new_target_flag, scsi_id) = tvld
+
+        if tname is None:
+            return None
 
         if new_target_flag or (volume_attached_flag is False):
             return None
@@ -1293,7 +1292,7 @@ class JovianDSSDriver(object):
         return volume_publication_info
 
     def _acquire_taget_volume_lun(self, target_prefix, target_name, vname,
-                                  luns_per_target=8):
+                                  luns_per_target=8, current=False):
         """Get target name and lun number for given volume.
 
         Returns a 5-tuple:
@@ -1345,6 +1344,9 @@ class JovianDSSDriver(object):
             LOG.debug("Volume %s already attached: target %s lun %s",
                       vname, target, lun_id)
             return (target, lun_id, True, False, scsi_id)
+
+        if current:
+            return (None, None, False, None, None)
 
         # Volume is not attached — find a free lun slot in an existing
         # related target, scanning in sorted order.
@@ -1625,6 +1627,13 @@ class JovianDSSDriver(object):
         :raises JDSSResourceNotFoundException: if target does not exist
         """
         return self.ra.get_target(target_name)
+
+    def get_target_sessions(self, target_name):
+        """Return list of active iSCSI sessions for target_name.
+
+        :raises JDSSResourceNotFoundException: if target does not exist
+        """
+        return self.ra.get_target_sessions(target_name)
 
     def delete_target(self, target_name):
         """Delete an iSCSI target by IQN.
