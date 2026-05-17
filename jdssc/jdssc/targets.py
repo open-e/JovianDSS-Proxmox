@@ -40,7 +40,13 @@ class Targets():
         self.jdss = jdss
 
         if 'targets_action' in self.args:
-            self.tsa[self.args.pop('targets_action')]()
+            act = self.args.pop('targets_action')
+            LOG.debug("Targets action %(act)s args %(args)s uargs %(uargs)s",
+                      {'act': act,
+                       'args': str(args),
+                       'uargs': str(uargs)})
+
+            self.tsa[act]()
 
     def __parse(self, args):
 
@@ -246,7 +252,8 @@ class Targets():
 
         raw_scsi_id = tinfo.get('scsi_id', '')
         if raw_scsi_id:
-            wwid = '2' + ''.join('{:x}'.format(ord(c)) for c in raw_scsi_id[:8])
+            wwid = '2' + ''.join('{:x}'.format(ord(c))
+                                 for c in raw_scsi_id[:8])
         else:
             wwid = ''
         out = ('%(target)s %(lun)d %(hosts)s %(wwid)s' % {
@@ -258,15 +265,30 @@ class Targets():
 
     def delete(self):
 
+        LOG.error("Targets delete request for volume %(vol)s %(snap)s",
+                  {'vol': self.args['volume_name'],
+                   'snap': self.args['snapshot_name']})
         self.jdss.set_target_prefix(self.args['target_prefix'])
 
         try:
+
+            LOG.debug("Targets delete request for volume %(vol)s %(snap)s try",
+                      {'vol': self.args['volume_name'],
+                       'snap': self.args['snapshot_name']})
             if self.args['snapshot_name']:
+
+                LOG.debug("Targets delete request for volume %(vol)s %(snap)s snapshot present",
+                          {'vol': self.args['volume_name'],
+                           'snap': self.args['snapshot_name']})
                 self.jdss.remove_export_snapshot(
                     self.args['target_prefix'],
                     self.args['target_group_name'],
                     self.args['snapshot_name'],
                     self.args['volume_name'])
+
+                LOG.debug("Targets delete request for volume %(vol)s %(snap)s remove export called",
+                          {'vol': self.args['volume_name'],
+                           'snap': self.args['snapshot_name']})
             else:
                 self.jdss.remove_export(
                     self.args['target_prefix'],
@@ -285,32 +307,32 @@ class Targets():
 
         tinfo = None
 
-        if self.args['current']:
-            LOG.debug("Getting current target")
+        try:
+            tinfo = self.jdss.get_volume_target(
+                self.args['target_prefix'],
+                self.args['target_group_name'],
+                self.args['volume_name'],
+                snapshot_name=self.args['snapshot_name'],
+                direct_mode=self.args['direct_mode'],
+                current=self.args['current'])
+        except jexc.JDSSTargetNotFoundException:
+            return
+        except jexc.JDSSException as jgerr:
+            LOG.error(jgerr.message)
+            exit(1)
 
-            try:
-                tinfo = self.jdss.get_volume_target(
-                    self.args['target_prefix'],
-                    self.args['target_group_name'],
-                    self.args['volume_name'],
-                    snapshot_name=self.args['snapshot_name'],
-                    direct_mode=self.args['direct_mode'])
-            except jexc.JDSSTargetNotFoundException:
-                return
-            except jexc.JDSSException as jgerr:
-                LOG.error(jgerr.message)
-                exit(1)
         if tinfo is None:
             LOG.debug("volume %s is not attached to any target",
                       self.args['volume_name'])
             return
+
         LOG.debug("volumes %s target info %s",
                   self.args['volume_name'],
                   tinfo)
 
         out = '{target} {lun} {hosts}'.format(target=tinfo['target'],
-                                             lun=tinfo['lun'],
-                                             hosts=','.join(tinfo['vips']))
+                                              lun=tinfo['lun'],
+                                              hosts=','.join(tinfo['vips']))
         print(out)
 
     def list(self):
