@@ -28,6 +28,7 @@ use PVE::Tools  qw(lock_file);
 our @EXPORT_OK = qw(
     lock_storage
     lock_vm
+    touch_cluster_lock
 );
 
 our %EXPORT_TAGS = ( all => [@EXPORT_OK] );
@@ -73,14 +74,14 @@ sub _sanitize_lockid {
 #      (including cfs_update failures and execution timeout) are prefixed with
 #      "joviandss-lock '$lockid' error: ...".
 #
-# The execution alarm is set to 60s — safely within pmxcfs's ~120s stale-lock
+# The execution alarm is set to 119s — safely within pmxcfs's ~120s stale-lock
 # release window, matching the PVE::Cluster convention.
 #
 # Returns result of $code on success ($@ = undef).
 # Returns undef and sets $@ on any failure.
 
 sub _cluster_lock_attempt {
-    my ($lockdir, $lockpath, $lockid, $timeout, $code, @param) = @_;
+    my ($ctx, $lockdir, $lockpath, $lockid, $timeout, $code, @param) = @_;
 
     my $prev_alarm  = alarm(0);    # suspend any outer alarm
     my $got_lock    = 0;
@@ -103,21 +104,22 @@ sub _cluster_lock_attempt {
 
             $timeout_err->() if $timeout <= 0;
 
-            print STDERR "waiting for joviandss lock '$lockid' ...\n";
+            OpenEJovianDSS::Common::debugmsg($ctx, 'debug', "waiting for joviandss lock '$lockid'");
             utime(0, 0, $lockpath);          # signal pmxcfs to release stale lock
             sleep(1);
         }
 
         # Hard execution timeout: pmxcfs drops locks not touched for ~120s.
-        # We use 60s to stay safely within that window (matching PVE::Cluster).
+        # We use 119s to stay safely within that window (matching PVE::Cluster).
         # $is_code_err is set after cfs_update() so that a cfs_update timeout
         # is classified as a lock-machinery error (prefixed), not a code error.
         local $SIG{ALRM} = sub { die "execution timed out\n" };
-        alarm(60);
+        alarm(119);
 
         PVE::Cluster::cfs_update();          # ensure latest cluster state
 
-        $is_code_err = 1;                    # errors from here on are from $code
+        push @{$ctx->{_active_locks}}, $lockpath;    # track for touch_cluster_lock
+        $is_code_err = 1;                            # errors from here on are from $code
         $res = &$code(@param);
 
         alarm(0);
@@ -134,8 +136,9 @@ sub _cluster_lock_attempt {
         $err = "no quorum!\n" if !$quorate;
     }
 
-    rmdir $lockpath if $got_lock;            # release lock; safe even on error
-    alarm($prev_alarm);                      # restore outer alarm
+    pop @{$ctx->{_active_locks}} if $got_lock;  # remove before releasing
+    rmdir $lockpath if $got_lock;                # release lock; safe even on error
+    alarm($prev_alarm);                          # restore outer alarm
 
     if ($err) {
         # Code errors are re-raised as-is; lock machinery errors are prefixed.
@@ -167,7 +170,7 @@ sub _cluster_lock_attempt {
 # Returns result of $code on success; returns undef and sets $@ on failure.
 
 sub _cluster_lock {
-    my ($storeid, $lockid, $timeout, $code, @param) = @_;
+    my ($ctx, $storeid, $lockid, $timeout, $code, @param) = @_;
 
     my $lockdir     = _cluster_lockdir();
     my $full_lockid = "joviandss-" . _sanitize_lockid($storeid) . "-" . _sanitize_lockid($lockid);
@@ -175,7 +178,7 @@ sub _cluster_lock {
 
     my $explicit    = defined $timeout;
     my $max_total   = 600;
-    my $per_attempt = 120;
+    my $per_attempt = 119;
     my $start       = time();
 
     while (1) {
@@ -191,7 +194,7 @@ sub _cluster_lock {
             $attempt = ($per_attempt < $remaining) ? $per_attempt : int($remaining);
         }
 
-        my $res = _cluster_lock_attempt($lockdir, $lockpath, $full_lockid, $attempt, $code, @param);
+        my $res = _cluster_lock_attempt($ctx, $lockdir, $lockpath, $full_lockid, $attempt, $code, @param);
 
         # Success: $@ is undef (set by _cluster_lock_attempt on success).
         return $res if !$@;
@@ -244,11 +247,27 @@ sub _node_lock {
 # Public API
 # ---------------------------------------------------------------------------
 
-# lock_storage($storeid, $path, $shared, $timeout, $code, @param)
+# touch_cluster_lock($ctx)
+#
+# Reset the pmxcfs 120 s inactivity timer on every cluster lock currently held
+# by this context.  No-op when no cluster lock is held (e.g. node-local storage
+# or jdssc calls that run outside a lock_vm/lock_storage block).
+# Called by joviandss_cmd before and after each run_command invocation.
+
+sub touch_cluster_lock {
+    my ($ctx) = @_;
+    for (@{$ctx->{_active_locks}}) {
+        utime(undef, undef, $_);
+        OpenEJovianDSS::Common::debugmsg($ctx, 'debug', "touch cluster lock '$_'");
+    }
+}
+
+# lock_storage($ctx, $storeid, $path, $shared, $timeout, $code, @param)
 #
 # Storage-level lock — serializes all operations on a given storage instance.
 # Used as a fallback for methods not covered by lock_vm.
 #
+# $ctx     — request context; active lock paths are stored in $ctx->{_active_locks}
 # $storeid — storage id (embedded in the cluster lock name)
 # $path    — value of the `path` property from storage.cfg (e.g. /mnt/pve/jdss-Pool-2);
 #            used as root for node-local lock files
@@ -260,31 +279,33 @@ sub _node_lock {
 # Lock path (node):    <path>/private/lock/storage
 
 sub lock_storage {
-    my ($storeid, $path, $shared, $timeout, $code, @param) = @_;
+    my ($ctx, $storeid, $path, $shared, $timeout, $code, @param) = @_;
 
     my $lockid = "storage";
 
     if ($shared) {
-        return _cluster_lock($storeid, $lockid, $timeout, $code, @param);
+        return _cluster_lock($ctx, $storeid, $lockid, $timeout, $code, @param);
     }
     return _node_lock($path, $lockid, $timeout, $code, @param);
 }
 
-# lock_vm($storeid, $path, $shared, $vmid, $timeout, $code, @param)
+# lock_vm($ctx, $storeid, $path, $shared, $vmid, $timeout, $code, @param)
 #
 # Per-VM lock — serializes operations that target the same VM's volumes.
 # Concurrent operations for different VMIDs proceed independently.
+#
+# $ctx — request context; active lock paths are stored in $ctx->{_active_locks}
 #
 # Lock path (cluster): /etc/pve/priv/lock/joviandss-<storeid>-vm-<vmid>
 # Lock path (node):    <path>/private/lock/vm-<vmid>
 
 sub lock_vm {
-    my ($storeid, $path, $shared, $vmid, $timeout, $code, @param) = @_;
+    my ($ctx, $storeid, $path, $shared, $vmid, $timeout, $code, @param) = @_;
 
     my $lockid = "vm-" . _sanitize_lockid($vmid);
 
     if ($shared) {
-        return _cluster_lock($storeid, $lockid, $timeout, $code, @param);
+        return _cluster_lock($ctx, $storeid, $lockid, $timeout, $code, @param);
     }
     return _node_lock($path, $lockid, $timeout, $code, @param);
 }

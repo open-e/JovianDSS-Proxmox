@@ -177,6 +177,27 @@ sub properties {
             type    => 'int',
             default => OpenEJovianDSS::Common::get_default_luns_per_target(),
         },
+        iscsi_change_lock_timeout => {
+            description =>
+              'Timeout in seconds to wait for the iSCSI REST serialization lock',
+            type    => 'integer',
+            minimum => 5,
+            maximum => OpenEJovianDSS::Common::get_max_iscsi_change_lock_timeout(),
+            default => OpenEJovianDSS::Common::get_default_iscsi_change_lock_timeout(),
+        },
+        jdssc_timeout => {
+            description =>
+              'Maximum total jdssc process lifetime in seconds',
+            type    => 'integer',
+            minimum => 10,
+            default => OpenEJovianDSS::Common::get_default_jdssc_timeout(),
+        },
+        iscsi_target_global_lock_path => {
+            description =>
+              'Path to the pmxcfs lock directory used to serialize iSCSI REST calls',
+            type    => 'string',
+            default => OpenEJovianDSS::Common::get_default_iscsi_target_global_lock_path(),
+        },
         ssl_cert_verify => {
             description =>
               "Enforce certificate verification for REST over SSL/TLS",
@@ -262,6 +283,9 @@ sub options {
         disable            => { optional => 1 },
         target_prefix      => { optional => 1 },
         luns_per_target    => { optional => 1 },
+        iscsi_change_lock_timeout     => { optional => 1 },
+        jdssc_timeout                 => { optional => 1 },
+        iscsi_target_global_lock_path => { optional => 1 },
         ssl_cert_verify    => { optional => 1 },
         delete_timeout     => { optional => 1 },
         user_name          => { },
@@ -445,20 +469,20 @@ sub _rename_volume_lock {
     if ( !defined($src_vmid) || !defined($new_vmid) ) {
         # Cannot determine one or both VMIDs: serialise at storage level.
         $res = OpenEJovianDSS::Lock::lock_storage(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef, $code,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef, $code,
         );
     } elsif ( $src_vmid == $new_vmid ) {
         # Rename within the same VM: one lock is sufficient.
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $new_vmid, undef, $code,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $new_vmid, undef, $code,
         );
     } elsif ( $src_vmid < $new_vmid ) {
         # Acquire lower vmid first.
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $src_vmid, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $src_vmid, undef,
             sub {
                 my $r = OpenEJovianDSS::Lock::lock_vm(
-                    $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $new_vmid, undef, $code,
+                    $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $new_vmid, undef, $code,
                 );
                 die $@ if $@;
                 return $r;
@@ -467,10 +491,10 @@ sub _rename_volume_lock {
     } else {
         # Acquire lower vmid first (new_vmid is lower here).
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $new_vmid, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $new_vmid, undef,
             sub {
                 my $r = OpenEJovianDSS::Lock::lock_vm(
-                    $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $src_vmid, undef, $code,
+                    $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $src_vmid, undef, $code,
                 );
                 die $@ if $@;
                 return $r;
@@ -511,7 +535,7 @@ sub _rename_volume {
                 "volume", $original_volname,
                 "get", "-i"
             ],
-            40, 5
+            118, 5
         );
 
     $jscsiid = OpenEJovianDSS::Common::clean_word($jscsiid);
@@ -521,7 +545,7 @@ sub _rename_volume {
             [ "pool", $pool,
               "volume", $original_volname,
               "rename", $new_volname, "--idempotent-scsi-id", $jscsiid ],
-            55, 3);
+            118, 3);
 
     my $newname = "${storeid}:${new_volname}";
     return $newname;
@@ -540,12 +564,12 @@ sub _create_base_lock {
     my $res;
     if ( defined $vmid ) {
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
             sub { _create_base( $class, $ctx, $volname ) },
         );
     } else {
         $res = OpenEJovianDSS::Lock::lock_storage(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
             sub { _create_base( $class, $ctx, $volname ) },
         );
     }
@@ -621,15 +645,15 @@ sub _clone_image_lock {
     if ( !defined($src_vmid) || $src_vmid == $vmid ) {
         # Source vmid unknown or same as destination: single lock is sufficient.
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef, $code,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef, $code,
         );
     } elsif ( $src_vmid < $vmid ) {
         # Acquire lower vmid first to prevent deadlock.
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $src_vmid, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $src_vmid, undef,
             sub {
                 my $r = OpenEJovianDSS::Lock::lock_vm(
-                    $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef, $code,
+                    $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef, $code,
                 );
                 die $@ if $@;
                 return $r;
@@ -638,10 +662,10 @@ sub _clone_image_lock {
     } else {
         # Acquire lower vmid first (vmid is lower here).
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
             sub {
                 my $r = OpenEJovianDSS::Lock::lock_vm(
-                    $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $src_vmid, undef, $code,
+                    $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $src_vmid, undef, $code,
                 );
                 die $@ if $@;
                 return $r;
@@ -664,7 +688,7 @@ sub _clone_image {
     my $clone_name = $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt );
 
     my $size = joviandss_cmd( $ctx,
-        [ "pool", $pool, "volume", $volname, "get", "-s" ], 50, 3 );
+        [ "pool", $pool, "volume", $volname, "get", "-s" ], 118, 3 );
     $size = clean_word($size);
 
     my $max_retries = 10;
@@ -690,7 +714,7 @@ sub _clone_image {
                         "clone", "--size", $size,    "--snapshot",
                         $snap,   "-n",     $clone_name
                     ],
-                    50, 3
+                    118, 3
                 );
             }
             else {
@@ -701,7 +725,7 @@ sub _clone_image {
                         "clone", "--size", $size,    "-n",
                         $clone_name
                     ],
-                    50, 3
+                    118, 3
                 );
             }
         };
@@ -757,7 +781,7 @@ sub _alloc_image_lock {
     my ( $class, $ctx, $vmid, $fmt, $name, $size ) = @_;
 
     my $res = OpenEJovianDSS::Lock::lock_vm(
-        $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
+        $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
         sub { _alloc_image( $class, $ctx, $vmid, $fmt, $name, $size ) },
     );
     die $@ if $@;
@@ -827,7 +851,7 @@ sub _alloc_image {
             my $err;
             eval {
                 joviandss_cmd(
-                    $ctx, $create_vol_cmd, 80, 3 );
+                    $ctx, $create_vol_cmd, 118, 3 );
             };
             $err = $@;
 
@@ -880,12 +904,12 @@ sub _free_image_lock {
     my $res;
     if ( defined $vmid ) {
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
             sub { _free_image( $class, $ctx, $volname, $isBase, $_format ) },
         );
     } else {
         $res = OpenEJovianDSS::Lock::lock_storage(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
             sub { _free_image( $class, $ctx, $volname, $isBase, $_format ) },
         );
     }
@@ -1042,12 +1066,12 @@ sub _volume_snapshot_rollback_lock {
     my $res;
     if ( defined $vmid ) {
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
             sub { _volume_snapshot_rollback( $class, $ctx, $volname, $snap ) },
         );
     } else {
         $res = OpenEJovianDSS::Lock::lock_storage(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
             sub { _volume_snapshot_rollback( $class, $ctx, $volname, $snap ) },
         );
     }
@@ -1161,12 +1185,12 @@ sub _volume_snapshot_delete_lock {
     my $res;
     if ( defined $vmid ) {
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
             sub { _volume_snapshot_delete( $class, $ctx, $volname, $snap, $running ) },
         );
     } else {
         $res = OpenEJovianDSS::Lock::lock_storage(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
             sub { _volume_snapshot_delete( $class, $ctx, $volname, $snap, $running ) },
         );
     }
@@ -1233,7 +1257,7 @@ sub volume_size_info {
     }
 
     my $size = joviandss_cmd( $ctx,
-        [ "pool", $pool, "volume", $volname, "get", "-s" ], 80, 3 );
+        [ "pool", $pool, "volume", $volname, "get", "-s" ], 118, 3 );
 
     return clean_word($size);
 }
@@ -1247,7 +1271,7 @@ sub status {
 
     for my $attempt (1 .. 3) {
         my $stats = eval {
-            joviandss_cmd( $ctx, [ "pool", $pool, "get" ], 10, 0 );
+            joviandss_cmd( $ctx, [ "pool", $pool, "get" ], 118, 0 );
         };
         if ($@) {
             debugmsg( $ctx, 'warn', "Storage status check failed (attempt ${attempt}): $@" );
@@ -1275,7 +1299,7 @@ sub get_identity {
 
     for my $attempt (1 .. 3) {
         my $stats = eval {
-            joviandss_cmd( $ctx, [ "pool", $pool, "get" ], 10, 0 );
+            joviandss_cmd( $ctx, [ "pool", $pool, "get" ], 118, 0 );
         };
         if ($@) {
             debugmsg( $ctx, 'warn', "Storage identity check failed (attempt ${attempt}): $@" );
@@ -1382,12 +1406,12 @@ sub _activate_volume_lock {
     my $res;
     if ( defined $vmid ) {
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
             sub { _activate_volume( $class, $ctx, $volname, $snapname, $cache ) },
         );
     } else {
         $res = OpenEJovianDSS::Lock::lock_storage(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
             sub { _activate_volume( $class, $ctx, $volname, $snapname, $cache ) },
         );
     }
@@ -1472,12 +1496,12 @@ sub _deactivate_volume_lock {
     my $res;
     if ( defined $vmid ) {
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
             sub { _deactivate_volume( $class, $ctx, $volname, $snapname, $cache, $hints ) },
         );
     } else {
         $res = OpenEJovianDSS::Lock::lock_storage(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
             sub { _deactivate_volume( $class, $ctx, $volname, $snapname, $cache, $hints ) },
         );
     }
@@ -1568,12 +1592,12 @@ sub _volume_resize_lock {
     my $res;
     if ( defined $vmid ) {
         $res = OpenEJovianDSS::Lock::lock_vm(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, $vmid, undef,
             sub { _volume_resize( $class, $ctx, $volname, $size, $running ) },
         );
     } else {
         $res = OpenEJovianDSS::Lock::lock_storage(
-            $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
+            $ctx, $ctx->{storeid}, $ctx->{scfg}{path}, $ctx->{scfg}{shared}, undef,
             sub { _volume_resize( $class, $ctx, $volname, $size, $running ) },
         );
     }
@@ -1591,7 +1615,7 @@ sub _volume_resize {
 
     eval {
         joviandss_cmd( $ctx,
-            [ "pool", "${pool}", "volume", "${volname}", "resize", "${size}" ], 55 );
+            [ "pool", "${pool}", "volume", "${volname}", "resize", "${size}" ], 118 );
     };
     my $rerr = $@;
     if (defined($rerr) && $rerr !~ /got timeout/ ) {
@@ -1622,7 +1646,7 @@ sub _volume_resize {
         local $@;
         eval {
             joviandss_cmd( $ctx,
-                [ "pool", "${pool}", "volume", "${volname}", "resize", "${size}" ], 55 );
+                [ "pool", "${pool}", "volume", "${volname}", "resize", "${size}" ], 118 );
         };
         $rerr = $@;
         $retry_count++;

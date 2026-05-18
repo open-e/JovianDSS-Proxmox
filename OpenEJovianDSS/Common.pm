@@ -54,6 +54,9 @@ our @EXPORT_OK = qw(
   get_default_content_size
   get_default_data_port
   get_default_debug
+  get_default_iscsi_change_lock_timeout
+  get_default_jdssc_timeout
+  get_default_iscsi_target_global_lock_path
   get_default_luns_per_target
   get_default_multipath
   get_default_path
@@ -93,8 +96,10 @@ our @EXPORT_OK = qw(
   get_create_base_path
   get_multipath
 
+  get_iscsi_change_lock_timeout
+  get_jdssc_timeout
+  get_iscsi_target_global_lock_path
   get_log_level
-  get_debug
 
   password_file_set_password
   password_file_set_chap_password
@@ -140,9 +145,11 @@ our @EXPORT_OK = qw(
 our %EXPORT_TAGS = ( all => [@EXPORT_OK], );
 
 use constant {
-    PLUGIN_LOCAL_STATE_DIR          => '/etc/joviandss/state',
-    PLUGIN_GLOBAL_STATE_DIR         => '/etc/pve/priv/joviandss/state',
-    PLUGIN_GLOBAL_PASSWORD_FILE_DIR => '/etc/pve/priv/storage/joviandss',
+    PLUGIN_LOCAL_STATE_DIR               => '/etc/joviandss/state',
+    PLUGIN_GLOBAL_STATE_DIR              => '/etc/pve/priv/joviandss/state',
+    PLUGIN_GLOBAL_PASSWORD_FILE_DIR      => '/etc/pve/priv/storage/joviandss',
+    JOVIANDSS_ISCSI_LOCK_PATH            => '/etc/pve/priv/lock/joviandss-iscsi-target-global-lock',
+    JOVIANDSS_ISCSI_CHANGE_LOCK_TIMEOUT_MAX => 115,  # must stay below pmxcfs CFS_LOCK_TIMEOUT (120 s)
 };
 
 
@@ -167,8 +174,10 @@ my $default_debug            = 0;
 my $default_prefix           = 'jdss-';
 my $default_pool             = 'Pool-0';
 my $default_log_file         = '/var/log/joviandss/joviandss.log';
-my $default_luns_per_target  = 8;
-my $default_multipath        = 0;
+my $default_iscsi_change_lock_timeout = 50;
+my $default_jdssc_timeout     = 113;
+my $default_luns_per_target    = 8;
+my $default_multipath          = 0;
 my $default_path             = '/mnt/pve/joviandss';
 my $default_shared           = 0;
 my $default_target_prefix    = 'iqn.2025-04.proxmox.joviandss.iscsi:';
@@ -186,8 +195,12 @@ sub get_default_content_size     { return $default_content_size }
 sub get_default_path             { die "Please set up path property in storage.cfg\n"; }
 sub get_default_target_prefix    { return $default_target_prefix }
 sub get_default_log_file         { return $default_log_file }
-sub get_default_luns_per_target  { return $default_luns_per_target }
-sub get_default_ssl_cert_verify  { return $default_ssl_cert_verify }
+sub get_max_iscsi_change_lock_timeout         { return JOVIANDSS_ISCSI_CHANGE_LOCK_TIMEOUT_MAX }
+sub get_default_iscsi_change_lock_timeout     { return $default_iscsi_change_lock_timeout }
+sub get_default_jdssc_timeout         { return $default_jdssc_timeout }
+sub get_default_iscsi_target_global_lock_path { return JOVIANDSS_ISCSI_LOCK_PATH }
+sub get_default_luns_per_target           { return $default_luns_per_target }
+sub get_default_ssl_cert_verify    { return $default_ssl_cert_verify }
 sub get_default_control_port     { return $default_control_port }
 sub get_default_data_port        { return $default_data_port }
 sub get_default_user_name        { return $default_user_name }
@@ -255,6 +268,24 @@ sub get_target_prefix {
 
     $prefix =~ s/:$//;
     return safe_word( clean_word($prefix) );
+}
+
+sub get_iscsi_change_lock_timeout {
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
+    return int( $scfg->{iscsi_change_lock_timeout} || $default_iscsi_change_lock_timeout );
+}
+
+sub get_jdssc_timeout {
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
+    return int( $scfg->{jdssc_timeout} || $default_jdssc_timeout );
+}
+
+sub get_iscsi_target_global_lock_path {
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
+    return $scfg->{iscsi_target_global_lock_path} || JOVIANDSS_ISCSI_LOCK_PATH;
 }
 
 sub get_luns_per_target {
@@ -587,11 +618,6 @@ sub get_content_volume_size {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
 
-    if ( get_debug($ctx) ) {
-        print
-"content_volume_size property is not set up, using default $default_content_size\n"
-          if ( !defined( $scfg->{content_volume_size} ) );
-    }
     my $size = $scfg->{content_volume_size} || $default_content_size;
     return $size;
 }
@@ -668,9 +694,10 @@ sub _new_reqid {
 sub new_ctx {
     my ($scfg, $storeid) = @_;
     return {
-        scfg    => $scfg,
-        storeid => $storeid,
-        reqid   => _new_reqid(),
+        scfg          => $scfg,
+        storeid       => $storeid,
+        reqid         => _new_reqid(),
+        _active_locks => [],
     };
 }
 
@@ -758,7 +785,6 @@ sub joviandss_cmd {
     my $target;
     my $retry_count = 0;
 
-    $timeout = 40 if ! defined($timeout);
     $retries = 0  if ! defined($retries);
     my $connection_options = [];
 
@@ -827,6 +853,17 @@ sub joviandss_cmd {
         push @$connection_options, '-c', $config_file;
     }
 
+    my $lock_path        = get_iscsi_target_global_lock_path($ctx);
+    my $lock_timeout     = get_iscsi_change_lock_timeout($ctx);
+    my $process_timeout  = get_jdssc_timeout($ctx);
+    $timeout //= $process_timeout;
+    $timeout = $process_timeout + 5
+        if $timeout < $process_timeout + 5;
+    push @$connection_options,
+        '--iscsi-target-lock-path',    $lock_path,
+        '--iscsi-change-lock-timeout', $lock_timeout,
+        '--timeout',                   $process_timeout;
+
     while ( $retry_count <= $retries ) {
 
         my $exitcode = 0;
@@ -840,12 +877,14 @@ sub joviandss_cmd {
                                     $err .= "$_[0]\n";
                                };
 
+            OpenEJovianDSS::Lock::touch_cluster_lock($ctx);
             $exitcode = run_command( $jcmd,
                 outfunc => $output,
                 errfunc => $errfunc,
-                timeout => $timeout,
+                timeout => $timeout + 1,
                 noerr   => 1
             );
+            OpenEJovianDSS::Lock::touch_cluster_lock($ctx);
         };
         my $rerr = $@;
 
@@ -861,6 +900,22 @@ sub joviandss_cmd {
             next;
         }
 
+        if ( $err && $err =~ /jdssc process timed out/ ) {
+            $retry_count++;
+            $msg = '';
+            $err = undef;
+            sleep( 3 + int( rand( 5 ) ) );
+            next;
+        }
+
+        if ( $err && $err =~ /(?:Not enough time to acquire|Could not acquire) iSCSI target lock/ ) {
+            $retry_count++;
+            $msg = '';
+            $err = undef;
+            sleep( 3 + int( rand( 5 ) ) );
+            next;
+        }
+
         if ( $rerr ) {
             die "$rerr\n";
         }
@@ -868,6 +923,8 @@ sub joviandss_cmd {
         if ( $exitcode == 0 ) {
             return $msg;
         }
+
+
 
         if ($err) {
             die "${err}\n";
@@ -1415,7 +1472,7 @@ sub target_active_info {
         push @$gettargetcmd, '-d';
     }
 
-    my $out = joviandss_cmd( $ctx, $gettargetcmd, 180, 5 );
+    my $out = joviandss_cmd( $ctx, $gettargetcmd, 118, 5 );
 
     if ( defined $out and clean_word($out) eq '' ) {
         return undef;
@@ -1536,7 +1593,7 @@ sub volume_publish {
         push @$create_target_cmd, '--chap-user', $chap_user, '--chap-password', $chap_pass;
     }
 
-    my $out = joviandss_cmd( $ctx, $create_target_cmd, 180, 5 );
+    my $out = joviandss_cmd( $ctx, $create_target_cmd, 118, 5 );
     my ( $targetname, $lunid, $ips, $scsiid ) = split( ' ', $out );
 
     my @iplist = split /\s*,\s*/, clean_word($ips);
@@ -1581,7 +1638,7 @@ sub target_update_chap {
 
     my $last_err;
     for my $attempt (1 .. 3) {
-        eval { joviandss_cmd($ctx, $cmd, 55,4); };
+        eval { joviandss_cmd($ctx, $cmd, 118, 4); };
         $last_err = $@;
         return unless $last_err;
         debugmsg($ctx, 'warn',
@@ -2537,8 +2594,7 @@ sub id_serial_from_rest {
                 "volume", $volname,
                 "get", "-i"
             ],
-            80, 5
-        );
+, 5        );
     } elsif (defined($volname) && defined($snapname)) {
         $jscsiid = joviandss_cmd(
             $ctx,
@@ -2548,8 +2604,7 @@ sub id_serial_from_rest {
                 "snapshot", $snapname,
                 "get", "-i"
             ],
-            80, 5
-        );
+, 5        );
     } else {
         die "Volume name is required to acquire scsi id\n";
     }
@@ -2754,7 +2809,7 @@ sub _volume_unstage_multipath_wait_unused {
 
             if ($pid) {
                 $pid = clean_word($pid);
-                print("Block device with SCSI ${scsiid} is used by ${pid}\n");
+                debugmsg( $ctx, 'debug', "Block device with SCSI ${scsiid} is used by ${pid}" );
 
                 # Get process name for diagnostics
                 if ( $pid =~ /^([\:\-\@\w.\/]+)$/ ) {
@@ -2775,7 +2830,7 @@ sub _volume_unstage_multipath_wait_unused {
                     warn "${warningmsg}\n";
                 }
             } else {
-                print("Block device with SCSI ${scsiid} is not used\n");
+                debugmsg( $ctx, 'debug', "Block device with SCSI ${scsiid} is not used" );
                 $should_continue = 0;
             }
         };
@@ -3052,8 +3107,7 @@ sub volume_unpublish {
                 '--target-group-name', $tgname,
                 '-v', $volname
             ],
-            55,
-            4
+            118, 4
         );
     }
 
@@ -3079,8 +3133,7 @@ sub volume_unpublish {
                 '-v', $volname,
                 '--snapshot', $snapname,
             ],
-            55,
-            4
+            118, 4
         );
     }
 
@@ -3908,7 +3961,7 @@ sub lun_record_update_device {
         };
 
         if ($expectedsize) {
-            if ( $updated_size eq $expectedsize ) {
+            if ( int($updated_size) == int($expectedsize) ) {
                 $lunrec->{size} = $expectedsize;
                 lun_record_local_update( $ctx,
                                          $targetname, $lunid,
@@ -3964,7 +4017,7 @@ sub volume_get_size {
 
     my $pool = get_pool($ctx);
 
-    my $output = joviandss_cmd($ctx, ['pool', $pool, 'volume', $volname, 'get', '-s'], 80, 5);
+    my $output = joviandss_cmd($ctx, ['pool', $pool, 'volume', $volname, 'get', '-s'], 118, 5);
 
     my $size = int( clean_word( $output ) + 0 );
     return $size;

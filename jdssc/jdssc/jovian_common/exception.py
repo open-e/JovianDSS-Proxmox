@@ -265,3 +265,52 @@ class JDSSResourceExhausted(JDSSException):
     def __init__(self):
         self.message = "JDSS Not enoung free space."
         super().__init__(self.message)
+
+
+class JDSSLockAcquireTimeout(JDSSException):
+    """iSCSI target lock could not be acquired within the timeout"""
+
+    def __init__(self, path, timeout):
+        self.message = (
+            "Could not acquire iSCSI target lock '%(path)s' within "
+            "%(timeout)d seconds" % {'path': path, 'timeout': timeout}
+        )
+        super().__init__(self.message)
+        self.errcode = 9
+
+
+class JDSSLockExecutionTimeout(JDSSException):
+    """jdssc process exceeded its global timeout"""
+
+    def __init__(self, timeout):
+        self.message = (
+            "jdssc process timed out after %(timeout)d seconds"
+            % {'timeout': timeout}
+        )
+        super().__init__(self.message)
+        self.errcode = 10
+
+
+class JDSSLockReleaseError(JDSSException):
+    """iSCSI target lock directory could not be removed"""
+
+    def __init__(self, path, reason):
+        self.message = (
+            "Failed to release iSCSI target lock '%(path)s': %(reason)s"
+            % {'path': path, 'reason': reason}
+        )
+        super().__init__(self.message)
+        self.errcode = 11
+
+
+class JDSSNotEnoughTimeForOperation(JDSSException):
+    """Not enough time remaining before process alarm to acquire the lock"""
+
+    def __init__(self, lock_timeout, remaining):
+        self.message = (
+            "Not enough time to acquire iSCSI target lock: "
+            "%(remaining).1f s remaining, %(lock_timeout)d s needed"
+            % {'remaining': remaining, 'lock_timeout': lock_timeout}
+        )
+        super().__init__(self.message)
+        self.errcode = 12
