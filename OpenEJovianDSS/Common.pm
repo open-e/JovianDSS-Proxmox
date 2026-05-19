@@ -3232,45 +3232,51 @@ sub lun_record_local_get_info_list {
         die "Unable to locate folder containing ${ ldir } plugin state\n";
     }
 
-    File::Find::find(
-        {
-            no_chdir => 1,
-            wanted   => sub {
-                my $full = $File::Find::name;
+    eval {
+        File::Find::find(
+            {
+                no_chdir => 1,
+                wanted   => sub {
+                    my $full = $File::Find::name;
 
-                # Expect path .../<storeid>/<target>/<lun_id>/$name
-                unless ($full =~ m!^\Q$ldir\E/([^/]+)/(\d+)/\Q$name\E$!) {
-                    return;
-                }
-                my ($targetname, $lunid) = ($1, $2);
-                $targetname = clean_word($targetname);
-                $lunid = clean_word($lunid);
+                    # Expect path .../<storeid>/<target>/<lun_id>/$name
+                    unless ($full =~ m!^\Q$ldir\E/([^/]+)/(\d+)/\Q$name\E$!) {
+                        return;
+                    }
+                    my ($targetname, $lunid) = ($1, $2);
+                    $targetname = clean_word($targetname);
+                    $lunid = clean_word($lunid);
 
-                # TODO: consider using target group name
-                my $lunrec = lun_record_local_get_by_path( $ctx, $full);
-                if ($lunrec) {
-                    if ( $lunrec->{volname} eq $volname ) {
-                        if ( defined($snapname) ) {
-                            if ( defined($lunrec->{snapname}) &&
-                                ( $lunrec->{snapname} eq $snapname ) ) {
-                                push @matches, [ $targetname, $lunid, $full, $lunrec ];
-                            }
-                        } else {
-                            unless( defined($lunrec->{snapname}) ) {
-                                push @matches, [ $targetname, $lunid, $full, $lunrec ];
-                                debugmsg( $ctx, "debug", "Found lun record of volume ${volname} "
-                                    . safe_var_print( "snapshot", $snapname )
-                                    . safe_var_print( "target group", $tgname )
-                                    . " targetname ${targetname}"
-                                    . " lunid ${lunid}\n");
+                    # TODO: consider using target group name
+                    my $lunrec = lun_record_local_get_by_path( $ctx, $full);
+                    if ($lunrec) {
+                        if ( $lunrec->{volname} eq $volname ) {
+                            if ( defined($snapname) ) {
+                                if ( defined($lunrec->{snapname}) &&
+                                    ( $lunrec->{snapname} eq $snapname ) ) {
+                                    push @matches, [ $targetname, $lunid, $full, $lunrec ];
+                                }
+                            } else {
+                                unless( defined($lunrec->{snapname}) ) {
+                                    push @matches, [ $targetname, $lunid, $full, $lunrec ];
+                                    debugmsg( $ctx, "debug", "Found lun record of volume ${volname} "
+                                        . safe_var_print( "snapshot", $snapname )
+                                        . safe_var_print( "target group", $tgname )
+                                        . " targetname ${targetname}"
+                                        . " lunid ${lunid}\n");
+                                }
                             }
                         }
                     }
-                }
-
+                },
             },
-        },
-        $ldir);
+            $ldir);
+    };
+    if ($@) {
+        debugmsg($ctx, 'warning',
+            "lun record search interrupted: $@"
+            . " (likely a concurrent deactivation removed a target directory)");
+    }
 
     return \@matches;
 }
@@ -3292,29 +3298,36 @@ sub lun_record_local_get_snapshot_list {
         die "Unable to locate folder containing plugin state\n";
     }
 
-    File::Find::find(
-        {
-            no_chdir => 1,
-            wanted   => sub {
-                my $full = $File::Find::name;
+    eval {
+        File::Find::find(
+            {
+                no_chdir => 1,
+                wanted   => sub {
+                    my $full = $File::Find::name;
 
-                unless ($full =~ m!^\Q$ldir\E/([^/]+)/(\d+)/\Q$volname\E$!) {
-                    return;
-                }
-                my ($targetname, $lunid) = ($1, $2);
-                $targetname = clean_word($targetname);
-                $lunid      = clean_word($lunid);
+                    unless ($full =~ m!^\Q$ldir\E/([^/]+)/(\d+)/\Q$volname\E$!) {
+                        return;
+                    }
+                    my ($targetname, $lunid) = ($1, $2);
+                    $targetname = clean_word($targetname);
+                    $lunid      = clean_word($lunid);
 
-                my $lunrec = lun_record_local_get_by_path($ctx, $full);
-                return unless $lunrec;
-                return unless $lunrec->{volname} eq $volname;
-                return unless defined($lunrec->{snapname});
+                    my $lunrec = lun_record_local_get_by_path($ctx, $full);
+                    return unless $lunrec;
+                    return unless $lunrec->{volname} eq $volname;
+                    return unless defined($lunrec->{snapname});
 
-                push @matches, [ $targetname, $lunid, $full, $lunrec ];
+                    push @matches, [ $targetname, $lunid, $full, $lunrec ];
+                },
             },
-        },
-        $ldir
-    );
+            $ldir
+        );
+    };
+    if ($@) {
+        debugmsg($ctx, 'warning',
+            "snapshot lun record search interrupted: $@"
+            . " (likely a concurrent deactivation removed a target directory)");
+    }
 
     return \@matches;
 }

@@ -1,4 +1,5 @@
 import os
+import random
 import time
 
 from jdssc.jovian_common.exception import (
@@ -39,7 +40,7 @@ def acquire_target_lock(path, timeout):
             os.utime(path, (0, 0))
         except OSError:
             pass
-        time.sleep(1)
+        time.sleep(random.uniform(0.1, 0.5))
 
 
 def release_target_lock(path):
