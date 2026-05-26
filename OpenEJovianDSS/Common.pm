@@ -307,7 +307,7 @@ sub get_delete_timeout {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
 
-    return $scfg->{delete_timeout} || 600;
+    return $scfg->{delete_timeout} || 118;
 }
 
 sub get_control_addresses {
@@ -958,7 +958,9 @@ sub volume_snapshots_info {
         [
             'pool',      $pool,  'volume', $volname,
             'snapshots', 'list', '--guid', '--creation'
-        ]
+        ],
+        118,
+        5
     );
 
     my $snapshots = {};
@@ -1302,7 +1304,9 @@ sub volume_rollback_check {
                 "pool",     $pool, "volume",   $volname,
                 "snapshot", $snap, "rollback", "check",
                 '--concise'
-            ]
+            ],
+            118,
+            5
         );
     };
     if ($@) {
@@ -1397,7 +1401,7 @@ sub get_iscsi_addresses {
 
     my $getaddressescmd = [ 'hosts', '--iscsi' ];
 
-    my $cmdout = joviandss_cmd( $ctx, $getaddressescmd );
+    my $cmdout = joviandss_cmd( $ctx, $getaddressescmd, 118, 3 );
 
     if ( length($cmdout) > 1 ) {
         my @hosts = ();
@@ -1498,7 +1502,7 @@ sub target_get_sessions {
 
     debugmsg( $ctx, "debug", "Getting sessions for target ${target_name}\n" );
 
-    my $out = joviandss_cmd( $ctx, [ 'target', $target_name, 'get', '--sessions' ] );
+    my $out = joviandss_cmd( $ctx, [ 'target', $target_name, 'get', '--sessions' ], 118, 5 );
 
     my %sessions = ();
     for my $line ( split /\n/, $out ) {
@@ -1770,9 +1774,9 @@ sub _rescan_target_hosts {
     # Iterate over iscsi sessions projected in /sys/class/iscsi_session folder
     # to identigy session related to target @targetname
 
+    my $found_session = 0;
     for my $session (@sessions) {
         my $targetname_file_path = "$session_dir/$session/targetname";
-
 
         if ( !-f $targetname_file_path ) {
             next;
@@ -1794,6 +1798,8 @@ sub _rescan_target_hosts {
         if ( $session_target ne $targetname ) {
             next;
         }
+
+        $found_session = 1;
 
         # iscsi $session is related to $targetname
         my $session_rescan_completed = 0;
@@ -1820,6 +1826,12 @@ sub _rescan_target_hosts {
                 "Because of inability to send targeted rescan for target $targetname lun $lunid, try conducting General rescan across all targets\n" );
             _scsi_bus_rescan_try($ctx, $lunid);
         }
+    }
+
+    unless ($found_session) {
+        debugmsg( $ctx, 'debug',
+            "No session found for target $targetname, conducting broad rescan\n" );
+        _scsi_bus_rescan_try($ctx, $lunid);
     }
 }
 
@@ -2050,7 +2062,7 @@ sub volume_stage_iscsi {
             . " hosts for target ${targetname}");
     }
 
-    for ( my $i = 1 ; $i <= 60 ; $i++ ) {
+    for ( my $i = 1 ; $i <= 240 ; $i++ ) {
         if ( -b $serial_path ) {
             debugmsg( $ctx, "debug", "Stage iSCSI block device ${serial_path}\n" );
             return [$serial_path];
@@ -2152,7 +2164,7 @@ sub volume_stage_multipath {
         # CHANGE events on sd devices which causes multipathd to re-evaluate
         # paths, disrupting existing multipath devices that are actively
         # being used for data copies (causes qemu-img I/O errors).
-        for my $attempt ( 1 .. 20) {
+        for my $attempt ( 1 .. 60) {
 
             # Explicitly register paths with multipathd before creating
             # the map.  This ensures multipathd knows which sd devices
@@ -2200,7 +2212,7 @@ sub volume_stage_multipath {
                     eval {
                         my $cmd = [ 'udevadm', 'trigger',
                                     '--subsystem-match=block',
-                                    "--attr-match=ID_SERIAL=${id}" ];
+                                    "--property-match=ID_SERIAL=${id}" ];
                         run_command(
                             $cmd,
                             outfunc => sub { },
@@ -2244,6 +2256,18 @@ sub volume_stage_multipath {
                     . "scsiid ${id} "
                     . "attempt ${attempt}"
                 );
+
+            if ( $attempt % 15 == 0 ) {
+                debugmsg( $ctx,
+                    "debug",
+                    "Conducting multipath del map for ${id} in attempt to make multipath device reappear"
+                );
+                eval {
+                    my $cmd = [ $MULTIPATHD, 'del', 'map', $id ];
+                    run_command( $cmd, timeout => 10, noerr => 1 );
+                };
+                sleep(5);
+            }
             eval {
                 my $cmd = [ $MULTIPATH, '-a', $id ];
                 run_command(
@@ -2593,8 +2617,7 @@ sub id_serial_from_rest {
                 "pool",   $pool,
                 "volume", $volname,
                 "get", "-i"
-            ],
-, 5        );
+            ], 118, 5);
     } elsif (defined($volname) && defined($snapname)) {
         $jscsiid = joviandss_cmd(
             $ctx,
@@ -2603,8 +2626,7 @@ sub id_serial_from_rest {
                 "volume", $volname,
                 "snapshot", $snapname,
                 "get", "-i"
-            ],
-, 5        );
+            ], 118, 5 );
     } else {
         die "Volume name is required to acquire scsi id\n";
     }
@@ -2877,9 +2899,25 @@ sub _volume_unstage_multipath_remove_device {
             debugmsg( $ctx, 'warn', "Unable to remove scsi id ${clean_scsiid} from wwid file: $@" );
         }
 
+
+
         # Step 2: Flush (remove) the multipath device map.
         # Using -f (flush) instead of bare $scsiid which would
         # recreate/refresh the device — the opposite of what we want.
+        
+        #TODO: review this section
+        if ($MULTIPATHD) {
+            eval {
+                my $cmd = [ $MULTIPATHD, 'del', 'map', $clean_scsiid ];
+                run_command( $cmd,
+                    outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                    errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+                    timeout => 10, noerr => 1
+                );
+            };
+            if ($@) { debugmsg( $ctx, 'warn', "multipathd del map failed for ${clean_scsiid}: $@" ); }
+        }
+
         eval {
             my $cmd = [ $MULTIPATH, '-f', $clean_scsiid ];
             run_command(
@@ -2890,6 +2928,15 @@ sub _volume_unstage_multipath_remove_device {
                 timeout => 30
             );
         };
+
+        if (_multipathd_map_exists($ctx, $clean_scsiid)) {
+            if ($MULTIPATHD) {
+                eval {
+                    my $cmd = [ $MULTIPATHD, 'del', 'map', $clean_scsiid ];
+                    run_command( $cmd, timeout => 10, noerr => 1 );
+                };
+            }
+        }
 
         # Step 3: Always attempt dmsetup removal.
         # multipath -f removes the multipath map but can leave
@@ -3072,6 +3119,23 @@ sub _volume_unstage_multipath_get_blocker {
 
     return $pid;
 }
+
+# TODO: review this code
+sub _multipathd_map_exists {
+    my ( $ctx, $wwid ) = @_;
+    my $found = 0;
+    eval {
+        my $cmd = [ $MULTIPATH, '-ll', $wwid ];
+        run_command( $cmd,
+            outfunc => sub { my $line = shift; $found = 1 if $line =~ /\Q$wwid\E/;
+                             cmd_log_output($ctx, 'debug', $cmd, $line); },
+            errfunc => sub { },
+            timeout => 15, noerr => 1
+        );
+    };
+    return $found;
+}
+
 
 sub volume_unpublish {
     my ( $ctx, $vmid, $volname, $snapname, $content_volume_flag ) = @_;
@@ -3273,7 +3337,7 @@ sub lun_record_local_get_info_list {
             $ldir);
     };
     if ($@) {
-        debugmsg($ctx, 'warning',
+        debugmsg($ctx, 'warn',
             "lun record search interrupted: $@"
             . " (likely a concurrent deactivation removed a target directory)");
     }
@@ -3324,7 +3388,7 @@ sub lun_record_local_get_snapshot_list {
         );
     };
     if ($@) {
-        debugmsg($ctx, 'warning',
+        debugmsg($ctx, 'warn',
             "snapshot lun record search interrupted: $@"
             . " (likely a concurrent deactivation removed a target directory)");
     }
@@ -3799,7 +3863,7 @@ sub volume_deactivate {
                 my $tinfo = target_active_info( $ctx, $tgname, $volname, $snapname, $contentvolumeflag );
                 if ( defined( $tinfo ) ){
                     my $lr;
-                    ($targetname, $lunid, $lunrecpath, $lr) = $rec;
+                    ($targetname, $lunid, $lunrecpath, $lr) = @{$rec};
 
                     if ( $tinfo->{name} eq $targetname ) {
                         if ( $tinfo->{lun} eq $lunid ) {
@@ -3855,17 +3919,7 @@ sub lun_record_update_device {
     my @update_device_try = ( 1 .. 10 );
     foreach (@update_device_try) {
 
-        for my $iscsihost (glob '/sys/class/scsi_host/host*') {
-            my $scan_file = "$iscsihost/scan";
-            if ( $scan_file =~ /^([\:\-\@\w.\/]+)$/ ) {
-                open my $fh, '>', $1
-                  or warn "Cannot open $scan_file for writing: $!";
-                print $fh "- - -\n"
-                  or warn "Failed to write to $scan_file: $!";
-                close $fh
-                  or warn "Failed to close $scan_file: $!";
-            }
-        }
+        _rescan_target_hosts( $ctx, $targetname, $lunid );
 
         my $iscsi_block_devices = block_device_iscsi_paths ( $ctx, $targetname, $lunid, $lunrec->{hosts} );
         my $block_device_path;
@@ -4006,7 +4060,7 @@ sub volume_update_size {
             foreach my $rec (@$lunrecinfolist) {
                 my $tinfo = target_active_info( $ctx, $tgname, $volname, undef, undef );
                 if ( defined( $tinfo ) ){
-                    my ($targetname, $lunid, $lunrecpath, $lunrecord) = $rec;
+                    my ($targetname, $lunid, $lunrecpath, $lunrecord) = @{$rec};
 
                     if ( $tinfo->{name} eq $targetname ) {
                         if ( $tinfo->{lun} eq $lunid ) {
@@ -4020,6 +4074,8 @@ sub volume_update_size {
                     }
                 }
             }
+            debugmsg( $ctx, 'warn',
+                "Unable to identify active lun record for volume ${volname}, size not updated\n" );
         }
     }
     1;

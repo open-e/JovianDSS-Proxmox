@@ -599,7 +599,8 @@ sub _create_base {
     my $newname;
     for my $attempt ( 1 .. $max_retries ) {
         $newname = joviandss_cmd( $ctx,
-            [ "pool", $pool, "volumes", "getfreename", "--prefix", $newnameprefix ]
+            [ "pool", $pool, "volumes", "getfreename", "--prefix", $newnameprefix ],
+            118, 5
         );
         $newname = clean_word($newname);
 
@@ -760,7 +761,9 @@ sub find_free_diskname {
     my $newnameprefix = join '', $prefix, $vmid, '-disk-';
     my $newname = joviandss_cmd( $ctx,
         [ "pool", $pool, "volumes", "getfreename",
-            '--prefix', $newnameprefix, '--suffix', $suffix ]
+            '--prefix', $newnameprefix, '--suffix', $suffix ],
+        118,
+        5
     );
 
     $newname = OpenEJovianDSS::Common::clean_word($newname);
@@ -967,7 +970,8 @@ sub _free_image {
             "delete", "-c",  '--target-prefix', $prefix,
             '--target-group-name', $tgname
         ],
-        get_delete_timeout($ctx)
+        get_delete_timeout($ctx),
+        5
     );
 
     debugmsg( $ctx, "debug",
@@ -997,7 +1001,7 @@ sub list_images {
 
     #TODO: rename jdssc variable
     my $jdssc = joviandss_cmd( $ctx,
-        [ "pool", $pool, "volumes", "list", "--vmid" ] );
+        [ "pool", $pool, "volumes", "list", "--vmid" ], 118, 5 );
 
     my $res = [];
     foreach ( split( /\n/, $jdssc ) ) {
@@ -1039,7 +1043,7 @@ sub volume_snapshot {
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
     joviandss_cmd( $ctx,
-        [ "pool", $pool, "volume", $volname, "snapshots", "create", $snap ] );
+        [ "pool", $pool, "volume", $volname, "snapshots", "create", $snap ], 118 );
 
 }
 
@@ -1119,7 +1123,9 @@ sub _volume_snapshot_rollback {
             'pool',     $pool, 'volume',   $volname,
             'snapshot', $snap, 'rollback', 'do',
             '--force-snapshots',
-        ]
+        ],
+        118,
+        5
     );
 
     foreach my $line ( split /\n/, $deleted_raw ) {
@@ -1227,7 +1233,9 @@ sub _volume_snapshot_delete {
             "delete",   '--target-prefix',
             $prefix,    '--target-group-name',
             $tgname
-        ]
+        ],
+        118,
+        5
     );
 }
 
@@ -1238,7 +1246,7 @@ sub volume_snapshot_list {
     my $pool = get_pool($ctx);
 
     my $jdssc = joviandss_cmd( $ctx,
-        [ "pool", $pool, "volume", $volname, "snapshots", "list" ] );
+        [ "pool", $pool, "volume", $volname, "snapshots", "list" ], 118, 5 );
 
     my $res = [];
     foreach ( split( /\n/, $jdssc ) ) {
@@ -1277,7 +1285,7 @@ sub status {
 
     for my $attempt (1 .. 3) {
         my $stats = eval {
-            joviandss_cmd( $ctx, [ "pool", $pool, "get" ], 118, 0 );
+            joviandss_cmd( $ctx, [ "pool", $pool, "get" ], 118, 3 );
         };
         if ($@) {
             debugmsg( $ctx, 'warn', "Storage status check failed (attempt ${attempt}): $@" );
@@ -1305,7 +1313,7 @@ sub get_identity {
 
     for my $attempt (1 .. 3) {
         my $stats = eval {
-            joviandss_cmd( $ctx, [ "pool", $pool, "get" ], 118, 0 );
+            joviandss_cmd( $ctx, [ "pool", $pool, "get" ], 118, 3 );
         };
         if ($@) {
             debugmsg( $ctx, 'warn', "Storage identity check failed (attempt ${attempt}): $@" );
@@ -1621,10 +1629,10 @@ sub _volume_resize {
 
     eval {
         joviandss_cmd( $ctx,
-            [ "pool", "${pool}", "volume", "${volname}", "resize", "${size}" ], 118 );
+            [ "pool", "${pool}", "volume", "${volname}", "resize", "${size}" ], 118, 3 );
     };
     my $rerr = $@;
-    if (defined($rerr) && $rerr !~ /got timeout/ ) {
+    if ($rerr && $rerr !~ /got timeout/ ) {
         die $rerr;
     }
     my $retry_count = 0;
@@ -1652,7 +1660,7 @@ sub _volume_resize {
         local $@;
         eval {
             joviandss_cmd( $ctx,
-                [ "pool", "${pool}", "volume", "${volname}", "resize", "${size}" ], 118 );
+                [ "pool", "${pool}", "volume", "${volname}", "resize", "${size}" ], 118, 3);
         };
         $rerr = $@;
         $retry_count++;
