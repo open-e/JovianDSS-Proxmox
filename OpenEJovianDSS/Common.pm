@@ -3617,8 +3617,8 @@ sub volume_activate {
         );
         $block_devs = $tbdlist;
 
-        unless (scalar(@$block_devs) == scalar(@$hosts)) {
-            die "Unable to connect all storage addresses\n";
+        unless (scalar(@$block_devs) >= 1) {
+            die "Unable to connect to any storage address\n";
         }
 
         if (defined( $scsiid ) ) {

@@ -1054,7 +1054,7 @@ class JovianDSSDriver(object):
                                 pass
 
                             try:
-                                self.ra.get_target(tname)
+                                self.ra.get_target(t)
                             except jexc.JDSSResourceNotFoundException:
                                 return
 
@@ -2353,7 +2353,7 @@ class JovianDSSDriver(object):
                                        'old_vol_scsi': idempotent})
                             raise Exception(("Idempotent renaming is impossible since %(new_vol)s "
                                        "scsi id %(new_vol_scsi)s differ from source volume %(old_vol)s "
-                                       "scsi id %(old_vol_scsi)s"),
+                                       "scsi id %(old_vol_scsi)s") %
                                       {'new_vol': new_volume_name,
                                        'new_vol_scsi': nvsi,
                                        'old_vol': volume_name,
@@ -2407,15 +2407,15 @@ class JovianDSSDriver(object):
                               {
                                'idempotent_scsi': idempotent,
                                'cur_vol': volume_name,
-                               'cur_vol_scsi': idempotent})
+                               'cur_vol_scsi': ovsi})
                     raise Exception(("Idempotent renaming is impossible since "
                                      "requested idempotent"
                                      "scsi id %(idempotent_scsi)s differ from "
                                      "current volume %(cur_vol)s "
-                                     "scsi id %(cur_vol_scsi)s"),
-                                    {'idempotent_scsi_id': idempotent,
+                                     "scsi id %(cur_vol_scsi)s") %
+                                    {'idempotent_scsi': idempotent,
                                      'cur_vol': volume_name,
-                                     'cur_vol_scsi': idempotent})
+                                     'cur_vol_scsi': ovsi})
             # Idempotent is None
             else:
                 try:

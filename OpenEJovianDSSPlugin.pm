@@ -855,7 +855,14 @@ sub _alloc_image {
             };
             $err = $@;
 
-            last unless $err;
+
+            unless ($err) {
+                eval {
+                    my $tgname = get_vm_target_group_name($ctx, $vmid);
+                    OpenEJovianDSS::Common::volume_publish($ctx, $tgname, $volume_name, undef, undef);
+                };
+                last;
+            }
 
             # Only retry "already exists" when the name was auto-selected.
             # A caller-specified name must not be silently changed.
@@ -871,7 +878,6 @@ sub _alloc_image {
                 select( undef, undef, undef, $delay );
                 next;
             }
-
             die $err;
         }
     }

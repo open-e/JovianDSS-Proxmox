@@ -67,7 +67,7 @@ jdssc starts
                          │       raise JDSSNotEnoughTimeForOperation
                          │     poll os.mkdir(lock_path) until acquired
                          │       on each failure: os.utime(lock_path, (0,0))
-                         │                        sleep(1)
+                         │                        sleep(random.uniform(0.1, 0.5))
                          │       on --iscsi-change-lock-timeout exceeded: raise JDSSLockAcquireTimeout
                          │     set _active_lock = lock_path
                          │
@@ -149,18 +149,11 @@ None of the four error strings match `/got timeout/`, so the existing
 `run_command` timeout retry loop does not trigger for lock errors.
 
 `joviandss_cmd` already retries on `run_command`-level timeouts (Proxmox
-infrastructure kills the process and sets `$rerr =~ /got timeout/`). An
-analogous handler is needed for jdssc's own internal timeout, which surfaces
-as exit code 1 with the error string:
+infrastructure kills the process and sets `$rerr =~ /got timeout/`). Analogous
+handlers are added for three jdssc lock errors that are safe to retry.
 
-```
-jdssc process timed out after <N> seconds
-```
-
-This is a transient condition — the jdssc process self-cleaned (alarm handler
-released the lock) or the lock will stale-clear within 120 s. The operation
-can be retried safely. Add a second check in `joviandss_cmd` **before** the
-generic `$err` die, matching `$err` against the jdssc timeout string:
+**`JDSSLockExecutionTimeout`** — process self-cleaned (alarm handler released the
+lock) or the lock will stale-clear within 120 s. Safe to retry:
 
 ```perl
 if ( $err && $err =~ /jdssc process timed out/ ) {
@@ -172,12 +165,12 @@ if ( $err && $err =~ /jdssc process timed out/ ) {
 }
 ```
 
-`JDSSNotEnoughTimeForOperation` is also a transient condition — the next jdssc
-invocation starts with fresh timeouts. Add an analogous handler matching its
-error string:
+**`JDSSNotEnoughTimeForOperation` and `JDSSLockAcquireTimeout`** — both mean the
+lock was never acquired; the next invocation starts with fresh timeouts and a new
+acquisition window. The two error strings are matched by a single handler:
 
 ```perl
-if ( $err && $err =~ /Not enough time to acquire iSCSI target lock/ ) {
+if ( $err && $err =~ /(?:Not enough time to acquire|Could not acquire) iSCSI target lock/ ) {
     $retry_count++;
     $msg = '';
     $err = undef;
@@ -188,7 +181,7 @@ if ( $err && $err =~ /Not enough time to acquire iSCSI target lock/ ) {
 
 | Error | Lock state on exit | Perl action |
 |---|---|---|
-| `JDSSLockAcquireTimeout` | Not held — never acquired | Propagate; no cleanup needed |
+| `JDSSLockAcquireTimeout` | Not held — never acquired | **Retry** after random delay |
 | `JDSSLockExecutionTimeout` | Released by alarm handler if possible; may persist up to 120 s if release failed | **Retry** after random delay |
 | `JDSSLockReleaseError` | Directory may persist up to 120 s | Propagate; stale lock self-clears |
 | `JDSSNotEnoughTimeForOperation` | Not held — never acquired | **Retry** after random delay |
@@ -340,7 +333,7 @@ def acquire_target_lock(path, timeout):
             os.utime(path, (0, 0))
         except OSError:
             pass
-        time.sleep(1)
+        time.sleep(random.uniform(0.1, 0.5))
 
 
 def release_target_lock(path):
@@ -491,7 +484,7 @@ sub get_default_iscsi_change_lock_timeout { return $default_iscsi_change_lock_ti
 sub get_iscsi_change_lock_timeout {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
-    return int( $scfg->{iscsi_change_lock_timeout} || JOVIANDSS_ISCSI_CHANGE_LOCK_TIMEOUT_MAX );
+    return int( $scfg->{iscsi_change_lock_timeout} || $default_iscsi_change_lock_timeout );
 }
 
 sub get_default_jdssc_timeout { return $default_jdssc_timeout }
@@ -880,9 +873,10 @@ updated together.
 | `jdssc/jdssc/lock.py` | New module: `DEFAULT_LOCK_PATH`, `MAX_ISCSI_CHANGE_LOCK_TIMEOUT`, `_active_lock`, `_alarm_deadline`, `acquire_target_lock`, `release_target_lock` |
 | `jdssc/jdssc/jovian_common/rest.py` | Add lock acquire/release around write-path methods |
 | `jdssc/bin/jdssc` | Add three CLI arguments; set alarm handler in `main()` |
-| `OpenEJovianDSS/Common.pm` | Add `JOVIANDSS_ISCSI_LOCK_PATH`, `JOVIANDSS_ISCSI_CHANGE_LOCK_TIMEOUT_MAX` constants; add getters; inject lock args and `touch_cluster_lock($ctx)` calls inside `joviandss_cmd`; set `$default_jdssc_timeout = 113`, `$default_iscsi_change_lock_timeout = 50` |
+| `OpenEJovianDSS/Common.pm` | Add `JOVIANDSS_ISCSI_LOCK_PATH`, `JOVIANDSS_ISCSI_CHANGE_LOCK_TIMEOUT_MAX` constants; add getters; inject lock args and `touch_cluster_lock($ctx)` calls inside `joviandss_cmd`; set `$default_jdssc_timeout = 113`, `$default_iscsi_change_lock_timeout = 50`; wrap both `File::Find::find` traversals in eval to tolerate concurrent directory removal |
 | `OpenEJovianDSS/Lock.pm` | Add `$ctx` as first param to all functions; push/pop `$ctx->{_active_locks}` in `_cluster_lock_attempt`; export `touch_cluster_lock($ctx)` |
 | `OpenEJovianDSSPlugin.pm` | Add `iscsi_target_global_lock_path`, `iscsi_change_lock_timeout`, and `jdssc_timeout` properties and options entries; add `$ctx` as first arg to all `lock_vm`/`lock_storage` call sites; explicit `joviandss_cmd` timeouts set to 118 |
+| `OpenEJovianDSSNFSPlugin.pm` | Add `$ctx` as first arg to all `lock_vm`/`lock_storage` call sites (was missing, causing runtime crash when NFS storage operations ran concurrently with iSCSI operations) |
 
 No changes to `driver.py` — locking is fully contained in `lock.py` and `rest.py`.
 
