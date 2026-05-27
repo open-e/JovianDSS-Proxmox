@@ -1597,7 +1597,7 @@ sub volume_publish {
         push @$create_target_cmd, '--chap-user', $chap_user, '--chap-password', $chap_pass;
     }
 
-    my $out = joviandss_cmd( $ctx, $create_target_cmd, 118, 5 );
+    my $out = joviandss_cmd( $ctx, $create_target_cmd, 118, 15 );
     my ( $targetname, $lunid, $ips, $scsiid ) = split( ' ', $out );
 
     my @iplist = split /\s*,\s*/, clean_word($ips);

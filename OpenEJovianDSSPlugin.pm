@@ -731,7 +731,13 @@ sub _clone_image {
             }
         };
         $err = $@;
-        last unless $err;
+        unless ($err) {
+            eval {
+                my $tgname = get_vm_target_group_name($ctx, $vmid);
+                OpenEJovianDSS::Common::volume_publish($ctx, $tgname, $clone_name, undef, undef);
+            };
+            last;
+        }
         if ( $err =~ /already exists/i && $attempt < $max_retries ) {
             my $delay = 1 + rand(3);
             debugmsg( $ctx, "warn",

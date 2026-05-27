@@ -401,7 +401,7 @@ def main():
                     _lock.release_target_lock(_lock._active_lock)
                 except JDSSLockReleaseError:
                     pass
-            raise JDSSLockExecutionTimeout(args.timeout)
+            raise JDSSLockExecutionTimeout(args['timeout'])
 
         jlock._alarm_deadline = time.monotonic() + args.timeout
         signal.signal(signal.SIGALRM, _alarm_handler)

@@ -134,7 +134,8 @@ class JovianRESTAPI(object):
             )
         return jlock.acquire_target_lock(
             lock_path,
-            self.configuration.get('lock_timeout', jlock.MAX_ISCSI_CHANGE_LOCK_TIMEOUT),
+            self.configuration.get(
+                'lock_timeout', jlock.MAX_ISCSI_CHANGE_LOCK_TIMEOUT),
         )
 
     def get_active_host(self):
@@ -510,6 +511,13 @@ class JovianRESTAPI(object):
                     LOG.warning("volume %s is busy", volume_name)
                     raise jexc.JDSSResourceIsBusyException(res=volume_name)
 
+        if resp.get("code") == 500 and resp.get("error") is not None:
+            if resp["error"].get("errno") == 13:
+                if 'class' in resp["error"] and \
+                        self.class_cfg_parser_error.match(resp["error"]["class"]):
+                    msg = resp["error"].get("message", "Unknown cfg error")
+                    raise jexc.JDSSCfgParserException(msg)
+
         self._general_error(req, resp)
 
     def is_target(self, target_name):
@@ -578,7 +586,8 @@ class JovianRESTAPI(object):
 
         lock_path = self._lock()
         try:
-            resp = self.rproxy.pool_request('POST', req, json_data=jdata, apiv=4)
+            resp = self.rproxy.pool_request(
+                'POST', req, json_data=jdata, apiv=4)
         finally:
             jlock.release_target_lock(lock_path)
 
@@ -716,7 +725,8 @@ class JovianRESTAPI(object):
 
         lock_path = self._lock()
         try:
-            resp = self.rproxy.pool_request('PUT', req, json_data=jdata, apiv=4)
+            resp = self.rproxy.pool_request(
+                'PUT', req, json_data=jdata, apiv=4)
         finally:
             jlock.release_target_lock(lock_path)
 
@@ -752,7 +762,8 @@ class JovianRESTAPI(object):
 
         lock_path = self._lock()
         try:
-            resp = self.rproxy.pool_request('PUT', req, json_data=jdata, apiv=4)
+            resp = self.rproxy.pool_request(
+                'PUT', req, json_data=jdata, apiv=4)
         finally:
             jlock.release_target_lock(lock_path)
 

@@ -177,7 +177,7 @@ sub _cluster_lock {
     my $lockpath    = "$lockdir/$full_lockid";
 
     my $explicit    = defined $timeout;
-    my $max_total   = 600;
+    my $max_total   = 1200;
     my $per_attempt = 119;
     my $start       = time();
 

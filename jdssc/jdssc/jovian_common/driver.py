@@ -210,27 +210,46 @@ class JovianDSSDriver(object):
         :return: None
         '''
         vol = None
+        deleted = False
+        last_err = None
+        max_attempts = 3
 
-        try:
-            vol = self.ra.get_lun(vname)
-        except jexc.JDSSResourceNotFoundException:
-            LOG.debug('unable to get volume %s info, '
-                      'assume it was already deleted', vname)
-            return
-        try:
-            self.ra.delete_lun(vname,
-                               force_umount=True,
-                               recursively_children=recursive)
+        for attempt in range(max_attempts):
+            try:
+                vol = self.ra.get_lun(vname)
+            except jexc.JDSSResourceNotFoundException:
+                LOG.debug('unable to get volume %s info, '
+                          'assume it was already deleted', vname)
+                return
 
-        except jexc.JDSSResourceIsBusyException as jerr:
-            LOG.debug('unable to conduct direct volume %s deletion', vname)
-            if recursive is False:
-                raise jerr
+            try:
+                self.ra.delete_lun(vname,
+                                   force_umount=False,
+                                   recursively_children=recursive)
+                deleted = True
+                break
 
-        except jexc.JDSSResourceNotFoundException:
-            LOG.debug('volume %s do not exists, it was already '
-                      'deleted', vname)
-            return
+            except jexc.JDSSResourceIsBusyException as jerr:
+                LOG.debug('unable to conduct direct volume %s deletion', vname)
+                if not recursive:
+                    raise
+                deleted = True
+                break
+
+            except jexc.JDSSResourceNotFoundException:
+                LOG.debug('volume %s does not exist, it was already '
+                          'deleted', vname)
+                return
+
+            except jexc.JDSSCfgParserException as jerr:
+                LOG.warning('iSCSI config cleanup failed for volume %s '
+                            '(stale target reference), retry %d/%d: %s',
+                            vname, attempt + 1, max_attempts, jerr)
+                last_err = jerr
+                time.sleep(1)
+
+        if not deleted:
+            raise last_err
 
         if vol is not None and \
                 'origin' in vol and \
@@ -242,7 +261,7 @@ class JovianDSSDriver(object):
                 self.ra.delete_snapshot(jcom.origin_volume(vol),
                                         jcom.origin_snapshot(vol),
                                         recursively_children=True,
-                                        force_umount=True)
+                                        force_umount=False)
 
     def _clean_garbage_resources(self, vname, snapshots=None):
         '''Removes resources that is not related to volume
@@ -609,7 +628,7 @@ class JovianDSSDriver(object):
                     self.ra.delete_snapshot(ovname,
                                             cvname,
                                             recursively_children=True,
-                                            force_umount=True)
+                                            force_umount=False)
                 except jexc.JDSSException as jerrd:
                     LOG.warning("Because of %s physical snapshot %s of volume"
                                 " %s have to be removed manually",
@@ -914,7 +933,7 @@ class JovianDSSDriver(object):
             psnaps = self.ra.get_volume_snapshots_page(pname, 0)
             if len(psnaps) > 1:
                 try:
-                    self.ra.delete_snapshot(vname, sname, force_umount=True)
+                    self.ra.delete_snapshot(vname, sname, force_umount=False)
                 except jexc.JDSSSnapshotNotFoundException:
                     LOG.debug('Snapshot %s not found', sname)
                     return
@@ -922,7 +941,7 @@ class JovianDSSDriver(object):
                 self._delete_volume(cvname, cascade=True)
         if jcom.is_volume(pname):
             try:
-                self.ra.delete_snapshot(vname, sname, force_umount=True)
+                self.ra.delete_snapshot(vname, sname, force_umount=False)
             except jexc.JDSSSnapshotNotFoundException:
                 LOG.debug('Snapshot %s not found', sname)
                 return
@@ -2681,7 +2700,7 @@ class JovianDSSDriver(object):
                                 cname)
                 try:
                     self.ra.delete_lun(ovname,
-                                       force_umount=True,
+                                       force_umount=False,
                                        recursively_children=False)
                 except jexc.JDSSResourceIsBusyException:
                     LOG.debug('unable to delete volume %s, it is busy',
