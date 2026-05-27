@@ -2068,7 +2068,7 @@ sub volume_stage_iscsi {
             return [$serial_path];
         }
 
-        debugmsg( $ctx, "debug", "Waiting for block device ${serial_path} (attempt ${i}/60)\n" );
+        debugmsg( $ctx, "debug", "Waiting for block device ${serial_path} attempt ${i}\n" );
 
         sleep(1);
 
