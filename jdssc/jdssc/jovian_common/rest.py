@@ -26,7 +26,6 @@ from jdssc.jovian_common import rest_proxy
 from jdssc.jovian_common.stub import _
 
 from jdssc.jovian_common import jdss_common as jcom
-import jdssc.lock as jlock
 
 LOG = logging.getLogger(__name__)
 
@@ -37,7 +36,6 @@ class JovianRESTAPI(object):
     def __init__(self, config):
 
         self.pool = config.get('jovian_pool', 'Pool-0')
-        self.configuration = config
         self.rproxy = rest_proxy.JovianDSSRESTProxy(config)
 
         self.resource_dne_msg = (
@@ -58,9 +56,6 @@ class JovianRESTAPI(object):
 
         self.zfs_cmd_error_class = (
             re.compile(r'^zfslib.wrap.zfs.ZfsCmdError$'))
-
-        self.class_cfg_parser_error = (
-            re.compile(r'^opene\.cfgparser\.CfgParserError$'))
 
         self.class_werkzeug_notfound = (
             re.compile(r'werkzeug.exceptions.NotFound'))
@@ -112,31 +107,12 @@ class JovianRESTAPI(object):
             msg = resp['error'].get('message', 'Unknown')
 
             reason = _("Request to %(url)s failed with code: %(code)s "
-                       "of type: %(eclass)s reason: %(message)s")
+                       "of type:%(eclass)s reason:%(message)s")
             reason = (reason % {'url': url,
                                 'code': code,
                                 'eclass': eclass,
                                 'message': msg})
         raise jexc.JDSSException(reason=reason)
-
-    def _lock(self):
-        """Acquire iSCSI target lock. Returns lock path.
-
-        iscsi_target_lock_path must always be present in configuration —
-        bin/jdssc sets it unconditionally via unify_config_options. If it is
-        absent, someone removed a required part of the locking setup.
-        """
-        lock_path = self.configuration.get('iscsi_target_lock_path')
-        if not lock_path:
-            raise RuntimeError(
-                "iscsi_target_lock_path missing from configuration; "
-                "iSCSI target locking has been misconfigured or disabled"
-            )
-        return jlock.acquire_target_lock(
-            lock_path,
-            self.configuration.get(
-                'lock_timeout', jlock.MAX_ISCSI_CHANGE_LOCK_TIMEOUT),
-        )
 
     def get_active_host(self):
         """Return address of currently used host."""
@@ -384,22 +360,11 @@ class JovianRESTAPI(object):
             LOG.debug("volume %s updated", volume_name)
             return
 
-        if 'code' in resp and 'error' in resp:
-            if resp["code"] == 500 and resp["error"] is not None:
-                if 'errno' in resp['error']:
-                    if resp["error"]["errno"] == 1:
-                        raise jexc.JDSSResourceNotFoundException(
-                            res=volume_name)
-                    elif resp["error"]["errno"] == 13:
-                        if 'class' in resp['error']:
-                            if self.class_cfg_parser_error.match(
-                                    resp['error']['class']):
-                                if 'message' in resp['error']:
-                                    raise jexc.JDSSCfgParserException(
-                                        resp['error']['message'])
-                                else:
-                                    raise jexc.JDSSCfgParserException(
-                                        "Unknown cfg error")
+        if resp["code"] == 500:
+            if resp["error"] is not None:
+                if resp["error"]["errno"] == 1:
+                    raise jexc.JDSSResourceNotFoundException(
+                        res=volume_name)
 
         self._general_error(req, resp)
 
@@ -511,13 +476,6 @@ class JovianRESTAPI(object):
                     LOG.warning("volume %s is busy", volume_name)
                     raise jexc.JDSSResourceIsBusyException(res=volume_name)
 
-        if resp.get("code") == 500 and resp.get("error") is not None:
-            if resp["error"].get("errno") == 13:
-                if 'class' in resp["error"] and \
-                        self.class_cfg_parser_error.match(resp["error"]["class"]):
-                    msg = resp["error"].get("message", "Unknown cfg error")
-                    raise jexc.JDSSCfgParserException(msg)
-
         self._general_error(req, resp)
 
     def is_target(self, target_name):
@@ -584,12 +542,7 @@ class JovianRESTAPI(object):
         LOG.info("create iSCSI target: %(target)s",
                  {'target': target_name})
 
-        lock_path = self._lock()
-        try:
-            resp = self.rproxy.pool_request(
-                'POST', req, json_data=jdata, apiv=4)
-        finally:
-            jlock.release_target_lock(lock_path)
+        resp = self.rproxy.pool_request('POST', req, json_data=jdata, apiv=4)
 
         if not resp["error"] and resp["code"] == 201:
             return
@@ -617,11 +570,7 @@ class JovianRESTAPI(object):
         LOG.info("delete iSCSI target: %(target)s",
                  {'target': target_name})
 
-        lock_path = self._lock()
-        try:
-            resp = self.rproxy.pool_request('DELETE', req)
-        finally:
-            jlock.release_target_lock(lock_path)
+        resp = self.rproxy.pool_request('DELETE', req)
 
         if resp["code"] in (200, 201, 204):
             LOG.debug(
@@ -653,11 +602,7 @@ class JovianRESTAPI(object):
 
         LOG.debug("add credentails to target %s", target_name)
 
-        lock_path = self._lock()
-        try:
-            resp = self.rproxy.pool_request('POST', req, json_data=chap_cred)
-        finally:
-            jlock.release_target_lock(lock_path)
+        resp = self.rproxy.pool_request('POST', req, json_data=chap_cred)
 
         if not resp["error"] and resp["code"] in (200, 201, 204):
             return
@@ -687,28 +632,6 @@ class JovianRESTAPI(object):
             raise jexc.JDSSResourceNotFoundException(res=target_name)
         self._general_error(req, resp)
 
-    def get_target_sessions(self, target_name):
-        """get_target_sessions
-
-        GET
-        /san/iscsi/targets/<target_name>/sessions
-
-        :param target_name: full iSCSI target IQN
-        :return: list of active session dicts, each with keys:
-            target_name, cid, ip, sid, initiator_name
-        """
-        req = "/san/iscsi/targets/%s/sessions" % target_name
-
-        LOG.debug("get sessions for target %s", target_name)
-        resp = self.rproxy.pool_request('GET', req, apiv=4)
-
-        if resp['error'] is None and resp['code'] == 200:
-            return resp['data']
-
-        if resp['code'] == 404:
-            raise jexc.JDSSResourceNotFoundException(res=target_name)
-        self._general_error(req, resp)
-
     def set_target_incoming_users_active(self, target_name, active):
         """Update incoming_users_active flag on an existing target.
 
@@ -723,12 +646,7 @@ class JovianRESTAPI(object):
         LOG.debug("set iSCSI target %s incoming_users_active=%s",
                   target_name, active)
 
-        lock_path = self._lock()
-        try:
-            resp = self.rproxy.pool_request(
-                'PUT', req, json_data=jdata, apiv=4)
-        finally:
-            jlock.release_target_lock(lock_path)
+        resp = self.rproxy.pool_request('PUT', req, json_data=jdata, apiv=4)
 
         if resp['error'] is None and resp['code'] in (200, 201, 204):
             return
@@ -760,12 +678,7 @@ class JovianRESTAPI(object):
                  {'target': target_name,
                   'assigned_vips': ','.join(assigned_vips)})
 
-        lock_path = self._lock()
-        try:
-            resp = self.rproxy.pool_request(
-                'PUT', req, json_data=jdata, apiv=4)
-        finally:
-            jlock.release_target_lock(lock_path)
+        resp = self.rproxy.pool_request('PUT', req, json_data=jdata, apiv=4)
 
         if resp['error'] is None and resp['code'] in (200, 201, 204):
             return resp['data']
@@ -813,25 +726,6 @@ class JovianRESTAPI(object):
 
         self._general_error(req, resp)
 
-    def get_target_by_lun_name(self, volume_name):
-        """Get iSCSI LUN entries for a volume across all targets and pools.
-
-        GET /san/iscsi/luns?where=name=={volume_name}
-
-        :param volume_name: physical volume name to search for
-        :return: list of dicts with keys lun, iscsi_target, pool
-        """
-        req = '/san/iscsi/luns?where=name==%s' % volume_name
-
-        LOG.debug("get luns for volume %s", volume_name)
-
-        resp = self.rproxy.request('GET', req)
-
-        if not resp["error"] and resp["code"] == 200:
-            return resp['data']
-
-        self._general_error(req, resp)
-
     def get_target_user(self, target_name):
         """Get name of CHAP user for accessing target
 
@@ -869,11 +763,7 @@ class JovianRESTAPI(object):
 
         LOG.debug("remove credentails from target %s", target_name)
 
-        lock_path = self._lock()
-        try:
-            resp = self.rproxy.pool_request('DELETE', req)
-        finally:
-            jlock.release_target_lock(lock_path)
+        resp = self.rproxy.pool_request('DELETE', req)
 
         if resp.get("error") is None and resp["code"] == 204:
             return
@@ -922,31 +812,6 @@ class JovianRESTAPI(object):
 
         self._general_error(req, resp)
 
-    def get_target_lun(self, target_name, lun_name):
-        """get_target_lun.
-
-        GET /san/iscsi/targets/<target_name>/luns/<lun_name>
-        :param target_name: target name
-        :param lun_name: zvol name attached to target
-        :return: lun data dict
-        """
-        req = '/san/iscsi/targets/%(tar)s/luns/%(lun)s' % {
-            'tar': target_name,
-            'lun': lun_name}
-
-        LOG.debug("get lun info for volume %(vol)s on target %(tar)s",
-                  {'vol': lun_name,
-                   'tar': target_name})
-        resp = self.rproxy.pool_request('GET', req)
-
-        if not resp["error"] and resp["code"] == 200:
-            return resp["data"]
-
-        if resp['code'] == 404:
-            raise jexc.JDSSResourceNotFoundException(res=lun_name)
-
-        self._general_error(req, resp)
-
     def attach_target_vol(self, target_name, lun_name,
                           lun_id=0,
                           mode=None):
@@ -972,14 +837,10 @@ class JovianRESTAPI(object):
                   {'vol': lun_name,
                    'tar': target_name})
 
-        lock_path = self._lock()
-        try:
-            resp = self.rproxy.pool_request('POST', req, json_data=jbody)
-        finally:
-            jlock.release_target_lock(lock_path)
+        resp = self.rproxy.pool_request('POST', req, json_data=jbody)
 
         if not resp["error"] and resp["code"] == 201:
-            return resp["data"]
+            return
 
         if resp["error"]:
             if ('class' in resp["error"] and
@@ -1019,11 +880,7 @@ class JovianRESTAPI(object):
                   {'vol': lun_name,
                    'tar': target_name})
 
-        lock_path = self._lock()
-        try:
-            resp = self.rproxy.pool_request('DELETE', req)
-        finally:
-            jlock.release_target_lock(lock_path)
+        resp = self.rproxy.pool_request('DELETE', req)
 
         if resp["code"] in (200, 201, 204):
             return

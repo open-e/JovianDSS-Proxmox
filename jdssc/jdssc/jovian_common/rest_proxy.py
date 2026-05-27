@@ -157,9 +157,6 @@ class JovianDSSRESTProxy(object):
 
                 LOG.debug("Geting %(data)s from %(t)s to %(addr)s",
                           {'data': out, 't': request_method, 'addr': addr})
-
-                if request_method == 'GET' and out is None:
-                    continue
                 return out
 
             # Adding 3 sec sleep delay

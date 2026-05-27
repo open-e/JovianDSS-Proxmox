@@ -54,9 +54,6 @@ our @EXPORT_OK = qw(
   get_default_content_size
   get_default_data_port
   get_default_debug
-  get_default_iscsi_change_lock_timeout
-  get_default_jdssc_timeout
-  get_default_iscsi_target_global_lock_path
   get_default_luns_per_target
   get_default_multipath
   get_default_path
@@ -78,6 +75,14 @@ our @EXPORT_OK = qw(
   get_data_addresses
   get_data_port
   get_delete_timeout
+  get_read_meta_timeout
+  get_read_list_timeout
+  get_idemp_write_timeout
+  get_nonidemp_write_timeout
+  get_max_parallel_volume_ops
+  get_max_parallel_volume_ops_wait
+  jd_host_key
+  jd_acquire_semaphore
   get_user_name
   get_user_password
   get_chap_enabled
@@ -96,10 +101,8 @@ our @EXPORT_OK = qw(
   get_create_base_path
   get_multipath
 
-  get_iscsi_change_lock_timeout
-  get_jdssc_timeout
-  get_iscsi_target_global_lock_path
   get_log_level
+  get_debug
 
   password_file_set_password
   password_file_set_chap_password
@@ -111,6 +114,10 @@ our @EXPORT_OK = qw(
   safe_word
   debugmsg
   joviandss_cmd
+  jd_cmd_read_meta
+  jd_cmd_read_list
+  jd_cmd_idemp
+  jd_cmd_nonidemp
   volume_snapshots_info
   volume_rollback_check
   remove_vm_snapshot_config
@@ -145,11 +152,43 @@ our @EXPORT_OK = qw(
 our %EXPORT_TAGS = ( all => [@EXPORT_OK], );
 
 use constant {
-    PLUGIN_LOCAL_STATE_DIR               => '/etc/joviandss/state',
-    PLUGIN_GLOBAL_STATE_DIR              => '/etc/pve/priv/joviandss/state',
-    PLUGIN_GLOBAL_PASSWORD_FILE_DIR      => '/etc/pve/priv/storage/joviandss',
-    JOVIANDSS_ISCSI_LOCK_PATH            => '/etc/pve/priv/lock/joviandss-iscsi-target-global-lock',
-    JOVIANDSS_ISCSI_CHANGE_LOCK_TIMEOUT_MAX => 115,  # must stay below pmxcfs CFS_LOCK_TIMEOUT (120 s)
+    PLUGIN_LOCAL_STATE_DIR          => '/etc/joviandss/state',
+    PLUGIN_GLOBAL_STATE_DIR         => '/etc/pve/priv/joviandss/state',
+    PLUGIN_GLOBAL_PASSWORD_FILE_DIR => '/etc/pve/priv/storage/joviandss',
+};
+
+# [PATCH PL-16] joviandss_cmd timeout class profiles.
+# Timeout overridable per-storage via storage.cfg (read_meta_timeout etc.).
+# Retries are NOT overridable — they encode class semantics (idempotency),
+# not tuning. Changing retries requires auditing the call sites for idempotency.
+# See docs/jd_timeout_classes.md for class semantics and decision tree.
+use constant {
+    # Single-attribute reads (pool get, volume get -s/-i)
+    JDSS_READ_META_TIMEOUT_DEFAULT      =>  15,
+    JDSS_READ_META_RETRIES              =>   3,
+
+    # Enumerations (volumes list, snapshots list, hosts)
+    JDSS_READ_LIST_TIMEOUT_DEFAULT      => 120,
+    JDSS_READ_LIST_RETRIES              =>   3,
+
+    # Idempotent writes (create/clone/rename/resize/snapshot/target)
+    # 2 attempts × 270s = 540s. Sized to fit single clone_image
+    # (READ_META + IDEMP_WRITE = ~585s) under 600s cfs_lock horizon.
+    # Single 270s budget covers worst-case observed REST POST under
+    # throttle=4 load (~120s). 1 retry kept as safety net for transient
+    # REST 500/503; more retries would generate burst pattern that
+    # restarts JDSS-side queue position rather than letting operation
+    # naturally drain.
+    JDSS_IDEMP_WRITE_TIMEOUT_DEFAULT    => 270,
+    JDSS_IDEMP_WRITE_RETRIES            =>   1,
+
+    # Non-idempotent writes (rollback only).
+    # MUST stay 0 — partial state + retry = inconsistent VM state.
+    # 1 attempt × 540s. Maximises single-attempt budget within 600s
+    # cfs_lock window for rollback. RETRIES MUST stay 0 — partial
+    # rollback + retry corrupts VM state across disks.
+    JDSS_NONIDEMP_WRITE_TIMEOUT_DEFAULT => 540,
+    JDSS_NONIDEMP_WRITE_RETRIES         =>   0,
 };
 
 
@@ -174,10 +213,8 @@ my $default_debug            = 0;
 my $default_prefix           = 'jdss-';
 my $default_pool             = 'Pool-0';
 my $default_log_file         = '/var/log/joviandss/joviandss.log';
-my $default_iscsi_change_lock_timeout = 50;
-my $default_jdssc_timeout     = 113;
-my $default_luns_per_target    = 8;
-my $default_multipath          = 0;
+my $default_luns_per_target  = 8;
+my $default_multipath        = 0;
 my $default_path             = '/mnt/pve/joviandss';
 my $default_shared           = 0;
 my $default_target_prefix    = 'iqn.2025-04.proxmox.joviandss.iscsi:';
@@ -195,12 +232,8 @@ sub get_default_content_size     { return $default_content_size }
 sub get_default_path             { die "Please set up path property in storage.cfg\n"; }
 sub get_default_target_prefix    { return $default_target_prefix }
 sub get_default_log_file         { return $default_log_file }
-sub get_max_iscsi_change_lock_timeout         { return JOVIANDSS_ISCSI_CHANGE_LOCK_TIMEOUT_MAX }
-sub get_default_iscsi_change_lock_timeout     { return $default_iscsi_change_lock_timeout }
-sub get_default_jdssc_timeout         { return $default_jdssc_timeout }
-sub get_default_iscsi_target_global_lock_path { return JOVIANDSS_ISCSI_LOCK_PATH }
-sub get_default_luns_per_target           { return $default_luns_per_target }
-sub get_default_ssl_cert_verify    { return $default_ssl_cert_verify }
+sub get_default_luns_per_target  { return $default_luns_per_target }
+sub get_default_ssl_cert_verify  { return $default_ssl_cert_verify }
 sub get_default_control_port     { return $default_control_port }
 sub get_default_data_port        { return $default_data_port }
 sub get_default_user_name        { return $default_user_name }
@@ -219,7 +252,7 @@ sub get_pool {
 
     die "pool name required in storage.cfg \n"
       if !defined( $scfg->{'pool_name'} );
-    return safe_word($scfg->{'pool_name'});
+    return $scfg->{'pool_name'};
 }
 
 sub get_create_base_path {
@@ -267,25 +300,7 @@ sub get_target_prefix {
     my $prefix = $scfg->{target_prefix} || $default_target_prefix;
 
     $prefix =~ s/:$//;
-    return safe_word( clean_word($prefix) );
-}
-
-sub get_iscsi_change_lock_timeout {
-    my ($ctx) = @_;
-    my $scfg = $ctx->{scfg};
-    return int( $scfg->{iscsi_change_lock_timeout} || $default_iscsi_change_lock_timeout );
-}
-
-sub get_jdssc_timeout {
-    my ($ctx) = @_;
-    my $scfg = $ctx->{scfg};
-    return int( $scfg->{jdssc_timeout} || $default_jdssc_timeout );
-}
-
-sub get_iscsi_target_global_lock_path {
-    my ($ctx) = @_;
-    my $scfg = $ctx->{scfg};
-    return $scfg->{iscsi_target_global_lock_path} || JOVIANDSS_ISCSI_LOCK_PATH;
+    return clean_word($prefix);
 }
 
 sub get_luns_per_target {
@@ -307,7 +322,161 @@ sub get_delete_timeout {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
 
-    return $scfg->{delete_timeout} || 118;
+    return $scfg->{delete_timeout} || 600;
+}
+
+# [PATCH PL-16] Per-class timeout getters with storage.cfg override.
+sub get_read_meta_timeout {
+    my ($ctx) = @_;
+    return $ctx->{scfg}{read_meta_timeout}
+        || JDSS_READ_META_TIMEOUT_DEFAULT;
+}
+
+sub get_read_list_timeout {
+    my ($ctx) = @_;
+    return $ctx->{scfg}{read_list_timeout}
+        || JDSS_READ_LIST_TIMEOUT_DEFAULT;
+}
+
+sub get_idemp_write_timeout {
+    my ($ctx) = @_;
+    return $ctx->{scfg}{idemp_write_timeout}
+        || JDSS_IDEMP_WRITE_TIMEOUT_DEFAULT;
+}
+
+sub get_nonidemp_write_timeout {
+    my ($ctx) = @_;
+    return $ctx->{scfg}{nonidemp_write_timeout}
+        || JDSS_NONIDEMP_WRITE_TIMEOUT_DEFAULT;
+}
+
+# [PATCH PL-17] Per-storage operation concurrency cap.
+# Default 4. Set to 0 to disable semaphore for the storage.
+sub get_max_parallel_volume_ops {
+    my ($ctx) = @_;
+    my $v = $ctx->{scfg}{max_parallel_volume_ops};
+    return defined($v) ? $v : 4;
+}
+
+# [PATCH PL-17] Acquire-side timeout. Default 3600s (1h).
+# Queue wait happens BEFORE cfs_lock acquisition, so cfs_lock horizon (600s)
+# does not apply here. qm clone/migrate tasks are async with no PVE timeout,
+# pvedaemon worker timeout (1800s) only applies to sync API calls.
+# Real ceiling is customer patience; sized to cover 200+ VM mass operations
+# at typical throttle=4 + ~60s per op = ~50 min for the last in queue.
+sub get_max_parallel_volume_ops_wait {
+    my ($ctx) = @_;
+    return $ctx->{scfg}{max_parallel_volume_ops_wait} || 3600;
+}
+
+# [PATCH PL-17] Build a stable identity key for the physical JDSS host
+# this storeid talks to. Two storeids whose control_addresses VIPs are
+# currently hosted on the same physical JDSS node MUST share the same
+# semaphore — otherwise per-VIP/per-pool scope under-throttles the REST
+# endpoint and the underlying ZFS module locks (namespace_lock,
+# dsl_pool_config_lock, txg_sync) become the bottleneck.
+#
+# Approach: query GET /api/v4/product on the storeid's control_addresses
+# VIP, extract `serial_number`. The serial is a stable, unique-per-physical
+# -unit identifier (e.g. "J0002465"). Since `control_addresses` is a VIP
+# that migrates with the pool during JDSS HA failover, the same VIP can
+# resolve to different physical serials at different points in time —
+# the answer always reflects which physical box is *currently* answering.
+#
+# Cache: in-process hash with TTL ($_HOST_KEY_CACHE_TTL seconds). After
+# TTL expiry the next acquire re-queries; intervening operations stay
+# fast. After HA failover the cache becomes stale for up to TTL seconds
+# — operations in that window are routed to the old semaphore key.
+# Worst case during failover window: brief over-throttle of the OLD
+# host, brief under-throttle of the NEW host. Acceptable: failover is
+# rare and the window is bounded by TTL.
+#
+# Fallback chosen: fail-fast. If REST is unreachable, the storage
+# operation about to be performed would fail at the next step anyway
+# (it's also a REST call). Better to die at the semaphore step with a
+# clear error than continue under a degraded/wrong key.
+my $_HOST_KEY_CACHE_TTL = 60;
+my %_HOST_KEY_CACHE;   # control_addresses_key => { id => str, fetched_at => epoch }
+
+sub _jd_fetch_host_serial {
+    my ($ctx) = @_;
+    require LWP::UserAgent;
+    require HTTP::Request;
+    require IO::Socket::SSL;
+
+    my $addrs = get_control_addresses($ctx);
+    my @ips = sort map { lc($_) } grep { length $_ }
+              split( /\s*,\s*/, $addrs // '' );
+    die "PL-17 host_key: storeid=$ctx->{storeid} has no control_addresses\n"
+        unless @ips;
+
+    my $port = get_control_port($ctx);
+    my $user = get_user_name($ctx);
+    my $pass = get_user_password($ctx);
+    my $verify_ssl = $ctx->{scfg}{ssl_cert_verify} ? 1 : 0;
+
+    my $ua = LWP::UserAgent->new( timeout => 10 );
+    $ua->ssl_opts(
+        SSL_verify_mode => $verify_ssl
+            ? IO::Socket::SSL::SSL_VERIFY_PEER()
+            : IO::Socket::SSL::SSL_VERIFY_NONE(),
+        verify_hostname => $verify_ssl ? 1 : 0,
+    );
+
+    my $last_err = 'no control_addresses tried';
+    for my $ip (@ips) {
+        my $url = "https://${ip}:${port}/api/v4/product";
+        my $req = HTTP::Request->new( GET => $url );
+        $req->authorization_basic( $user, $pass );
+        my $resp = $ua->request($req);
+        if ( $resp->is_success ) {
+            my $body = eval { decode_json( $resp->decoded_content ) };
+            if ( $body && $body->{data} && $body->{data}{serial_number} ) {
+                return $body->{data}{serial_number};
+            }
+            $last_err = "missing serial_number in /api/v4/product response";
+            next;
+        }
+        $last_err = "HTTP " . $resp->code . " " . $resp->status_line;
+    }
+    die "PL-17 host_key: storeid=$ctx->{storeid} cannot fetch JDSS "
+      . "/api/v4/product serial: ${last_err}\n";
+}
+
+sub jd_host_key {
+    my ($ctx) = @_;
+
+    my $addrs = get_control_addresses($ctx) // '';
+    my $port  = get_control_port($ctx);
+    my $cache_key = lc($addrs) . ":${port}";
+
+    my $now = time();
+    my $cached = $_HOST_KEY_CACHE{$cache_key};
+    if ( $cached && ( $now - $cached->{fetched_at} ) < $_HOST_KEY_CACHE_TTL ) {
+        return $cached->{id};
+    }
+
+    my $serial = _jd_fetch_host_serial($ctx);
+    # Sanitize for filesystem use (serial is normally [A-Z0-9])
+    $serial =~ s/[^A-Za-z0-9._-]/-/g;
+    $_HOST_KEY_CACHE{$cache_key} = { id => $serial, fetched_at => $now };
+    return $serial;
+}
+
+# [PATCH PL-17] Acquire a semaphore slot. Returns a guard object whose
+# scope-exit releases the slot. MUST be called at the OUTERMOST plugin
+# method, BEFORE any cfs_lock_vm/cfs_lock_storage acquisition, so that
+# queued operations do not hold cfs locks while waiting.
+sub jd_acquire_semaphore {
+    my ($ctx) = @_;
+    require OpenEJovianDSS::Semaphore;
+    return OpenEJovianDSS::Semaphore->acquire(
+        host_key  => jd_host_key($ctx),
+        storeid   => $ctx->{storeid},
+        max_slots => get_max_parallel_volume_ops($ctx),
+        timeout   => get_max_parallel_volume_ops_wait($ctx),
+        ctx       => $ctx,
+    );
 }
 
 sub get_control_addresses {
@@ -618,6 +787,11 @@ sub get_content_volume_size {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
 
+    if ( get_debug($ctx) ) {
+        print
+"content_volume_size property is not set up, using default $default_content_size\n"
+          if ( !defined( $scfg->{content_volume_size} ) );
+    }
     my $size = $scfg->{content_volume_size} || $default_content_size;
     return $size;
 }
@@ -694,10 +868,9 @@ sub _new_reqid {
 sub new_ctx {
     my ($scfg, $storeid) = @_;
     return {
-        scfg          => $scfg,
-        storeid       => $storeid,
-        reqid         => _new_reqid(),
-        _active_locks => [],
+        scfg    => $scfg,
+        storeid => $storeid,
+        reqid   => _new_reqid(),
     };
 }
 
@@ -785,6 +958,7 @@ sub joviandss_cmd {
     my $target;
     my $retry_count = 0;
 
+    $timeout = 40 if ! defined($timeout);
     $retries = 0  if ! defined($retries);
     my $connection_options = [];
 
@@ -853,17 +1027,6 @@ sub joviandss_cmd {
         push @$connection_options, '-c', $config_file;
     }
 
-    my $lock_path        = get_iscsi_target_global_lock_path($ctx);
-    my $lock_timeout     = get_iscsi_change_lock_timeout($ctx);
-    my $process_timeout  = get_jdssc_timeout($ctx);
-    $timeout //= $process_timeout;
-    $timeout = $process_timeout + 5
-        if $timeout < $process_timeout + 5;
-    push @$connection_options,
-        '--iscsi-target-lock-path',    $lock_path,
-        '--iscsi-change-lock-timeout', $lock_timeout,
-        '--timeout',                   $process_timeout;
-
     while ( $retry_count <= $retries ) {
 
         my $exitcode = 0;
@@ -877,14 +1040,12 @@ sub joviandss_cmd {
                                     $err .= "$_[0]\n";
                                };
 
-            OpenEJovianDSS::Lock::touch_cluster_lock($ctx);
             $exitcode = run_command( $jcmd,
                 outfunc => $output,
                 errfunc => $errfunc,
-                timeout => $timeout + 1,
+                timeout => $timeout,
                 noerr   => 1
             );
-            OpenEJovianDSS::Lock::touch_cluster_lock($ctx);
         };
         my $rerr = $@;
 
@@ -900,22 +1061,6 @@ sub joviandss_cmd {
             next;
         }
 
-        if ( $err && $err =~ /jdssc process timed out/ ) {
-            $retry_count++;
-            $msg = '';
-            $err = undef;
-            sleep( 3 + int( rand( 5 ) ) );
-            next;
-        }
-
-        if ( $err && $err =~ /(?:Not enough time to acquire|Could not acquire) iSCSI target lock/ ) {
-            $retry_count++;
-            $msg = '';
-            $err = undef;
-            sleep( 3 + int( rand( 5 ) ) );
-            next;
-        }
-
         if ( $rerr ) {
             die "$rerr\n";
         }
@@ -924,8 +1069,6 @@ sub joviandss_cmd {
             return $msg;
         }
 
-
-
         if ($err) {
             die "${err}\n";
         }
@@ -933,6 +1076,43 @@ sub joviandss_cmd {
     }
 
     die "JovianDSS command timed out after $retries retries\n";
+}
+
+# [PATCH PL-16] Timeout-class helpers.
+# Decision: read/write × idempotent/non-idempotent.
+# Pass-through $force_debug_level and $password for parity with joviandss_cmd().
+# See docs/jd_timeout_classes.md for class semantics and override mechanism.
+
+sub jd_cmd_read_meta {
+    my ($ctx, $cmd, $force_debug_level, $password) = @_;
+    return joviandss_cmd($ctx, $cmd,
+        get_read_meta_timeout($ctx), JDSS_READ_META_RETRIES,
+        $force_debug_level, $password);
+}
+
+sub jd_cmd_read_list {
+    my ($ctx, $cmd, $force_debug_level, $password) = @_;
+    return joviandss_cmd($ctx, $cmd,
+        get_read_list_timeout($ctx), JDSS_READ_LIST_RETRIES,
+        $force_debug_level, $password);
+}
+
+sub jd_cmd_idemp {
+    my ($ctx, $cmd, $force_debug_level, $password) = @_;
+    return joviandss_cmd($ctx, $cmd,
+        get_idemp_write_timeout($ctx), JDSS_IDEMP_WRITE_RETRIES,
+        $force_debug_level, $password);
+}
+
+# WARNING: JDSS_NONIDEMP_WRITE_RETRIES is 0 by design. Non-idempotent
+# operations (rollback) must NOT be retried — partial state on the first
+# attempt makes a retry dangerous. If you need a longer timeout, bump
+# nonidemp_write_timeout in storage.cfg; do NOT change the retries constant.
+sub jd_cmd_nonidemp {
+    my ($ctx, $cmd, $force_debug_level, $password) = @_;
+    return joviandss_cmd($ctx, $cmd,
+        get_nonidemp_write_timeout($ctx), JDSS_NONIDEMP_WRITE_RETRIES,
+        $force_debug_level, $password);
 }
 
 
@@ -953,14 +1133,12 @@ sub volume_snapshots_info {
 
     my $pool = get_pool($ctx);
 
-    my $output = joviandss_cmd(
+    my $output = jd_cmd_read_list(   # [PATCH PL-16] enumerates snapshots, idempotent
         $ctx,
         [
             'pool',      $pool,  'volume', $volname,
             'snapshots', 'list', '--guid', '--creation'
-        ],
-        118,
-        5
+        ]
     );
 
     my $snapshots = {};
@@ -1298,15 +1476,13 @@ sub volume_rollback_check {
     $blockers //= [];
     my $res;
     eval {
-        $res = joviandss_cmd(
+        $res = jd_cmd_read_list(   # [PATCH PL-16] "rollback check" is a QUERY, not the destructive op; idempotent
             $ctx,
             [
                 "pool",     $pool, "volume",   $volname,
                 "snapshot", $snap, "rollback", "check",
                 '--concise'
-            ],
-            118,
-            5
+            ]
         );
     };
     if ($@) {
@@ -1401,7 +1577,7 @@ sub get_iscsi_addresses {
 
     my $getaddressescmd = [ 'hosts', '--iscsi' ];
 
-    my $cmdout = joviandss_cmd( $ctx, $getaddressescmd, 118, 3 );
+    my $cmdout = jd_cmd_read_list( $ctx, $getaddressescmd );   # [PATCH PL-16] iSCSI hosts enumeration
 
     if ( length($cmdout) > 1 ) {
         my @hosts = ();
@@ -1476,7 +1652,7 @@ sub target_active_info {
         push @$gettargetcmd, '-d';
     }
 
-    my $out = joviandss_cmd( $ctx, $gettargetcmd, 118, 5 );
+    my $out = jd_cmd_idemp( $ctx, $gettargetcmd );   # [PATCH PL-16] was 180/5; target get/create — idempotent admin op
 
     if ( defined $out and clean_word($out) eq '' ) {
         return undef;
@@ -1495,60 +1671,6 @@ sub target_active_info {
         iplist => \@iplist
     );
     return \%tinfo;
-}
-
-sub target_get_sessions {
-    my ( $ctx, $target_name ) = @_;
-
-    debugmsg( $ctx, "debug", "Getting sessions for target ${target_name}\n" );
-
-    my $out = joviandss_cmd( $ctx, [ 'target', $target_name, 'get', '--sessions' ], 118, 5 );
-
-    my %sessions = ();
-    for my $line ( split /\n/, $out ) {
-        $line = clean_word($line);
-        next if $line eq '';
-        my ( $initiator, $ips_str ) = split( /\s+/, $line, 2 );
-        my @ips = split( /,/, $ips_str );
-        $sessions{$initiator} = \@ips;
-    }
-
-    for my $initiator ( keys %sessions ) {
-        debugmsg( $ctx, "debug",
-            "Target ${target_name} session: initiator ${initiator} "
-            . "ips " . join( ',', @{ $sessions{$initiator} } ) . "\n"
-        );
-    }
-
-    return \%sessions;
-}
-
-sub get_local_initiator_name {
-    my ( $ctx ) = @_;
-
-    my $initiatorname_file = '/etc/iscsi/initiatorname.iscsi';
-
-    debugmsg( $ctx, "debug", "Reading local initiator name from ${initiatorname_file}\n" );
-
-    open( my $fh, '<', $initiatorname_file )
-        or die "Cannot open ${initiatorname_file}: $!\n";
-
-    my $initiator_name = undef;
-    while ( my $line = <$fh> ) {
-        chomp $line;
-        if ( $line =~ /^InitiatorName=(.+)$/ ) {
-            $initiator_name = $1;
-            last;
-        }
-    }
-    close($fh);
-
-    die "InitiatorName not found in ${initiatorname_file}\n"
-        unless defined $initiator_name;
-
-    debugmsg( $ctx, "debug", "Local initiator name is ${initiator_name}\n" );
-
-    return $initiator_name;
 }
 
 sub get_vm_target_group_name {
@@ -1589,24 +1711,18 @@ sub volume_publish {
             unless defined $chap_user && length($chap_user);
         die "chap_user_password is required when chap_enabled is set\n"
             unless defined $chap_pass;
-        # TODO: credentials are passed as argv and are visible in /proc/<pid>/cmdline
-        # for the duration of the jdssc process. Fix: add --chap-credentials-file <path>
-        # to jdssc targets create, write credentials to a 0600 tempfile (File::Temp,
-        # UNLINK=>1), pass the path instead of the values. Same change needed in
-        # target_update_chap below and in the jdssc targets.py / target.py parsers.
         push @$create_target_cmd, '--chap-user', $chap_user, '--chap-password', $chap_pass;
     }
 
-    my $out = joviandss_cmd( $ctx, $create_target_cmd, 118, 15 );
-    my ( $targetname, $lunid, $ips, $scsiid ) = split( ' ', $out );
+    my $out = jd_cmd_idemp( $ctx, $create_target_cmd );   # [PATCH PL-16] was 180/5; target create — idempotent (already-exists handled)
+    my ( $targetname, $lunid, $ips ) = split( ' ', $out );
 
     my @iplist = split /\s*,\s*/, clean_word($ips);
 
     my %tinfo = (
-        target  => clean_word($targetname),
-        lunid   => clean_word($lunid),
-        iplist  => \@iplist,
-        scsiid  => clean_word($scsiid),
+        target => clean_word($targetname),
+        lunid  => clean_word($lunid),
+        iplist => \@iplist
     );
     debugmsg( $ctx, "debug",
             "Publish volume ${volname} "
@@ -1614,8 +1730,7 @@ sub volume_publish {
           . 'acquired '
           . "target ${targetname} "
           . "lun ${lunid} "
-          . "hosts @{iplist} "
-          . "scsiid " . ( $scsiid // 'undef' ) );
+          . "hosts @{iplist}");
 
     return \%tinfo;
 }
@@ -1633,18 +1748,20 @@ sub target_update_chap {
             unless defined $chap_user && length($chap_user);
         die "chap_user_password is required when chap_enabled is set\n"
             unless defined $chap_pass;
-        # TODO: same argv exposure as in volume_publish above — move to
-        # --chap-credentials-file once jdssc target update supports it.
         push @$cmd, '--chap-user', $chap_user, '--chap-password', $chap_pass;
     } else {
         push @$cmd, '--no-chap';
     }
 
+    # [PATCH PL-16] target_update_chap kept on raw joviandss_cmd: the manual
+    # retry loop catches ANY error, not just timeout, which is broader than
+    # the helper class semantics. TODO: audit whether broader retry is needed
+    # under JD-5/JD-6 — if not, migrate to jd_cmd_idemp.
     my $last_err;
-    for my $attempt (1 .. 3) {
-        eval { joviandss_cmd($ctx, $cmd, 118, 4); };
+    for my $attempt (1 .. 2) {
+        eval { joviandss_cmd($ctx, $cmd, 30); };
+        last unless $@;
         $last_err = $@;
-        return unless $last_err;
         debugmsg($ctx, 'warn',
             "target_update_chap attempt ${attempt} failed for "
             . "${targetname}: ${last_err}");
@@ -1696,51 +1813,6 @@ sub _iscsiadm_clear_chap {
     }
 }
 
-
-# Runs rescan-scsi-bus.sh for $lunid only when no other instance is active.
-# retrun 0 and skips silently when a concurrent rescan is already in progress
-# return 0 if error happens
-# return 1 if rescan is completed
-sub _scsi_bus_rescan_try {
-    my ($ctx, $lunid) = @_;
-
-    my $busy = 0;
-    eval {
-        my $chk = ['pgrep', '-f', 'rescan-scsi-bus.sh'];
-        run_command(
-            $chk,
-            outfunc => sub { $busy = 1; },
-            errfunc => sub { },
-            noerr   => 1,
-        );
-    };
-
-    if ($busy) {
-        debugmsg($ctx, 'debug',
-            "rescan-scsi-bus.sh already running, skipping rescan for lun ${lunid}\n");
-        return 0;
-    }
-
-    my $cmd = [
-        '/usr/bin/rescan-scsi-bus.sh',
-        '--sparselun', '--reportlun2', '--largelun',
-        "--luns=${lunid}", '-a',
-    ];
-
-    my $errcode = run_command(
-        $cmd,
-        outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-        errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-        timeout => 55,
-        noerr   => 1,
-    );
-    if ($errcode == 0 ) {
-        return 1;
-    }
-    return 0;
-}
-
-
 # _rescan_target_hosts($ctx, $targetname, $lunid)
 #
 # Trigger a SCSI LUN rescan only on the hosts that carry an iSCSI session
@@ -1751,99 +1823,55 @@ sub _scsi_bus_rescan_try {
 #
 # Safe to call from multiple parallel processes: each touches only its own
 # session hosts, so there is no cross-VM interference.
-#
-# if targetd rescan is not possible will attempt brorad scsi scan for all targets
-# broad scan will happen only if no other scan scritps are going at the moment
 sub _rescan_target_hosts {
     my ( $ctx, $targetname, $lunid ) = @_;
 
-    my $session_dir = '/sys/class/iscsi_session';
-    opendir( my $session_dir_desc, $session_dir ) or do {
-        debugmsg( $ctx, 'warn', "Cannot open $session_dir $!\n" );
-
-        # Unable to open iscsi_session folder containing mappings of
-        # iscsi sessions
-        # proceed will broad scan
-
-        _scsi_bus_rescan_try($ctx, $lunid);
+    my $sessdir = '/sys/class/iscsi_session';
+    opendir( my $dh, $sessdir ) or do {
+        debugmsg( $ctx, 'warn', "Cannot open $sessdir: $!\n" );
         return;
     };
-    my @sessions = grep { /^session\d+$/ } readdir($session_dir_desc);
-    closedir($session_dir_desc);
+    my @sessions = grep { /^session\d+$/ } readdir($dh);
+    closedir($dh);
 
-    # Iterate over iscsi sessions projected in /sys/class/iscsi_session folder
-    # to identigy session related to target @targetname
+    for my $sess (@sessions) {
+        my $tgt_file = "$sessdir/$sess/targetname";
+        next unless -f $tgt_file;
+        open( my $fh, '<', $tgt_file ) or next;
+        my $tgt = <$fh>;
+        close $fh;
+        chomp $tgt;
+        next unless defined $tgt && $tgt eq $targetname;
 
-    my $found_session = 0;
-    for my $session (@sessions) {
-        my $targetname_file_path = "$session_dir/$session/targetname";
+        my $dev_link = "$sessdir/$sess/device";
+        next unless -l $dev_link;
+        my $real = Cwd::realpath($dev_link);
+        next unless defined $real;
 
-        if ( !-f $targetname_file_path ) {
-            next;
-        }
+        my ($hostN) = ( $real =~ m{/(host\d+)/} );
+        next unless defined $hostN;
 
-        open( my $targetfile_desc, '<', $targetname_file_path ) or next;
-
-        my $session_target = <$targetfile_desc>;
-
-        $session_target = clean_word($session_target);
-        $session_target = safe_word($session_target);
-
-        close $targetfile_desc;
-
-        if ( !defined $session_target ) {
-            next;
-        }
-
-        if ( $session_target ne $targetname ) {
-            next;
-        }
-
-        $found_session = 1;
-
-        # iscsi $session is related to $targetname
-        my $session_rescan_completed = 0;
-        my $session_device_link = "$session_dir/$session/device";
-        if ( -l $session_device_link ) {
-            my $session_device_path = Cwd::realpath($session_device_link);
-            if ( defined( $session_device_path ) ) {
-                my ( $session_host_name ) = ( $session_device_path =~ m{/(host\d+)/} );
-
-                my $session_scan_path = "/sys/class/scsi_host/$session_host_name/scan";
-                if ( open( my $session_scan_desc, '>', $session_scan_path ) ) {
-                    print $session_scan_desc "- - $lunid\n";
-                    close $session_scan_desc;
-                    $session_rescan_completed = 1;
-                    debugmsg( $ctx, 'debug',
-                        "Targeted rescan: $session_device_path for target $targetname lun $lunid\n" );
-                } else {
-                    debugmsg( $ctx, 'warn', "Cannot write to $session_scan_path: $!\n" );
-                }
-            }
-        }
-        if ( $session_rescan_completed == 0) {
+        my $scan = "/sys/class/scsi_host/$hostN/scan";
+        if ( open( my $sf, '>', $scan ) ) {
+            print $sf "- - $lunid\n";
+            close $sf;
             debugmsg( $ctx, 'debug',
-                "Because of inability to send targeted rescan for target $targetname lun $lunid, try conducting General rescan across all targets\n" );
-            _scsi_bus_rescan_try($ctx, $lunid);
+                "Targeted rescan: $hostN for target $targetname lun $lunid\n" );
+        } else {
+            debugmsg( $ctx, 'warn', "Cannot write to $scan: $!\n" );
         }
-    }
-
-    unless ($found_session) {
-        debugmsg( $ctx, 'debug',
-            "No session found for target $targetname, conducting broad rescan\n" );
-        _scsi_bus_rescan_try($ctx, $lunid);
     }
 }
 
 sub volume_stage_iscsi {
-    my ( $ctx, $targetname, $lunid, $hosts, $scsiid ) = @_;
+    my ( $ctx, $targetname, $lunid, $hosts ) = @_;
 
     debugmsg( $ctx, "debug", "Stage target ${targetname} lun ${lunid} over addresses @$hosts\n" );
 
-    # Fast path: block device already present.
-    my $serial_path = block_device_path_from_serial( $scsiid, 0 );
-    if ( -b $serial_path ) {
-        return [$serial_path];
+    # Fast path: all block devices already present.
+    my $targets_block_devices = block_device_iscsi_paths( $ctx, $targetname, $lunid, $hosts );
+    if ( @$targets_block_devices == @$hosts ) {
+        return $targets_block_devices;
     }
 
     # Helper: refresh %host_has_session from iscsiadm --mode session output.
@@ -2062,34 +2090,50 @@ sub volume_stage_iscsi {
             . " hosts for target ${targetname}");
     }
 
-    for ( my $i = 1 ; $i <= 240 ; $i++ ) {
-        if ( -b $serial_path ) {
-            debugmsg( $ctx, "debug", "Stage iSCSI block device ${serial_path}\n" );
-            return [$serial_path];
+    # 160 iterations (160s): covers JD-2 global flock queue delay for N=10 VMs
+    # (~130s peak observed during snapshot_clone_from_r1_par). PL-12.
+    for ( my $i = 1 ; $i <= 160 ; $i++ ) {
+        $targets_block_devices =
+            block_device_iscsi_paths( $ctx, $targetname, $lunid, \@logged_in );
+
+        if ( @$targets_block_devices == @logged_in ) {
+            debugmsg( $ctx, "debug", "Stage iSCSI block devices @{ $targets_block_devices }\n" );
+            return $targets_block_devices;
         }
 
-        debugmsg( $ctx, "debug", "Waiting for block device ${serial_path} attempt ${i}\n" );
+        debugmsg( $ctx, "debug", "Waiting for block devices: got "
+            . scalar(@$targets_block_devices) . " of " . scalar(@logged_in)
+            . " (attempt ${i}/160)\n" );
 
         sleep(1);
 
-        # Run rescan-scsi-bus only every 3rd attempt — under concurrent load
-        # each rescan takes minutes and many concurrent rescans cause SCSI bus
-        # congestion.
-        if ( $i % 3 == 0 ) {
+        # Targeted per-host rescan — replaces rescan-scsi-bus.sh -a.
+        # Scans only the SCSI hosts that carry sessions for $targetname,
+        # avoiding cross-VM interference when N VMs hotplug disks in parallel.
+        if ( $i % 3 == 0 && $lunid =~ /^\A\d+\z$/ ) {
             _rescan_target_hosts( $ctx, $targetname, $lunid );
+        } elsif ( $lunid !~ /^\A\d+\z$/ ) {
+            debugmsg( $ctx, "warn", "Lun id ${lunid} contains non digit symbols" );
         }
     }
 
-    #log_dir_content($ctx, '/dev/disk/by-id');
+    log_dir_content($ctx, '/dev/disk/by-path');
     debugmsg( $ctx, "warn",
-        "Unable to identify block device for scsi id ${scsiid}\n" );
+        "Unable to identify iscsi block device location @{ $targets_block_devices }\n" );
 
     die "Unable to locate target ${targetname} block device location.\n";
 }
 
 sub volume_stage_multipath {
-    my ( $ctx, $scsiid, $block_devs ) = @_;
+    # [PATCH PL-20v2] signature extended with $volname, $snapname so we can
+    # escalate from kernel-side rescan (PL-20) to JDSS-side REST republish
+    # when the size=0 condition is persistent (BUG-026 deeper than a race).
+    my ( $ctx, $scsiid, $block_devs, $volname, $snapname ) = @_;
     $scsiid = clean_word($scsiid);
+
+    # PL-20v2: counters for deep-recovery escalation.
+    my $pl20_size_zero_count = 0;
+    my $deep_recovery_done   = 0;
 
     my $mpath;
 
@@ -2164,7 +2208,165 @@ sub volume_stage_multipath {
         # CHANGE events on sd devices which causes multipathd to re-evaluate
         # paths, disrupting existing multipath devices that are actively
         # being used for data copies (causes qemu-img I/O errors).
-        for my $attempt ( 1 .. 60) {
+        #
+        # [PATCH PL-19] Retry budget increased from 20 attempts × 2s = 40s
+        # to 60 attempts with exponential backoff (2..8s) totalling ~5min.
+        # Plus periodic recovery escalation:
+        #   - every 5 attempts: "multipath -ll <wwid>" (light scan)
+        #   - every 10 attempts: "multipathd reconfigure" (existing logic)
+        #   - every 15 attempts: "multipathd del map" + retry from scratch
+        # Rationale: empirically multipathd sometimes uparcie refuses
+        # "add map" under load for ~minutes, then recovers. Extending the
+        # plugin retry window lets the operation succeed instead of failing
+        # with "Unable to identify the multipath name" — without changing
+        # the PL-18 cluster-wide concurrency model. Cost is longer slot hold
+        # time on failure path (was max 40s, now max ~5min); acceptable
+        # because hold p95 already reaches minutes under heavy snapshots.
+        for my $attempt ( 1 .. 60 ) {
+
+            # [PATCH PL-20] SCSI READ CAPACITY race detection and rescan.
+            # Empirically (4/4 BUG-025 incidents 2026-05-15/16) when multipathd
+            # refuses to build a map for a freshly-published LUN, the underlying
+            # sd-device(s) have size=0 in /sys/block/<sd>/size — kernel saw the
+            # LUN attach event and ran READ CAPACITY before JDSS finished setting
+            # the volume size on the target side, getting 0 logical blocks back.
+            # Kernel logs: "sd N:0:0:M: [sdX] 0 512-byte logical blocks (0 B/0 B)".
+            # device-mapper cannot build a multipath map on a 0-byte device, so
+            # "multipathd add map" fails persistently with "failed to setup map"
+            # and "invalid map name" — and the kernel NEVER auto-re-runs READ
+            # CAPACITY (zero "capacity change" events observed for 8 stuck
+            # sd-devices over 4 fail incidents). The device stays 0-byte until
+            # the LUN is detached.
+            #
+            # Mitigation: each iteration, check /sys/block/<sd>/size for our
+            # sd-devices. If size==0, write "1" to /sys/block/<sd>/device/rescan
+            # to force a fresh READ CAPACITY. When JDSS has the correct size
+            # by then, kernel updates size and emits a uevent; multipathd then
+            # builds the map.
+            #
+            # This is a workaround for a JDSS race (LUN attach should be
+            # atomic with size — reported separately). Cheap (one stat per
+            # sd per iter) and safe (rescan is documented kernel API).
+            my $any_size_zero_this_iter = 0;
+            for my $devname (@sd_devnames) {
+                my $size_path = "/sys/block/${devname}/size";
+                next unless -r $size_path;
+                my $size = 0;
+                if (open(my $fh, '<', $size_path)) {
+                    chomp(my $line = <$fh>);
+                    close($fh);
+                    $size = $line + 0;
+                }
+                if ($size == 0) {
+                    $any_size_zero_this_iter = 1;
+                    debugmsg($ctx, "warn", sprintf(
+                        "PL-20: sd-device /dev/%s has size=0 (JDSS READ CAPACITY race) "
+                        . "— forcing kernel SCSI rescan (attempt %d)",
+                        $devname, $attempt));
+                    my $rescan = "/sys/block/${devname}/device/rescan";
+                    if (open(my $fh, '>', $rescan)) {
+                        print $fh "1\n";
+                        close($fh);
+                    }
+                }
+            }
+            $pl20_size_zero_count++ if $any_size_zero_this_iter;
+
+            # [PATCH PL-20v2] Deep recovery escalation — if PL-20 rescan has
+            # been ineffective for $DEEP_RECOVERY_THRESHOLD iterations
+            # (kernel-side rescan does NOT cure size=0), reach down through
+            # the iSCSI stack to JDSS REST: unpublish the LUN and republish
+            # it. This forces JDSS to redo the LUN setup from scratch,
+            # giving it a fresh shot at committing the volume size. After
+            # republish, trigger an iSCSI session rescan so the initiator
+            # picks up the new LUN attach event, then re-resolve sd-devnames
+            # and reset the PL-20 counter so the fresh LUN gets a clean
+            # budget.
+            #
+            # Triggered AT MOST ONCE per stage operation ($deep_recovery_done)
+            # to bound recovery cost — if even REST republish does not cure
+            # the LUN, the outer 60-attempt budget will exhaust normally and
+            # the operation will fail with the original
+            # "Unable to identify the multipath name" error.
+            #
+            # Empirical motivation (BUG-026 incident 2026-05-17 07:20-07:24):
+            # plugin observed 34+ consecutive PL-20 rescans on the same
+            # sd-devices (sdjq, sdjr for vm-323-disk-1 snapshot r1) — JDSS
+            # kept returning READ CAPACITY=0 across all rescans, proving the
+            # bug is NOT a short race but a persistent stuck LUN. PL-20 alone
+            # is therefore insufficient.
+            my $DEEP_RECOVERY_THRESHOLD = 15;
+            if (   !$deep_recovery_done
+                && $pl20_size_zero_count >= $DEEP_RECOVERY_THRESHOLD
+                && defined($volname)
+                && length($volname) ) {
+                $deep_recovery_done = 1;
+                my ($v_vmid) = ($volname =~ /^vm-(\d+)-/);
+                if (defined $v_vmid && length $v_vmid) {
+                    debugmsg($ctx, "warn", sprintf(
+                        "PL-20v2: kernel rescan ineffective for %d iters — "
+                        . "escalating to JDSS REST unpublish+republish "
+                        . "(vmid=%d volname=%s%s)",
+                        $pl20_size_zero_count, $v_vmid, $volname,
+                        (defined $snapname && length $snapname
+                            ? " snap=$snapname" : "")));
+
+                    my $unpublish_ok = 0;
+                    eval {
+                        volume_unpublish($ctx, $v_vmid, $volname, $snapname, undef);
+                        $unpublish_ok = 1;
+                    };
+                    if (!$unpublish_ok) {
+                        debugmsg($ctx, "warn",
+                            "PL-20v2: REST unpublish failed: $@");
+                    }
+
+                    if ($unpublish_ok) {
+                        sleep(2);   # let JDSS settle after LUN removal
+                        my $tgname = "vm-${v_vmid}";
+                        my $republish_ok = 0;
+                        eval {
+                            volume_publish($ctx, $tgname, $volname, $snapname, undef);
+                            $republish_ok = 1;
+                        };
+                        if (!$republish_ok) {
+                            debugmsg($ctx, "warn",
+                                "PL-20v2: REST republish failed: $@");
+                        } else {
+                            debugmsg($ctx, "info",
+                                "PL-20v2: REST republish OK — "
+                                . "triggering iscsiadm session rescan");
+                            eval {
+                                my $cmd = [ $ISCSIADM, '-m', 'session', '--rescan' ];
+                                run_command(
+                                    $cmd,
+                                    outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                                    errfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                                    timeout => 30,
+                                    noerr   => 1
+                                );
+                            };
+                            sleep(3);   # let kernel re-attach new sd-devices
+                            # Re-resolve sd-devnames — old ones are gone after
+                            # unpublish; new sd-devices appear after republish.
+                            @sd_devnames = ();
+                            if ($block_devs && ref($block_devs) eq 'ARRAY') {
+                                for my $bp (@$block_devs) {
+                                    my $real = Cwd::abs_path($bp);
+                                    if ($real && $real =~ m{^/dev/(sd[a-z]+)$}) {
+                                        push @sd_devnames, $1;
+                                    }
+                                }
+                                debugmsg($ctx, "debug",
+                                    "PL-20v2: re-resolved sd-devices post-republish: "
+                                    . join(', ', @sd_devnames));
+                            }
+                            # Fresh budget for the fresh LUN.
+                            $pl20_size_zero_count = 0;
+                        }
+                    }
+                }
+            }
 
             # Explicitly register paths with multipathd before creating
             # the map.  This ensures multipathd knows which sd devices
@@ -2212,7 +2414,7 @@ sub volume_stage_multipath {
                     eval {
                         my $cmd = [ 'udevadm', 'trigger',
                                     '--subsystem-match=block',
-                                    "--property-match=ID_SERIAL=${id}" ];
+                                    "--attr-match=ID_SERIAL=${id}" ];
                         run_command(
                             $cmd,
                             outfunc => sub { },
@@ -2256,18 +2458,6 @@ sub volume_stage_multipath {
                     . "scsiid ${id} "
                     . "attempt ${attempt}"
                 );
-
-            if ( $attempt % 15 == 0 ) {
-                debugmsg( $ctx,
-                    "debug",
-                    "Conducting multipath del map for ${id} in attempt to make multipath device reappear"
-                );
-                eval {
-                    my $cmd = [ $MULTIPATHD, 'del', 'map', $id ];
-                    run_command( $cmd, timeout => 10, noerr => 1 );
-                };
-                sleep(5);
-            }
             eval {
                 my $cmd = [ $MULTIPATH, '-a', $id ];
                 run_command(
@@ -2308,7 +2498,35 @@ sub volume_stage_multipath {
                     );
                 };
             }
-            sleep(2);
+
+            # [PATCH PL-19] Every 15th attempt: drop any stale half-built
+            # map state for this WWID inside multipathd and start over.
+            # Observed empirically: under sustained load multipathd holds
+            # an internal "pending" state for a WWID that prevents fresh
+            # "add map" from succeeding. "del map" wipes that state; the
+            # next "add map" in the loop has a clean slate.
+            if ( $attempt % 15 == 0 ) {
+                debugmsg( $ctx, "debug",
+                    "PL-19: dropping stale multipathd map state for scsiid ${id} "
+                    . "(attempt ${attempt})" );
+                eval {
+                    my $cmd = [ $MULTIPATHD, 'del', 'map', $id ];
+                    run_command(
+                        $cmd,
+                        outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                        errfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                        noerr   => 1,
+                        timeout => 20
+                    );
+                };
+            }
+
+            # [PATCH PL-19] Exponential backoff capped at 8s: 2,2,3,4,5,6,7,8,8,...
+            # Gives multipathd more breathing room under sustained pressure
+            # without spamming it at fixed 2s intervals when it clearly isn't
+            # responding.
+            my $sleep_time = $attempt < 2 ? 2 : ( $attempt < 8 ? $attempt : 8 );
+            sleep( $sleep_time );
         }
     } else {
         die "Invalid characters in scsiid: ${scsiid}";
@@ -2357,7 +2575,9 @@ sub block_device_path_from_lun_rec {
                                      $targetname, $lunid,
                                      $lunrec->{volname}, $lunrec->{snapname},
                                      $lunrec );
-            $block_dev = volume_stage_multipath( $ctx, $lunrec->{scsiid} );
+            $block_dev = volume_stage_multipath(
+                $ctx, $lunrec->{scsiid}, undef,
+                $lunrec->{volname}, $lunrec->{snapname} );   # [PATCH PL-20v2]
             return $block_dev;
         }
 
@@ -2611,22 +2831,24 @@ sub id_serial_from_rest {
 
     my $jscsiid;
     if (defined($volname) && !defined($snapname)) {
-        $jscsiid = joviandss_cmd(
+        $jscsiid = jd_cmd_read_meta(   # [PATCH PL-16] was 80/5; single SCSI ID attribute
             $ctx,
             [
                 "pool",   $pool,
                 "volume", $volname,
                 "get", "-i"
-            ], 118, 5);
+            ]
+        );
     } elsif (defined($volname) && defined($snapname)) {
-        $jscsiid = joviandss_cmd(
+        $jscsiid = jd_cmd_read_meta(   # [PATCH PL-16] was 80/5; single SCSI ID attribute on snapshot
             $ctx,
             [
                 "pool",   $pool,
                 "volume", $volname,
                 "snapshot", $snapname,
                 "get", "-i"
-            ], 118, 5 );
+            ]
+        );
     } else {
         die "Volume name is required to acquire scsi id\n";
     }
@@ -2831,7 +3053,7 @@ sub _volume_unstage_multipath_wait_unused {
 
             if ($pid) {
                 $pid = clean_word($pid);
-                debugmsg( $ctx, 'debug', "Block device with SCSI ${scsiid} is used by ${pid}" );
+                print("Block device with SCSI ${scsiid} is used by ${pid}\n");
 
                 # Get process name for diagnostics
                 if ( $pid =~ /^([\:\-\@\w.\/]+)$/ ) {
@@ -2852,7 +3074,7 @@ sub _volume_unstage_multipath_wait_unused {
                     warn "${warningmsg}\n";
                 }
             } else {
-                debugmsg( $ctx, 'debug', "Block device with SCSI ${scsiid} is not used" );
+                print("Block device with SCSI ${scsiid} is not used\n");
                 $should_continue = 0;
             }
         };
@@ -2899,25 +3121,30 @@ sub _volume_unstage_multipath_remove_device {
             debugmsg( $ctx, 'warn', "Unable to remove scsi id ${clean_scsiid} from wwid file: $@" );
         }
 
-
+        # Step 1b: Tell multipathd to stop managing this map before flushing.
+        # Without this, multipathd may race: it still sees iSCSI paths present
+        # (SCST cleanup hasn't propagated yet), fires addmap, and recreates the
+        # dm device immediately after multipath -f removes it — producing a
+        # zombie with queue_if_no_path and 0 paths (BUG-010).
+        if ($MULTIPATHD) {
+            eval {
+                my $cmd = [ $MULTIPATHD, 'del', 'map', $clean_scsiid ];
+                run_command(
+                    $cmd,
+                    outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                    errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+                    timeout  => 10,
+                    noerr    => 1
+                );
+            };
+            if ($@) {
+                debugmsg( $ctx, 'warn', "multipathd del map failed for ${clean_scsiid}: $@" );
+            }
+        }
 
         # Step 2: Flush (remove) the multipath device map.
         # Using -f (flush) instead of bare $scsiid which would
         # recreate/refresh the device — the opposite of what we want.
-        
-        #TODO: review this section
-        if ($MULTIPATHD) {
-            eval {
-                my $cmd = [ $MULTIPATHD, 'del', 'map', $clean_scsiid ];
-                run_command( $cmd,
-                    outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-                    timeout => 10, noerr => 1
-                );
-            };
-            if ($@) { debugmsg( $ctx, 'warn', "multipathd del map failed for ${clean_scsiid}: $@" ); }
-        }
-
         eval {
             my $cmd = [ $MULTIPATH, '-f', $clean_scsiid ];
             run_command(
@@ -2929,20 +3156,31 @@ sub _volume_unstage_multipath_remove_device {
             );
         };
 
+        # Step 2b: Defense-in-depth — if multipathd still tracks the map
+        # (a concurrent addmap raced between Step 1b and Step 2), force-remove now.
         if (_multipathd_map_exists($ctx, $clean_scsiid)) {
+            debugmsg( $ctx, 'debug',
+                "multipathd still tracks ${clean_scsiid} after flush, removing" );
             if ($MULTIPATHD) {
                 eval {
                     my $cmd = [ $MULTIPATHD, 'del', 'map', $clean_scsiid ];
-                    run_command( $cmd, timeout => 10, noerr => 1 );
+                    run_command(
+                        $cmd,
+                        outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+                        errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+                        timeout  => 10,
+                        noerr    => 1
+                    );
                 };
+                if ($@) {
+                    debugmsg( $ctx, 'warn',
+                        "multipathd del map (step 2b) failed for ${clean_scsiid}: $@" );
+                }
             }
         }
 
         # Step 3: Always attempt dmsetup removal.
-        # multipath -f removes the multipath map but can leave
-        # an orphaned dm device behind.  Use dmsetup info to check
-        # if the dm device exists (not multipath -ll which only
-        # sees the multipath map).
+        # multipath -f removes the multipath map but can leave an orphaned dm device behind.
         my $dm_exists = _dmsetup_device_exists($ctx, $clean_scsiid);
         unless ($dm_exists) {
             debugmsg( $ctx, "debug", "Volume unstage multipath scsiid ${clean_scsiid} done (flush)" );
@@ -3007,6 +3245,28 @@ sub _volume_unstage_multipath_remove_device {
     }
 
     return 0; # All attempts failed and deferred removal not possible
+}
+
+# Check if multipathd still tracks a map by WWID using multipath -ll.
+# Used to detect the race where multipathd recreates a dm device
+# after multipath -f removed it (BUG-010).
+sub _multipathd_map_exists {
+    my ( $ctx, $wwid ) = @_;
+    my $found = 0;
+    eval {
+        my $cmd = [ $MULTIPATH, '-ll', $wwid ];
+        run_command( $cmd,
+            outfunc => sub {
+                my $line = shift;
+                $found = 1 if $line =~ /\Q$wwid\E/;
+                cmd_log_output($ctx, 'debug', $cmd, $line);
+            },
+            errfunc => sub { },
+            timeout  => 15,
+            noerr    => 1
+        );
+    };
+    return $found;
 }
 
 # Check if a device-mapper device exists by SCSI ID / dm name.
@@ -3120,23 +3380,6 @@ sub _volume_unstage_multipath_get_blocker {
     return $pid;
 }
 
-# TODO: review this code
-sub _multipathd_map_exists {
-    my ( $ctx, $wwid ) = @_;
-    my $found = 0;
-    eval {
-        my $cmd = [ $MULTIPATH, '-ll', $wwid ];
-        run_command( $cmd,
-            outfunc => sub { my $line = shift; $found = 1 if $line =~ /\Q$wwid\E/;
-                             cmd_log_output($ctx, 'debug', $cmd, $line); },
-            errfunc => sub { },
-            timeout => 15, noerr => 1
-        );
-    };
-    return $found;
-}
-
-
 sub volume_unpublish {
     my ( $ctx, $vmid, $volname, $snapname, $content_volume_flag ) = @_;
 
@@ -3156,13 +3399,30 @@ sub volume_unpublish {
         $tgname = get_vm_target_group_name($ctx, $vmid);
     }
 
-    $tgname = safe_word($tgname);
     # Volume deletion will result in deletetion of all its snapshots
     # Therefore we have to detach all volume snapshots that is expected to be
     # removed along side with volume
     unless ( defined($snapname) ) {
+        my $delitablesnaps = jd_cmd_read_list(   # [PATCH PL-16] was 120/2; "delete -c -p" is preview/check, idempotent enumeration
+            $ctx,
+            [
+                "pool",   $pool,
+                "volume", $volname,
+                "delete", "-c",  "-p",
+                '--target-prefix', $prefix,
+                '--target-group-name', $tgname
+            ]
+        );
+        my @dsl = split( " ", $delitablesnaps );
 
-        joviandss_cmd(
+        unless ( $content_volume_flag ) {
+            foreach my $snap (@dsl) {
+                volume_deactivate( $ctx, $vmid,
+                    $volname, $snap, undef );
+            }
+        }
+
+        jd_cmd_idemp(   # [PATCH PL-16] was 120/2; target delete — idempotent (not-found handled)
             $ctx,
             [
                 'pool', $pool,
@@ -3170,24 +3430,12 @@ sub volume_unpublish {
                 '--target-prefix', $prefix,
                 '--target-group-name', $tgname,
                 '-v', $volname
-            ],
-            118, 4
+            ]
         );
     }
 
     if ( defined( $snapname ) ) {
-
-        $pool = safe_word($pool);
-        $prefix = safe_word($prefix);
-        $tgname = safe_word($tgname);
-        $volname = safe_word($volname);
-        $snapname = safe_word($snapname);
-
-        debugmsg( $ctx,"debug",
-                "Unpublish volume ${volname} "
-                . safe_var_print( "snapshot", $snapname )
-                . " in check\n");
-        joviandss_cmd(
+        jd_cmd_idemp(   # [PATCH PL-16] was 120/2; snapshot target delete — idempotent
             $ctx,
             [
                 'pool', $pool,
@@ -3195,12 +3443,8 @@ sub volume_unpublish {
                 '--target-prefix', $prefix,
                 '--target-group-name', $tgname,
                 '-v', $volname,
-                '--snapshot', $snapname,
-            ],
-            118, 4
-        );
+                '--snapshot', $snapname]);
     }
-
     1;
 }
 
@@ -3296,102 +3540,45 @@ sub lun_record_local_get_info_list {
         die "Unable to locate folder containing ${ ldir } plugin state\n";
     }
 
-    eval {
-        File::Find::find(
-            {
-                no_chdir => 1,
-                wanted   => sub {
-                    my $full = $File::Find::name;
+    File::Find::find(
+        {
+            no_chdir => 1,
+            wanted   => sub {
+                my $full = $File::Find::name;
 
-                    # Expect path .../<storeid>/<target>/<lun_id>/$name
-                    unless ($full =~ m!^\Q$ldir\E/([^/]+)/(\d+)/\Q$name\E$!) {
-                        return;
-                    }
-                    my ($targetname, $lunid) = ($1, $2);
-                    $targetname = clean_word($targetname);
-                    $lunid = clean_word($lunid);
+                # Expect path .../<storeid>/<target>/<lun_id>/$name
+                unless ($full =~ m!^\Q$ldir\E/([^/]+)/(\d+)/\Q$name\E$!) {
+                    return;
+                }
+                my ($targetname, $lunid) = ($1, $2);
+                $targetname = clean_word($targetname);
+                $lunid = clean_word($lunid);
 
-                    # TODO: consider using target group name
-                    my $lunrec = lun_record_local_get_by_path( $ctx, $full);
-                    if ($lunrec) {
-                        if ( $lunrec->{volname} eq $volname ) {
-                            if ( defined($snapname) ) {
-                                if ( defined($lunrec->{snapname}) &&
-                                    ( $lunrec->{snapname} eq $snapname ) ) {
-                                    push @matches, [ $targetname, $lunid, $full, $lunrec ];
-                                }
-                            } else {
-                                unless( defined($lunrec->{snapname}) ) {
-                                    push @matches, [ $targetname, $lunid, $full, $lunrec ];
-                                    debugmsg( $ctx, "debug", "Found lun record of volume ${volname} "
-                                        . safe_var_print( "snapshot", $snapname )
-                                        . safe_var_print( "target group", $tgname )
-                                        . " targetname ${targetname}"
-                                        . " lunid ${lunid}\n");
-                                }
+                # TODO: consider using target group name
+                my $lunrec = lun_record_local_get_by_path( $ctx, $full);
+                if ($lunrec) {
+                    if ( $lunrec->{volname} eq $volname ) {
+                        if ( defined($snapname) ) {
+                            if ( defined($lunrec->{snapname}) &&
+                                ( $lunrec->{snapname} eq $snapname ) ) {
+                                push @matches, [ $targetname, $lunid, $full, $lunrec ];
+                            }
+                        } else {
+                            unless( defined($lunrec->{snapname}) ) {
+                                push @matches, [ $targetname, $lunid, $full, $lunrec ];
+                                debugmsg( $ctx, "debug", "Found lun record of volume ${volname} "
+                                    . safe_var_print( "snapshot", $snapname )
+                                    . safe_var_print( "target group", $tgname )
+                                    . " targetname ${targetname}"
+                                    . " lunid ${lunid}\n");
                             }
                         }
                     }
-                },
+                }
+
             },
-            $ldir);
-    };
-    if ($@) {
-        debugmsg($ctx, 'warn',
-            "lun record search interrupted: $@"
-            . " (likely a concurrent deactivation removed a target directory)");
-    }
-
-    return \@matches;
-}
-
-sub lun_record_local_get_snapshot_list {
-    my ($ctx, $volname) = @_;
-    my $storeid = $ctx->{storeid};
-
-    # Returns [ targetname, lunid, path, lunrec ] for every locally-recorded
-    # snapshot activation of $volname (lunrec->{snapname} is defined).
-    # Used by volume_deactivate to clean up snapshot state without calling
-    # jdssc to discover which snapshots were activated on this node.
-
-    my @matches = ();
-
-    my $ldir = File::Spec->catdir( PLUGIN_LOCAL_STATE_DIR, $storeid );
-
-    unless ( -d $ldir ) {
-        die "Unable to locate folder containing plugin state\n";
-    }
-
-    eval {
-        File::Find::find(
-            {
-                no_chdir => 1,
-                wanted   => sub {
-                    my $full = $File::Find::name;
-
-                    unless ($full =~ m!^\Q$ldir\E/([^/]+)/(\d+)/\Q$volname\E$!) {
-                        return;
-                    }
-                    my ($targetname, $lunid) = ($1, $2);
-                    $targetname = clean_word($targetname);
-                    $lunid      = clean_word($lunid);
-
-                    my $lunrec = lun_record_local_get_by_path($ctx, $full);
-                    return unless $lunrec;
-                    return unless $lunrec->{volname} eq $volname;
-                    return unless defined($lunrec->{snapname});
-
-                    push @matches, [ $targetname, $lunid, $full, $lunrec ];
-                },
-            },
-            $ldir
-        );
-    };
-    if ($@) {
-        debugmsg($ctx, 'warn',
-            "snapshot lun record search interrupted: $@"
-            . " (likely a concurrent deactivation removed a target directory)");
-    }
+        },
+        $ldir);
 
     return \@matches;
 }
@@ -3438,7 +3625,7 @@ sub lun_record_local_get_by_path {
         die "Unexpected content in $path";
     }
 
-    for my $key (qw(scsiid volname snapname size multipath hosts shared)) {
+    for my $key (qw(scsiid volname snapname size multipath hosts multipath shared)) {
         die "Local lun record ${path} is missing '$key'"
             unless exists $jdata->{$key};
     }
@@ -3478,11 +3665,6 @@ sub lun_record_local_delete {
     debugmsg($ctx, 'debug', "delete lun record check\n");
     my $ltdir = File::Spec->catdir( PLUGIN_LOCAL_STATE_DIR,
                                     $storeid, $targetname );
-    if ( $ltdir =~ /^([\:\-\@\w.\/]+)$/ ) {
-        $ltdir = $1;
-    } else {
-        die "Invalid character in target dir path: ${ltdir}\n";
-    }
     unless ( -d $ltdir ) {
         eval {
             volume_unstage_iscsi(
@@ -3500,22 +3682,13 @@ sub lun_record_local_delete {
     # Local Target Lun Directory
     my $ltldir = File::Spec->catdir( PLUGIN_LOCAL_STATE_DIR,
                                      $storeid, $targetname, $lunid );
-    if ( $ltldir =~ /^([\:\-\@\w.\/]+)$/ ) {
-        $ltldir = $1;
-    } else {
-        die "Invalid character in lun dir path: ${ltldir}\n";
-    }
 
     my $ltlfile = File::Spec->catfile( $ltldir, $volname );
-    if ( $ltlfile =~ /^([\:\-\@\w.\/]+)$/ ) {
-        my $file = $1;
-        if ( -f $file ) {
-            unless ( unlink($file) ) {
-                die "Unable to remove lun file ${file} because $!\n";
-            }
+
+    if ( -f $ltlfile ) {
+        unless ( unlink($ltlfile) ) {
+            die "Unable to remove lun file ${ltlfile} because $!\n";
         }
-    } else {
-        die "Invalid character in lun file path: ${ltlfile}\n";
     }
 
     if ( -d $ltldir ) {
@@ -3552,70 +3725,6 @@ sub lun_record_local_delete {
                     "lun ${lunid} because of $!");
         }
     }
-    return 1;
-}
-
-sub volume_deactivate_by_lun_record {
-    my ($ctx, $vmid, $targetname, $lunid, $lunrecord) = @_;
-
-    my $volname  = $lunrecord->{volname};
-    my $snapname = $lunrecord->{snapname};
-
-    debugmsg( $ctx, "debug",
-            "Deactivate volume ${volname} "
-            . safe_var_print( "snapshot", $snapname )
-            . " by lun record target ${targetname} lun ${lunid} "
-          . "start\n" );
-
-    # Logout iSCSI BEFORE removing multipath.  If we remove multipath
-    # first, the `multipath $scsiid` refresh commands in the removal
-    # function recreate the device because iSCSI paths are still active.
-    # By logging out iSCSI first, the underlying paths disappear and
-    # multipath removal succeeds cleanly.
-    volume_unstage_iscsi_device ( $ctx, $targetname, $lunid, $lunrecord->{hosts} );
-
-
-    if ( $lunrecord->{multipath} ) {
-
-        my $unstage_multipath_done = 0;
-        for my $attempt ( 1 .. 3) {
-            eval {
-                volume_unstage_multipath( $ctx, $lunrecord->{scsiid} );
-            };
-            my $cerr = $@;
-            if ($cerr) {
-                warn "volume_unstage_multipath failed: $@" if $@;
-            } else {
-                $unstage_multipath_done = 1;
-                last;
-            }
-        }
-
-        unless ($unstage_multipath_done ) {
-            die "Unable to unstage multipath device for "
-              . safe_var_print( "volume", $volname )
-              . safe_var_print( "snapshot", $snapname )
-              . "\n";
-        }
-    }
-
-    if ( defined($snapname) ) {
-        # We do not delete target on joviandss as this will lead to race
-        # condition in case of migration
-        eval {
-            volume_unpublish( $ctx, $vmid, $volname, $snapname, undef );
-        };
-        warn "unpublish_volume failed: $@" if $@;
-    }
-
-    lun_record_local_delete( $ctx, $targetname, $lunid, $volname, $snapname );
-
-
-    debugmsg( $ctx, "debug",
-            "Deactivate volume ${volname} "
-            . safe_var_print( "snapshot", $snapname )
-            . " by lun record target ${targetname} lun ${lunid} "
-          . "done\n" );
     return 1;
 }
 
@@ -3665,7 +3774,6 @@ sub volume_activate {
             $targetname = $tinfo->{target};
             $lunid = $tinfo->{lunid};
             $hosts = $tinfo->{iplist};
-            $scsiid = $tinfo->{scsiid};
         } else {
             die "Publishing volume ${volname} " . safe_var_print( "snapshot", $snapname ) .
                 " failed to provide target info\n";
@@ -3677,13 +3785,13 @@ sub volume_activate {
             $targetname,
             $lunid,
             $hosts,
-            $scsiid,
         );
         $block_devs = $tbdlist;
 
-        unless (scalar(@$block_devs) >= 1) {
-            die "Unable to connect to any storage address\n";
+        unless (scalar(@$block_devs) == scalar(@$hosts)) {
+            die "Unable to connect all storage addresses\n";
         }
+        $scsiid = id_serial_from_rest( $ctx, $volname, $snapname );
 
         if (defined( $scsiid ) ) {
             $scsiid_acquired = 1;
@@ -3694,7 +3802,9 @@ sub volume_activate {
 
         if ($multipath) {
             $multipath_staged = 1;
-            my $multipath_path = volume_stage_multipath( $ctx, $scsiid, $block_devs );
+            my $multipath_path = volume_stage_multipath(
+                $ctx, $scsiid, $block_devs,
+                $volname, $snapname );   # [PATCH PL-20v2]
             my $mpdl = [ clean_word($multipath_path) ];
             $block_devs = $mpdl;
         }
@@ -3819,6 +3929,8 @@ sub volume_deactivate {
     my $lunrecpath;
     my $lunrecord = undef;
 
+    my $local_cleanup = 0;
+
     my $pool   = get_pool($ctx);
     my $prefix = get_target_prefix($ctx);
 
@@ -3834,11 +3946,21 @@ sub volume_deactivate {
     }
 
     unless( $snapname ) {
-        my $snap_records = lun_record_local_get_snapshot_list( $ctx, $volname );
-        # We conduct full deactivation by lun record
-        foreach my $snaprec (@$snap_records) {
-            my ($snap_target, $snap_lun, undef, $snap_lunrec) = @$snaprec;
-            volume_deactivate_by_lun_record( $ctx, $vmid, $snap_target, $snap_lun, $snap_lunrec );
+        my $delitablesnaps = jd_cmd_read_list(   # [PATCH PL-16] was 120/2; "delete -c -p" is preview/check, idempotent enumeration
+            $ctx,
+            [
+                "pool",   $pool,
+                "volume", $volname,
+                "delete", "-c",  "-p",
+                '--target-prefix', $prefix,
+                '--target-group-name', $tgname
+            ]
+        );
+        my @dsl = split( " ", $delitablesnaps );
+
+        foreach my $snap (@dsl) {
+            volume_deactivate( $ctx, $vmid,
+                $volname, $snap, undef );
         }
     }
     my $lunrecinfolist = lun_record_local_get_info_list( $ctx, $volname, $snapname );
@@ -3863,7 +3985,7 @@ sub volume_deactivate {
                 my $tinfo = target_active_info( $ctx, $tgname, $volname, $snapname, $contentvolumeflag );
                 if ( defined( $tinfo ) ){
                     my $lr;
-                    ($targetname, $lunid, $lunrecpath, $lr) = @{$rec};
+                    ($targetname, $lunid, $lunrecpath, $lr) = $rec;
 
                     if ( $tinfo->{name} eq $targetname ) {
                         if ( $tinfo->{lun} eq $lunid ) {
@@ -3897,7 +4019,38 @@ sub volume_deactivate {
         return 1;
     }
 
-    volume_deactivate_by_lun_record( $ctx, $vmid, $targetname, $lunid, $lunrecord );
+    # Logout iSCSI BEFORE removing multipath.  If we remove multipath
+    # first, the `multipath $scsiid` refresh commands in the removal
+    # function recreate the device because iSCSI paths are still active.
+    # By logging out iSCSI first, the underlying paths disappear and
+    # multipath removal succeeds cleanly.
+    volume_unstage_iscsi_device ( $ctx, $targetname, $lunid, $lunrecord->{hosts} );
+
+    if ( $lunrecord->{multipath} ) {
+        eval {
+            volume_unstage_multipath( $ctx, $lunrecord->{scsiid} );
+        };
+        my $cerr = $@;
+        if ($cerr) {
+            $local_cleanup = 1;
+            warn "volume_unstage_multipath failed: $@" if $@;
+        }
+    }
+
+    my $cerr;
+    if ( $snapname ) {
+    # We do not delete target on joviandss as this will lead to race condition
+    # in case of migration
+        eval {
+            volume_unpublish( $ctx, $vmid, $volname, $snapname, undef );
+        };
+        $cerr = $@;
+        if ($cerr) {
+            $local_cleanup = 1;
+            warn "unpublish_volume failed: $@" if $@;
+        }
+    }
+    lun_record_local_delete( $ctx, $targetname, $lunid, $volname, $snapname );
     debugmsg( $ctx, "debug",
             "Volume ${volname} deactivate done "
           . safe_var_print( "snapshot", $snapname )
@@ -3919,6 +4072,9 @@ sub lun_record_update_device {
     my @update_device_try = ( 1 .. 10 );
     foreach (@update_device_try) {
 
+        # PL-14: replaced global glob over /sys/class/scsi_host/host* with
+        # targeted helper from PL-9.  Eliminates thundering herd when N VMs
+        # are cloning/migrating/resizing in parallel and racing with udev.
         _rescan_target_hosts( $ctx, $targetname, $lunid );
 
         my $iscsi_block_devices = block_device_iscsi_paths ( $ctx, $targetname, $lunid, $lunrec->{hosts} );
@@ -3987,7 +4143,9 @@ sub lun_record_update_device {
                                          $lunrec->{volname}, $lunrec->{snapname},
                                          $lunrec );
             }
-            $block_device_path = volume_stage_multipath( $ctx, $lunrec->{scsiid} );
+            $block_device_path = volume_stage_multipath(
+                $ctx, $lunrec->{scsiid}, undef,
+                $lunrec->{volname}, $lunrec->{snapname} );   # [PATCH PL-20v2]
             eval {
                 my $cmd = [ $MULTIPATH, '-r', ${block_device_path} ];
                 run_command(
@@ -4028,7 +4186,7 @@ sub lun_record_update_device {
         };
 
         if ($expectedsize) {
-            if ( int($updated_size) == int($expectedsize) ) {
+            if ( $updated_size eq $expectedsize ) {
                 $lunrec->{size} = $expectedsize;
                 lun_record_local_update( $ctx,
                                          $targetname, $lunid,
@@ -4060,7 +4218,7 @@ sub volume_update_size {
             foreach my $rec (@$lunrecinfolist) {
                 my $tinfo = target_active_info( $ctx, $tgname, $volname, undef, undef );
                 if ( defined( $tinfo ) ){
-                    my ($targetname, $lunid, $lunrecpath, $lunrecord) = @{$rec};
+                    my ($targetname, $lunid, $lunrecpath, $lunrecord) = $rec;
 
                     if ( $tinfo->{name} eq $targetname ) {
                         if ( $tinfo->{lun} eq $lunid ) {
@@ -4074,8 +4232,6 @@ sub volume_update_size {
                     }
                 }
             }
-            debugmsg( $ctx, 'warn',
-                "Unable to identify active lun record for volume ${volname}, size not updated\n" );
         }
     }
     1;
@@ -4086,7 +4242,7 @@ sub volume_get_size {
 
     my $pool = get_pool($ctx);
 
-    my $output = joviandss_cmd($ctx, ['pool', $pool, 'volume', $volname, 'get', '-s'], 118, 5);
+    my $output = jd_cmd_read_meta($ctx, ['pool', $pool, 'volume', $volname, 'get', '-s']);   # [PATCH PL-16] was 80/5; single size attribute
 
     my $size = int( clean_word( $output ) + 0 );
     return $size;

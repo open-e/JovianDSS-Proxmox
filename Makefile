@@ -28,6 +28,7 @@ install:
 	install -D -m 0644 ./OpenEJovianDSSNFSPlugin.pm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSNFSPlugin.pm
 	install -D -m 0644 ./OpenEJovianDSSPlugin.pm $(DESTDIR)/usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
 	install -D -m 0644 ./OpenEJovianDSS/Common.pm $(DESTDIR)/usr/share/perl5/OpenEJovianDSS/Common.pm
+	install -D -m 0644 ./OpenEJovianDSS/Semaphore.pm $(DESTDIR)/usr/share/perl5/OpenEJovianDSS/Semaphore.pm
 	install -D -m 0644 ./OpenEJovianDSS/Lock.pm $(DESTDIR)/usr/share/perl5/OpenEJovianDSS/Lock.pm
 	install -D -m 0644 ./OpenEJovianDSS/NFSCommon.pm $(DESTDIR)/usr/share/perl5/OpenEJovianDSS/NFSCommon.pm
 

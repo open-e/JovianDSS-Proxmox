@@ -16,19 +16,12 @@
 #    under the License.
 
 import argparse
-import signal
-import time
 
 import yaml
 import sys
 
 from jdssc.jovian_common import driver
-from jdssc.jovian_common.exception import (
-    JDSSLockExecutionTimeout,
-    JDSSLockReleaseError,
-)
 
-import jdssc.lock as jlock
 import jdssc.pool as pool
 
 import logging
@@ -131,26 +124,6 @@ def parse_args():
                         required=False,
                         default=None,
                         help='Unique request identifier to include in log output')
-
-    parser.add_argument('--iscsi-target-lock-path',
-                        dest='iscsi_target_lock_path',
-                        default=jlock.DEFAULT_LOCK_PATH,
-                        required=False,
-                        help='pmxcfs lock directory path for iSCSI target serialization (default: %(default)s)')
-
-    parser.add_argument('--iscsi-change-lock-timeout',
-                        dest='iscsi_change_lock_timeout',
-                        type=int,
-                        default=jlock.MAX_ISCSI_CHANGE_LOCK_TIMEOUT,
-                        required=False,
-                        help='Seconds to wait for iSCSI target lock acquisition (default: %(default)s)')
-
-    parser.add_argument('--timeout',
-                        dest='timeout',
-                        type=int,
-                        default=None,
-                        required=False,
-                        help='Maximum total process lifetime in seconds. When omitted, jdssc runs unconstrained.')
 
     command = parser.add_subparsers(required=True, dest='command')
 
@@ -310,10 +283,6 @@ def unify_config_options(args, cfg):
     if args.user_password:
         cfg['san_password'] = args.user_password
 
-    cfg['iscsi_target_lock_path'] = args.iscsi_target_lock_path
-
-    cfg['lock_timeout'] = args.iscsi_change_lock_timeout
-
     return cfg
 
 
@@ -375,50 +344,16 @@ def main():
 
     config = unify_config_options(args, config)
     setup_logging(args, config)
-
-    LOG = logging.getLogger(__name__)
-
-    if args.iscsi_change_lock_timeout <= 0:
-        LOG.error("--iscsi-change-lock-timeout must be greater than 0")
-        sys.exit(1)
-
-    if args.iscsi_change_lock_timeout > jlock.MAX_ISCSI_CHANGE_LOCK_TIMEOUT:
-        LOG.error("--iscsi-change-lock-timeout must not exceed %d s (pmxcfs stale-lock timeout is 120 s)",
-                  jlock.MAX_ISCSI_CHANGE_LOCK_TIMEOUT)
-        sys.exit(1)
-
-    if args.timeout is not None:
-        if args.timeout <= args.iscsi_change_lock_timeout + 5:
-            LOG.error(
-                "--timeout (%d) must be greater than --iscsi-change-lock-timeout + 5 (%d)",
-                args.timeout, args.iscsi_change_lock_timeout + 5)
-            sys.exit(1)
-
-        def _alarm_handler(signum, frame):
-            import jdssc.lock as _lock
-            if _lock._active_lock is not None:
-                try:
-                    _lock.release_target_lock(_lock._active_lock)
-                except JDSSLockReleaseError:
-                    pass
-            raise JDSSLockExecutionTimeout(args['timeout'])
-
-        jlock._alarm_deadline = time.monotonic() + args.timeout
-        signal.signal(signal.SIGALRM, _alarm_handler)
-        signal.alarm(args.timeout)
-
     # list available commands
     cmd = {'pool': pool.Pools,
            'hosts': hosts,
            'cfg': cfg}
 
-    try:
-        jdss = driver.JovianDSSDriver(config)
-        args = vars(args)
-        cmd[args.pop('command')](args, uargs, jdss)
-    finally:
-        signal.alarm(0)
-        jlock._alarm_deadline = None
+    jdss = driver.JovianDSSDriver(config)
+
+    args = vars(args)
+    # Run command
+    cmd[args.pop('command')](args, uargs, jdss)
 
 
 if __name__ == "__main__":
