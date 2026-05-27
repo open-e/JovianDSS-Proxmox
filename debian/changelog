@@ -1,3 +1,39 @@
+open-e-joviandss-proxmox-plugin (0.11.5-0) stable; urgency=medium
+
+    * Revert: Remove pmxcfs mkdir-based iSCSI target lock (jdssc/lock.py),
+      JDSSCfgParserException / JDSSLockAcquireTimeout exception classes,
+      _lock() method from REST layer, and associated unit tests — superseded
+      by cluster-wide Semaphore (PL-17/18)
+    * Revert: _delete_vol_with_source_snap force_umount back to True; remove
+      retry loop that worked around the race the lock was meant to address
+    * New: Four timeout classes with per-operation helper wrappers —
+      jd_cmd_read_meta (15 s), jd_cmd_read_list (120 s),
+      jd_cmd_idemp (270 s), jd_cmd_nonidemp (540 s) (PL-16)
+    * New: Cluster-wide Semaphore.pm controlling max_parallel_volume_ops
+      across all cluster nodes (PL-17/18)
+    * Fix: _rename_volume timeout raised 40 s → 90 s, retries set to 0
+      to avoid duplicate rename on retry (PL-4)
+    * Fix: _clone_object pre-checks for and removes conflicting snapshot
+      before cloning to prevent orphaned ZFS snapshots (PL-5)
+    * Fix: Block device discovery loop extended to 160 iterations (PL-6/12)
+    * Fix: volume_unpublish / volume_deactivate timeout raised 40 s → 120 s
+      (PL-7)
+    * Fix: vmstate guard in _deactivate_volume prevents deactivating
+      running-VM volumes (PL-8)
+    * Fix: Targeted _rescan_target_hosts() replaces rescan-scsi-bus.sh -a
+      for faster, lower-impact rescan (PL-9/14)
+    * Fix: multipathd del map issued before and after multipath -f;
+      add _multipathd_map_exists helper (PL-11)
+    * Fix: eval guard in _free_image ensures ZVOL delete still executes
+      after a deactivate failure (PL-13)
+    * Fix: Multipath retry budget raised 20 → 60; multipathd del map
+      issued every 15 attempts to unblock stuck maps (PL-19)
+    * Fix: size==0 detection triggers kernel rescan; REST unpublish +
+      republish escalation path added for persistent zero-size devices
+      (PL-20/20v2)
+
+ -- Open-E QA Team, Claude Code (Anthropic AI)  Wed, 27 May 2026 00:00:00 +0200
+
 open-e-joviandss-proxmox-plugin (0.11.4-0) stable; urgency=medium
 
     * New: CHAP authentication for iSCSI targets — enable per-storage CHAP via
