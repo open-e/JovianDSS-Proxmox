@@ -109,6 +109,7 @@ our @EXPORT_OK = qw(
 
   safe_var_print
   safe_word
+  safe_mount_options
   debugmsg
   joviandss_cmd
   volume_snapshots_info
@@ -568,10 +569,10 @@ sub get_options {
     my $scfg = $ctx->{scfg};
     my $options = $scfg->{options};
     if (defined($options)) {
-        if ( $options =~ /^([\:\-\@\w.\/]+)$/ ) {
+        if ( $options =~ /^([\:\-\@\w.,\/=]+)$/ ) {
             return $1;
         } else {
-            die "Options property contains forbiden symbols: ${options}\n";
+            die "Options property contains forbidden symbols: ${options}\n";
         }
     } else {
         return undef;
@@ -663,6 +664,16 @@ sub safe_word{
     my ($word, $word_desc) = @_;
 
     if ( $word =~ /^([\:\-\@\w.\/]+)$/ ) {
+        return $1;
+    } else {
+        die "${word_desc} contains forbidden symbols: ${word}\n";
+    }
+}
+
+sub safe_mount_options {
+    my ($word, $word_desc) = @_;
+
+    if ( $word =~ /^([\:\-\@\w.,\/=]+)$/ ) {
         return $1;
     } else {
         die "${word_desc} contains forbidden symbols: ${word}\n";

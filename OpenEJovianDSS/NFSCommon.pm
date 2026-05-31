@@ -205,7 +205,7 @@ sub snapshot_activate {
     my $optstr = 'ro';
 
     if (defined($optionscfg) && $optionscfg ne '') {
-        $optstr .= OpenEJovianDSS::Common::safe_word(",${optionscfg}", 'Options property');
+        $optstr .= OpenEJovianDSS::Common::safe_mount_options(",${optionscfg}", 'Options property');
     }
 
     push @$nfs_mount_cmd, '-o', $optstr;
@@ -531,7 +531,7 @@ sub mount {
     my $cmd = ['/bin/mount', '-t', 'nfs'];
 
     if ($options) {
-        push @$cmd, '-o',OpenEJovianDSS::Common::safe_word($options, "mounting options");
+        push @$cmd, '-o', OpenEJovianDSS::Common::safe_mount_options($options, "mounting options");
     }
     push @$cmd, $source;
     push @$cmd, OpenEJovianDSS::Common::safe_word($sharemntpath, 'Share storage path');
