@@ -240,102 +240,6 @@ When set to 1, the storage entry remains in the cluster configuration but is eff
 - Editing out (commenting) the 'storage pool' section risks having your configuration removed by the GUI or the API. Using disable preserves the entry and its metadata safely.
 
 
-### iscsi_change_lock_timeout
-
-**Default**: `50`
-
-**Type**: *integer*
-
-**Required**: `False`
-
-**Minimum**: `5` **Maximum**: `115`
-
-Timeout in seconds that `jdssc` will wait to acquire the cluster-wide iSCSI REST
-serialization lock before giving up on a single attempt. When the lock is held by
-another `jdssc` process (for example, a concurrent volume activation on the same or
-another node), `jdssc` retries every fraction of a second until this timeout expires,
-then raises an error. The Proxmox plugin retries the entire `jdssc` invocation
-automatically on such failures.
-
-The default of 50 s is conservative and sufficient for most deployments.
-Raise it (up to 115 s) only when log messages indicate repeated lock-acquisition
-timeouts under sustained concurrent load.
-
-The maximum is capped at 115 s — below the pmxcfs stale-lock reclaim threshold of
-120 s — so that a dead lock left by a crashed process is always reclaimed within a
-bounded time window regardless of how many waiters are polling.
-
-```
-joviandss: jdss-Pool-0
-        ...
-        iscsi_change_lock_timeout 80
-        ...
-```
-
-
-### iscsi_target_global_lock_path
-
-**Default**: `/etc/pve/priv/lock/joviandss-iscsi-target-global-lock`
-
-**Type**: *string*
-
-**Required**: `False`
-
-Path to the pmxcfs lock directory used to serialize concurrent iSCSI REST write
-calls across all nodes in the cluster. The directory is created and removed
-atomically by `jdssc` using `mkdir`/`rmdir` on the pmxcfs filesystem, which
-provides cluster-wide exclusion without a separate lock daemon.
-
-The default path is shared by all JovianDSS storage instances on the cluster.
-A single global lock prevents concurrent iSCSI REST calls from racing regardless
-of which pool or target they target — the REST API does not support concurrent
-modification.
-
-Override this only when multiple independent JovianDSS clusters share the same
-Proxmox cluster and require separate lock namespaces:
-
-```
-joviandss: jdss-Pool-0
-        ...
-        iscsi_target_global_lock_path /etc/pve/priv/lock/joviandss-iscsi-pool-0-lock
-        ...
-```
-
-
-### jdssc_timeout
-
-**Default**: `113`
-
-**Type**: *integer*
-
-**Required**: `False`
-
-**Minimum**: `10`
-
-Maximum lifetime in seconds of a single `jdssc` subprocess invocation. When this
-timeout expires, `jdssc` releases any held iSCSI REST lock, writes an error to
-stderr, and exits. The Proxmox plugin then retries the operation automatically.
-
-The default of 113 s accommodates the slowest expected JovianDSS REST calls
-(target creation, LUN attachment) while leaving a margin before the 120 s
-pmxcfs cluster-lock inactivity timeout.
-
-Increase this value only when REST calls to JovianDSS consistently take longer
-than the default — for example, on high-latency WAN links to a remote JovianDSS
-server.
-
-```
-joviandss: jdss-Pool-0
-        ...
-        jdssc_timeout 120
-        ...
-```
-
-**Relationship to `iscsi_change_lock_timeout`**: `jdssc_timeout` must be at least
-`iscsi_change_lock_timeout + 5` seconds. `jdssc` enforces this constraint at
-startup and exits immediately if the constraint is violated.
-
-
 ### log_file
 
 **Default**: `/var/log/joviandss/joviandss.log`
@@ -616,7 +520,7 @@ Key behaviors:
 
     Thin provisioning defers space allocation until I/O, pulling from the JovianDSS pool up to the volume’s declared size.
 
-    Detailed debug output goes log file at `/var/log/joviandss/jdss-Pool-0.log`, with up to five 16 MiB rotations.
+    Detailed debug output goes log file at `/var/log/joviandss/jdss-Pool-0.log`, with up to six 16 MiB rotations.
 
     Self-signed certificates are accepted to simplify initial testing/setup.
 

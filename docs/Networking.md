@@ -91,7 +91,7 @@ Consider a scenario in which the Proxmox VE cluster and the JovianDSS storage ar
 
 1. *Net1* 172.28.0.0/16 Management/Internet connection
 2. *Net2* 172.29.0.0/16 Data network
-2. *Net2* 172.30.0.0/16 Data network
+3. *Net3* 172.30.0.0/16 Data network
 
 
 ![two-nodes-three-serv](https://github.com/user-attachments/assets/48c32685-bf9f-46a5-82d9-8eb17fca80ca)
@@ -148,13 +148,13 @@ Static routes in Proxmox VE are defined by creating the file `/etc/network/inter
 ```
 iface vmbr0 inet static
         up /sbin/ip route add 192.168.28.102 dev vmbr0
-        down /sbin/ip route add 192.168.28.102 dev vmbr0
+        down /sbin/ip route del 192.168.28.102 dev vmbr0
 
 iface ens224 inet static
         up /sbin/ip route add 192.168.29.102 dev ens224
-        down /sbin/ip route add 192.168.29.102 dev ens224
+        down /sbin/ip route del 192.168.29.102 dev ens224
 
 iface ens256 inet static
         up /sbin/ip route add 192.168.30.102 dev ens256
-        down /sbin/ip route add 192.168.30.102 dev ens256
+        down /sbin/ip route del 192.168.30.102 dev ens256
 ```
