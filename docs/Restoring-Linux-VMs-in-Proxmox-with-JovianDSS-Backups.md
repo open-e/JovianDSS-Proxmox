@@ -71,8 +71,7 @@ joviandss: jdss-Pool-1-backup
         ssl_cert_verify 0
         control_addresses 192.168.28.101
         data_addresses 192.168.29.101,192.168.30.101
-        path /mnt/pve/jdss-Pool-1-backup
-        log_file /var/log/joviandss/jdss-Pool-1-backup
+        log_file /var/log/joviandss/jdss-Pool-1-backup.log
         shared 1
 ```
 On one of the `node1` hosts, run VM 100, which uses the disk `vm-100-disk-0` residing on the JovianDSS `pool` `Pool-2`.
