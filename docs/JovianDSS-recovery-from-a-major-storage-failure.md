@@ -110,7 +110,7 @@ To do this we will create dedicated `zvol` on `Backup node` and set `Production 
 
 ### Create a `zvol` responsible for storing backups on `Backup node`
 
-Go to `Storage` tab of `Backup node` and create `backup-vm-100-disk-0` `zvol`. Name is arbitraty, but it would be better if this name will be easily associated with original volume.
+Go to `Storage` tab of `Backup node` and create `backup-vm-100-disk-0` `zvol`. Name is arbitrary, but it would be better if this name will be easily associated with original volume.
 ![demo-create-backup-volume](https://user-images.githubusercontent.com/21205679/206247447-366dfde0-cd22-41df-8eef-75eed716ef6f.png)
 ![demo-create-backup-volume-2](https://user-images.githubusercontent.com/21205679/206247455-402f9050-d920-4abc-9b6e-898f0f57dbeb.png)
 
@@ -120,7 +120,7 @@ Go to `Storage` tab of `Backup node` and create `backup-vm-100-disk-0` `zvol`. N
 3. Click setting for `v_vm-100-disk-0`
 4. Select `Add to backup task`
 ![demo-add-backup-task-1](https://user-images.githubusercontent.com/21205679/206247246-3fa7ebb2-1a5c-47f0-8a48-6546c3d6e433.png)
-5. Specify appropriate `retension-interval` plans
+5. Specify appropriate `retention-interval` plans
 ![demo-add-backup-task-2](https://user-images.githubusercontent.com/21205679/206247258-a9a92c6e-2cbb-483a-8596-0a642d6579ac.png)
 6. Set `Destination server` field to `Backup node` by providing its IP address in. In this case it is 
 7. Set `Resource path` as `Pool-0/backup-vm-100-disk-0` or other `zvol` name if you named `zvol` `backup-vm-100-disk-0` differently.
@@ -163,8 +163,7 @@ available snapshots.
 * `vm id` is a virtual machine identifier that is unique id inside proxmox
 * `disk id` is unique disk identifier if disk associated with virtual machine `100`.
 Where `disk id` is number that is expected to be unique respective to virtual machine with id `100`.
-So that couple 
- In out case it is `v_vm-100-disk-1`.
+In our case it is `v_vm-100-disk-1`.
 
 ![demo-clone-backup-4](https://user-images.githubusercontent.com/21205679/206459111-589ff02d-9a1d-4388-a30b-e12fb7a9a28b.png)
 
@@ -218,7 +217,7 @@ In this case it is `ide0` record.
 ide0: jdss-Production-node-Pool-0:vm-100-disk-0,size=32G
 ```
 Make it point out to clone created in previous step by specifying `Backup node` storage pool and proper volume name.
-In this case it is: `jdss-Vackup-node-Pool-0:vm-100-disk-1`
+In this case it is: `jdss-Backup-node-Pool-0:vm-100-disk-1`
 
 So the line will look like:
 ```

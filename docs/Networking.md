@@ -123,7 +123,7 @@ joviandss: jdss-Pool-2
         ...
 ```
 
-Such configurations is very complex and it is recommended to check connectivity of each Proxmox VE server in a cluster and JovianDSS VIP's. 
+Such a configuration is very complex and it is recommended to check connectivity of each Proxmox VE server in a cluster and JovianDSS VIPs. 
 ```
 root@node1:~# ping -c 5 192.168.28.102
 ```
