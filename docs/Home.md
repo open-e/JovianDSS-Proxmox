@@ -32,7 +32,7 @@ For a full list of topics, visit the [JovianDSS Proxmox Wiki](https://github.com
 | `images`(QEMU/KVM VM images)/`rootdir`(container data) to JovianDSS volume relation  | :white_check_mark: Each VM/CT virtual disk is stored on its own dedicated volume |
 | Snapshots                                                                            | :white_check_mark: Each volume maintains its own set of snapshots. Snapshots are created individually for each volume. **Note**: Proxmox VE's built-in backup functionality does not back up JovianDSS plugin snapshots |
 | Rollback                                                                             | Rollback can be done to the latest snapshot only, user is recommended to use cloning from snapshot to restore to older state  |
-| Clonning                                                                             | :white_check_mark:                                                       |
+| Cloning                                                                              | :white_check_mark:                                                       |
 | Volume movement from one VM to another                                               | :white_check_mark:                                                       |
 | Volume resizing                                                                      | :white_check_mark:                                                       |
 | Supported format of storing VM/CT data                                               | `raw` (with **Snapshots supported**)                                     |
