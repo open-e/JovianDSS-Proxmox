@@ -88,6 +88,7 @@ our @EXPORT_OK = qw(
   get_thin_provisioning
   get_log_file
   get_options
+  get_cluster_prefix
   get_content
   get_content_volume_name
   get_content_volume_type
@@ -110,6 +111,8 @@ our @EXPORT_OK = qw(
   safe_var_print
   safe_word
   safe_mount_options
+  volume_name_clustered
+  volume_name_unclustered
   debugmsg
   joviandss_cmd
   volume_snapshots_info
@@ -579,6 +582,19 @@ sub get_options {
     }
 }
 
+sub get_cluster_prefix {
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
+    if (defined( $scfg->{cluster_prefix}) ) {
+        my $prefix = $scfg->{cluster_prefix};
+        if ($prefix =~ /[[:alnum:]]/) {
+            $prefix = safe_word( $prefix );
+            return $prefix;
+        }
+    }
+    return undef;
+}
+
 sub get_content {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
@@ -620,7 +636,7 @@ sub get_content_volume_size {
     my $scfg = $ctx->{scfg};
 
     my $size = $scfg->{content_volume_size} || $default_content_size;
-    return $size;
+return $size;
 }
 
 sub get_content_path {
@@ -678,6 +694,24 @@ sub safe_mount_options {
     } else {
         die "${word_desc} contains forbidden symbols: ${word}\n";
     }
+}
+
+sub volume_name_clustered {
+    my ($ctx, $volname) = @_;
+
+    my $prefix = get_cluster_prefix($ctx);
+
+    return defined($prefix) ? "${prefix}_${volname}" : $volname;
+}
+
+sub volume_name_unclustered {
+    my ($ctx, $volname_clustered) = @_;
+
+    my $prefix = get_cluster_prefix($ctx);
+
+    return $volname_clustered unless defined($prefix);
+    return undef unless $volname_clustered =~ s/^\Q${prefix}\E_//;
+    return $volname_clustered;
 }
 
 my $log_file_path = undef;

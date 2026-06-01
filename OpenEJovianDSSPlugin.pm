@@ -258,6 +258,17 @@ sub properties {
             description => 'CHAP initiator password for iSCSI authentication',
             type        => 'string',
         },
+        cluster_prefix => {
+            description =>
+              "Volume name prefix for cluster isolation. "
+              . "When set, only volumes whose names start with this prefix "
+              . "are visible to this storage instance. Allows multiple "
+              . "Proxmox clusters to share the same JovianDSS pool without "
+              . "seeing each other's volumes. "
+              . "Only letters and digits allowed (e.g. 'pveA', 'cluster01').",
+            type    => 'string',
+            pattern => '[a-zA-Z][a-zA-Z0-9]*',
+        },
         debug => {
             description => "Allow debug prints",
             type        => 'boolean',
@@ -299,6 +310,7 @@ sub options {
         chap_enabled       => { optional => 1 },
         chap_user_name     => { optional => 1 },
         chap_user_password => { optional => 1 },
+        cluster_prefix     => { optional => 1, fixed => 1 },
         log_file           => { optional => 1 },
         'create-subdirs'   => { optional => 1 },
         'create-base-path' => { optional => 1 },
@@ -322,11 +334,12 @@ sub path {
     my $pool = get_pool($ctx);
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
 
     my $path = undef;
 
     if ( $vtype eq "images" ) {
-        my $til = lun_record_local_get_info_list( $ctx, $volname, $snapname );
+        my $til = lun_record_local_get_info_list( $ctx, $volname_clustered, $snapname );
 
         unless (@$til) {
             eval {
@@ -334,7 +347,7 @@ sub path {
                       . safe_var_print( "snapshot", $snapname )
                       . "\n");
 
-                my $pathval = block_device_path_from_rest( $ctx, $volname, $snapname );
+                my $pathval = block_device_path_from_rest( $ctx, $volname_clustered, $snapname );
 
                 $pathval =~ m{^([\:\w\-/\.]+)$}
                   or die "Invalid source path '$pathval'";
@@ -389,10 +402,10 @@ sub path {
                   . safe_var_print( "snapshot", $snapname )
                   . " $@\n");
                 volume_deactivate( $ctx,
-                    $vmid, $volname, $snapname, undef );
+                    $vmid, $volname_clustered, $snapname, undef );
                 my $bdpl =
                   volume_activate( $ctx,
-                    $vmid, $volname, $snapname, undef );
+                    $vmid, $volname_clustered, $snapname, undef );
 
                 unless ( defined($bdpl) ) {
                     die "Unable to identify block device related to ${volname} "
@@ -523,16 +536,20 @@ sub _rename_volume {
       $class->find_free_diskname( $storeid, $scfg, $new_vmid, $original_format )
       if ( !defined($new_volname) );
 
+    my $original_volname_clustered = volume_name_clustered( $ctx, $original_volname );
+    my $new_volname_clustered      = volume_name_clustered( $ctx, $new_volname );
+
     volume_deactivate( $ctx,
-        $original_vmid, $original_volname, undef, undef );
+        $original_vmid, $original_volname_clustered, undef, undef );
+
     volume_unpublish( $ctx,
-        $original_vmid, $original_volname, undef, undef );
+        $original_vmid, $original_volname_clustered, undef, undef );
 
     my $jscsiid = joviandss_cmd(
             $ctx,
             [
                 "pool",   $pool,
-                "volume", $original_volname,
+                "volume", $original_volname_clustered,
                 "get", "-i"
             ],
             118, 5
@@ -543,8 +560,8 @@ sub _rename_volume {
     #TODO: Lock file have to be updated here
     joviandss_cmd( $ctx,
             [ "pool", $pool,
-              "volume", $original_volname,
-              "rename", $new_volname, "--idempotent-scsi-id", $jscsiid ],
+              "volume", $original_volname_clustered,
+              "rename", $new_volname_clustered, "--idempotent-scsi-id", $jscsiid ],
             118, 3);
 
     my $newname = "${storeid}:${new_volname}";
@@ -598,12 +615,21 @@ sub _create_base {
     my $max_retries = 10;
     my $newname;
     for my $attempt ( 1 .. $max_retries ) {
+
+        my $getfreename_cmd =
+            [ "pool", $pool, "volumes", "getfreename", "--prefix", $newnameprefix ];
+        my $cluster_prefix = OpenEJovianDSS::Common::get_cluster_prefix($ctx);
+
+        if ( defined($cluster_prefix) ) {
+            push @$getfreename_cmd, '--cluster-prefix', $cluster_prefix;
+        }
+
         $newname = joviandss_cmd( $ctx,
-            [ "pool", $pool, "volumes", "getfreename", "--prefix", $newnameprefix ],
+            $getfreename_cmd,
             118, 5
         );
         $newname = clean_word($newname);
-
+        $newname = OpenEJovianDSS::Common::safe_word($newname); 
         my $err;
         eval {
             # Call _rename_volume directly for the same reason.
@@ -688,8 +714,14 @@ sub _clone_image {
       $class->parse_volname($volname);
     my $clone_name = $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt );
 
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
     my $size = joviandss_cmd( $ctx,
-        [ "pool", $pool, "volume", $volname, "get", "-s" ], 118, 3 );
+        [ "pool", $pool, "volume", $volname_clustered, "get", "-s" ], 118, 3 );
+
+
+    #    my $size = jd_cmd_read_meta( $ctx,   # [PATCH PL-16] was 50/3; single size attribute
+    #    [ "pool", $pool, "volume", $volname_clustered, "get", "-s" ] );
+    #>>>>>>> 29a0397 (Add cluster_prefix for sharing a JovianDSS pool across clusters)
     $size = clean_word($size);
 
     my $max_retries = 10;
@@ -699,6 +731,8 @@ sub _clone_image {
             debugmsg( $ctx, "warn",
                 "clone_image retry ${attempt}/${max_retries}: retrying with new candidate name ${clone_name}\n" );
         }
+
+        my $clone_name_clustered = volume_name_clustered( $ctx, $clone_name );
 
         debugmsg( $ctx, "debug",
                 "Clone ${volname} with size ${size} to ${clone_name} "
@@ -711,9 +745,9 @@ sub _clone_image {
                 joviandss_cmd(
                     $ctx,
                     [
-                        "pool",  $pool,    "volume", $volname,
+                        "pool",  $pool,    "volume", $volname_clustered,
                         "clone", "--size", $size,    "--snapshot",
-                        $snap,   "-n",     $clone_name
+                        $snap,   "-n",     $clone_name_clustered
                     ],
                     118, 3
                 );
@@ -722,9 +756,9 @@ sub _clone_image {
                 joviandss_cmd(
                     $ctx,
                     [
-                        "pool",  $pool,    "volume", $volname,
+                        "pool",  $pool,    "volume", $volname_clustered,
                         "clone", "--size", $size,    "-n",
-                        $clone_name
+                        $clone_name_clustered
                     ],
                     118, 3
                 );
@@ -734,7 +768,7 @@ sub _clone_image {
         unless ($err) {
             eval {
                 my $tgname = get_vm_target_group_name($ctx, $vmid);
-                OpenEJovianDSS::Common::volume_publish($ctx, $tgname, $clone_name, undef, undef);
+                OpenEJovianDSS::Common::volume_publish($ctx, $tgname, $clone_name_clustered, undef, undef);
             };
             last;
         }
@@ -844,9 +878,10 @@ sub _alloc_image {
 "Creating volume ${volume_name} format ${fmt} requested size ${size_assigned}"
             );
 
+            my $volume_name_clustered = volume_name_clustered( $ctx, $volume_name );
             my $create_vol_cmd = [
                 "pool",   $pool,    "volumes", "create",
-                "--size", "${size_assigned}", "-n", $volume_name
+                "--size", "${size_assigned}", "-n", $volume_name_clustered
             ];
 
             if ( defined($thin_provisioning) ) {
@@ -864,11 +899,10 @@ sub _alloc_image {
             };
             $err = $@;
 
-
             unless ($err) {
                 eval {
                     my $tgname = get_vm_target_group_name($ctx, $vmid);
-                    OpenEJovianDSS::Common::volume_publish($ctx, $tgname, $volume_name, undef, undef);
+                    OpenEJovianDSS::Common::volume_publish($ctx, $tgname, $volume_name_clustered, undef, undef);
                 };
                 last;
             }
@@ -952,13 +986,14 @@ sub _free_image {
     my $tgname =
       get_vm_target_group_name( $ctx, $vmid );
     my $prefix = get_target_prefix($ctx);
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
 
     # Volume deletion will result in deletetion of all its snapshots
     # Therefore we have to detach all volume snapshots that is expected to be
     # removed along side with volume
 
     volume_deactivate( $ctx, $vmid,
-        $volname, undef, undef );
+        $volname_clustered, undef, undef );
 
     # volume_unpublish is intentionally skipped here.  The final
     # "volume delete -c" already handles iSCSI target detachment via
@@ -972,7 +1007,7 @@ sub _free_image {
     joviandss_cmd(
         $ctx,
         [
-            "pool",   $pool, "volume",          $volname,
+            "pool",   $pool, "volume",          $volname_clustered,
             "delete", "-c",  '--target-prefix', $prefix,
             '--target-group-name', $tgname
         ],
@@ -1006,16 +1041,23 @@ sub list_images {
     my $pool = get_pool($ctx);
 
     #TODO: rename jdssc variable
-    my $jdssc = joviandss_cmd( $ctx,
-        [ "pool", $pool, "volumes", "list", "--vmid" ], 118, 5 );
+    my $list_cmd = [ "pool", $pool, "volumes", "list", "--vmid" ];
+    my $cluster_prefix =  OpenEJovianDSS::Common::get_cluster_prefix($ctx);
+
+    if (defined($cluster_prefix)) {
+        push @$list_cmd, '--cluster-prefix', $cluster_prefix;
+    }
+    my $jdssc = joviandss_cmd( $ctx, $list_cmd, 118, 5 );
 
     my $res = [];
     foreach ( split( /\n/, $jdssc ) ) {
-        my ( $volname, $vm, $size, $ctime ) = split;
+        my ( $raw_volname, $vm, $size, $ctime ) = split;
 
-        $volname = clean_word($volname);
-        $vm      = clean_word($vm);
-        $size    = clean_word($size);
+        my $volname = volume_name_unclustered( $ctx, clean_word($raw_volname) );
+        next unless defined($volname);
+
+        $vm   = clean_word($vm);
+        $size = clean_word($size);
 
         my $volid = "$storeid:$volname";
 
@@ -1048,9 +1090,11 @@ sub volume_snapshot {
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
+    # TODO: make snapshot creation idempotent
+    # This will require adding --idempotent flag for jdss cmd
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
     joviandss_cmd( $ctx,
-        [ "pool", $pool, "volume", $volname, "snapshots", "create", $snap ], 118 );
-
+        [ "pool", $pool, "volume", $volname_clustered, "snapshots", "create", $snap ], 118 );
 }
 
 # Returns a hash with the snapshot names as keys and the following data:
@@ -1061,7 +1105,8 @@ sub volume_snapshot_info {
     my ( $class, $scfg, $storeid, $volname ) = @_;
     my $ctx = new_ctx($scfg, $storeid);
 
-    return volume_snapshots_info( $ctx, $volname );
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    return volume_snapshots_info( $ctx, $volname_clustered );
 }
 
 sub volume_snapshot_needs_fsfreeze {
@@ -1123,10 +1168,11 @@ sub _volume_snapshot_rollback {
     # Deleted blocker names are returned as "snap:<name>" tokens; we call
     # remove_vm_snapshot_config for each — it is idempotent, so calling it for
     # unmanaged snapshots is harmless.
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
     my $deleted_raw = joviandss_cmd(
         $ctx,
         [
-            'pool',     $pool, 'volume',   $volname,
+            'pool',     $pool, 'volume',   $volname_clustered,
             'snapshot', $snap, 'rollback', 'do',
             '--force-snapshots',
         ],
@@ -1183,8 +1229,9 @@ sub volume_rollback_is_possible {
     my $force_rollback = vm_tag_force_rollback_is_set(
         $ctx, $vmid);
 
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
     my $ok = volume_rollback_check(
-        $ctx, $vmid, $volname, $snap, $blockers,
+        $ctx, $vmid, $volname_clustered, $snap, $blockers,
         $force_rollback);
 
     return $ok;
@@ -1227,14 +1274,16 @@ sub _volume_snapshot_delete {
     my $tgname =
       get_vm_target_group_name( $ctx, $vmid );
 
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+
     volume_deactivate( $ctx, $vmid,
-        $volname, $snap, undef );
+        $volname_clustered, $snap, undef );
 
     joviandss_cmd(
         $ctx,
         [
             "pool",     $pool,
-            "volume",   $volname,
+            "volume",   $volname_clustered,
             "snapshot", $snap,
             "delete",   '--target-prefix',
             $prefix,    '--target-group-name',
@@ -1251,8 +1300,9 @@ sub volume_snapshot_list {
 
     my $pool = get_pool($ctx);
 
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
     my $jdssc = joviandss_cmd( $ctx,
-        [ "pool", $pool, "volume", $volname, "snapshots", "list" ], 118, 5 );
+        [ "pool", $pool, "volume", $volname_clustered, "snapshots", "list" ], 118, 5 );
 
     my $res = [];
     foreach ( split( /\n/, $jdssc ) ) {
@@ -1271,13 +1321,15 @@ sub volume_size_info {
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
+
     if ( 'images' cmp "$vtype" ) {
         return $class->SUPER::volume_size_info( $scfg, $storeid, $volname,
             $timeout );
     }
 
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
     my $size = joviandss_cmd( $ctx,
-        [ "pool", $pool, "volume", $volname, "get", "-s" ], 118, 3 );
+        [ "pool", $pool, "volume", $volname_clustered, "get", "-s" ], 118, 3 );
 
     return clean_word($size);
 }
@@ -1448,16 +1500,17 @@ sub _activate_volume {
           . " start" );
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
 
     return 0 if ( 'images' ne "$vtype" );
 
     my $til =
       lun_record_local_get_info_list( $ctx,
-        $volname, $snapname );
+        $volname_clustered, $snapname );
 
     unless (@$til) {
         volume_activate( $ctx, $vmid,
-            $volname, $snapname, undef );
+            $volname_clustered, $snapname, undef );
     }
     else {
 # If volume was resized on other node we have to make sure that current size is accurate
@@ -1478,18 +1531,18 @@ sub _activate_volume {
                   . safe_var_print( "snapshot", $snapname )
                   . " not found. Re-activating." );
             volume_deactivate( $ctx,
-                $vmid, $volname, $snapname, undef );
+                $vmid, $volname_clustered, $snapname, undef );
             volume_activate( $ctx,
-                $vmid, $volname, $snapname, undef );
+                $vmid, $volname_clustered, $snapname, undef );
         }
 
         my $current_size =
-          volume_get_size( $ctx, $volname );
+          volume_get_size( $ctx, $volname_clustered );
         if ( @$til == 1 ) {
             my ( $targetname, $lunid, $lunrecpath, $lr ) = @{ $til->[0] };
             if ( $current_size > $lr->{size} ) {
                 volume_update_size( $ctx,
-                    $vmid, $volname, $current_size );
+                    $vmid, $volname_clustered, $current_size );
             }
         }
         else {
@@ -1540,55 +1593,24 @@ sub _deactivate_volume {
     my $prefix = get_target_prefix($ctx);
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
 
     my $tgname =
       get_vm_target_group_name( $ctx, $vmid );
 
     return 0 if ( 'images' ne "$vtype" );
 
-    # For VM state volumes, capture the target name from lun records before
-    # volume_deactivate may clear them.  Sessions are checked after deactivation
-    # so the local iSCSI logout has already happened and only other nodes' sessions
-    # remain visible.
-    my $state_target_name = undef;
+    my $had_lun_record = undef;
     if ( $volname =~ m!^vm-(\d+)-state-(.+)$! ) {
-        my $til = lun_record_local_get_info_list($ctx, $volname, $snapname);
-        if (@$til == 1) {
-            ($state_target_name) = @{$til->[0]};
-        }
+        my $lunrecs = lun_record_local_get_info_list( $ctx, $volname_clustered, $snapname );
+        $had_lun_record = scalar(@$lunrecs) > 0;
     }
-
     volume_deactivate( $ctx, $vmid,
-        $volname, $snapname, undef );
+        $volname_clustered, $snapname, undef );
 
     # Unpublish VM state volumes only when no other initiator holds an active session
-    if ( $volname =~ m!^vm-(\d+)-state-(.+)$! ) {
-        my $do_unpublish = 1;
-
-        #if ( defined ($state_target_name) ) {
-        #    eval {
-        #        my $sessions         = target_get_sessions($ctx, $state_target_name);
-        #        my $local_initiator  = get_local_initiator_name($ctx);
-        #        my @other_initiators = grep { $_ ne $local_initiator } keys %$sessions;
-
-        #        if (@other_initiators) {
-        #            debugmsg($ctx, "debug",
-        #                "Skipping unpublish of ${volname}: target ${state_target_name} "
-        #                . "has active sessions from: "
-        #                . join(', ', @other_initiators) . "\n");
-        #            $do_unpublish = 0;
-        #        }
-        #    };
-        #    if ($@) {
-        #        debugmsg($ctx, "warn",
-        #            "Unable to check sessions for target ${state_target_name}, "
-        #            . "proceeding with unpublish: $@\n");
-        #    }
-        #}
-
-        if ( $do_unpublish && defined($state_target_name) ) {
-            volume_unpublish($ctx, $vmid, $volname, $snapname, undef);
-        }
+    if ( $had_lun_record ) {
+        volume_unpublish($ctx, $vmid, $volname_clustered, $snapname, undef);
     }
 
     debugmsg( $ctx, "debug",
@@ -1633,9 +1655,10 @@ sub _volume_resize {
     debugmsg( $ctx, "debug",
         "Resize volume ${volname} to size ${size}" );
 
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
     eval {
         joviandss_cmd( $ctx,
-            [ "pool", "${pool}", "volume", "${volname}", "resize", "${size}" ], 118, 3 );
+            [ "pool", "${pool}", "volume", $volname_clustered, "resize", "${size}" ], 118, 3 );
     };
     my $rerr = $@;
     if ($rerr && $rerr !~ /got timeout/ ) {
@@ -1655,7 +1678,7 @@ sub _volume_resize {
             $resizeok = 1;
             last;
         }
-        my $cursize = OpenEJovianDSS::Common::volume_get_size( $ctx, $volname );
+        my $cursize = OpenEJovianDSS::Common::volume_get_size( $ctx, $volname_clustered );
         $cursize = OpenEJovianDSS::Common::clean_word($cursize);
 
         if (int($cursize) >= int($size)) {
@@ -1666,14 +1689,14 @@ sub _volume_resize {
         local $@;
         eval {
             joviandss_cmd( $ctx,
-                [ "pool", "${pool}", "volume", "${volname}", "resize", "${size}" ], 118, 3);
+                [ "pool", "${pool}", "volume", "${volname_clustered}", "resize", "${size}" ], 118, 3);
         };
         $rerr = $@;
         $retry_count++;
     }
 
     if ($resizeok) {
-        my $til = lun_record_local_get_info_list( $ctx, $volname, undef );
+        my $til = lun_record_local_get_info_list( $ctx, $volname_clustered, undef );
         if ( @$til == 1 ) {
             my ( $targetname, $lunid, $lunrecpath, $lunrecord ) = @{ $til->[0] };
             lun_record_update_device( $ctx,
