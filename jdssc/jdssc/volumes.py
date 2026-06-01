@@ -95,6 +95,12 @@ class Volumes():
                               required=True,
                               dest='volume_prefix',
                               help='Prefix for the new volume')
+        freename.add_argument('--cluster-prefix',
+                              dest='cluster_prefix',
+                              type=str,
+                              default=None,
+                              help=('Cluster prefix embedded in stored '
+                                    'volume names'))
 
         listp = parsers.add_parser('list')
         listp.add_argument('--vmid',
@@ -102,6 +108,13 @@ class Volumes():
                            action='store_true',
                            default=False,
                            help='Show only volumes with VM ID')
+        listp.add_argument('--cluster-prefix',
+                           dest='cluster_prefix',
+                           type=str,
+                           default=None,
+                           help=('Cluster prefix embedded in stored volume '
+                                 'names; only volumes carrying it are listed '
+                                 'and the VM ID is parsed after the prefix'))
 
         kargs, ukargs = parser.parse_known_args(args)
 
@@ -215,18 +228,27 @@ class Volumes():
         if 'volume_prefix' in self.args:
             volume_prefix = self.args['volume_prefix']
 
+        # Stored JovianDSS idnames carry the cluster prefix when one is
+        # configured (e.g. "pveA_base-100-disk-0"). Search using the
+        # fully-qualified "<cluster_prefix>_<volume_prefix>" so existing
+        # volumes are counted, but return the bare "<volume_prefix><i>"
+        # name — the Perl layer re-applies the cluster prefix.
+        cluster_prefix = self.args.get('cluster_prefix')
+        search_prefix = volume_prefix
+        if cluster_prefix:
+            search_prefix = "{0}_{1}".format(cluster_prefix, volume_prefix)
+
         present_volumes = []
         data = self.jdss.list_volumes()
 
         for v in data:
-            if v['name'].startswith(volume_prefix):
+            if v['name'].startswith(search_prefix):
                 present_volumes.append(v['name'])
                 continue
 
         for i in range(0, sys.maxsize):
-            nname = volume_prefix + str(i)
-            if nname not in present_volumes:
-                print(nname)
+            if search_prefix + str(i) not in present_volumes:
+                print(volume_prefix + str(i))
                 return
         raise Exception("Unable to find free volume name")
 
@@ -244,7 +266,17 @@ class Volumes():
 
         vmid_re = None
         if self.args['vmid']:
-            vmid_re = re.compile(r'^(vm|base)-[0-9]+')
+            cluster_prefix = self.args.get('cluster_prefix')
+            if cluster_prefix:
+                # Stored idnames carry the cluster prefix
+                # (e.g. "pveA_vm-100-disk-0"); match it explicitly so the
+                # VM ID is parsed from the part following "<prefix>_". The
+                # prefix is alphanumeric (no '-'), so the existing
+                # split('-')[1] VM ID extraction below still holds.
+                vmid_re = re.compile(
+                    r'^' + re.escape(cluster_prefix) + r'_(vm|base)-[0-9]+')
+            else:
+                vmid_re = re.compile(r'^(vm|base)-[0-9]+')
 
         for v in data:
 

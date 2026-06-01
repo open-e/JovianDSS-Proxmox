@@ -294,6 +294,17 @@ sub properties {
             description => 'CHAP initiator password for iSCSI authentication',
             type        => 'string',
         },
+        cluster_prefix => {
+            description =>
+              "Volume name prefix for cluster isolation. "
+              . "When set, only volumes whose names start with this prefix "
+              . "are visible to this storage instance. Allows multiple "
+              . "Proxmox clusters to share the same JovianDSS pool without "
+              . "seeing each other's volumes. "
+              . "Only letters and digits allowed (e.g. 'pveA', 'cluster01').",
+            type    => 'string',
+            pattern => '[a-zA-Z][a-zA-Z0-9]*',
+        },
         debug => {
             description => "Allow debug prints",
             type        => 'boolean',
@@ -338,6 +349,7 @@ sub options {
         chap_enabled       => { optional => 1 },
         chap_user_name     => { optional => 1 },
         chap_user_password => { optional => 1 },
+        cluster_prefix     => { optional => 1, fixed => 1 },
         log_file           => { optional => 1 },
         'create-subdirs'   => { optional => 1 },
         'create-base-path' => { optional => 1 },
@@ -361,11 +373,12 @@ sub path {
     my $pool = get_pool($ctx);
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
 
     my $path = undef;
 
     if ( $vtype eq "images" ) {
-        my $til = lun_record_local_get_info_list( $ctx, $volname, $snapname );
+        my $til = lun_record_local_get_info_list( $ctx, $volname_clustered, $snapname );
 
         unless (@$til) {
             eval {
@@ -373,7 +386,7 @@ sub path {
                       . safe_var_print( "snapshot", $snapname )
                       . "\n");
 
-                my $pathval = block_device_path_from_rest( $ctx, $volname, $snapname );
+                my $pathval = block_device_path_from_rest( $ctx, $volname_clustered, $snapname );
 
                 $pathval =~ m{^([\:\w\-/\.]+)$}
                   or die "Invalid source path '$pathval'";
@@ -428,10 +441,10 @@ sub path {
                   . safe_var_print( "snapshot", $snapname )
                   . " $@\n");
                 volume_deactivate( $ctx,
-                    $vmid, $volname, $snapname, undef );
+                    $vmid, $volname_clustered, $snapname, undef );
                 my $bdpl =
                   volume_activate( $ctx,
-                    $vmid, $volname, $snapname, undef );
+                    $vmid, $volname_clustered, $snapname, undef );
 
                 unless ( defined($bdpl) ) {
                     die "Unable to identify block device related to ${volname}"
@@ -563,17 +576,20 @@ sub _rename_volume {
       $class->find_free_diskname( $storeid, $scfg, $new_vmid, $original_format )
       if ( !defined($new_volname) );
 
+    my $original_volname_clustered = volume_name_clustered( $ctx, $original_volname );
+    my $new_volname_clustered      = volume_name_clustered( $ctx, $new_volname );
+
     volume_deactivate( $ctx,
-        $original_vmid, $original_volname, undef, undef );
+        $original_vmid, $original_volname_clustered, undef, undef );
 
     volume_unpublish( $ctx,
-        $original_vmid, $original_volname, undef, undef );
+        $original_vmid, $original_volname_clustered, undef, undef );
 
     # [PATCH PL-16] class IDEMP_WRITE (was 90/0). Rename is idempotent in
     # plugin layer: if already renamed, REST returns "not found" on retry
     # which clone_image/create_base loops handle via "already exists" path.
     jd_cmd_idemp( $ctx,
-        [ "pool", $pool, "volume", $original_volname, "rename", $new_volname ]
+        [ "pool", $pool, "volume", $original_volname_clustered, "rename", $new_volname_clustered ]
     );
 
     my $newname = "${storeid}:${new_volname}";
@@ -625,12 +641,16 @@ sub _create_base {
 
     my $newnameprefix = join '', 'base-', $vmid, '-disk-';
 
+    my $getfreename_cmd =
+      [ "pool", $pool, "volumes", "getfreename", "--prefix", $newnameprefix ];
+    my $cluster_prefix = $ctx->{scfg}{cluster_prefix};
+    push @$getfreename_cmd, '--cluster-prefix', $cluster_prefix
+      if defined($cluster_prefix);
+
     my $max_retries = 5;
     my $newname;
     for my $attempt ( 1 .. $max_retries ) {
-        $newname = jd_cmd_read_list( $ctx,   # [PATCH PL-16] enumerates volumes to find free name
-            [ "pool", $pool, "volumes", "getfreename", "--prefix", $newnameprefix ]
-        );
+        $newname = jd_cmd_read_list( $ctx, $getfreename_cmd );   # [PATCH PL-16] enumerates volumes to find free name
         $newname = clean_word($newname);
 
         my $err;
@@ -716,8 +736,10 @@ sub _clone_image {
       $class->parse_volname($volname);
     my $clone_name = $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt );
 
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+
     my $size = jd_cmd_read_meta( $ctx,   # [PATCH PL-16] was 50/3; single size attribute
-        [ "pool", $pool, "volume", $volname, "get", "-s" ] );
+        [ "pool", $pool, "volume", $volname_clustered, "get", "-s" ] );
     $size = clean_word($size);
 
     my $max_retries = 10;
@@ -727,6 +749,8 @@ sub _clone_image {
             debugmsg( $ctx, "warn",
                 "clone_image retry ${attempt}/${max_retries}: retrying with new candidate name ${clone_name}\n" );
         }
+
+        my $clone_name_clustered = volume_name_clustered( $ctx, $clone_name );
 
         debugmsg( $ctx, "debug",
                 "Clone ${volname} with size ${size} to ${clone_name}"
@@ -739,9 +763,9 @@ sub _clone_image {
                 jd_cmd_idemp(   # [PATCH PL-16] was 50/3; clone idempotent via "already exists" loop
                     $ctx,
                     [
-                        "pool",  $pool,    "volume", $volname,
+                        "pool",  $pool,    "volume", $volname_clustered,
                         "clone", "--size", $size,    "--snapshot",
-                        $snap,   "-n",     $clone_name
+                        $snap,   "-n",     $clone_name_clustered
                     ]
                 );
             }
@@ -749,9 +773,9 @@ sub _clone_image {
                 jd_cmd_idemp(   # [PATCH PL-16] was 50/3; clone idempotent via "already exists" loop
                     $ctx,
                     [
-                        "pool",  $pool,    "volume", $volname,
+                        "pool",  $pool,    "volume", $volname_clustered,
                         "clone", "--size", $size,    "-n",
-                        $clone_name
+                        $clone_name_clustered
                     ]
                 );
             }
@@ -838,9 +862,10 @@ sub _alloc_image {
 "Creating volume ${volume_name} format ${fmt} requested size ${size_assigned}"
             );
 
+            my $volume_name_clustered = volume_name_clustered( $ctx, $volume_name );
             my $create_vol_cmd = [
                 "pool",   $pool,    "volumes", "create",
-                "--size", "${size_assigned}", "-n", $volume_name
+                "--size", "${size_assigned}", "-n", $volume_name_clustered
             ];
 
             if ( defined($thin_provisioning) ) {
@@ -940,6 +965,7 @@ sub _free_image {
     my $tgname =
       get_vm_target_group_name( $ctx, $vmid );
     my $prefix = get_target_prefix($ctx);
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
 
     # Volume deletion will result in deletetion of all its snapshots
     # Therefore we have to detach all volume snapshots that is expected to be
@@ -951,7 +977,7 @@ sub _free_image {
     # case for vmstate ZVOLs that were never activated). PL-13.
     eval {
         volume_deactivate( $ctx, $vmid,
-            $volname, undef, undef );
+            $volname_clustered, undef, undef );
     };
     if ( $@ ) {
         debugmsg( $ctx, "warn",
@@ -971,7 +997,7 @@ sub _free_image {
     joviandss_cmd(
         $ctx,
         [
-            "pool",   $pool, "volume",          $volname,
+            "pool",   $pool, "volume",          $volname_clustered,
             "delete", "-c",  '--target-prefix', $prefix,
             '--target-group-name', $tgname
         ],
@@ -1001,16 +1027,22 @@ sub list_images {
     my $pool = get_pool($ctx);
 
     #TODO: rename jdssc variable
-    my $jdssc = jd_cmd_read_list( $ctx,   # [PATCH PL-16] was default 40/0 — root cause of clone failures under N=10 par
-        [ "pool", $pool, "volumes", "list", "--vmid" ] );
+    my $list_cmd = [ "pool", $pool, "volumes", "list", "--vmid" ];
+    my $cluster_prefix = $ctx->{scfg}{cluster_prefix};
+    push @$list_cmd, '--cluster-prefix', $cluster_prefix
+      if defined($cluster_prefix);
+
+    my $jdssc = jd_cmd_read_list( $ctx, $list_cmd );   # [PATCH PL-16] was default 40/0 — root cause of clone failures under N=10 par
 
     my $res = [];
     foreach ( split( /\n/, $jdssc ) ) {
-        my ( $volname, $vm, $size, $ctime ) = split;
+        my ( $raw_volname, $vm, $size, $ctime ) = split;
 
-        $volname = clean_word($volname);
-        $vm      = clean_word($vm);
-        $size    = clean_word($size);
+        my $volname = volume_name_unclustered( $ctx, clean_word($raw_volname) );
+        next unless defined($volname);
+
+        $vm   = clean_word($vm);
+        $size = clean_word($size);
 
         my $volid = "$storeid:$volname";
 
@@ -1051,8 +1083,9 @@ sub volume_snapshot {
     # then timed out at network layer, the second sees "already exists" and
     # the caller's exception handler treats it as a noop (see _delete_image
     # and snapshot orchestration paths).
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
     jd_cmd_idemp( $ctx,
-        [ "pool", $pool, "volume", $volname, "snapshots", "create", $snap ]
+        [ "pool", $pool, "volume", $volname_clustered, "snapshots", "create", $snap ]
     );
 
 }
@@ -1065,7 +1098,8 @@ sub volume_snapshot_info {
     my ( $class, $scfg, $storeid, $volname ) = @_;
     my $ctx = new_ctx($scfg, $storeid);
 
-    return volume_snapshots_info( $ctx, $volname );
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    return volume_snapshots_info( $ctx, $volname_clustered );
 }
 
 sub volume_snapshot_needs_fsfreeze {
@@ -1132,10 +1166,11 @@ sub _volume_snapshot_rollback {
     # ONLY non-idempotent call site. Partial rollback (one disk done, another
     # mid-way) + retry = inconsistent VM state. retries=0 is the safety
     # invariant — DO NOT migrate to jd_cmd_idemp.
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
     my $deleted_raw = jd_cmd_nonidemp(
         $ctx,
         [
-            'pool',     $pool, 'volume',   $volname,
+            'pool',     $pool, 'volume',   $volname_clustered,
             'snapshot', $snap, 'rollback', 'do',
             '--force-snapshots',
         ]
@@ -1190,8 +1225,9 @@ sub volume_rollback_is_possible {
     my $force_rollback = vm_tag_force_rollback_is_set(
         $ctx, $vmid);
 
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
     my $ok = volume_rollback_check(
-        $ctx, $vmid, $volname, $snap, $blockers,
+        $ctx, $vmid, $volname_clustered, $snap, $blockers,
         $force_rollback);
 
     return $ok;
@@ -1235,8 +1271,10 @@ sub _volume_snapshot_delete {
     my $tgname =
       get_vm_target_group_name( $ctx, $vmid );
 
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+
     volume_deactivate( $ctx, $vmid,
-        $volname, $snap, undef );
+        $volname_clustered, $snap, undef );
 
     # [PATCH PL-16] class IDEMP_WRITE (was PL-15 90/0). Snapshot delete is
     # idempotent: a retry on "not found" is harmless — the caller's exception
@@ -1245,7 +1283,7 @@ sub _volume_snapshot_delete {
         $ctx,
         [
             "pool",     $pool,
-            "volume",   $volname,
+            "volume",   $volname_clustered,
             "snapshot", $snap,
             "delete",   '--target-prefix',
             $prefix,    '--target-group-name',
@@ -1260,8 +1298,9 @@ sub volume_snapshot_list {
 
     my $pool = get_pool($ctx);
 
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
     my $jdssc = jd_cmd_read_list( $ctx,   # [PATCH PL-16] enumerates snapshots, idempotent
-        [ "pool", $pool, "volume", $volname, "snapshots", "list" ] );
+        [ "pool", $pool, "volume", $volname_clustered, "snapshots", "list" ] );
 
     my $res = [];
     foreach ( split( /\n/, $jdssc ) ) {
@@ -1285,8 +1324,9 @@ sub volume_size_info {
             $timeout );
     }
 
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
     my $size = jd_cmd_read_meta( $ctx,   # [PATCH PL-16] was 80/3; single size attribute
-        [ "pool", $pool, "volume", $volname, "get", "-s" ] );
+        [ "pool", $pool, "volume", $volname_clustered, "get", "-s" ] );
 
     return clean_word($size);
 }
@@ -1445,16 +1485,17 @@ sub _activate_volume {
           . " start" );
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
 
     return 0 if ( 'images' ne "$vtype" );
 
     my $til =
       lun_record_local_get_info_list( $ctx,
-        $volname, $snapname );
+        $volname_clustered, $snapname );
 
     unless (@$til) {
         volume_activate( $ctx, $vmid,
-            $volname, $snapname, undef );
+            $volname_clustered, $snapname, undef );
     }
     else {
 # If volume was resized on other node we have to make sure that current size is accurate
@@ -1475,18 +1516,18 @@ sub _activate_volume {
                   . safe_var_print( "snapshot", $snapname )
                   . " not found. Re-activating." );
             volume_deactivate( $ctx,
-                $vmid, $volname, $snapname, undef );
+                $vmid, $volname_clustered, $snapname, undef );
             volume_activate( $ctx,
-                $vmid, $volname, $snapname, undef );
+                $vmid, $volname_clustered, $snapname, undef );
         }
 
         my $current_size =
-          volume_get_size( $ctx, $volname );
+          volume_get_size( $ctx, $volname_clustered );
         if ( @$til == 1 ) {
             my ( $targetname, $lunid, $lunrecpath, $lr ) = @{ $til->[0] };
             if ( $current_size > $lr->{size} ) {
                 volume_update_size( $ctx,
-                    $vmid, $volname, $current_size );
+                    $vmid, $volname_clustered, $current_size );
             }
         }
         else {
@@ -1538,24 +1579,25 @@ sub _deactivate_volume {
     my $prefix = get_target_prefix($ctx);
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
 
     my $tgname =
       get_vm_target_group_name( $ctx, $vmid );
 
     return 0 if ( 'images' ne "$vtype" );
 
-    my $lunrecs = lun_record_local_get_info_list( $ctx, $volname, $snapname );
+    my $lunrecs = lun_record_local_get_info_list( $ctx, $volname_clustered, $snapname );
     my $had_lun_record = scalar(@$lunrecs) > 0;
 
     volume_deactivate( $ctx, $vmid,
-        $volname, $snapname, undef );
+        $volname_clustered, $snapname, undef );
 
     # Unpublish if that is a state of VM and this node owns the LUN record.
     # If no local LUN record exists (e.g. source node cleanup after migration),
     # skip unpublish to avoid SCST 500 errors causing jdssc to retry in a loop.
     if ( $volname =~ m!^vm-(\d+)-state-(.+)$! && $had_lun_record ) {
         volume_unpublish( $ctx,
-            $vmid, $volname, $snapname, undef );
+            $vmid, $volname_clustered, $snapname, undef );
     }
 
     debugmsg( $ctx, "debug",
@@ -1601,16 +1643,18 @@ sub _volume_resize {
     debugmsg( $ctx, "debug",
         "Resize volume ${volname} to size ${size}" );
 
+    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+
     # [PATCH PL-16] class IDEMP_WRITE (was PL-10 90/0). Resize is idempotent
     # via the size check in volume_size_info: caller re-reads and only resizes
     # if size differs. Safe to retry on timeout.
     jd_cmd_idemp( $ctx,
-        [ "pool", "${pool}", "volume", "${volname}", "resize", "${size}" ]
+        [ "pool", "${pool}", "volume", "${volname_clustered}", "resize", "${size}" ]
     );
 
     my $til =
       lun_record_local_get_info_list( $ctx,
-        $volname, undef );
+        $volname_clustered, undef );
     if ( @$til == 1 ) {
         my ( $targetname, $lunid, $lunrecpath, $lunrecord ) = @{ $til->[0] };
         lun_record_update_device( $ctx,

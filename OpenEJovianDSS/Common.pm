@@ -113,6 +113,8 @@ our @EXPORT_OK = qw(
   safe_var_print
   safe_word
   safe_mount_options
+  volume_name_clustered
+  volume_name_unclustered
   debugmsg
   joviandss_cmd
   jd_cmd_read_meta
@@ -852,6 +854,20 @@ sub safe_mount_options {
     } else {
         die "${word_desc} contains forbidden symbols: ${word}\n";
     }
+}
+
+sub volume_name_clustered {
+    my ($ctx, $volname) = @_;
+    my $prefix = $ctx->{scfg}{cluster_prefix};
+    return defined($prefix) ? "${prefix}_${volname}" : $volname;
+}
+
+sub volume_name_unclustered {
+    my ($ctx, $volname_clustered) = @_;
+    my $prefix = $ctx->{scfg}{cluster_prefix};
+    return $volname_clustered unless defined($prefix);
+    return undef unless $volname_clustered =~ s/^\Q${prefix}\E_//;
+    return $volname_clustered;
 }
 
 my $log_file_path = undef;
@@ -2312,7 +2328,8 @@ sub volume_stage_multipath {
                 && defined($volname)
                 && length($volname) ) {
                 $deep_recovery_done = 1;
-                my ($v_vmid) = ($volname =~ /^vm-(\d+)-/);
+                my $volname_unclustered = volume_name_unclustered($ctx, $volname) // $volname;
+                my ($v_vmid) = ($volname_unclustered =~ /^vm-(\d+)-/);
                 if (defined $v_vmid && length $v_vmid) {
                     debugmsg($ctx, "warn", sprintf(
                         "PL-20v2: kernel rescan ineffective for %d iters — "
