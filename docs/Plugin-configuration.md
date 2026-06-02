@@ -120,6 +120,22 @@ Minimum length is 12 characters; maximum is 16 characters (iSCSI RFC 3720 limit)
 - To rotate the password: run `pvesm set <storeid> --chap_user_password <new-password>`. Active iSCSI sessions are unaffected; the new password takes effect on the next VM start.
 
 
+### cluster_prefix
+
+> **Experimental** — behaviour may change in future releases. See [Cluster-Prefix.md](Cluster-Prefix.md) for full setup instructions.
+
+**Default**: None
+
+**Type**: *string*
+
+**Required**: `False`
+
+A short alphanumeric prefix embedded in every volume name that this storage instance creates on JovianDSS (e.g. `pveA_vm-100-disk-0`). When set, only volumes whose names begin with this prefix are visible to the storage instance — volumes belonging to other clusters are ignored.
+
+This allows multiple independent Proxmox clusters to share the same JovianDSS pool without seeing each other's volumes. A distinct `target_prefix` per cluster is also required for full iSCSI isolation; see [Cluster-Prefix.md](Cluster-Prefix.md).
+
+**Constraints**: must start with a letter, followed by letters and digits only — no underscores or hyphens (e.g. `pveA`, `cluster01`). Cannot be changed after the storage instance is created (`fixed` property).
+
 ### content
 
 **Default**: None
@@ -213,6 +229,16 @@ For more information, see the [Networking](https://github.com/open-e/JovianDSS-P
 Specifies the TCP port for iSCSI data connections to all entries in [data_addresses](#data_addresses).
 If not set, the default port 3260 is used.
 
+### delete_timeout
+
+**Default**: `600`
+
+**Type**: *int*
+
+**Required**: `False`
+
+Timeout in seconds for volume delete operations. Increase this if the JovianDSS pool has many dependent snapshots and deletion consistently exceeds the default.
+
 ### debug
 
 **Default**: `0`
@@ -239,6 +265,16 @@ When set to 1, the storage entry remains in the cluster configuration but is eff
 - Ideal for planned maintenance or testing: you can disable it temporarily without deleting the definition.
 - Editing out (commenting) the 'storage pool' section risks having your configuration removed by the GUI or the API. Using disable preserves the entry and its metadata safely.
 
+
+### idemp_write_timeout
+
+**Default**: `270`
+
+**Type**: *int*
+
+**Required**: `False`
+
+Timeout in seconds for a single attempt of an idempotent write operation: volume create, clone, rename, resize, snapshot create/delete, and iSCSI target operations. Each operation is retried once on timeout (2 attempts × 270 s = 540 s maximum). Sized so that a full `clone_image` (one metadata read plus one write) fits within Proxmox's 600 s `cfs_lock` horizon. Increase if REST write operations consistently time out under heavy load.
 
 ### log_file
 
@@ -268,6 +304,30 @@ Targets are named using the format `<target_prefix>:vm-<vmID>-<index>`:
 
 When a VM or container requires more volumes than `luns_per_target` allows, additional targets are created with the same <vmID> and an incremented <index>.
 
+### max_parallel_volume_ops
+
+**Default**: `1`
+
+**Type**: *int*
+
+**Required**: `False`
+
+Maximum number of storage operations that a single PVE node may execute concurrently against this storage instance. Operations that arrive while all slots are occupied are queued and dispatched in order. Set to `0` to disable the limit entirely.
+
+The default of `1` serialises all storage operations per node, which is the safe baseline. Increase this value only after validating that your JovianDSS server and iSCSI fabric can sustain the resulting parallel load without iSCSI timeouts or multipathd contention.
+
+The concurrency budget is shared across all storage instances on the same PVE node that point to the same physical JovianDSS server (identified by its hardware serial number), so two pools on the same JDSS unit each set to `max_parallel_volume_ops 2` allow at most 2 total concurrent operations against that server, not 4.
+
+### max_parallel_volume_ops_wait
+
+**Default**: `7200`
+
+**Type**: *int*
+
+**Required**: `False`
+
+How long in seconds a queued operation will wait for a slot before failing with a semaphore timeout. The wait happens before any `cfs_lock` is acquired, so it is not bounded by Proxmox's 600 s `cfs_lock` horizon. The default covers large batch operations such as cloning or migrating 200+ VMs at `max_parallel_volume_ops 1` (~60 s per operation). Reduce this value if you prefer faster fail-fast behaviour during overload.
+
 ### multipath
 
 **Default**: 0
@@ -286,6 +346,16 @@ Changes to multipath or additions to [data_addresses](#data_addresses) take effe
 The plugin interacts with multipath devices but does not configure the host’s multipath services.
 Ensure the `multipathd` service is enabled on every node in a cluster and its configuration [complies with the JovianDSS Proxmox plugin requirements](https://github.com/open-e/JovianDSS-Proxmox/wiki/Multipathing).
 
+
+### nonidemp_write_timeout
+
+**Default**: `540`
+
+**Type**: *int*
+
+**Required**: `False`
+
+Timeout in seconds for non-idempotent write operations. Currently only snapshot rollback uses this class. The operation is attempted exactly once and is **never retried** — a partial rollback followed by a retry would leave VM disks in an inconsistent state. Increase this value if rollback consistently times out on pools with large or heavily-snapshotted volumes; do not rely on retries to compensate.
 
 ### path
 
@@ -314,6 +384,26 @@ If the specified `pool` does not exist, the plugin fails.
 This property is foundational: all resources managed by the plugin (volumes, snapshots, iSCSI targets) are provisioned within the named `pool`.
 
 Never create multiple storage `pool` records with the same `pool_name`, as doing so may cause race conditions and unpredictable behavior.
+
+### read_list_timeout
+
+**Default**: `120`
+
+**Type**: *int*
+
+**Required**: `False`
+
+Timeout in seconds for enumeration reads: volumes list, snapshots list, and iSCSI hosts queries. Each enumeration is retried up to 3 times on timeout. Increase this value if volume or snapshot listings are large and consistently time out under concurrent load.
+
+### read_meta_timeout
+
+**Default**: `15`
+
+**Type**: *int*
+
+**Required**: `False`
+
+Timeout in seconds for single-attribute reads: pool status, volume size, and SCSI ID lookups. Each read is retried up to 3 times on timeout. This value rarely needs adjustment; increase it only if the JovianDSS REST API is unusually slow to respond to individual attribute queries.
 
 ### shared
 
