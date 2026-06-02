@@ -232,20 +232,20 @@ sub properties {
         max_parallel_volume_ops => {
             description =>
               "Maximum concurrent storage operations on this storage from "
-              . "a single PVE node (default 4). Operations beyond this cap "
+              . "a single PVE node (default 1). Operations beyond this cap "
               . "queue deterministically. 0 = disabled.",
             type    => 'int',
-            default => 4,
+            default => 1,  # [PATCH PL-18v2]
         },
         max_parallel_volume_ops_wait => {
             description =>
               "How long to wait in the operation queue before failing with "
-              . "a semaphore timeout (default 3600s / 1h). Queue wait happens "
+              . "a semaphore timeout (default 7200s / 2h). Queue wait happens "
               . "BEFORE cfs_lock acquisition so it is not constrained by the "
               . "600s cfs_lock horizon. Sized to cover 200+ VM batches at "
               . "throttle=4. Reduce if you want faster fail-fast diagnostics.",
             type    => 'int',
-            default => 3600,
+            default => 7200,  # [PATCH PL-18v4] default 3600 -> 7200
         },
         control_addresses => {
             description =>

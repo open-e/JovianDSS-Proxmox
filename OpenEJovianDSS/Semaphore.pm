@@ -80,7 +80,7 @@ my $MAX_OP_TIME = 3600;
 
 # cfs_lock_file timeout per critical section. The critical section itself
 # is tiny (read+decide+write a small JSON file), 30s is generous.
-my $CFS_LOCK_TIMEOUT = 30;
+my $CFS_LOCK_TIMEOUT = 300;  # [PATCH PL-18v3] 30→300: burst ops exhausted 30s budget → orphaned ZVOLs
 
 sub _debugmsg {
     my ($ctx, $level, $msg) = @_;
@@ -197,7 +197,7 @@ sub acquire {
 
     my $host_key  = $args{host_key}  // die "PL-18 sem acquire: host_key required\n";
     my $storeid   = $args{storeid}   // '<unknown>';
-    my $max_slots = $args{max_slots} // 4;
+    my $max_slots = $args{max_slots} // 1;  # [PATCH PL-18v2]
     my $timeout   = $args{timeout}   // 600;
     my $ctx       = $args{ctx};
 

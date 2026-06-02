@@ -358,10 +358,10 @@ sub get_nonidemp_write_timeout {
 sub get_max_parallel_volume_ops {
     my ($ctx) = @_;
     my $v = $ctx->{scfg}{max_parallel_volume_ops};
-    return defined($v) ? $v : 4;
+    return defined($v) ? $v : 1;  # [PATCH PL-18v2]
 }
 
-# [PATCH PL-17] Acquire-side timeout. Default 3600s (1h).
+# [PATCH PL-17] Acquire-side timeout. Default 7200s (2h) since [PATCH PL-18v4].
 # Queue wait happens BEFORE cfs_lock acquisition, so cfs_lock horizon (600s)
 # does not apply here. qm clone/migrate tasks are async with no PVE timeout,
 # pvedaemon worker timeout (1800s) only applies to sync API calls.
@@ -369,7 +369,7 @@ sub get_max_parallel_volume_ops {
 # at typical throttle=4 + ~60s per op = ~50 min for the last in queue.
 sub get_max_parallel_volume_ops_wait {
     my ($ctx) = @_;
-    return $ctx->{scfg}{max_parallel_volume_ops_wait} || 3600;
+    return $ctx->{scfg}{max_parallel_volume_ops_wait} || 7200;  # [PATCH PL-18v4] default 3600 -> 7200
 }
 
 # [PATCH PL-17] Build a stable identity key for the physical JDSS host
@@ -2158,14 +2158,16 @@ sub volume_stage_multipath {
     my ( $ctx, $scsiid, $block_devs, $volname, $snapname ) = @_;
     $scsiid = clean_word($scsiid);
 
-    # PL-20v2: counters for deep-recovery escalation.
-    my $pl20_size_zero_count = 0;
-    my $deep_recovery_done   = 0;
+    # [PATCH PL-20v5] PL-20 counter removed — kernel rescan was empirically
+    # ineffective (4/4 BUG-026 incidents required PL-20v2 REST republish);
+    # we now escalate immediately on first size=0 detection.
+    my $deep_recovery_done = 0;
 
     my $mpath;
+    my $id;  # [PATCH PL-20v4] function-scope so return can reference refreshed value
 
     if ( $scsiid =~ /^([\:\-\@\w.\/]+)$/ ) {
-        my $id = $1;
+        $id = $1;
 
         eval {
             my $cmd = [ $MULTIPATH, '-a', $id ];
@@ -2251,30 +2253,29 @@ sub volume_stage_multipath {
         # because hold p95 already reaches minutes under heavy snapshots.
         for my $attempt ( 1 .. 60 ) {
 
-            # [PATCH PL-20] SCSI READ CAPACITY race detection and rescan.
-            # Empirically (4/4 BUG-025 incidents 2026-05-15/16) when multipathd
-            # refuses to build a map for a freshly-published LUN, the underlying
-            # sd-device(s) have size=0 in /sys/block/<sd>/size — kernel saw the
-            # LUN attach event and ran READ CAPACITY before JDSS finished setting
-            # the volume size on the target side, getting 0 logical blocks back.
-            # Kernel logs: "sd N:0:0:M: [sdX] 0 512-byte logical blocks (0 B/0 B)".
-            # device-mapper cannot build a multipath map on a 0-byte device, so
-            # "multipathd add map" fails persistently with "failed to setup map"
-            # and "invalid map name" — and the kernel NEVER auto-re-runs READ
-            # CAPACITY (zero "capacity change" events observed for 8 stuck
-            # sd-devices over 4 fail incidents). The device stays 0-byte until
-            # the LUN is detached.
+            # [PATCH PL-20v5] BUG-026 detection — immediate escalation to
+            # PL-20v2 REST republish on FIRST size=0 detection.
             #
-            # Mitigation: each iteration, check /sys/block/<sd>/size for our
-            # sd-devices. If size==0, write "1" to /sys/block/<sd>/device/rescan
-            # to force a fresh READ CAPACITY. When JDSS has the correct size
-            # by then, kernel updates size and emits a uevent; multipathd then
-            # builds the map.
+            # History: PL-20 (deployed 2026-05-16) tried up to 15 forced
+            # kernel SCSI rescans before escalating. Empirically NEVER
+            # worked: 4/4 BUG-026 incidents required PL-20v2 republish,
+            # kernel rescan resolved 0/4. Structural reason: JDSS returns
+            # READ CAPACITY=0 from the same LUN regardless of how many
+            # rescans we issue — only a FRESH LUN (via unpublish+publish)
+            # can have a non-zero size. PL-20 kernel-rescan loop was thus
+            # dead code wasting ~90s of PL-18 slot per BUG-026 incident.
             #
-            # This is a workaround for a JDSS race (LUN attach should be
-            # atomic with size — reported separately). Cheap (one stat per
-            # sd per iter) and safe (rescan is documented kernel API).
-            my $any_size_zero_this_iter = 0;
+            # PL-20v5 collapses detection + escalation: first iteration
+            # that sees /sys/block/<sd>/size == 0 fires PL-20v2 immediately.
+            # Single read per sd-device per iteration (cheap, safe).
+            #
+            # Triggered AT MOST ONCE per stage operation ($deep_recovery_done)
+            # to bound recovery cost — if even REST republish does not cure
+            # the LUN, the outer 60-attempt budget will exhaust normally and
+            # the operation will fail with the original
+            # "Unable to identify the multipath name" error.
+            my $size_zero_detected = 0;
+            my $size_zero_devname;
             for my $devname (@sd_devnames) {
                 my $size_path = "/sys/block/${devname}/size";
                 next unless -r $size_path;
@@ -2285,19 +2286,11 @@ sub volume_stage_multipath {
                     $size = $line + 0;
                 }
                 if ($size == 0) {
-                    $any_size_zero_this_iter = 1;
-                    debugmsg($ctx, "warn", sprintf(
-                        "PL-20: sd-device /dev/%s has size=0 (JDSS READ CAPACITY race) "
-                        . "— forcing kernel SCSI rescan (attempt %d)",
-                        $devname, $attempt));
-                    my $rescan = "/sys/block/${devname}/device/rescan";
-                    if (open(my $fh, '>', $rescan)) {
-                        print $fh "1\n";
-                        close($fh);
-                    }
+                    $size_zero_detected = 1;
+                    $size_zero_devname  = $devname;
+                    last;
                 }
             }
-            $pl20_size_zero_count++ if $any_size_zero_this_iter;
 
             # [PATCH PL-20v2] Deep recovery escalation — if PL-20 rescan has
             # been ineffective for $DEEP_RECOVERY_THRESHOLD iterations
@@ -2322,9 +2315,8 @@ sub volume_stage_multipath {
             # kept returning READ CAPACITY=0 across all rescans, proving the
             # bug is NOT a short race but a persistent stuck LUN. PL-20 alone
             # is therefore insufficient.
-            my $DEEP_RECOVERY_THRESHOLD = 15;
-            if (   !$deep_recovery_done
-                && $pl20_size_zero_count >= $DEEP_RECOVERY_THRESHOLD
+            if (   $size_zero_detected
+                && !$deep_recovery_done
                 && defined($volname)
                 && length($volname) ) {
                 $deep_recovery_done = 1;
@@ -2332,10 +2324,10 @@ sub volume_stage_multipath {
                 my ($v_vmid) = ($volname_unclustered =~ /^vm-(\d+)-/);
                 if (defined $v_vmid && length $v_vmid) {
                     debugmsg($ctx, "warn", sprintf(
-                        "PL-20v2: kernel rescan ineffective for %d iters — "
-                        . "escalating to JDSS REST unpublish+republish "
+                        "PL-20v2: sd-device /dev/%s has size=0 (BUG-026) at attempt %d "
+                        . "— escalating immediately to JDSS REST unpublish+republish "
                         . "(vmid=%d volname=%s%s)",
-                        $pl20_size_zero_count, $v_vmid, $volname,
+                        $size_zero_devname, $attempt, $v_vmid, $volname,
                         (defined $snapname && length $snapname
                             ? " snap=$snapname" : "")));
 
@@ -2389,8 +2381,85 @@ sub volume_stage_multipath {
                                     "PL-20v2: re-resolved sd-devices post-republish: "
                                     . join(', ', @sd_devnames));
                             }
-                            # Fresh budget for the fresh LUN.
-                            $pl20_size_zero_count = 0;
+                            # [PATCH PL-20v3] Re-read SCSI WWID after REST
+                            # republish. JDSS does not guarantee scsi_id
+                            # stability across volume_unpublish + volume_publish.
+                            # Regression observed 2026-05-30: same
+                            # volname/target/lun but a different scsi_id after
+                            # republish (was 23631343234373839, became
+                            # 7b0a3671b423e635). If we continue with the old
+                            # $id, every subsequent `multipathd add map` fails
+                            # because the WWID no longer exists on JDSS.
+                            # Refresh $id from /lib/udev/scsi_id on the fresh
+                            # sd-device, and re-register the new WWID with
+                            # multipath. Same code path harmless when scsi_id
+                            # is unchanged (the historical happy path).
+                            if (@sd_devnames) {
+                                my $new_id = '';
+                                my $sid_cmd = [ '/lib/udev/scsi_id',
+                                    '-g', '-u', '-d',
+                                    '/dev/' . $sd_devnames[0] ];
+                                eval {
+                                    run_command(
+                                        $sid_cmd,
+                                        outfunc => sub { $new_id .= shift; },
+                                        errfunc => sub {
+                                            cmd_log_output($ctx, 'debug',
+                                                $sid_cmd, shift);
+                                        },
+                                        timeout => 10,
+                                        noerr   => 1
+                                    );
+                                };
+                                $new_id =~ s/^\s+|\s+$//g;
+                                if ($new_id =~ /^([0-9a-f]{8,})$/
+                                        && $new_id ne $id) {
+                                    debugmsg($ctx, "info", sprintf(
+                                        "PL-20v3: scsiid changed after "
+                                      . "republish: %s -> %s "
+                                      . "(JDSS reassigned WWID — refreshing "
+                                      . "local state)",
+                                        $id, $new_id));
+                                    eval {
+                                        my $mp_add = [ $MULTIPATH, '-a',
+                                                       $new_id ];
+                                        run_command(
+                                            $mp_add,
+                                            outfunc => sub {
+                                                cmd_log_output($ctx, 'debug',
+                                                    $mp_add, shift);
+                                            },
+                                            errfunc => sub {
+                                                cmd_log_output($ctx, 'error',
+                                                    $mp_add, shift);
+                                            },
+                                            timeout => 10,
+                                            noerr   => 1
+                                        );
+                                    };
+                                    $id    = $new_id;
+                                    $mpath = block_device_path_from_serial(
+                                                 $id, $is_multipath);
+                                }
+                                elsif ($new_id && $new_id eq $id) {
+                                    debugmsg($ctx, "debug",
+                                        "PL-20v3: scsiid unchanged after "
+                                      . "republish ($id) — no WWID refresh "
+                                      . "needed");
+                                }
+                                elsif (!$new_id) {
+                                    debugmsg($ctx, "warn",
+                                        "PL-20v3: failed to read fresh "
+                                      . "scsiid from /dev/$sd_devnames[0] "
+                                      . "— continuing with old WWID $id "
+                                      . "(multipath ops may fail)");
+                                }
+                            }
+
+                            # [PATCH PL-20v5] PL-20 counter removed —
+                            # no need to reset after republish since we
+                            # escalate on first size=0 detection and
+                            # $deep_recovery_done guards against second fire.
                         }
                     }
                 }
@@ -2562,7 +2631,11 @@ sub volume_stage_multipath {
 
     $mpath = clean_word($mpath);
     if ( -b $mpath ) {
-        return $mpath;
+        # [PATCH PL-20v4] Return the (potentially PL-20v3-refreshed)
+        # scsiid alongside the multipath path so callers (notably
+        # volume_activate) can propagate the new WWID to lun_record.
+        # Backward-compatible: scalar context still returns $mpath only.
+        return wantarray ? ($mpath, $id) : $mpath;
     }
 
     die "Unable to identify the multipath name for scsiid ${scsiid}\n";
@@ -3830,9 +3903,29 @@ sub volume_activate {
 
         if ($multipath) {
             $multipath_staged = 1;
-            my $multipath_path = volume_stage_multipath(
+            # [PATCH PL-20v4] Use list context to receive the (possibly
+            # refreshed) scsiid back from volume_stage_multipath. If
+            # PL-20v2 republished the LUN and PL-20v3 detected a new WWID,
+            # the returned $current_scsiid is the fresh one; we MUST
+            # propagate it into $scsiid here so the subsequent
+            # lun_record_local_create stores the correct WWID and downstream
+            # callers (lun_record_update_device → volume_stage_multipath #2)
+            # see the fresh device path instead of a vanished pre-republish one.
+            my ($multipath_path, $current_scsiid) = volume_stage_multipath(
                 $ctx, $scsiid, $block_devs,
-                $volname, $snapname );   # [PATCH PL-20v2]
+                $volname, $snapname );   # [PATCH PL-20v2 + PL-20v4]
+            if (defined($current_scsiid)
+                    && length($current_scsiid)
+                    && $current_scsiid ne $scsiid) {
+                debugmsg($ctx, "info", sprintf(
+                    "PL-20v4: propagating refreshed scsiid from "
+                  . "volume_stage_multipath into volume_activate state: "
+                  . "%s -> %s (volname=%s%s)",
+                    $scsiid, $current_scsiid, $volname,
+                    (defined $snapname && length $snapname
+                        ? " snap=$snapname" : "")));
+                $scsiid = $current_scsiid;
+            }
             my $mpdl = [ clean_word($multipath_path) ];
             $block_devs = $mpdl;
         }
