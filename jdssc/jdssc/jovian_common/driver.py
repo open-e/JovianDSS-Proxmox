@@ -2496,7 +2496,10 @@ class JovianDSSDriver(object):
 
                 vid = jcom.vid_from_sname(r['name'])
                 if vid == volume_name or vid is None:
-                    ret.append({'name': jcom.sid_from_sname(r['name'])})
+                    props = r.get('properties', {})
+                    ret.append({'name': jcom.sid_from_sname(r['name']),
+                                'guid': props.get('guid'),
+                                'creation': props.get('creation')})
 
             except Exception:
                 continue
