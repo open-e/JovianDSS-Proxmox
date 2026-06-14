@@ -1872,6 +1872,10 @@ sub on_add_hook {
         die "chap_user_password is required when chap_enabled is set\n"
             unless defined OpenEJovianDSS::Common::get_chap_user_password($ctx);
     }
+    # PVE 9.x assigns this hook's return value to the API result 'config'
+    # field, which is schema-typed as an object. Return undef (no
+    # server-generated properties) so result verification does not fail.
+    return undef;
 }
 
 sub on_delete_hook {
