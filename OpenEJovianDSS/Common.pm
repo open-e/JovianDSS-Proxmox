@@ -4385,10 +4385,34 @@ sub store_setup {
 sub vm_tag_force_rollback_is_set {
     my ( $ctx, $vmid ) = @_;
 
+    # A wrong "no tag" answer silently downgrades a force rollback to a
+    # blocked one, so a failed tag read must never be mistaken for absence.
+    # Transient read failures (e.g. a pvesh hiccup) are retried; only a
+    # persistent failure dies. A genuine present/absent answer returns at
+    # once -- the loop never spins on a definitive result.
+    my $attempts = 5;
+    my $last_err;
+    for my $attempt ( 1 .. $attempts ) {
+        my $is_set = eval { _vm_tag_force_rollback_read( $ctx, $vmid ); };
+        return $is_set unless $@;
+
+        $last_err = $@;
+        debugmsg( $ctx, 'warn',
+            "force_rollback tag read for vmid ${vmid} failed "
+          . "(attempt ${attempt}/${attempts}): ${last_err}" );
+        sleep(2) if $attempt < $attempts;
+    }
+    die $last_err;
+}
+
+sub _vm_tag_force_rollback_read {
+    my ( $ctx, $vmid ) = @_;
+
     my $virt_type = vmid_identify_virt_type($ctx, $vmid);
 
     if ( ! defined($virt_type) ) {
-        return 0;
+        die "Unable to identify virtualisation type of VM/CT ${vmid} "
+          . "while checking force_rollback tag\n";
     }
     my $nodename = PVE::INotify::nodename();
 
@@ -4408,23 +4432,42 @@ sub vm_tag_force_rollback_is_set {
         noerr   => 1
     );
 
+    if ( $exitcode != 0 ) {
+        die "Unable to read VM/CT ${vmid} config "
+          . "while checking force_rollback tag: ${err_out}\n";
+    }
+
     my $conf;
     eval {
         $conf = decode_json($json_out);
     };
 
-    return 0 if $@ || ref($conf) ne 'HASH';
+    if ( $@ || ref($conf) ne 'HASH' ) {
+        die "Unable to parse VM/CT ${vmid} config "
+          . "while checking force_rollback tag: $@\n";
+    }
 
-    return 0 if !defined $conf->{tags};
+    if ( !defined $conf->{tags} ) {
+        debugmsg( $ctx, "debug",
+            "force_rollback tag for vmid ${vmid}: absent (no tags)" );
+        return 0;
+    }
 
     my @tags = split(/[,;]/, $conf->{tags});
 
     foreach my $tag (@tags) {
-        if (clean_word($tag) eq 'force_rollback') {
+        $tag =~ s/^\s+|\s+$//g;
+        if ($tag eq 'force_rollback') {
+            debugmsg( $ctx, "debug",
+                "force_rollback tag for vmid ${vmid}: present "
+              . "(tags='$conf->{tags}')" );
             return 1;
         }
     }
 
+    debugmsg( $ctx, "debug",
+        "force_rollback tag for vmid ${vmid}: absent "
+      . "(tags='$conf->{tags}')" );
     return 0;
 }
 
