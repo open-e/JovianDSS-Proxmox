@@ -111,7 +111,7 @@ class JovianDSSRESTProxy(object):
         :param json_data: data
         """
         out = None
-        for i in range(50):
+        for i in range(17):
 
             for i in range(len(self.hosts)):
                 try:
@@ -183,7 +183,7 @@ class JovianDSSRESTProxy(object):
                             apiv=apiv)
 
     @retry(json.JSONDecodeError,
-           tries=50)
+           tries=5)
     def _send(self, pr):
         """Send prepared request
 

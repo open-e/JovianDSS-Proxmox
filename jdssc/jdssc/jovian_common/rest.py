@@ -584,12 +584,12 @@ class JovianRESTAPI(object):
         LOG.info("create iSCSI target: %(target)s",
                  {'target': target_name})
 
-        lock_path = self._lock()
-        try:
-            resp = self.rproxy.pool_request(
-                'POST', req, json_data=jdata, apiv=4)
-        finally:
-            jlock.release_target_lock(lock_path)
+        # lock_path = self._lock()
+        # try:
+        resp = self.rproxy.pool_request(
+            'POST', req, json_data=jdata, apiv=4)
+        # finally:
+        #    jlock.release_target_lock(lock_path)
 
         if not resp["error"] and resp["code"] == 201:
             return
@@ -617,11 +617,11 @@ class JovianRESTAPI(object):
         LOG.info("delete iSCSI target: %(target)s",
                  {'target': target_name})
 
-        lock_path = self._lock()
-        try:
-            resp = self.rproxy.pool_request('DELETE', req)
-        finally:
-            jlock.release_target_lock(lock_path)
+        # lock_path = self._lock()
+        # try:
+        resp = self.rproxy.pool_request('DELETE', req)
+        # finally:
+        #    jlock.release_target_lock(lock_path)
 
         if resp["code"] in (200, 201, 204):
             LOG.debug(
@@ -653,11 +653,11 @@ class JovianRESTAPI(object):
 
         LOG.debug("add credentails to target %s", target_name)
 
-        lock_path = self._lock()
-        try:
-            resp = self.rproxy.pool_request('POST', req, json_data=chap_cred)
-        finally:
-            jlock.release_target_lock(lock_path)
+        # lock_path = self._lock()
+        # try:
+        resp = self.rproxy.pool_request('POST', req, json_data=chap_cred)
+        # finally:
+        #    jlock.release_target_lock(lock_path)
 
         if not resp["error"] and resp["code"] in (200, 201, 204):
             return
@@ -723,12 +723,12 @@ class JovianRESTAPI(object):
         LOG.debug("set iSCSI target %s incoming_users_active=%s",
                   target_name, active)
 
-        lock_path = self._lock()
-        try:
-            resp = self.rproxy.pool_request(
-                'PUT', req, json_data=jdata, apiv=4)
-        finally:
-            jlock.release_target_lock(lock_path)
+        # lock_path = self._lock()
+        # try:
+        resp = self.rproxy.pool_request(
+            'PUT', req, json_data=jdata, apiv=4)
+        # finally:
+        #    jlock.release_target_lock(lock_path)
 
         if resp['error'] is None and resp['code'] in (200, 201, 204):
             return
@@ -760,12 +760,12 @@ class JovianRESTAPI(object):
                  {'target': target_name,
                   'assigned_vips': ','.join(assigned_vips)})
 
-        lock_path = self._lock()
-        try:
-            resp = self.rproxy.pool_request(
-                'PUT', req, json_data=jdata, apiv=4)
-        finally:
-            jlock.release_target_lock(lock_path)
+        # lock_path = self._lock()
+        # try:
+        resp = self.rproxy.pool_request(
+            'PUT', req, json_data=jdata, apiv=4)
+        # finally:
+        #    jlock.release_target_lock(lock_path)
 
         if resp['error'] is None and resp['code'] in (200, 201, 204):
             return resp['data']
@@ -869,11 +869,11 @@ class JovianRESTAPI(object):
 
         LOG.debug("remove credentails from target %s", target_name)
 
-        lock_path = self._lock()
-        try:
-            resp = self.rproxy.pool_request('DELETE', req)
-        finally:
-            jlock.release_target_lock(lock_path)
+        # lock_path = self._lock()
+        # try:
+        resp = self.rproxy.pool_request('DELETE', req)
+        # finally:
+        #    jlock.release_target_lock(lock_path)
 
         if resp.get("error") is None and resp["code"] == 204:
             return
@@ -972,11 +972,11 @@ class JovianRESTAPI(object):
                   {'vol': lun_name,
                    'tar': target_name})
 
-        lock_path = self._lock()
-        try:
-            resp = self.rproxy.pool_request('POST', req, json_data=jbody)
-        finally:
-            jlock.release_target_lock(lock_path)
+        # lock_path = self._lock()
+        # try:
+        resp = self.rproxy.pool_request('POST', req, json_data=jbody)
+        # finally:
+        #    jlock.release_target_lock(lock_path)
 
         if not resp["error"] and resp["code"] == 201:
             return resp["data"]
@@ -1019,11 +1019,11 @@ class JovianRESTAPI(object):
                   {'vol': lun_name,
                    'tar': target_name})
 
-        lock_path = self._lock()
-        try:
-            resp = self.rproxy.pool_request('DELETE', req)
-        finally:
-            jlock.release_target_lock(lock_path)
+        # lock_path = self._lock()
+        # try:
+        resp = self.rproxy.pool_request('DELETE', req)
+        # finally:
+        #    jlock.release_target_lock(lock_path)
 
         if resp["code"] in (200, 201, 204):
             return
