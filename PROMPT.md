@@ -8,6 +8,9 @@ Review code to be coherent.
 
 There are 2 parts of software:
 
+Put additional effort in making sure that perl part is correct.
+Perl part contain majority of bugs and should be treated with extended care.
+
 perl plugin
     ./OpenEJovianDSS/Common.pm
     ./OpenEJovianDSS/Lock.pm
