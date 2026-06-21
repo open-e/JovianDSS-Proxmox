@@ -1,0 +1,200 @@
+  Bugs (functional correctness)
+
+  1. block_device_path_from_lun_rec — multipath path overwritten (Common.pm:1867)
+
+  This is the most impactful bug. When multipath is enabled and the volume is already staged ($lunrec->{multipath} = 1), the function:
+  - Correctly computes $block_device_path = block_device_path_from_serial($id, 1) → /dev/mapper/…
+  - Then falls through to the unconditional block below the if (get_multipath) scope
+  - Which overwrites it: $block_device_path = block_device_path_from_serial($id, 0) → /dev/disk/by-id/scsi-…
+  - Returns the wrong, non-multipath path
+
+  if ( get_multipath($ctx) ) {
+      unless ($lunrec->{multipath}) {
+          ...
+          return $block_dev;    # ← early return only on first-time staging
+      }
+      $block_device_path = block_device_path_from_serial( $id, 1 );
+      # ← no return here; falls through
+  }
+
+  # This ALWAYS runs and overwrites the multipath path:
+  $block_device_path = block_device_path_from_serial( $id, 0 );
+  return $block_device_path;   # always /dev/disk/by-id/... even with multipath
+
+  Fix: add return $block_device_path; inside the if (get_multipath) block, after setting it.
+
+  ---
+  2. volume_unstage_iscsi_device — basename called on potentially undef $bdp (Common.pm:2197)
+
+  my $bdp;
+  if ( $idp =~ /^([\:\-\@\w.\/]+)$/ ) {
+      my $cmd = [ "readlink", "-f", $1 ];
+      run_command( $cmd, outfunc => sub {
+          if ( $path =~ /^([\:\-\@\w.\/]+)$/ ) { $bdp = $1; }  # only set if matches
+          ...
+      }, ... );
+  }
+  my $block_device_name = File::Basename::basename($bdp);  # $bdp still undef if readlink failed
+
+  If readlink -f produces output that doesn't match the safe-word regex, $bdp remains undef. basename(undef) in File::Basename returns "." on some perls or warns/dies on others. The subsequent regex unless ($block_device_name =~ /^[a-z0-9]+$/) then fails with a misleading error.
+
+  ---
+  3. lun_record_local_delete — opendir without error check (Common.pm:2933)
+
+  if ( rmdir( $ltldir ) ) {
+      my $dh;
+      opendir( $dh, $ltdir );                          # ← no 'or die'
+      my @entries = grep { $_ ne '.' && $_ ne '..' } readdir $dh;
+      closedir $dh;
+      unless ( @entries ) {
+          volume_unstage_iscsi( $ctx, $targetname );   # ← called if opendir silently fails
+          ...
+      }
+  }
+
+  If opendir fails (permissions, race condition), readdir returns undef, @entries is empty, and volume_unstage_iscsi is called prematurely — logging out the iSCSI session while other LUNs on that target may still be active.
+
+  ---
+  4. safe_ford — exported but not defined (Common.pm:51)
+
+  our @EXPORT_OK = qw(
+    ...
+    safe_ford       # ← no sub safe_ford exists anywhere
+    ...
+  );
+
+  Any caller that use OpenEJovianDSS::Common qw(safe_ford) will get "Undefined subroutine" at runtime. Should be removed from @EXPORT_OK.
+
+  ---
+  5. get_control_addresses — length check rejects valid short addresses (Common.pm:279)
+
+  if ( length( $scfg->{control_addresses} ) > 4 ) {
+
+  IPv6 loopback ::1 is 3 characters — rejected. This silently falls back to data_addresses. Should be > 0.
+
+  ---
+  6. vm_tag_force_rollback_is_set — potential whitespace in tag comparison (Common.pm:3532)
+
+  my @tags = split(/[,;]/, $conf->{tags});
+  foreach my $tag (@tags) {
+      if ($tag eq 'force_rollback') {   # ← no trim
+
+  If Proxmox stores tags as "snap1; force_rollback", splitting on ; yields " force_rollback" with a leading space. The eq comparison fails silently, making the tag invisible. Each tag needs $tag =~ s/^\s+|\s+$//g before comparison.
+
+  ---
+  Design issues
+
+  7. Multi-cluster naming conflict — hardcoded target group names
+
+  As detailed in the previous analysis: get_vm_target_group_name returns "vm-${vmid}" and get_content_target_group_name returns "proxmox-content" — both hardcoded. Two clusters sharing one JovianDSS pool will fight over the same JovianDSS-side target group objects. Neither function receives $storeid or any cluster-distinguishing input even though that information is available in $ctx.
+
+  ---
+  8. ha_state_is_defined + ha_state_get — two pvesh calls for one dataset (Common.pm:1964, 2007)
+
+  volume_rollback_is_possible calls ha_state_is_defined first, then if that returns true, calls ha_state_get. Both spawn pvesh get /cluster/ha/resources/<vmid> — the same REST call twice in sequence. ha_state_is_defined should return the decoded JSON hash, not just a boolean, so the caller can extract state from it without a second round-trip.
+
+  ---
+  9. joviandss_cmd — $err accumulates across retries (Common.pm:751)
+
+  my $err = undef;
+  while ( $retry_count <= $retries ) {
+      ...
+      if ( $rerr && $rerr =~ /got timeout/ ) {
+          $retry_count++;
+          $msg = '';
+          $err = undef;    # ← reset
+
+  $err IS reset on timeout retry. But this code only resets on got timeout, not on exitcode != 0. If jdssc exits non-zero on attempt 1, $err is set, and the loop breaks with die "${err}\n". The retry path works correctly for timeouts. Minor: $err is reset to undef not '' while $msg is reset to '' — inconsistency, but harmless.
+
+  ---
+  10. lun_record_update_device — up to 20 seconds of sleep per call (Common.pm:3289)
+
+  The retry loop runs up to 10 iterations, with sleep(1) near the top AND sleep(1) at the bottom of each iteration (lines 3400 and 3434). That is a potential 20-second stall during volume activation and resize. Given this is called inside the per-VM lock's 60-second alarm window, it consumes a third of the available window.
+
+  ---
+  Code quality
+
+  11. store_settup — typo in function name (Common.pm:3484)
+
+  Should be store_setup. Minor, but it's a public export used in Plugin.pm's activate_storage.
+
+  ---
+  12. sleep(3) before dying on multiple LUN records (Plugin.pm:392)
+
+  sleep(3);
+  die "Resource ${volname} have multiple records:\n${records_info}";
+
+  Debugging artifact — adds 3 seconds of latency before every "multiple records" error, which is already an error path. Remove.
+
+  ---
+  13. ha_state_is_defined — leading whitespace in sub (Common.pm:1964)
+
+  sub ha_state_is_defined {
+       my ($ctx, $vmid) = @_;   # ← 5-space indent instead of 4
+
+  Minor style inconsistency.
+
+  ---
+  14. Multiple stale TODO/FIXME comments
+
+
+
+
+
+
+
+
+
+  ┌──────────────────┬─────────────────────────────────────────────────────────────────────┐
+  │     Location     │                                TODO                                 │
+  ├──────────────────┼─────────────────────────────────────────────────────────────────────┤
+  │ Plugin.pm:38     │ #TODO: comment/uncomment to enable criticue operation               │
+  ├──────────────────┼─────────────────────────────────────────────────────────────────────┤
+  │ Plugin.pm:341    │ # TODO: reevaluate this section (deactivate/reactivate on lun miss) │
+  ├──────────────────┼─────────────────────────────────────────────────────────────────────┤
+  │ Plugin.pm:863    │ #TODO: rename jdssc variable                                        │
+  ├──────────────────┼─────────────────────────────────────────────────────────────────────┤
+  │ Common.pm:1720   │ # TODO: remove once multipath device appearance is reliable         │
+  ├──────────────────┼─────────────────────────────────────────────────────────────────────┤
+  │ Common.pm:2793   │ # TODO: consider using target group name                            │
+  ├──────────────────┼─────────────────────────────────────────────────────────────────────┤
+  │ NFSCommon.pm:167 │ # TODO: Make sure that clone is mounted as READONLY                 │
+  └──────────────────┴─────────────────────────────────────────────────────────────────────┘
+
+  ---
+  ADR 0001 — CHAP authentication: accepted but not implemented
+
+  The ADR dated 2026-04-15 is marked Accepted. The decision was to add single shared CHAP credentials (chap_enabled, chap_user_name, chap_user_password) to the plugin. The current code has none of these: no properties declared, no CHAP parameters passed to jdssc targets create, no password file handling for CHAP credentials. The ADR consequence ("Volume start will get a bit slower") has not materialized. This is an open implementation gap.
+
+  ---
+  Summary table
+
+
+
+  ┌─────┬──────────────────────────┬──────────┬────────────────────────────────────────────────────────────────────────────────────┐
+  │  #  │           File           │ Severity │                                       Issue                                        │
+  ├─────┼──────────────────────────┼──────────┼────────────────────────────────────────────────────────────────────────────────────┤
+  │ 1   │ Common.pm:1867           │ Bug      │ Multipath path overwritten by non-multipath path in block_device_path_from_lun_rec │
+  ├─────┼──────────────────────────┼──────────┼────────────────────────────────────────────────────────────────────────────────────┤
+  │ 2   │ Common.pm:2197           │ Bug      │ basename($bdp) on potentially undef $bdp                                           │
+  ├─────┼──────────────────────────┼──────────┼────────────────────────────────────────────────────────────────────────────────────┤
+  │ 3   │ Common.pm:2933           │ Bug      │ opendir without error check; premature iSCSI logout on failure                     │
+  ├─────┼──────────────────────────┼──────────┼────────────────────────────────────────────────────────────────────────────────────┤
+  │ 4   │ Common.pm:51             │ Bug      │ safe_ford in @EXPORT_OK but no implementation                                      │
+  ├─────┼──────────────────────────┼──────────┼────────────────────────────────────────────────────────────────────────────────────┤
+  │ 5   │ Common.pm:279            │ Bug      │ > 4 length check rejects ::1 and other short addresses                             │
+  ├─────┼──────────────────────────┼──────────┼────────────────────────────────────────────────────────────────────────────────────┤
+  │ 6   │ Common.pm:3532           │ Bug      │ force_rollback tag comparison without whitespace trim                              │
+  ├─────┼──────────────────────────┼──────────┼────────────────────────────────────────────────────────────────────────────────────┤
+  │ 7   │ Common.pm:1361,1366      │ Design   │ Hardcoded target group names prevent multi-cluster pool sharing                    │
+  ├─────┼──────────────────────────┼──────────┼────────────────────────────────────────────────────────────────────────────────────┤
+  │ 8   │ Common.pm:1964,2007      │ Design   │ Two pvesh subprocesses for one HA dataset                                          │
+  ├─────┼──────────────────────────┼──────────┼────────────────────────────────────────────────────────────────────────────────────┤
+  │ 9   │ Common.pm:3300,3400,3434 │ Design   │ Up to 20s sleep in lun_record_update_device inside lock window                     │
+✻ Cooked for 2m 41s────────────────┼──────────┼────────────────────────────────────────────────────────────────────────────────────┤
+  │ 10  │ Common.pm:3484           │ Minor    │ Typo: store_settup → store_setup                                                   │
+❯ please create tmp file to store your findings
+
+✻ Compacting conversation… (1m 18s)
+  ⎿  Tip: Use /btw to ask a quick side question without interrupting Claude's current work
+
