@@ -255,9 +255,15 @@ class Volumes():
             # if self.args['suffix']:
             #    nname = nname + self.args['suffix']
 
-            if nname not in present_volumes:
+            # Compare and look up using the stored (clustered) idname so
+            # existing volumes are detected, but return the bare name below.
+            nname_stored = nname
+            if cluster_prefix:
+                nname_stored = "{0}_{1}".format(cluster_prefix, nname)
 
-                vd = {'id': nname}
+            if nname_stored not in present_volumes:
+
+                vd = {'id': nname_stored}
                 try:
                     data = self.jdss.get_volume(vd)
                 except jexc.JDSSVolumeNotFoundException:

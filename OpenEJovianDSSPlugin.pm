@@ -532,12 +532,17 @@ sub _rename_volume {
         $original_format
     ) = $class->parse_volname($original_volname);
 
-    $new_volname =
-      $class->find_free_diskname( $storeid, $scfg, $new_vmid, $original_format )
-      if ( !defined($new_volname) );
+    my $new_volname_clustered;
+
+    if ( defined($new_volname) ) {
+        $new_volname_clustered = volume_name_clustered( $ctx, $new_volname );
+    } else {
+        my $cluster_prefix = OpenEJovianDSS::Common::get_cluster_prefix($ctx);
+        $new_volname_clustered = $class->find_free_diskname( $storeid, $scfg, $new_vmid, $original_format,
+                                                             undef, $cluster_prefix );
+    }
 
     my $original_volname_clustered = volume_name_clustered( $ctx, $original_volname );
-    my $new_volname_clustered      = volume_name_clustered( $ctx, $new_volname );
 
     volume_deactivate( $ctx,
         $original_vmid, $original_volname_clustered, undef, undef );
@@ -564,7 +569,7 @@ sub _rename_volume {
               "rename", $new_volname_clustered, "--idempotent-scsi-id", $jscsiid ],
             118, 3);
 
-    my $newname = "${storeid}:${new_volname}";
+    my $newname = join ':', $storeid , OpenEJovianDSS::Common::volume_name_unclustered( $new_volname_clustered );
     return $newname;
 }
 
@@ -712,30 +717,27 @@ sub _clone_image {
 
     my ( undef, undef, undef, undef, undef, undef, $fmt ) =
       $class->parse_volname($volname);
-    my $clone_name = $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt );
+
+    my $cluster_prefix = OpenEJovianDSS::Common::get_cluster_prefix($ctx);
+    my $clone_name_clustered = $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt, undef, $cluster_prefix );
+
 
     my $volname_clustered = volume_name_clustered( $ctx, $volname );
     my $size = joviandss_cmd( $ctx,
         [ "pool", $pool, "volume", $volname_clustered, "get", "-s" ], 118, 3 );
 
-
-    #    my $size = jd_cmd_read_meta( $ctx,   # [PATCH PL-16] was 50/3; single size attribute
-    #    [ "pool", $pool, "volume", $volname_clustered, "get", "-s" ] );
-    #>>>>>>> 29a0397 (Add cluster_prefix for sharing a JovianDSS pool across clusters)
     $size = clean_word($size);
 
     my $max_retries = 10;
     for my $attempt ( 1 .. $max_retries ) {
         if ( $attempt > 1 ) {
-            $clone_name = $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt );
+            $clone_name_clustered = $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt, undef, $cluster_prefix);
             debugmsg( $ctx, "warn",
-                "clone_image retry ${attempt}/${max_retries}: retrying with new candidate name ${clone_name}\n" );
+                "clone_image retry ${attempt}/${max_retries}: retrying with new candidate name ${clone_name_clustered}\n" );
         }
 
-        my $clone_name_clustered = volume_name_clustered( $ctx, $clone_name );
-
         debugmsg( $ctx, "debug",
-                "Clone ${volname} with size ${size} to ${clone_name} "
+                "Clone ${volname_clustered} with size ${size} to ${clone_name_clustered} "
               . safe_var_print( " with snapshot", $snap )
               . "\n" );
 
@@ -775,7 +777,7 @@ sub _clone_image {
         if ( $err =~ /already exists/i && $attempt < $max_retries ) {
             my $delay = 1 + rand(3);
             debugmsg( $ctx, "warn",
-                "clone_image: volume ${clone_name} already exists "
+                "clone_image: volume ${clone_name_clustered} already exists "
               . "(JovianDSS stale list under load), "
               . sprintf( "retrying in %.1fs (attempt %d/%d)\n",
                          $delay, $attempt, $max_retries - 1 ) );
@@ -784,11 +786,11 @@ sub _clone_image {
         }
         die $err;
     }
-    return $clone_name;
+    return  OpenEJovianDSS::Common::volume_name_unclustered( $clone_name_clustered );
 }
 
 sub find_free_diskname {
-    my ($class, $storeid, $scfg, $vmid, $fmt, $add_fmt_suffix) = @_;
+    my ($class, $storeid, $scfg, $vmid, $fmt, $add_fmt_suffix, $cluster_prefix) = @_;
 
     my $ctx = new_ctx($scfg, $storeid);
     my $pool = get_pool($ctx);
@@ -799,6 +801,9 @@ sub find_free_diskname {
 
     # TODO: implement suffix support needed for qcow
     my $newnameprefix = join '', $prefix, $vmid, '-disk-';
+    if (defined($cluster_prefix)) {
+        $newnameprefix = join '_', $cluster_prefix, $newnameprefix;
+    }
     my $newname = joviandss_cmd( $ctx,
         [ "pool", $pool, "volumes", "getfreename",
             '--prefix', $newnameprefix, '--suffix', $suffix ],
@@ -809,8 +814,6 @@ sub find_free_diskname {
     $newname = OpenEJovianDSS::Common::clean_word($newname);
     $newname = OpenEJovianDSS::Common::safe_word($newname);
     return $newname;
-
-    die "unable to allocate an image name for VM $vmid in storage '$storeid'\n";
 }
 
 
@@ -837,10 +840,15 @@ sub _alloc_image {
     my $storeid = $ctx->{storeid};
 
     my $volume_name = $name;
+    my $volume_name_clustered;
 
-    unless ( defined($volume_name) ) {
-        $volume_name =
-          $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt );
+    my $cluster_prefix = OpenEJovianDSS::Common::get_cluster_prefix($ctx);
+
+    if ( defined($volume_name) ) {
+        $volume_name_clustered = volume_name_clustered( $ctx, $volume_name );
+    } else {
+        $volume_name_clustered =
+            $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt, undef, $cluster_prefix );
         debugmsg( $ctx, "debug",
             "Searching for free volume name for vm ${vmid} format ${fmt}" );
     }
@@ -866,19 +874,19 @@ sub _alloc_image {
 
             # On retry (name was auto-selected), re-query for a free name so we
             # skip any volume that appeared in JovianDSS since the last check.
-            if ( $attempt > 1 && !defined($name) ) {
-                $volume_name =
-                  $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt );
+            if ( $attempt > 1 && !defined($volume_name) ) {
+                $volume_name_clustered =
+                    $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt, undef, $cluster_prefix );
                 debugmsg( $ctx, "warn",
                     "alloc_image retry ${attempt}/${max_retries}: "
-                  . "retrying with new candidate name ${volume_name}\n" );
+                  . "retrying with new candidate name ${volume_name_clustered}\n" );
             }
 
             debugmsg( $ctx, "debug",
-"Creating volume ${volume_name} format ${fmt} requested size ${size_assigned}"
+"Creating volume ${volume_name_clustered} format ${fmt} requested size ${size_assigned}"
             );
 
-            my $volume_name_clustered = volume_name_clustered( $ctx, $volume_name );
+            #my $volume_name_clustered = volume_name_clustered( $ctx, $volume_name );
             my $create_vol_cmd = [
                 "pool",   $pool,    "volumes", "create",
                 "--size", "${size_assigned}", "-n", $volume_name_clustered
@@ -914,7 +922,7 @@ sub _alloc_image {
             {
                 my $delay = 1 + rand(3);
                 debugmsg( $ctx, "warn",
-                    "alloc_image: volume ${volume_name} already exists "
+                    "alloc_image: volume ${volume_name_clustered} already exists "
                   . "(JovianDSS stale list under load), "
                   . sprintf( "retrying in %.1fs (attempt %d/%d)\n",
                         $delay, $attempt, $max_retries - 1 ) );
@@ -924,7 +932,7 @@ sub _alloc_image {
             die $err;
         }
     }
-    return clean_word($volume_name);
+    return clean_word(OpenEJovianDSS::Common::volume_name_unclustered($volume_name_clustered));
 }
 
 # cluster_lock_storage — strict no-op pass-through.
