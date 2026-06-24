@@ -1037,7 +1037,7 @@ sub on_update_hook {
             OpenEJovianDSS::NFSCommon::password_file_set_password(
                 $ctx, $param{user_password});
         } else {
-            OpenEJovianDSS::NFSCommon::password_file_delete($ctx);
+            OpenEJovianDSS::Common::password_file_delete_user_password($ctx);
         }
     }
     return undef;

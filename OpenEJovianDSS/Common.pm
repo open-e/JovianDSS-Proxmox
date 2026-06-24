@@ -456,7 +456,8 @@ sub _password_file_delete_key {
         }
         PVE::Tools::file_set_contents($pwfile_path, $password_file_data, 0600, 1);
     } else {
-        unlink $pwfile_path;
+        # No keys left (no user password, no chap password) — drop the whole file.
+        password_file_delete($ctx);
     }
 }
 
@@ -494,6 +495,14 @@ sub password_file_delete {
     my ($ctx) = @_;
     my $pwfile_path = get_password_file_path($ctx);
     unlink $pwfile_path;
+}
+
+sub password_file_delete_user_password {
+    my ($ctx) = @_;
+    # user_password is mandatory while the storage exists: it can be changed but
+    # never individually cleared. The whole file is removed only on storage
+    # deletion (on_delete_hook -> password_file_delete).
+    die "user_password cannot be cleared; provide a new value or remove the storage\n";
 }
 
 sub password_file_delete_chap_password {

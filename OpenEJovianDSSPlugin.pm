@@ -1900,7 +1900,7 @@ sub on_update_hook {
         if (defined($param{user_password})) {
             OpenEJovianDSS::Common::password_file_set_password($ctx, $param{user_password});
         } else {
-            die "user_password cannot be cleared; provide a new value or remove the storage\n";
+            OpenEJovianDSS::Common::password_file_delete_user_password($ctx);
         }
     }
     if (exists($param{chap_user_password})) {
