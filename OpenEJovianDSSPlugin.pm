@@ -569,7 +569,7 @@ sub _rename_volume {
               "rename", $new_volname_clustered, "--idempotent-scsi-id", $jscsiid ],
             118, 3);
 
-    my $newname = join ':', $storeid , OpenEJovianDSS::Common::volume_name_unclustered( $new_volname_clustered );
+    my $newname = join ':', $storeid , OpenEJovianDSS::Common::volume_name_unclustered( $ctx, $new_volname_clustered );
     return $newname;
 }
 
@@ -786,7 +786,7 @@ sub _clone_image {
         }
         die $err;
     }
-    return  OpenEJovianDSS::Common::volume_name_unclustered( $clone_name_clustered );
+    return  OpenEJovianDSS::Common::volume_name_unclustered( $ctx, $clone_name_clustered );
 }
 
 sub find_free_diskname {
@@ -932,7 +932,7 @@ sub _alloc_image {
             die $err;
         }
     }
-    return clean_word(OpenEJovianDSS::Common::volume_name_unclustered($volume_name_clustered));
+    return clean_word(OpenEJovianDSS::Common::volume_name_unclustered($ctx, $volume_name_clustered));
 }
 
 # cluster_lock_storage — strict no-op pass-through.
