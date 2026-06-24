@@ -119,7 +119,7 @@ sub api {
 }
 
 sub type {
-    return 'joviandss';
+    return OpenEJovianDSS::Common::PLUGIN_TYPE_JOVIANDSS;
 }
 
 sub plugindata {

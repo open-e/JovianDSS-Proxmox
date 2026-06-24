@@ -65,7 +65,7 @@ sub api {
 }
 
 sub type {
-    return 'joviandss-nfs';
+    return OpenEJovianDSS::Common::PLUGIN_TYPE_JOVIANDSS_NFS;
 }
 
 sub plugindata {
@@ -385,7 +385,7 @@ sub volume_snapshot {
     # Encode vmid into snapshot name so list/delete can filter per volume
     my $internal_snap = OpenEJovianDSS::NFSCommon::nas_sname($snap, $vmid);
 
-    OpenEJovianDSS::NFSCommon::joviandss_cmd( $scfg, $storeid,
+    OpenEJovianDSS::Common::joviandss_cmd( $ctx,
         [ "pool", $pool, "nas_volume", "-d", $datname,
           "snapshots", "create", "--ignoreexists", $internal_snap ] );
 }
@@ -918,7 +918,7 @@ sub _volume_snapshot_delete {
 
     # REST API path: /pools/{pool}/nas-volumes/{dataset}/snapshots/{snapshot}
     my $internal_snap = OpenEJovianDSS::NFSCommon::nas_sname($snapname, $vmid);
-    OpenEJovianDSS::NFSCommon::joviandss_cmd( $scfg, $storeid,
+    OpenEJovianDSS::Common::joviandss_cmd( $ctx,
         [ "pool", $pool, "nas_volume", "-d", $datname,
           "snapshot", $internal_snap, "delete" ] );
 
@@ -1016,7 +1016,7 @@ sub on_add_hook {
     }
     if (exists($sensitive{user_password})) {
         if (defined($sensitive{user_password})) {
-            OpenEJovianDSS::NFSCommon::password_file_set_password(
+            OpenEJovianDSS::Common::password_file_set_password(
                 $ctx, $sensitive{user_password});
         }
     }
@@ -1025,7 +1025,7 @@ sub on_add_hook {
 sub on_delete_hook {
     my ($class, $storeid, $scfg) = @_;
     my $ctx = new_ctx($scfg, $storeid);
-    OpenEJovianDSS::NFSCommon::password_file_delete($ctx);
+    OpenEJovianDSS::Common::password_file_delete($ctx);
 }
 
 sub on_update_hook {
@@ -1034,7 +1034,7 @@ sub on_update_hook {
     my $ctx = new_ctx($scfg, $storeid);
     if (exists($param{user_password})) {
         if (defined($param{user_password})) {
-            OpenEJovianDSS::NFSCommon::password_file_set_password(
+            OpenEJovianDSS::Common::password_file_set_password(
                 $ctx, $param{user_password});
         } else {
             OpenEJovianDSS::Common::password_file_delete_user_password($ctx);

@@ -151,7 +151,9 @@ our %EXPORT_TAGS = ( all => [@EXPORT_OK], );
 use constant {
     PLUGIN_LOCAL_STATE_DIR               => '/etc/joviandss/state',
     PLUGIN_GLOBAL_STATE_DIR              => '/etc/pve/priv/joviandss/state',
-    PLUGIN_GLOBAL_PASSWORD_FILE_DIR      => '/etc/pve/priv/storage/joviandss',
+    PLUGIN_TYPE_JOVIANDSS                => 'joviandss',
+    PLUGIN_TYPE_JOVIANDSS_NFS            => 'joviandss-nfs',
+    PLUGIN_PASSWORD_DIR_BASE             => '/etc/pve/priv/storage',
     JOVIANDSS_ISCSI_LOCK_PATH            => '/etc/pve/priv/lock/joviandss-iscsi-target-global-lock',
     JOVIANDSS_ISCSI_CHANGE_LOCK_TIMEOUT_MAX => 115,  # must stay below pmxcfs CFS_LOCK_TIMEOUT (120 s)
 };
@@ -382,10 +384,31 @@ sub get_user_name {
     return $scfg->{user_name} || $default_user_name;
 }
 
+sub get_plugin_type {
+    my ($ctx) = @_;
+    my $type = $ctx->{scfg}{type};
+
+    if (!defined $type) {
+        die "JovianDSS: storage 'type' is not set in scfg\n";
+    }
+    if ($type eq PLUGIN_TYPE_JOVIANDSS) {
+        return PLUGIN_TYPE_JOVIANDSS;
+    }
+    if ($type eq PLUGIN_TYPE_JOVIANDSS_NFS) {
+        return PLUGIN_TYPE_JOVIANDSS_NFS;
+    }
+
+    die "JovianDSS: unexpected storage type '$type'\n";
+}
+
+sub get_plugin_password_dir {
+    my ($ctx) = @_;
+    return PLUGIN_PASSWORD_DIR_BASE . '/' . get_plugin_type($ctx);
+}
+
 sub get_password_file_path {
     my ($ctx) = @_;
-    my $storeid = $ctx->{storeid};
-    return PLUGIN_GLOBAL_PASSWORD_FILE_DIR . "/${storeid}.pw";
+    return get_plugin_password_dir($ctx) . "/$ctx->{storeid}.pw";
 }
 
 sub _password_file_get_key {
@@ -408,7 +431,7 @@ sub _password_file_get_key {
 sub _password_file_set_key {
     my ($ctx, $key, $value) = @_;
 
-    my $dir = PLUGIN_GLOBAL_PASSWORD_FILE_DIR;
+    my $dir = get_plugin_password_dir($ctx);
     my $pwfile_path = get_password_file_path($ctx);
 
     File::Path::make_path($dir, { mode => 0700 }) if ! -d $dir;
@@ -830,7 +853,7 @@ sub safe_var_print {
 }
 
 sub joviandss_cmd {
-    my ( $ctx, $cmd, $timeout, $retries, $force_debug_level, $password ) = @_;
+    my ( $ctx, $cmd, $timeout, $retries, $force_debug_level ) = @_;
     my $scfg    = $ctx->{scfg};
     my $storeid = $ctx->{storeid};
 
@@ -885,7 +908,7 @@ sub joviandss_cmd {
         die "JovianDSS REST user name is not provided.\n";
     }
 
-    my $user_password = defined($password) ? $password : get_user_password($ctx);
+    my $user_password = get_user_password($ctx);
     if ( defined($user_password) ) {
         push @$connection_options, '--user-password', $user_password;
     } else {

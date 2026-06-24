@@ -57,11 +57,6 @@ our @EXPORT_OK = qw(
     parse_export_path
     nas_private_mounts_volname_snapname
 
-    get_password_file_path
-    get_user_password
-    password_file_set_password
-    password_file_delete
-
     nas_sname
     nas_vmid_from_sname
     nas_snapid_from_sname
@@ -126,9 +121,8 @@ sub snapshot_info {
     my $pool = pool_name_get( $scfg );
 
     # Use -d flag because dataset name from export property is the exact dataset name on JovianDSS
-    my $output = joviandss_cmd(
-        $scfg,
-        $storeid,
+    my $output = OpenEJovianDSS::Common::joviandss_cmd(
+        $ctx,
         [
             'pool', $pool, 'nas_volume', '-d', $dataset,
             'snapshots', 'list', '--creation'
@@ -644,7 +638,7 @@ sub snapshot_publish {
     OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
         "Publishing snapshot ${snapname} (${internal_snap}) for volume ${volname} from dataset ${datname}\n" );
 
-    my $cmd_output = joviandss_cmd( $scfg, $storeid,
+    my $cmd_output = OpenEJovianDSS::Common::joviandss_cmd( $ctx,
         [ "pool", $pool,
           "nas_volume", "-d", $datname,
           "snapshot", $internal_snap,
@@ -694,8 +688,8 @@ sub snapshot_unpublish {
     $pool = OpenEJovianDSS::Common::safe_word($pool, 'Pool name');
     $datname = OpenEJovianDSS::Common::safe_word($datname, 'Dataset name');
     $internal_snap = OpenEJovianDSS::Common::safe_word($internal_snap, 'Snapshot name');
-    joviandss_cmd(
-        $scfg, $storeid,
+    OpenEJovianDSS::Common::joviandss_cmd(
+        $ctx,
         [ 'pool', $pool,
           'nas_volume', '-d', $datname,
           'snapshot', $internal_snap,
@@ -739,56 +733,8 @@ sub dataset_name_get {
     return $dataset_name;
 }
 
-# Password management — NFS-specific path: joviandss-nfs/<storeid>.pw
-
-my $NFS_PASSWORD_DIR = '/etc/pve/priv/storage/joviandss-nfs';
-
-sub get_password_file_path {
-    my ($ctx) = @_;
-    my $storeid = $ctx->{storeid};
-    return "${NFS_PASSWORD_DIR}/${storeid}.pw";
-}
-
-sub get_user_password {
-    my ($ctx) = @_;
-
-    my $pwfile_path = get_password_file_path($ctx);
-    return undef if ! -f $pwfile_path;
-
-    my $content = file_get_contents($pwfile_path);
-    my $config = {};
-    foreach my $line (split /\n/, $content) {
-        $line =~ s/^\s+|\s+$//g;
-        next if $line =~ /^#/ || $line eq '';
-        if ($line =~ /^(\S+)\s+(.+)$/) {
-            $config->{$1} = $2;
-        }
-    }
-    return $config->{user_password};
-}
-
-sub password_file_set_password {
-    my ($ctx, $password) = @_;
-
-    my $pwfile_path = get_password_file_path($ctx);
-    if (! -d $NFS_PASSWORD_DIR) {
-        File::Path::make_path($NFS_PASSWORD_DIR, { mode => 0700 });
-    }
-    file_set_contents($pwfile_path, "user_password $password\n", 0600, 1);
-}
-
-sub password_file_delete {
-    my ($ctx) = @_;
-    my $pwfile_path = get_password_file_path($ctx);
-    unlink $pwfile_path;
-}
-
-sub joviandss_cmd {
-    my ( $scfg, $storeid, $cmd, $timeout, $retries, $force_debug_level ) = @_;
-    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
-    my $password = get_user_password($ctx);
-    return OpenEJovianDSS::Common::joviandss_cmd(
-        $ctx, $cmd, $timeout, $retries, $force_debug_level, $password);
-}
+# Password resolution and the jdssc wrapper moved to OpenEJovianDSS::Common
+# (type-aware credential resolution): NFS now calls Common::joviandss_cmd and
+# Common::password_file_* directly.
 
 1;
