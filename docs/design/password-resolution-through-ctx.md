@@ -16,7 +16,7 @@
 > password resolution, but not yet sharing the method lock's `$ctx`.
 >
 > This is a **prerequisite** for the NFS side of the
-> [jdssc execution lock](jdssc-execution-lock-design.md) (its Open Question #2):
+> [jdssc execution lock](multi-layer-lock-design.md) (its Open Question #2):
 > the jdssc lock's refresh and re-entry guard live on `$ctx->{_held_locks}`, so
 > the jdssc call and the method lock must share one `$ctx`.
 
@@ -58,27 +58,32 @@ password resolution in `OpenEJovianDSS/Common.pm`, and lets NFS use the common
 
 ## Problem
 
-- **Duplicated credential code.** `OpenEJovianDSS/NFSCommon.pm` defines its own
-  `get_user_password` (`:752`), `get_password_file_path` (`:746`),
-  `password_file_set_password` (`:770`), and `password_file_delete` (`:780`) —
-  the same logic as Common's (`Common.pm:463` / `:391` / …), differing *only* in
-  the directory.
-- **A wrapper that exists solely for the password.** `NFSCommon::joviandss_cmd`
-  (`:786`) builds a **fresh `$ctx`** via `new_ctx`, reads the NFS password, and
-  delegates to `Common::joviandss_cmd($ctx, …, $password)`. The explicit password
-  is required because `Common::joviandss_cmd`'s fallback (`get_user_password`) would
-  otherwise read the **iSCSI** file.
-- **The fresh `$ctx` breaks context threading.** Because the wrapper discards the
-  caller's `$ctx`, an NFS jdssc call runs on a *different* `$ctx` than the NFS
-  method lock — so the jdssc execution lock's `run_refreshed` / re-entry guard
-  (which key on `$ctx->{_held_locks}`) cannot see the outer method lock. (This was
-  already latent with the pre-existing `touch_cluster_lock`.)
-- **A broken NFS credential path.** The NFS plugin's *direct* jdssc call at
-  `OpenEJovianDSSNFSPlugin.pm:229` (`joviandss_cmd($ctx, ["pool", $pool, "get"], …)`)
-  goes to `Common::joviandss_cmd` with **no password**, so it resolves the credential
-  from Common's default — the **iSCSI** directory — which holds no file for an NFS
-  storeid. The call gets no password and dies; this currently leaves NFS
-  `get_identity` non-functional (see Risk #4).
+- ~~**Duplicated credential code.**~~ **(Resolved.)** `OpenEJovianDSS/NFSCommon.pm`
+  used to define its own `get_user_password`, `get_password_file_path`,
+  `password_file_set_password`, and `password_file_delete` — the same logic as
+  Common's, differing *only* in the directory. **All four are now retired**; Common's
+  type-aware `get_password_file_path` / `get_user_password` serve both plugins.
+- ~~**A wrapper that exists solely for the password.**~~ **(Resolved.)**
+  `NFSCommon::joviandss_cmd` used to build a **fresh `$ctx`** via `new_ctx`, read the
+  NFS password, and delegate to `Common::joviandss_cmd($ctx, …, $password)` — the
+  explicit password was needed because Common's fallback (`get_user_password`) would
+  otherwise read the **iSCSI** file. The wrapper is **retired**; NFS calls
+  `Common::joviandss_cmd($ctx)` directly, and the type-aware fallback reads the
+  correct file.
+- ~~**The fresh `$ctx` breaks context threading.**~~ **(Resolved.)** The wrapper
+  discarded the caller's `$ctx`, so an NFS jdssc call ran on a *different* `$ctx` than
+  the NFS method lock — the (future) jdssc execution lock's `run_refreshed` /
+  re-entry guard, which key on `$ctx->{_held_locks}`, could not have seen the outer
+  method lock. With the wrapper gone **and** every `NFSCommon` snapshot/mount helper
+  re-signatured to take `$ctx` (no fresh `new_ctx`), one `$ctx` now threads from each
+  NFS method through to `Common::joviandss_cmd`.
+- ~~**A broken NFS credential path.**~~ **(Resolved.)** The NFS plugin's *direct*
+  jdssc call in `get_identity` (`joviandss_cmd($ctx, ["pool", $pool, "get"], …)`) went
+  to `Common::joviandss_cmd` with **no password**, so it resolved the credential from
+  Common's default — the **iSCSI** directory — which holds no file for an NFS storeid;
+  the call got no password and died, leaving NFS `get_identity` non-functional. With
+  type-aware resolution it now reads the NFS directory and `get_identity` works (see
+  Risk #4).
 
 ---
 
@@ -347,7 +352,7 @@ Obsolete constants / vars:
 
 ## Relationship to Other Designs
 
-- [jdssc execution lock](jdssc-execution-lock-design.md) — this is the prerequisite
+- [jdssc execution lock](multi-layer-lock-design.md) — this is the prerequisite
   for that design's **Open Question #2 (NFS parity)**: NFS can only share one
   `$ctx->{_held_locks}` with its method lock once it stops building a fresh `$ctx`
   for jdssc. This unification removes the **wrapper** (the password-driven fresh
@@ -482,7 +487,7 @@ The three call sites above are only the *direct* jdssc callers. Across the
 dropped at every plugin→NFSCommon boundary. The NFS plugin's locked methods (`_volume_snapshot_rollback`,
 `_volume_snapshot_delete`, `_activate_volume`, `_deactivate_volume`, …) hold their
 **method lock** on one `$ctx` but then call these helpers with `$scfg, $storeid`,
-which build a *different* `$ctx`. For the [jdssc execution lock](jdssc-execution-lock-design.md)'s
+which build a *different* `$ctx`. For the [jdssc execution lock](multi-layer-lock-design.md)'s
 `run_refreshed` / re-entry guard to see the outer method lock, **one `$ctx` must run
 from method entry through the jdssc call** — i.e. these helper signatures change to
 `($ctx, …)` and every caller passes the threaded `$ctx`.
