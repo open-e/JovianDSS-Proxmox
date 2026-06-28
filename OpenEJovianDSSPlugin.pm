@@ -326,7 +326,15 @@ $SYSTEMCTL = undef if !-X $SYSTEMCTL;
 
 sub path {
     my ( $class, $scfg, $volname, $storeid, $snapname ) = @_;
-    my $ctx = new_ctx($scfg, $storeid);
+    # Thin entry point for PVE core: create the per-operation ctx once and
+    # delegate. Internal callers must use _path() with the ctx of the volume's
+    # own storage so the ctx is built exactly once and threaded down.
+    return _path( $class, new_ctx( $scfg, $storeid ), $volname, $snapname );
+}
+
+sub _path {
+    my ( $class, $ctx, $volname, $snapname ) = @_;
+    my $scfg = $ctx->{scfg};
     debugmsg($ctx, 'debug', "Path start for volume ${volname} "
           . safe_var_print( "snapshot", $snapname )
           . "\n");
@@ -538,8 +546,8 @@ sub _rename_volume {
         $new_volname_clustered = volume_name_clustered( $ctx, $new_volname );
     } else {
         my $cluster_prefix = OpenEJovianDSS::Common::get_cluster_prefix($ctx);
-        $new_volname_clustered = $class->find_free_diskname( $storeid, $scfg, $new_vmid, $original_format,
-                                                             undef, $cluster_prefix );
+        $new_volname_clustered = _find_free_diskname( $class, $ctx, $new_vmid, $original_format,
+                                                      undef, $cluster_prefix );
     }
 
     my $original_volname_clustered = volume_name_clustered( $ctx, $original_volname );
@@ -719,7 +727,7 @@ sub _clone_image {
       $class->parse_volname($volname);
 
     my $cluster_prefix = OpenEJovianDSS::Common::get_cluster_prefix($ctx);
-    my $clone_name_clustered = $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt, undef, $cluster_prefix );
+    my $clone_name_clustered = _find_free_diskname( $class, $ctx, $vmid, $fmt, undef, $cluster_prefix );
 
 
     my $volname_clustered = volume_name_clustered( $ctx, $volname );
@@ -731,7 +739,7 @@ sub _clone_image {
     my $max_retries = 10;
     for my $attempt ( 1 .. $max_retries ) {
         if ( $attempt > 1 ) {
-            $clone_name_clustered = $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt, undef, $cluster_prefix);
+            $clone_name_clustered = _find_free_diskname( $class, $ctx, $vmid, $fmt, undef, $cluster_prefix);
             debugmsg( $ctx, "warn",
                 "clone_image retry ${attempt}/${max_retries}: retrying with new candidate name ${clone_name_clustered}\n" );
         }
@@ -791,8 +799,16 @@ sub _clone_image {
 
 sub find_free_diskname {
     my ($class, $storeid, $scfg, $vmid, $fmt, $add_fmt_suffix, $cluster_prefix) = @_;
+    # Thin entry point for PVE core: create the per-operation ctx once and
+    # delegate. Internal callers must use _find_free_diskname() with the ctx of
+    # the volume's own storage so the ctx is built exactly once and threaded down.
+    return _find_free_diskname( $class, new_ctx( $scfg, $storeid ),
+        $vmid, $fmt, $add_fmt_suffix, $cluster_prefix );
+}
 
-    my $ctx = new_ctx($scfg, $storeid);
+sub _find_free_diskname {
+    my ($class, $ctx, $vmid, $fmt, $add_fmt_suffix, $cluster_prefix) = @_;
+
     my $pool = get_pool($ctx);
 
     $fmt //= '';
@@ -848,7 +864,7 @@ sub _alloc_image {
         $volume_name_clustered = volume_name_clustered( $ctx, $volume_name );
     } else {
         $volume_name_clustered =
-            $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt, undef, $cluster_prefix );
+            _find_free_diskname( $class, $ctx, $vmid, $fmt, undef, $cluster_prefix );
         debugmsg( $ctx, "debug",
             "Searching for free volume name for vm ${vmid} format ${fmt}" );
     }
@@ -876,7 +892,7 @@ sub _alloc_image {
             # skip any volume that appeared in JovianDSS since the last check.
             if ( $attempt > 1 && !defined($volume_name) ) {
                 $volume_name_clustered =
-                    $class->find_free_diskname( $storeid, $scfg, $vmid, $fmt, undef, $cluster_prefix );
+                    _find_free_diskname( $class, $ctx, $vmid, $fmt, undef, $cluster_prefix );
                 debugmsg( $ctx, "warn",
                     "alloc_image retry ${attempt}/${max_retries}: "
                   . "retrying with new candidate name ${volume_name_clustered}\n" );
@@ -1842,7 +1858,8 @@ sub update_volume_attribute {
 sub qemu_blockdev_options {
     my ($class, $scfg, $storeid, $volname, $machine_version, $options) = @_;
 
-    my ($path) = $class->path($scfg, $volname, $storeid, $options->{'snapshot-name'});
+    my $ctx = new_ctx($scfg, $storeid);
+    my ($path) = _path($class, $ctx, $volname, $options->{'snapshot-name'});
     my $blockdev = { driver => 'host_device', filename => $path };
     return $blockdev;
 }

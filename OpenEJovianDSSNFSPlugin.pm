@@ -136,7 +136,15 @@ sub options {
 # It does not check if actual object exists
 sub path {
     my ( $class, $scfg, $volname, $storeid, $snapname ) = @_;
-    my $ctx = new_ctx($scfg, $storeid);
+    # Thin entry point for PVE core: create the per-operation ctx once and
+    # delegate. Internal callers must use _path() with the ctx of the volume's
+    # own storage so the ctx is built exactly once and threaded down.
+    return _path( $class, new_ctx( $scfg, $storeid ), $volname, $snapname );
+}
+
+sub _path {
+    my ( $class, $ctx, $volname, $snapname ) = @_;
+    my $scfg = $ctx->{scfg};
     OpenEJovianDSS::Common::debugmsg($ctx, 'debug', "Path start for volume ${volname} "
           . OpenEJovianDSS::Common::safe_var_print( "snapshot", $snapname )
           . "\n");
@@ -366,7 +374,7 @@ sub volume_snapshot {
     OpenEJovianDSS::Common::debugmsg( $ctx, 'debug',
         "Creating snapshot ${snap} for dataset ${datname}\n" );
 
-    my $vol_path = $class->path($scfg, $volname, $storeid, undef);
+    my $vol_path = _path($class, $ctx, $volname, undef);
 
     die "volume ${volname} not found at path ${vol_path}\n"
         unless -e $vol_path;
@@ -477,8 +485,8 @@ sub _volume_snapshot_rollback {
 
     # Here we have share active and mounted
 
-    my $vol_path = $class->path($scfg, $volname, $storeid, undef);
-    my $snap_path = $class->path($scfg, $volname, $storeid, $snapname);
+    my $vol_path = _path($class, $ctx, $volname, undef);
+    my $snap_path = _path($class, $ctx, $volname, $snapname);
 
     OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
         "Rollback paths:\n"
@@ -861,7 +869,7 @@ sub _deactivate_volume {
         OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
             "Proceed to volume ${volname} deactivation as snapname is empty");
     }
-    my $vol_path = $class->path($scfg, $volname, $storeid, undef);
+    my $vol_path = _path($class, $ctx, $volname, undef);
 
     my $sync_cmd = ['/usr/bin/sync', $vol_path];
     eval {
