@@ -1897,9 +1897,11 @@ sub on_add_hook {
         die "chap_user_password is required when chap_enabled is set\n"
             unless defined OpenEJovianDSS::Common::get_chap_user_password($ctx);
     }
-    # PVE 9.x assigns this hook's return value to the API result 'config'
-    # field, which is schema-typed as an object. Return undef (no
-    # server-generated properties) so result verification does not fail.
+    # undef is the correct return value here (same as PVE's base Plugin.pm default).
+    # Config.pm only sets $res->{config} = $returned_config if $returned_config,
+    # so undef means the 'config' key is simply omitted from the API response —
+    # it never becomes JSON null. Only plugins that generate server-side properties
+    # (e.g. PBS encryption-key) return a hashref here.
     return undef;
 }
 
