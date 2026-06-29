@@ -156,6 +156,10 @@ use constant {
     PLUGIN_PASSWORD_DIR_BASE             => '/etc/pve/priv/storage',
     JOVIANDSS_ISCSI_LOCK_PATH            => '/etc/pve/priv/lock/joviandss-iscsi-target-global-lock',
     JOVIANDSS_ISCSI_CHANGE_LOCK_TIMEOUT_MAX => 115,  # must stay below pmxcfs CFS_LOCK_TIMEOUT (120 s)
+    # Max jdssc execution timeout while a Proxmox cluster (pmxcfs) lock is held. run_command
+    # uses timeout+1, so the jdssc process runs <= 118 s — under the 120 s pmxcfs
+    # CFS_LOCK_TIMEOUT, leaving ~2 s margin so the held cluster lock can never expire mid-run.
+    PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX     => 117,
 };
 
 
@@ -202,6 +206,7 @@ sub get_default_path             { die "Please set up path property in storage.c
 sub get_default_target_prefix    { return $default_target_prefix }
 sub get_default_log_file         { return $default_log_file }
 sub get_max_iscsi_change_lock_timeout         { return JOVIANDSS_ISCSI_CHANGE_LOCK_TIMEOUT_MAX }
+sub get_proxmox_cluster_lock_timeout_max      { return PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX }
 sub get_default_iscsi_change_lock_timeout     { return $default_iscsi_change_lock_timeout }
 sub get_default_jdssc_timeout         { return $default_jdssc_timeout }
 sub get_default_iscsi_target_global_lock_path { return JOVIANDSS_ISCSI_LOCK_PATH }
@@ -619,10 +624,11 @@ sub get_cluster_prefix {
     my $scfg = $ctx->{scfg};
     if (defined( $scfg->{cluster_prefix}) ) {
         my $prefix = $scfg->{cluster_prefix};
-        if ($prefix =~ /[[:alnum:]]/) {
-            $prefix = safe_word( $prefix );
-            return $prefix;
+        if ($prefix =~ /^([a-zA-Z][a-zA-Z0-9]*)$/) {
+            return $1;
         }
+        die "cluster_prefix '${prefix}' is invalid: only letters and digits are allowed, "
+          . "and it must start with a letter\n";
     }
     return undef;
 }
