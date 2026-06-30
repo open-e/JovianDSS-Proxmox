@@ -326,12 +326,19 @@ $SYSTEMCTL = undef if !-X $SYSTEMCTL;
 
 sub path {
     my ( $class, $scfg, $volname, $storeid, $snapname ) = @_;
-    # Thin entry point for PVE core: create the per-operation ctx once and
-    # delegate. Internal callers must use _path() with the ctx of the volume's
-    # own storage so the ctx is built exactly once and threaded down.
-    return _path( $class, new_ctx( $scfg, $storeid ), $volname, $snapname );
+    # Thin entry point for PVE core: create the per-operation ctx once, delegate,
+    # then map _path()'s fixed [$path, $vmid, $vtype] shape onto PVE's wantarray
+    # contract here, at the top level. Internal callers must use _path() with the
+    # ctx of the volume's own storage so the ctx is built exactly once and threaded
+    # down.
+    my ( $path, $vmid, $vtype ) =
+      @{ _path( $class, new_ctx( $scfg, $storeid ), $volname, $snapname ) };
+    return wantarray ? ( $path, $vmid, $vtype ) : $path;
 }
 
+# _path always returns a fixed-shape arrayref [$path, $vmid, $vtype] and never
+# branches on wantarray (internal helper convention — context handling lives only
+# in the top-level path()). $path is undef when the volume does not exist.
 sub _path {
     my ( $class, $ctx, $volname, $snapname ) = @_;
     my $scfg = $ctx->{scfg};
@@ -369,7 +376,7 @@ sub _path {
                 $clean_error =~ s/\s+$//;
                 if ($clean_error =~ /^JDSS resource .+ does not exist\.$/) {
                     debugmsg($ctx, "debug", "Volume $volname does not exist: ${clean_error}");
-                    return wantarray ? ( undef, $vmid, $vtype ) : undef;
+                    return [ undef, $vmid, $vtype ];
                 }
                 debugmsg($ctx, "error",
                     "Unable to identify expected block device path for volume "
@@ -382,7 +389,7 @@ sub _path {
                 debugmsg($ctx, 'debug', "Path after activation of volume ${volname} "
                       . safe_var_print( "snapshot", $snapname )
                       . "${path}\n");
-                return wantarray ? ( $path, $vmid, $vtype ) : $path;
+                return [ $path, $vmid, $vtype ];
             }
         }
 
@@ -429,7 +436,7 @@ sub _path {
                   . safe_var_print( "snapshot", $snapname )
                   . "${pathval}\n");
 
-            return wantarray ? ( $pathval, $vmid, $vtype ) : $pathval;
+            return [ $pathval, $vmid, $vtype ];
         }
 
         # Check if we actually have multiple records or if this is a different error
@@ -463,10 +470,12 @@ sub _path {
 
     }
     else {
-        $path = $class->filesystem_path( $scfg, $volname, $snapname );
+        # filesystem_path is wantarray-aware; capture its full triple in list
+        # context and box it into the fixed shape.
+        my ( $fs_path, $fs_vmid, $fs_vtype ) =
+          $class->filesystem_path( $scfg, $volname, $snapname );
+        return [ $fs_path, $fs_vmid, $fs_vtype ];
     }
-
-    return $path;
 }
 
 sub rename_volume {
@@ -1858,8 +1867,13 @@ sub update_volume_attribute {
 sub qemu_blockdev_options {
     my ($class, $scfg, $storeid, $volname, $machine_version, $options) = @_;
 
-    my $ctx = new_ctx($scfg, $storeid);
-    my ($path) = _path($class, $ctx, $volname, $options->{'snapshot-name'});
+    my $ctx      = new_ctx($scfg, $storeid);
+    my $snapname = $options->{'snapshot-name'};
+
+    # _path returns a fixed [$path, $vmid, $vtype] arrayref; only the
+    # block-device path is needed here.
+    my ( $path, $vmid, $vtype ) = @{ _path( $class, $ctx, $volname, $snapname ) };
+
     my $blockdev = { driver => 'host_device', filename => $path };
     return $blockdev;
 }
