@@ -242,6 +242,8 @@ class Volumes():
         if cluster_prefix:
             search_prefix = "{0}_{1}".format(cluster_prefix, volume_prefix)
 
+        volume_suffix = self.args.get('volume_suffix')
+
         present_volumes = []
         data = self.jdss.list_volumes()
 
@@ -252,8 +254,8 @@ class Volumes():
 
         for i in range(0, sys.maxsize):
             nname = volume_prefix + str(i)
-            # if self.args['suffix']:
-            #    nname = nname + self.args['suffix']
+            if volume_suffix:
+                nname = nname + volume_suffix
 
             # Compare and look up using the stored (clustered) idname so
             # existing volumes are detected, but return the bare name below.
