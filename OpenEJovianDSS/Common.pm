@@ -97,9 +97,7 @@ our @EXPORT_OK = qw(
   get_create_base_path
   get_multipath
 
-  get_iscsi_change_lock_timeout
   get_jdssc_timeout
-  get_iscsi_target_global_lock_path
   get_log_level
 
   password_file_set_password
@@ -281,22 +279,10 @@ sub get_target_prefix {
     return safe_word( clean_word($prefix) );
 }
 
-sub get_iscsi_change_lock_timeout {
-    my ($ctx) = @_;
-    my $scfg = $ctx->{scfg};
-    return int( $scfg->{iscsi_change_lock_timeout} || $default_iscsi_change_lock_timeout );
-}
-
 sub get_jdssc_timeout {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
     return int( $scfg->{jdssc_timeout} || $default_jdssc_timeout );
-}
-
-sub get_iscsi_target_global_lock_path {
-    my ($ctx) = @_;
-    my $scfg = $ctx->{scfg};
-    return $scfg->{iscsi_target_global_lock_path} || JOVIANDSS_ISCSI_LOCK_PATH;
 }
 
 sub get_luns_per_target {
@@ -936,15 +922,11 @@ sub joviandss_cmd {
         push @$connection_options, '-c', $config_file;
     }
 
-    my $lock_path        = get_iscsi_target_global_lock_path($ctx);
-    my $lock_timeout     = get_iscsi_change_lock_timeout($ctx);
     my $process_timeout  = get_jdssc_timeout($ctx);
     $timeout //= $process_timeout;
     $timeout = $process_timeout + 5
         if $timeout < $process_timeout + 5;
     push @$connection_options,
-        '--iscsi-target-lock-path',    $lock_path,
-        '--iscsi-change-lock-timeout', $lock_timeout,
         '--timeout',                   $process_timeout;
 
     while ( $retry_count <= $retries ) {

@@ -28,7 +28,6 @@ from jdssc.jovian_common.exception import (
     JDSSLockReleaseError,
 )
 
-import jdssc.lock as jlock
 import jdssc.pool as pool
 
 import logging
@@ -131,19 +130,6 @@ def parse_args():
                         required=False,
                         default=None,
                         help='Unique request identifier to include in log output')
-
-    parser.add_argument('--iscsi-target-lock-path',
-                        dest='iscsi_target_lock_path',
-                        default=jlock.DEFAULT_LOCK_PATH,
-                        required=False,
-                        help='pmxcfs lock directory path for iSCSI target serialization (default: %(default)s)')
-
-    parser.add_argument('--iscsi-change-lock-timeout',
-                        dest='iscsi_change_lock_timeout',
-                        type=int,
-                        default=jlock.MAX_ISCSI_CHANGE_LOCK_TIMEOUT,
-                        required=False,
-                        help='Seconds to wait for iSCSI target lock acquisition (default: %(default)s)')
 
     parser.add_argument('--timeout',
                         dest='timeout',
@@ -309,10 +295,6 @@ def unify_config_options(args, cfg):
 
     if args.user_password:
         cfg['san_password'] = args.user_password
-
-    cfg['iscsi_target_lock_path'] = args.iscsi_target_lock_path
-
-    cfg['lock_timeout'] = args.iscsi_change_lock_timeout
 
     return cfg
 
