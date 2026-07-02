@@ -660,7 +660,7 @@ sub get_content_volume_size {
     my $scfg = $ctx->{scfg};
 
     my $size = $scfg->{content_volume_size} || $default_content_size;
-return $size;
+    return $size;
 }
 
 sub get_content_path {
@@ -966,14 +966,6 @@ sub joviandss_cmd {
         }
 
         if ( $err && $err =~ /jdssc process timed out/ ) {
-            $retry_count++;
-            $msg = '';
-            $err = undef;
-            sleep( 3 + int( rand( 5 ) ) );
-            next;
-        }
-
-        if ( $err && $err =~ /(?:Not enough time to acquire|Could not acquire) iSCSI target lock/ ) {
             $retry_count++;
             $msg = '';
             $err = undef;
