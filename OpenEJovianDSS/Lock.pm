@@ -15,20 +15,36 @@
 
 package OpenEJovianDSS::Lock;
 
+# Scope-typed lock primitive shared by the iSCSI and NFS plugins — see
+# docs/design/multi-layer-lock-design.md (the accepted design this module
+# implements).
+#
+# One public entry point, with_lock($ctx, $lock_class, $id, ...), serves every
+# lock: the per-VM / per-storage method locks and the per-jdssc-invocation
+# component locks (jdssc_cluster / jdssc_node, reserved multipath). A lock's
+# scope comes from its class's <class>_lock_type storage.cfg property (per-class
+# default otherwise); two backends implement it: pmxcfs mkdir (cluster reach,
+# CFS_LOCK_TIMEOUT idle expiry) and node-local flock (never expires, freed on
+# process death). All held locks share one registry in $ctx->{_held_locks} —
+# the re-entry guard, the keep-alive refresh and the hold-cap deadline all
+# operate on it, which is why one $ctx must thread through a whole locked
+# operation (never new_ctx under a held lock).
+
 use strict;
 use warnings;
 
+use Carp ();
 use Exporter 'import';
 
-use File::Path  qw(make_path);
-use File::stat  ();
-use PVE::Cluster ();
-use PVE::Tools  qw(lock_file);
+use File::Basename ();
+use File::Path     qw(make_path);
+use File::stat     ();
+use Time::HiRes    ();
+use PVE::Cluster   ();
+use PVE::Tools     qw(lock_file);
 
 our @EXPORT_OK = qw(
-    lock_storage
-    lock_vm
-    touch_cluster_lock
+    with_lock
 );
 
 our %EXPORT_TAGS = ( all => [@EXPORT_OK] );
@@ -45,14 +61,285 @@ sub _cluster_lockdir {
 }
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Per-class constants
+# ---------------------------------------------------------------------------
+#
+# Every per-class value is a FLAT, individually named constant — greppable,
+# referenceable directly, compile-time checked where used by name. The LOCK_*
+# maps below only WIRE those constants to their class keys: the maps exist
+# because the class arrives as a runtime variable and needs a lookup — no value
+# is ever defined inside a map.
+
+# default scope per class
+use constant LOCK_CLASS_JDSSC_CLUSTER_DEFAULT_TYPE => 'cluster';
+use constant LOCK_CLASS_JDSSC_NODE_DEFAULT_TYPE    => 'node';
+use constant LOCK_CLASS_MULTIPATH_DEFAULT_TYPE     => 'node';
+use constant LOCK_CLASS_VM_DEFAULT_TYPE            => 'vm';
+use constant LOCK_CLASS_STORAGE_DEFAULT_TYPE       => 'storage';
+
+# seconds to WAIT to acquire, per class
+use constant LOCK_CLASS_JDSSC_CLUSTER_ACQUIRE_TIMEOUT => 600;    # = PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX
+use constant LOCK_CLASS_JDSSC_NODE_ACQUIRE_TIMEOUT    => 10;
+use constant LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT     => 10;
+use constant LOCK_CLASS_VM_ACQUIRE_TIMEOUT            => 600;
+use constant LOCK_CLASS_STORAGE_ACQUIRE_TIMEOUT       => 600;
+
+# hold cap: run_bounded alarm + refresh_locks deadline. The jdssc caps sit just
+# above run_command's kill (PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX + 1) so a
+# legitimate maximal run never trips enforcement, yet below CFS_LOCK_TIMEOUT.
+use constant LOCK_CLASS_JDSSC_CLUSTER_HOLD_TIMEOUT => 119;
+use constant LOCK_CLASS_JDSSC_NODE_HOLD_TIMEOUT    => 119;
+use constant LOCK_CLASS_MULTIPATH_HOLD_TIMEOUT     => 60;
+use constant LOCK_CLASS_VM_HOLD_TIMEOUT            => 600;
+use constant LOCK_CLASS_STORAGE_HOLD_TIMEOUT       => 600;
+
+# class-key → constant wiring, used by the getters for runtime dispatch.
+# LOCK_DEFAULT_TYPE's key set doubles as the valid-class list (with_lock dies
+# on any other key).
+use constant LOCK_DEFAULT_TYPE => {
+    jdssc_cluster => LOCK_CLASS_JDSSC_CLUSTER_DEFAULT_TYPE,
+    jdssc_node    => LOCK_CLASS_JDSSC_NODE_DEFAULT_TYPE,
+    multipath     => LOCK_CLASS_MULTIPATH_DEFAULT_TYPE,
+    vm            => LOCK_CLASS_VM_DEFAULT_TYPE,
+    storage       => LOCK_CLASS_STORAGE_DEFAULT_TYPE,
+};
+use constant LOCK_CLASS_ACQUIRE_TIMEOUT => {
+    jdssc_cluster => LOCK_CLASS_JDSSC_CLUSTER_ACQUIRE_TIMEOUT,
+    jdssc_node    => LOCK_CLASS_JDSSC_NODE_ACQUIRE_TIMEOUT,
+    multipath     => LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT,
+    vm            => LOCK_CLASS_VM_ACQUIRE_TIMEOUT,
+    storage       => LOCK_CLASS_STORAGE_ACQUIRE_TIMEOUT,
+};
+use constant LOCK_CLASS_HOLD_TIMEOUT => {
+    jdssc_cluster => LOCK_CLASS_JDSSC_CLUSTER_HOLD_TIMEOUT,
+    jdssc_node    => LOCK_CLASS_JDSSC_NODE_HOLD_TIMEOUT,
+    multipath     => LOCK_CLASS_MULTIPATH_HOLD_TIMEOUT,
+    vm            => LOCK_CLASS_VM_HOLD_TIMEOUT,
+    storage       => LOCK_CLASS_STORAGE_HOLD_TIMEOUT,
+};
+
+# Explicit lock-class property names — NO runtime "${class}_lock_*" key
+# building. Every storage.cfg property a class understands is spelled out here,
+# so each name is greppable and adding a class is a deliberate row, not a key
+# conjured from string interpolation.
+use constant LOCK_CLASS_PROPERTY => {
+    jdssc_cluster => { type => 'jdssc_cluster_lock_type', dir => 'jdssc_cluster_lock_path',
+                       acquire => 'jdssc_cluster_lock_acquire_timeout', hold => 'jdssc_cluster_lock_hold_timeout' },
+    jdssc_node    => { type => 'jdssc_node_lock_type',    dir => 'jdssc_node_lock_path',
+                       acquire => 'jdssc_node_lock_acquire_timeout',    hold => 'jdssc_node_lock_hold_timeout' },
+    multipath     => { type => 'multipath_lock_type',     dir => 'multipath_lock_path',
+                       acquire => 'multipath_lock_acquire_timeout',     hold => 'multipath_lock_hold_timeout' },
+    vm            => { type => 'vm_lock_type',            dir => 'vm_lock_path',
+                       acquire => 'vm_lock_acquire_timeout',            hold => 'vm_lock_hold_timeout' },
+    storage       => { type => 'storage_lock_type',       dir => 'storage_lock_path',
+                       acquire => 'storage_lock_acquire_timeout',       hold => 'storage_lock_hold_timeout' },
+};
+
+# ---------------------------------------------------------------------------
+# Per-class property getters
 # ---------------------------------------------------------------------------
 
-# Replace characters that are not safe in a filename/lockid with '_'.
-sub _sanitize_lockid {
-    my ($s) = @_;
-    $s =~ s/[^a-zA-Z0-9\-_]/_/g;
-    return $s;
+# Read a class's explicit scfg property for one attribute (undef if the class
+# declares none). Two-step lookup on purpose: a one-step
+# ->{$lock_class}{$attr} on an unknown class would AUTOVIVIFY an empty hash
+# inside the shared LOCK_CLASS_PROPERTY constant.
+sub _lock_class_scfg {
+    my ($ctx, $lock_class, $attr) = @_;
+
+    my $props = LOCK_CLASS_PROPERTY->{$lock_class} or return undef;
+    my $prop  = $props->{$attr}                    or return undef;
+
+    return $ctx->{scfg}{$prop};
+}
+
+# Each getter resolves one attribute for a class: the operator's explicit
+# <class>_lock_<attr> override from storage.cfg (looked up by literal name via
+# LOCK_CLASS_PROPERTY), else the class's flat default constant via the wiring
+# map. No trailing global fallbacks: with_lock has already validated the class
+# against LOCK_DEFAULT_TYPE, and the LOCK_* maps are key-complete by invariant.
+
+sub get_lock_class_type {
+    my ($ctx, $lock_class) = @_;
+
+    my $type = _lock_class_scfg($ctx, $lock_class, 'type')
+            // LOCK_DEFAULT_TYPE->{$lock_class};
+
+    # 'vm' / 'storage' are structural to their namesake classes (the class id
+    # keys the lock name); component classes accept 'node' / 'cluster' only.
+    die "invalid ${lock_class}_lock_type '$type'\n"
+        unless $type eq 'node' || $type eq 'cluster' || $type eq $lock_class;
+
+    return $type;
+}
+
+sub get_lock_class_dir {
+    my ($ctx, $lock_class) = @_;
+
+    return _lock_class_scfg($ctx, $lock_class, 'dir');    # undef → backend default dir
+}
+
+sub get_lock_class_acquire_timeout {
+    my ($ctx, $lock_class) = @_;
+
+    return _lock_class_scfg($ctx, $lock_class, 'acquire')
+        // LOCK_CLASS_ACQUIRE_TIMEOUT->{$lock_class};
+}
+
+sub get_lock_class_hold_timeout {
+    my ($ctx, $lock_class) = @_;
+
+    return _lock_class_scfg($ctx, $lock_class, 'hold')
+        // LOCK_CLASS_HOLD_TIMEOUT->{$lock_class};
+}
+
+# ---------------------------------------------------------------------------
+# Scope-to-path resolution
+# ---------------------------------------------------------------------------
+
+# Maps the resolved (scope, class, id) → (backend, lock path) — the one place
+# lock paths are built; callers pass a class + id, never a path or a scope.
+sub _lock_resolve {
+    my ($ctx, $type, $lock_class, $id) = @_;
+
+    # id-keyed classes: 'vm' is keyed by the vmid (passed as $id); 'storage' by
+    # the storeid (intrinsic to $ctx). Singleton classes have no id.
+    my $key = $lock_class eq 'storage' ? $ctx->{storeid} : $id;
+    $key = OpenEJovianDSS::Common::safe_word(
+               OpenEJovianDSS::Common::clean_word($key), "lock id") if defined $key;
+    my $name = defined $key ? "joviandss-lock-${lock_class}-${key}"
+                            : "joviandss-lock-${lock_class}";
+
+    # Directory is set by the resolved backend; node = this host's local
+    # /run/lock tmpfs (already per-PVE-server), cluster = pmxcfs, non-shared
+    # vm/storage = the storage's own directory.
+    my ($backend, $default_dir) =
+          $type eq 'node'    ? ('node',    '/run/lock')
+        : $type eq 'cluster' ? ('cluster', _cluster_lockdir())
+        : OpenEJovianDSS::Common::get_shared($ctx)
+                             ? ('cluster', _cluster_lockdir())
+        :                      ('node',    OpenEJovianDSS::Common::get_path($ctx) . '/private/lock');
+
+    my $dir = get_lock_class_dir($ctx, $lock_class) // $default_dir;
+    return ($backend, "$dir/$name");
+}
+
+# ---------------------------------------------------------------------------
+# Held-lock registry: re-entry guard, keep-alive refresh, hold deadline
+# ---------------------------------------------------------------------------
+#
+# $ctx->{_held_locks} is initialized to [] in Common::new_ctx. Records are
+# added by _lock_enter BEFORE acquisition (the cluster poll loop needs the
+# in-flight target registered) and removed BY PATH by _lock_leave — never a
+# LIFO pop.
+
+sub _lock_enter {
+    my ($ctx, $backend, $path) = @_;
+
+    for my $lock (@{ $ctx->{_held_locks} }) {
+        next if $lock->{path} ne $path;
+        Carp::confess(
+            "LOCK BUG: '$path' is already held — re-locking it is forbidden and "
+          . "would deadlock; this must never happen, please report it to the dev "
+          . "team.\n\n=== held since ===\n$lock->{acquired_at}\n"
+          . "=== re-lock attempted here ===" );    # confess appends the current stack
+    }
+
+    push @{ $ctx->{_held_locks} },
+        { backend     => $backend,
+          path        => $path,
+          acquired_at => Carp::longmess("acquired '$path'"),
+          deadline    => undef };    # armed at acquisition by _lock_arm_deadline
+}
+
+sub _lock_leave {
+    my ($ctx, $path) = @_;
+
+    @{ $ctx->{_held_locks} } = grep { $_->{path} ne $path } @{ $ctx->{_held_locks} };
+}
+
+# Arm the wall-clock hold deadline for a registered lock. Called at the top of
+# the locked body — the lock is held at that point, so this marks the start of
+# the hold. Never call it from _lock_enter: that precedes the acquisition wait,
+# and a contended cluster acquisition (whose acquire bound far exceeds its hold
+# cap) would die on its first refresh.
+sub _lock_arm_deadline {
+    my ($ctx, $path, $max_hold) = @_;
+
+    return if !$max_hold;
+
+    for my $lock (@{ $ctx->{_held_locks} }) {
+        next if $lock->{path} ne $path;
+        $lock->{deadline} = time() + $max_hold;
+        last;
+    }
+}
+
+# Backend-agnostic keep-alive AND wall-clock hold-cap enforcement — called by
+# run_refreshed around every locked body and by the cluster poll loop each
+# iteration. $skip_path is a lock being acquired right now: it is skipped so
+# the acquisition's utime(0,0) stale-poke is not overwritten with a fresh
+# mtime (and it has no deadline yet).
+sub refresh_locks {
+    my ($ctx, $skip_path) = @_;
+
+    for my $lock (@{ $ctx->{_held_locks} }) {
+        next if defined $skip_path && $lock->{path} eq $skip_path;
+
+        # Wall-clock hold cap: overrun → die → the normal exception-safe
+        # unwind releases everything held.
+        die "lock '$lock->{path}' held past its hold cap — aborting to release it\n"
+            if $lock->{deadline} && time() > $lock->{deadline};
+
+        if ($lock->{backend} eq 'cluster') {
+            utime(undef, undef, $lock->{path});    # pmxcfs: reset the CFS_LOCK_TIMEOUT idle timer
+        }
+        # 'node' (flock): no-op — never expires
+    }
+}
+
+# Exception-safe refresh bracket around a locked body: the post-refresh runs
+# even if the body dies, so a held lock is never left un-refreshed right before
+# a retry sleep. Returns a single scalar/ref — see the design's Return
+# convention (lock_file runs $code in scalar context; never wantarray here).
+sub run_refreshed {
+    my ($ctx, $code, @param) = @_;
+
+    refresh_locks($ctx);
+    my $res;
+    my $ok  = eval { $res = $code->(@param); 1 };
+    my $err = $@;
+    refresh_locks($ctx);
+    die $err if !$ok;
+    return $res;
+}
+
+# run_bounded($max_hold, $code, @param) — pure-Perl-hang backstop: run the held
+# body under a hold alarm. Overrun → die → lock releases on unwind. $max_hold
+# 0/undef → no cap. Outer alarm saved/restored. Nested alarm users
+# (run_command, lock_file waits) suspend this alarm — the wall-clock hold bound
+# is the deadline check in refresh_locks, not this. Deliberately NO kill here:
+# this wrapper owns no process (a runaway jdssc is killed by run_command's own
+# timeout); its enforcement is the die, whose unwind is what releases the lock.
+sub run_bounded {
+    my ($max_hold, $code, @param) = @_;
+
+    return $code->(@param) unless $max_hold;
+
+    my $prev = alarm(0);                 # suspend any outer alarm
+    my $res;
+    my $ok = eval {
+        local $SIG{ALRM} =
+            sub { die "lock hold exceeded ${max_hold}s — aborting to release the lock\n" };
+        alarm($max_hold);
+        $res = $code->(@param);
+        alarm(0);
+        1;
+    };
+    my $err = $@;
+    alarm(0);
+    alarm($prev) if $prev;               # restore outer alarm (best-effort)
+    die $err if !$ok;
+    return $res;
 }
 
 # ---------------------------------------------------------------------------
@@ -60,10 +347,10 @@ sub _sanitize_lockid {
 # ---------------------------------------------------------------------------
 #
 # Modelled on the private $cfs_lock closure in PVE::Cluster
-# (pve-cluster/src/PVE/Cluster.pm:601) with three additions:
+# (pve-cluster/src/PVE/Cluster.pm:601) with these differences:
 #
 #   1. Retry-friendly acquisition error string ("acquire timeout") so that
-#      _cluster_lock can detect and retry acquisition-only failures.
+#      _cluster_lock_path can detect and retry acquisition-only failures.
 #
 #   2. Quorum check on lock failure: if the lock was never acquired, test
 #      the write bit on /etc/pve/local (pmxcfs clears it on quorum loss)
@@ -71,11 +358,29 @@ sub _sanitize_lockid {
 #
 #   3. $is_code_err flag: set to 1 after cfs_update() and before $code so
 #      that errors from $code are re-raised as-is while lock-machinery errors
-#      (including cfs_update failures and execution timeout) are prefixed with
+#      (including cfs_update failures) are prefixed with
 #      "joviandss-lock '$lockid' error: ...".
 #
-# The execution alarm is set to 119s — safely within pmxcfs's ~120s stale-lock
-# release window, matching the PVE::Cluster convention.
+#   4. Deadline-based acquisition accounting: any inter-poll sleep — fixed,
+#      backed-off or jittered — charges itself against the budget (no
+#      per-sleep bookkeeping).
+#
+#   5. Poll backoff + jitter, driven by the PROXMOX_CLUSTER_POLL_* constants:
+#      contending nodes spread out instead of polling in lockstep, and a
+#      long-held lock backs the loop off toward the cap.
+#
+#   6. Each iteration refreshes every OTHER lock this $ctx already holds
+#      (refresh_locks with the in-flight target skipped), so queueing behind a
+#      contended lock never lets an already-held outer lock be stale-reclaimed
+#      while its owner is alive.
+#
+#   7. NO internal execution alarm around $code: the per-class hold cap
+#      (run_bounded + the refresh_locks deadline, with the cluster-backend
+#      alarm ceiling applied in _lock_exec) supersedes the old hardcoded 119 s
+#      alarm.
+#
+#   8. NO registry bookkeeping here: _lock_enter/_lock_leave in _lock_exec own
+#      $ctx->{_held_locks} (registered before acquisition, removed by path).
 #
 # Returns result of $code on success ($@ = undef).
 # Returns undef and sets $@ on any failure.
@@ -95,34 +400,36 @@ sub _cluster_lock_attempt {
         my $timeout_err = sub { die "acquire timeout\n" };
         local $SIG{ALRM} = $timeout_err;
 
+        my $deadline = time() + $timeout;
+        my $base     = OpenEJovianDSS::Common::PROXMOX_CLUSTER_POLL_BASE_SLEEP();
+
         while (1) {
-            alarm($timeout);
+            my $remaining = $deadline - time();
+            $timeout_err->() if $remaining <= 0;
+
+            alarm( int($remaining) + 1 );    # guard a wedged FUSE mkdir
             $got_lock = mkdir($lockpath);    # atomic on pmxcfs
-            $timeout  = alarm(0) - 1;       # deduct elapsed; sleep costs 1s
+            alarm(0);
 
             last if $got_lock;
 
-            $timeout_err->() if $timeout <= 0;
+            OpenEJovianDSS::Common::debugmsg($ctx, 'debug',
+                "waiting for joviandss lock '$lockid'");
 
-            OpenEJovianDSS::Common::debugmsg($ctx, 'debug', "waiting for joviandss lock '$lockid'");
-            utime(0, 0, $lockpath);          # signal pmxcfs to release stale lock
-            sleep(1);
+            utime(0, 0, $lockpath);          # signal pmxcfs to release a stale lock
+            refresh_locks($ctx, $lockpath);  # keep our held outer locks alive
+
+            Time::HiRes::sleep(
+                $base + rand(OpenEJovianDSS::Common::PROXMOX_CLUSTER_POLL_JITTER_MAX()) );
+            $base += OpenEJovianDSS::Common::PROXMOX_CLUSTER_POLL_BACKOFF_STEP();
+            $base  = OpenEJovianDSS::Common::PROXMOX_CLUSTER_POLL_SLEEP_CAP()
+                if $base > OpenEJovianDSS::Common::PROXMOX_CLUSTER_POLL_SLEEP_CAP();
         }
-
-        # Hard execution timeout: pmxcfs drops locks not touched for ~120s.
-        # We use 119s to stay safely within that window (matching PVE::Cluster).
-        # $is_code_err is set after cfs_update() so that a cfs_update timeout
-        # is classified as a lock-machinery error (prefixed), not a code error.
-        local $SIG{ALRM} = sub { die "execution timed out\n" };
-        alarm(119);
 
         PVE::Cluster::cfs_update();          # ensure latest cluster state
 
-        push @{$ctx->{_active_locks}}, $lockpath;    # track for touch_cluster_lock
-        $is_code_err = 1;                            # errors from here on are from $code
+        $is_code_err = 1;                    # errors from here on are from $code
         $res = &$code(@param);
-
-        alarm(0);
     };
 
     my $err = $@;
@@ -136,9 +443,8 @@ sub _cluster_lock_attempt {
         $err = "no quorum!\n" if !$quorate;
     }
 
-    pop @{$ctx->{_active_locks}} if $got_lock;  # remove before releasing
-    rmdir $lockpath if $got_lock;                # release lock; safe even on error
-    alarm($prev_alarm);                          # restore outer alarm
+    rmdir $lockpath if $got_lock;            # release lock; safe even on error
+    alarm($prev_alarm);                      # restore outer alarm
 
     if ($err) {
         # Code errors are re-raised as-is; lock machinery errors are prefixed.
@@ -156,158 +462,122 @@ sub _cluster_lock_attempt {
 }
 
 # ---------------------------------------------------------------------------
-# Cluster-wide lock — retry loop
+# Cluster-wide lock — acquisition-timeout retry wrapper
 # ---------------------------------------------------------------------------
 #
-# Wraps _cluster_lock_attempt with a retry strategy suited to JovianDSS
-# operations, which can hold a lock for 30-90s under concurrent load.
-#
-# If $timeout is defined:  single attempt with that timeout, no retry.
-# If $timeout is undef:    retry loop — up to 600s total, 120s per attempt,
-#                          retrying only on acquisition timeout (safe to retry
-#                          because the lock was never acquired and no code ran).
-#
-# Returns result of $code on success; returns undef and sets $@ on failure.
+# Retries _cluster_lock_attempt on acquisition timeout only (safe: the lock was
+# never acquired and no code ran) until the acquire budget is spent, then gives
+# up with "got lock request timeout". Keeps _cluster_lock_attempt's convention:
+# returns the result of $code on success ($@ = undef), returns undef and sets
+# $@ on any failure — _lock_exec converts that to a die.
 
-sub _cluster_lock {
-    my ($ctx, $storeid, $lockid, $timeout, $code, @param) = @_;
+sub _cluster_lock_path {
+    my ($ctx, $lockpath, $timeout, $code, @param) = @_;
 
-    my $lockdir     = _cluster_lockdir();
-    my $full_lockid = "joviandss-" . _sanitize_lockid($storeid) . "-" . _sanitize_lockid($lockid);
-    my $lockpath    = "$lockdir/$full_lockid";
+    my $lockdir = File::Basename::dirname($lockpath);
+    my $lockid  = File::Basename::basename($lockpath);
 
-    my $explicit    = defined $timeout;
-    my $max_total   = 1200;
-    my $per_attempt = 119;
-    my $start       = time();
+    my $deadline = time() + $timeout;
 
     while (1) {
-        my $attempt;
-        if ($explicit) {
-            $attempt = $timeout;
-        } else {
-            my $remaining = $max_total - (time() - $start);
-            if ($remaining <= 10) {
-                $@ = "joviandss-lock '$full_lockid' error: got lock request timeout\n";
-                return undef;
-            }
-            $attempt = ($per_attempt < $remaining) ? $per_attempt : int($remaining);
+        my $remaining = $deadline - time();
+        if ($remaining <= 0) {
+            $@ = "joviandss-lock '$lockid' error: got lock request timeout\n";
+            return undef;
         }
 
-        my $res = _cluster_lock_attempt($ctx, $lockdir, $lockpath, $full_lockid, $attempt, $code, @param);
+        my $res = _cluster_lock_attempt($ctx, $lockdir, $lockpath, $lockid,
+                                        $remaining, $code, @param);
 
         # Success: $@ is undef (set by _cluster_lock_attempt on success).
         return $res if !$@;
 
-        my $err = $@;
-
-        # Acquisition timeout without explicit deadline → safe to retry.
-        # Matches "joviandss-lock '...' error: acquire timeout\n" from _cluster_lock_attempt.
-        next if !$explicit && $err =~ /acquire timeout/;
-
-        # Anything else (code error, execution timeout, quorum loss,
-        # explicit-deadline expiry) → propagate immediately.
-        return undef;
+        # Acquisition timeout → retry while budget remains. Anything else
+        # (code error, quorum loss, hold-cap death) → propagate immediately.
+        return undef if $@ !~ /acquire timeout/;
     }
 }
 
 # ---------------------------------------------------------------------------
-# Node-local lock  (POSIX flock)
+# The explicit-path lock primitive
 # ---------------------------------------------------------------------------
-#
-# Uses PVE::Tools::lock_file which holds an exclusive flock on a file under
-# <path>/private/lock/.  Suitable for non-shared storage where all operations
-# on a given storage happen on a single Proxmox node.
-#
-# Re-entrant within the same process: PVE::Tools::lock_file_full tracks open
-# handles per PID in $lock_handles->{$$} and skips re-acquisition if the same
-# file is already locked by the current process.
-#
-# $timeout defaults to 600s (not PVE::Tools' 10s default) because JovianDSS
-# operations can hold the lock for 30-90s under concurrent load.
 
-sub _node_lock {
-    my ($path, $lockid, $timeout, $code, @param) = @_;
+# _lock_exec($ctx, $backend, $path, $timeout, $max_hold, $code, @param)
+# Exclusive only. Dispatches by backend, brackets the work with the re-entry
+# guard, arms the hold deadline at the top of the locked body, and wraps the
+# body in run_bounded + run_refreshed — so with_lock auto-caps and
+# auto-refreshes; callers never do either manually.
+sub _lock_exec {
+    my ($ctx, $backend, $path, $timeout, $max_hold, $code, @param) = @_;
 
-    # Substitute a large default; PVE::Tools' 10s default is too short for
-    # JovianDSS operations that can legitimately take 30-90s under load.
-    $timeout //= 600;
+    _lock_enter($ctx, $backend, $path);    # re-entry guard + register in _held_locks
 
-    my $lockdir  = "$path/private/lock";
-    make_path($lockdir);
+    # Cluster-backend alarm ceiling: a wedged pure-Perl holder reaches no
+    # cooperation point, so only the alarm can stop it — and on pmxcfs it must
+    # die BEFORE a waiter could stale-reclaim at CFS_LOCK_TIMEOUT. The constant
+    # is the ceiling; it applies even when the class cap is 0 (a
+    # backend-correctness invariant, not a class property). The wall-clock
+    # deadline keeps the full class cap.
+    my $alarm_cap = $max_hold;
+    if ( $backend eq 'cluster' ) {
+        my $ceiling = OpenEJovianDSS::Common::PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX();
+        if ( !$alarm_cap || $alarm_cap > $ceiling ) {
+            $alarm_cap = $ceiling;
+        }
+    }
+    my $body = sub {
+        _lock_arm_deadline($ctx, $path, $max_hold);
+        return run_bounded($alarm_cap, sub { run_refreshed($ctx, $code, @param) });
+    };
 
-    my $lockfile = "$lockdir/$lockid";
-
-    my $res = PVE::Tools::lock_file($lockfile, $timeout, $code, @param);
-    return undef if $@;    # $@ set by lock_file; caller must die $@ if $@
-    return $res;
+    my $res;
+    my $ok = eval {
+        if ($backend eq 'cluster') {
+            $res = _cluster_lock_path($ctx, $path, $timeout, $body);
+            die $@ if $@;   # _cluster_lock_path signals failure via undef + $@
+        } else { # node
+            $timeout ||= 10;   # last-resort fallback; per-class default already applied in with_lock
+            make_path( File::Basename::dirname($path) );   # <path>/private/lock may not exist yet
+            $res = PVE::Tools::lock_file($path, $timeout, $body);    # flock LOCK_EX
+            die $@ if $@;   # lock_file signals acquisition failure / $code die via $@, not by dying
+        }
+        1;
+    };
+    my $err = $@;
+    _lock_leave($ctx, $path);              # unregister (backend has already released)
+    die $err if !$ok;
+    return $res;    # single scalar/ref — see the design's Return convention
 }
 
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
-# touch_cluster_lock($ctx)
+# with_lock($ctx, $lock_class, $id, $timeout, $code, @param)
+#   $lock_class  the lock class: 'jdssc_cluster' | 'jdssc_node' | 'multipath' |
+#                'vm' | 'storage'
+#   $id          sub-key within the class (the vmid for 'vm'); undef for
+#                singleton classes ('storage' is keyed by $ctx->{storeid})
+#   $timeout     seconds to wait for acquisition, or undef →
+#                <lock_class>_lock_acquire_timeout → per-class default
+#   $code        coderef run while the lock is held (every held lock is
+#                auto-refreshed around it — the caller never refreshes manually)
+#   @param       trailing args forwarded to $code
 #
-# Reset the pmxcfs 120 s inactivity timer on every cluster lock currently held
-# by this context.  No-op when no cluster lock is held (e.g. node-local storage
-# or jdssc calls that run outside a lock_vm/lock_storage block).
-# Called by joviandss_cmd before and after each run_command invocation.
+# All locks are exclusive. Returns the result of $code; dies on failure
+# (acquisition or $code). The lock is always released before an error
+# propagates.
+sub with_lock {
+    my ($ctx, $lock_class, $id, $timeout, $code, @param) = @_;
 
-sub touch_cluster_lock {
-    my ($ctx) = @_;
-    for (@{$ctx->{_active_locks}}) {
-        utime(undef, undef, $_);
-        OpenEJovianDSS::Common::debugmsg($ctx, 'debug', "touch cluster lock '$_'");
-    }
-}
+    die "unknown lock class '$lock_class'\n"    # fail loud — the maps have no fallbacks
+        if !exists LOCK_DEFAULT_TYPE->{$lock_class};
 
-# lock_storage($ctx, $storeid, $path, $shared, $timeout, $code, @param)
-#
-# Storage-level lock — serializes all operations on a given storage instance.
-# Used as a fallback for methods not covered by lock_vm.
-#
-# $ctx     — request context; active lock paths are stored in $ctx->{_active_locks}
-# $storeid — storage id (embedded in the cluster lock name)
-# $path    — value of the `path` property from storage.cfg (e.g. /mnt/pve/jdss-Pool-2);
-#            used as root for node-local lock files
-# $shared  — true → cluster-wide pmxcfs mkdir lock; false → node-local flock
-# $timeout — cluster: undef = retry loop up to 600s; defined = single attempt.
-#            node-local: undef = 600s default; defined = that many seconds.
-#
-# Lock path (cluster): /etc/pve/priv/lock/joviandss-<storeid>-storage
-# Lock path (node):    <path>/private/lock/storage
-
-sub lock_storage {
-    my ($ctx, $storeid, $path, $shared, $timeout, $code, @param) = @_;
-
-    my $lockid = "storage";
-
-    if ($shared) {
-        return _cluster_lock($ctx, $storeid, $lockid, $timeout, $code, @param);
-    }
-    return _node_lock($path, $lockid, $timeout, $code, @param);
-}
-
-# lock_vm($ctx, $storeid, $path, $shared, $vmid, $timeout, $code, @param)
-#
-# Per-VM lock — serializes operations that target the same VM's volumes.
-# Concurrent operations for different VMIDs proceed independently.
-#
-# $ctx — request context; active lock paths are stored in $ctx->{_active_locks}
-#
-# Lock path (cluster): /etc/pve/priv/lock/joviandss-<storeid>-vm-<vmid>
-# Lock path (node):    <path>/private/lock/vm-<vmid>
-
-sub lock_vm {
-    my ($ctx, $storeid, $path, $shared, $vmid, $timeout, $code, @param) = @_;
-
-    my $lockid = "vm-" . _sanitize_lockid($vmid);
-
-    if ($shared) {
-        return _cluster_lock($ctx, $storeid, $lockid, $timeout, $code, @param);
-    }
-    return _node_lock($path, $lockid, $timeout, $code, @param);
+    my $type     = get_lock_class_type($ctx, $lock_class);              # scope
+    $timeout   //= get_lock_class_acquire_timeout($ctx, $lock_class);   # wait-to-acquire
+    my $max_hold = get_lock_class_hold_timeout($ctx, $lock_class);      # hold cap (alarm + deadline)
+    my ($backend, $path) = _lock_resolve($ctx, $type, $lock_class, $id);
+    return _lock_exec($ctx, $backend, $path, $timeout, $max_hold, $code, @param);
 }
 
 1;

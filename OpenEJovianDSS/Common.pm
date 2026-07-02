@@ -54,9 +54,7 @@ our @EXPORT_OK = qw(
   get_default_content_size
   get_default_data_port
   get_default_debug
-  get_default_iscsi_change_lock_timeout
   get_default_jdssc_timeout
-  get_default_iscsi_target_global_lock_path
   get_default_luns_per_target
   get_default_multipath
   get_default_path
@@ -112,6 +110,7 @@ our @EXPORT_OK = qw(
   volume_name_clustered
   volume_name_unclustered
   debugmsg
+  lock_properties
   joviandss_cmd
   volume_snapshots_info
   volume_rollback_check
@@ -152,12 +151,21 @@ use constant {
     PLUGIN_TYPE_JOVIANDSS                => 'joviandss',
     PLUGIN_TYPE_JOVIANDSS_NFS            => 'joviandss-nfs',
     PLUGIN_PASSWORD_DIR_BASE             => '/etc/pve/priv/storage',
-    JOVIANDSS_ISCSI_LOCK_PATH            => '/etc/pve/priv/lock/joviandss-iscsi-target-global-lock',
-    JOVIANDSS_ISCSI_CHANGE_LOCK_TIMEOUT_MAX => 115,  # must stay below pmxcfs CFS_LOCK_TIMEOUT (120 s)
     # Max jdssc execution timeout while a Proxmox cluster (pmxcfs) lock is held. run_command
     # uses timeout+1, so the jdssc process runs <= 118 s — under the 120 s pmxcfs
     # CFS_LOCK_TIMEOUT, leaving ~2 s margin so the held cluster lock can never expire mid-run.
+    # Also the cluster-backend hold-alarm ceiling in Lock::_lock_exec (design Finding #15).
     PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX     => 117,
+    # Max total time a cluster-scope lock acquisition retries before dying with
+    # "got lock request timeout" (design Finding #13; replaces a hardcoded 1200).
+    PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX => 600,
+    # Cluster (pmxcfs) lock poll-loop tuning — each mkdir/utime can involve corosync
+    # round-trips, so the inter-poll sleep backs off linearly and is jittered to keep
+    # contending nodes out of lockstep.
+    PROXMOX_CLUSTER_POLL_BASE_SLEEP      => 0.3,   # initial inter-poll sleep (s)
+    PROXMOX_CLUSTER_POLL_BACKOFF_STEP    => 0.1,   # added to the base each iteration (s)
+    PROXMOX_CLUSTER_POLL_JITTER_MAX      => 5,     # uniform jitter upper bound (s)
+    PROXMOX_CLUSTER_POLL_SLEEP_CAP       => 10,    # max base sleep (s)
 };
 
 
@@ -173,46 +181,45 @@ $MULTIPATHD = undef if !-X $MULTIPATHD;
 my $DMSETUP = '/usr/sbin/dmsetup';
 $DMSETUP = undef if !-X $DMSETUP;
 
-my $default_block_size       = '16K';
-my $default_content_size     = 100;
-my $default_control_port     = 82;
-my $default_create_base_path = 1;
-my $default_data_port        = 3260;
-my $default_debug            = 0;
-my $default_prefix           = 'jdss-';
-my $default_pool             = 'Pool-0';
-my $default_log_file         = '/var/log/joviandss/joviandss.log';
-my $default_iscsi_change_lock_timeout = 50;
-my $default_jdssc_timeout     = 113;
-my $default_luns_per_target    = 8;
-my $default_multipath          = 0;
-my $default_path             = '/mnt/pve/joviandss';
-my $default_shared           = 0;
-my $default_target_prefix    = 'iqn.2025-04.proxmox.joviandss.iscsi:';
-my $default_user_name        = 'admin';
-my $default_ssl_cert_verify  = 1;
+use constant {
+    DEFAULT_BLOCK_SIZE                => '16K',
+    DEFAULT_CONTENT_SIZE              => 100,
+    DEFAULT_CONTROL_PORT              => 82,
+    DEFAULT_CREATE_BASE_PATH          => 1,
+    DEFAULT_DATA_PORT                 => 3260,
+    DEFAULT_DEBUG                     => 0,
+    DEFAULT_PREFIX                    => 'jdss-',
+    DEFAULT_POOL                      => 'Pool-0',
+    DEFAULT_LOG_FILE                  => '/var/log/joviandss/joviandss.log',
+    DEFAULT_JDSSC_TIMEOUT             => 113,
+    DEFAULT_LUNS_PER_TARGET           => 8,
+    DEFAULT_MULTIPATH                 => 0,
+    DEFAULT_PATH                      => '/mnt/pve/joviandss',
+    DEFAULT_SHARED                    => 0,
+    DEFAULT_TARGET_PREFIX             => 'iqn.2025-04.proxmox.joviandss.iscsi:',
+    DEFAULT_USER_NAME                 => 'admin',
+    DEFAULT_SSL_CERT_VERIFY           => 1,
+};
 
 
-sub get_default_block_size       { return $default_block_size }
-sub get_default_create_base_path { return $default_create_base_path }
-sub get_default_prefix           { return $default_prefix }
-sub get_default_pool             { return $default_pool }
-sub get_default_debug            { return $default_debug }
-sub get_default_multipath        { return $default_multipath }
-sub get_default_content_size     { return $default_content_size }
+
+sub get_default_block_size       { return DEFAULT_BLOCK_SIZE }
+sub get_default_create_base_path { return DEFAULT_CREATE_BASE_PATH }
+sub get_default_prefix           { return DEFAULT_PREFIX }
+sub get_default_pool             { return DEFAULT_POOL }
+sub get_default_debug            { return DEFAULT_DEBUG }
+sub get_default_multipath        { return DEFAULT_MULTIPATH }
+sub get_default_content_size     { return DEFAULT_CONTENT_SIZE }
 sub get_default_path             { die "Please set up path property in storage.cfg\n"; }
-sub get_default_target_prefix    { return $default_target_prefix }
-sub get_default_log_file         { return $default_log_file }
-sub get_max_iscsi_change_lock_timeout         { return JOVIANDSS_ISCSI_CHANGE_LOCK_TIMEOUT_MAX }
+sub get_default_target_prefix    { return DEFAULT_TARGET_PREFIX }
+sub get_default_log_file         { return DEFAULT_LOG_FILE }
 sub get_proxmox_cluster_lock_timeout_max      { return PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX }
-sub get_default_iscsi_change_lock_timeout     { return $default_iscsi_change_lock_timeout }
-sub get_default_jdssc_timeout         { return $default_jdssc_timeout }
-sub get_default_iscsi_target_global_lock_path { return JOVIANDSS_ISCSI_LOCK_PATH }
-sub get_default_luns_per_target           { return $default_luns_per_target }
-sub get_default_ssl_cert_verify    { return $default_ssl_cert_verify }
-sub get_default_control_port     { return $default_control_port }
-sub get_default_data_port        { return $default_data_port }
-sub get_default_user_name        { return $default_user_name }
+sub get_default_jdssc_timeout         { return DEFAULT_JDSSC_TIMEOUT }
+sub get_default_luns_per_target           { return DEFAULT_LUNS_PER_TARGET }
+sub get_default_ssl_cert_verify    { return DEFAULT_SSL_CERT_VERIFY }
+sub get_default_control_port     { return DEFAULT_CONTROL_PORT }
+sub get_default_data_port        { return DEFAULT_DATA_PORT }
+sub get_default_user_name        { return DEFAULT_USER_NAME }
 
 sub get_path {
     my ($ctx) = @_;
@@ -273,7 +280,7 @@ sub get_log_level {
 sub get_target_prefix {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
-    my $prefix = $scfg->{target_prefix} || $default_target_prefix;
+    my $prefix = $scfg->{target_prefix} || DEFAULT_TARGET_PREFIX;
 
     $prefix =~ s/:$//;
     return safe_word( clean_word($prefix) );
@@ -282,13 +289,13 @@ sub get_target_prefix {
 sub get_jdssc_timeout {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
-    return int( $scfg->{jdssc_timeout} || $default_jdssc_timeout );
+    return int( $scfg->{jdssc_timeout} || DEFAULT_JDSSC_TIMEOUT );
 }
 
 sub get_luns_per_target {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
-    my $luns_per_target = $scfg->{luns_per_target} || $default_luns_per_target;
+    my $luns_per_target = $scfg->{luns_per_target} || DEFAULT_LUNS_PER_TARGET;
 
     return int($luns_per_target);
 }
@@ -321,7 +328,7 @@ sub get_control_addresses {
 sub get_control_port {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
-    my $port = $scfg->{control_port} || $default_control_port;
+    my $port = $scfg->{control_port} || DEFAULT_CONTROL_PORT;
 
     return int( clean_word($port) + 0);
 }
@@ -372,7 +379,7 @@ sub get_data_port {
 sub get_user_name {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
-    return $scfg->{user_name} || $default_user_name;
+    return $scfg->{user_name} || DEFAULT_USER_NAME;
 }
 
 sub get_plugin_type {
@@ -547,7 +554,7 @@ sub get_block_size {
             die "Block size ${block_size_str} is not supported\n";
         }
     }
-    return $default_block_size;
+    return DEFAULT_BLOCK_SIZE;
 }
 
 sub get_block_size_bytes {
@@ -587,7 +594,7 @@ sub get_thin_provisioning {
 sub get_log_file {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
-    return $scfg->{log_file} || $default_log_file;
+    return $scfg->{log_file} || DEFAULT_LOG_FILE;
 }
 
 sub get_options {
@@ -659,7 +666,7 @@ sub get_content_volume_size {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
 
-    my $size = $scfg->{content_volume_size} || $default_content_size;
+    my $size = $scfg->{content_volume_size} || DEFAULT_CONTENT_SIZE;
     return $size;
 }
 
@@ -678,13 +685,13 @@ sub get_content_path {
 sub get_multipath {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
-    return $scfg->{multipath} || $default_multipath;
+    return $scfg->{multipath} || DEFAULT_MULTIPATH;
 }
 
 sub get_shared {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
-    return $scfg->{shared} || $default_shared;
+    return $scfg->{shared} || DEFAULT_SHARED;
 }
 
 sub clean_word {
@@ -763,10 +770,10 @@ sub _new_reqid {
 sub new_ctx {
     my ($scfg, $storeid) = @_;
     return {
-        scfg          => $scfg,
-        storeid       => $storeid,
-        reqid         => _new_reqid(),
-        _active_locks => [],
+        scfg        => $scfg,
+        storeid     => $storeid,
+        reqid       => _new_reqid(),
+        _held_locks => [],
     };
 }
 
@@ -844,10 +851,69 @@ sub safe_var_print {
     return defined($variable) ? "${varname} ${variable}" : "";
 }
 
+# storage.cfg schema for the lock-class properties, defined once here.
+# PVE::SectionConfig registers property names globally: the iSCSI plugin
+# splices this into its properties() (re-declaring the names in the NFS plugin
+# would be a duplicate property error); BOTH plugins list the names in their
+# options(). Values are read by the generic OpenEJovianDSS::Lock getters
+# (get_lock_class_type / _dir / _acquire_timeout / _hold_timeout).
+sub lock_properties {
+    return {
+        jdssc_cluster_lock_type => {
+            description => "Scope of the cluster-tier jdssc lock",
+            type        => 'string',
+            enum        => [ 'node', 'cluster' ],
+        },
+        jdssc_cluster_lock_path => {
+            description => "Directory override for the cluster-tier jdssc lock"
+                         . " (must suit the chosen type's backend)",
+            type        => 'string',
+        },
+        jdssc_cluster_lock_acquire_timeout => {
+            description => "Seconds to wait to acquire the cluster-tier jdssc lock",
+            type        => 'integer',
+            minimum     => 1,
+        },
+        jdssc_cluster_lock_hold_timeout => {
+            description => "Hold cap in seconds for the cluster-tier jdssc lock"
+                         . " (0 disables the wall-clock deadline)",
+            type        => 'integer',
+            minimum     => 0,
+        },
+        jdssc_node_lock_type => {
+            description => "Scope of the node-tier jdssc lock",
+            type        => 'string',
+            enum        => [ 'node', 'cluster' ],
+        },
+        jdssc_node_lock_path => {
+            description => "Directory override for the node-tier jdssc lock"
+                         . " (must suit the chosen type's backend)",
+            type        => 'string',
+        },
+        jdssc_node_lock_acquire_timeout => {
+            description => "Seconds to wait to acquire the node-tier jdssc lock",
+            type        => 'integer',
+            minimum     => 1,
+        },
+        jdssc_node_lock_hold_timeout => {
+            description => "Hold cap in seconds for the node-tier jdssc lock"
+                         . " (0 disables the wall-clock deadline)",
+            type        => 'integer',
+            minimum     => 0,
+        },
+    };
+}
+
+# $lock_class — which jdssc component lock class to take around the run
+# (trailing optional arg). One of:
+#   'jdssc_cluster'  → cluster-wide serialization (state-changing commands)  [default]
+#   'jdssc_node'     → per-host serialization only (host-safe read commands)
 sub joviandss_cmd {
-    my ( $ctx, $cmd, $timeout, $retries, $force_debug_level ) = @_;
+    my ( $ctx, $cmd, $timeout, $retries, $force_debug_level, $lock_class ) = @_;
     my $scfg    = $ctx->{scfg};
     my $storeid = $ctx->{storeid};
+
+    $lock_class //= 'jdssc_cluster';
 
     my $msg = '';
     my $err = undef;
@@ -922,19 +988,25 @@ sub joviandss_cmd {
         push @$connection_options, '-c', $config_file;
     }
 
-    my $process_timeout  = get_jdssc_timeout($ctx);
-    $timeout //= $process_timeout;
-    $timeout = $process_timeout + 5
-        if $timeout < $process_timeout + 5;
-    push @$connection_options,
-        '--timeout',                   $process_timeout;
+    # jdssc_timeout (scfg) supplies the default per-call execution timeout when
+    # the caller passes none; jdssc itself gets no --timeout — run_command's
+    # kill (timeout + 1) is the sole bound on the process.
+    $timeout //= get_jdssc_timeout($ctx);
+
+    # One run — run_command's timeout + 1 — must stay below the pmxcfs
+    # CFS_LOCK_TIMEOUT idle expiry under a cluster-backend jdssc lock, and below
+    # every class's hold cap on any backend; the per-call execution timeout is
+    # therefore clamped centrally here for every call (over-cap call-site
+    # literals like 118 are bounded automatically). The old
+    # "process_timeout + 5" floor is gone for the same reason: it could
+    # re-inflate the hold past the clamp.
+    $timeout = PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX
+        if $timeout > PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX;
 
     while ( $retry_count <= $retries ) {
 
         my $exitcode = 0;
         eval {
-            my $jcmd = [ '/usr/local/bin/jdssc', @$connection_options, @$cmd ];
-
             my $output   = sub {
                                     $msg .= "$_[0]\n";
                                };
@@ -942,14 +1014,22 @@ sub joviandss_cmd {
                                     $err .= "$_[0]\n";
                                };
 
-            OpenEJovianDSS::Lock::touch_cluster_lock($ctx);
-            $exitcode = run_command( $jcmd,
-                outfunc => $output,
-                errfunc => $errfunc,
-                timeout => $timeout + 1,
-                noerr   => 1
-            );
-            OpenEJovianDSS::Lock::touch_cluster_lock($ctx);
+            my $jrun = sub {
+                my $jcmd = [ '/usr/local/bin/jdssc', @$connection_options, @$cmd ];
+                $exitcode = run_command( $jcmd,
+                    outfunc => $output,
+                    errfunc => $errfunc,
+                    timeout => $timeout + 1,
+                    noerr   => 1
+                );
+            };
+
+            # The jdssc component lock — taken per single jdssc execution,
+            # inside the retry loop. with_lock refreshes every held lock
+            # around the body (replacing the old touch_cluster_lock brackets)
+            # and dies on any failure, so $@ feeds the retry handling below
+            # unchanged.
+            OpenEJovianDSS::Lock::with_lock($ctx, $lock_class, undef, undef, $jrun);
         };
         my $rerr = $@;
 
@@ -958,14 +1038,6 @@ sub joviandss_cmd {
         # value of 0, so the "exitcode == 0" check would incorrectly
         # return the (empty) output as success.
         if ( $rerr && $rerr =~ /got timeout/ ) {
-            $retry_count++;
-            $msg = '';
-            $err = undef;
-            sleep( 3 + int( rand( 5 ) ) );
-            next;
-        }
-
-        if ( $err && $err =~ /jdssc process timed out/ ) {
             $retry_count++;
             $msg = '';
             $err = undef;
@@ -2480,7 +2552,7 @@ sub get_device_mapper_name {
                     }
                 },
             errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-            timeout  => 20,
+            timeout  => 5,
             noerr   => 1
         );
     } else {
@@ -3637,7 +3709,7 @@ sub volume_deactivate_by_lun_record {
         my $unstage_multipath_done = 0;
         for my $attempt ( 1 .. 3) {
             eval {
-                volume_unstage_multipath( $ctx, $lunrecord->{scsiid} );
+                volume_unstage_multipath( $ctx, $lunrecord->{scsiid}, 10, 20 );
             };
             my $cerr = $@;
             if ($cerr) {
