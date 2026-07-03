@@ -166,6 +166,14 @@ use constant {
     PROXMOX_CLUSTER_POLL_BACKOFF_STEP    => 0.1,   # added to the base each iteration (s)
     PROXMOX_CLUSTER_POLL_JITTER_MAX      => 5,     # uniform jitter upper bound (s)
     PROXMOX_CLUSTER_POLL_SLEEP_CAP       => 10,    # max base sleep (s)
+    # Bounds of the target-session query (target_get_sessions → jdssc
+    # `sessions list`, docs/design/jdssc-target-sessions.md): the per-try
+    # timeout is short — a healthy appliance answers in seconds — and
+    # persistence across transient stalls comes from the retry count
+    # (joviandss_cmd retries only on process timeouts; error exits die
+    # immediately).
+    TARGET_SESSIONS_QUERY_TIMEOUT        => 30,    # seconds per run
+    TARGET_SESSIONS_QUERY_RETRIES        => 7,     # timeout-retries
 };
 
 
@@ -1629,9 +1637,13 @@ sub target_active_info {
 sub target_get_sessions {
     my ( $ctx, $target_name ) = @_;
 
+    my $pool = get_pool( $ctx );
+
     debugmsg( $ctx, "debug", "Getting sessions for target ${target_name}\n" );
 
-    my $out = joviandss_cmd( $ctx, [ 'target', $target_name, 'get', '--sessions' ], 118, 5 );
+    my $out = joviandss_cmd( $ctx,
+        [ 'pool', $pool, 'target', $target_name, 'sessions', 'list' ],
+        TARGET_SESSIONS_QUERY_TIMEOUT, TARGET_SESSIONS_QUERY_RETRIES );
 
     my %sessions = ();
     for my $line ( split /\n/, $out ) {

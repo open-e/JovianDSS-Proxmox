@@ -17,6 +17,7 @@ import argparse
 import logging
 import sys
 
+import jdssc.sessions as sessions
 from jdssc.jovian_common import exception as jexc
 
 """Singular iSCSI target operations addressed by full IQN."""
@@ -29,6 +30,7 @@ class Target():
 
         self.ta = {'delete': self.delete,
                    'get': self.get,
+                   'sessions': self.sessions,
                    'update': self.update}
 
         self.args = args
@@ -49,14 +51,11 @@ class Target():
         parser.add_argument('target_name', help='Full iSCSI target IQN')
         parsers = parser.add_subparsers(dest='target_action')
 
-        get = parsers.add_parser('get')
-        get.add_argument('--sessions',
-                         dest='sessions',
-                         action='store_true',
-                         default=False,
-                         help='Show active iSCSI sessions instead of target data')
+        parsers.add_parser('get')
 
         parsers.add_parser('delete')
+
+        parsers.add_parser('sessions')
 
         update = parsers.add_parser('update')
         update.add_argument('--chap-user',
@@ -78,21 +77,6 @@ class Target():
 
     def get(self):
         target_name = self.args['target_name']
-        if self.args.get('sessions'):
-            try:
-                sessions = self.jdss.get_target_sessions(target_name)
-            except jexc.JDSSResourceNotFoundException:
-                LOG.error("Target %s not found", target_name)
-                sys.exit(1)
-            except jexc.JDSSException as jerr:
-                LOG.error(jerr.message)
-                sys.exit(1)
-            by_initiator = {}
-            for s in sessions:
-                by_initiator.setdefault(s['initiator_name'], []).append(s['ip'])
-            for initiator, ips in by_initiator.items():
-                print("{} {}".format(initiator, ','.join(ips)))
-            return
         try:
             data = self.jdss.get_target(target_name)
         except jexc.JDSSResourceNotFoundException:
@@ -102,6 +86,9 @@ class Target():
             LOG.error(jerr.message)
             sys.exit(1)
         print(data)
+
+    def sessions(self):
+        sessions.Sessions(self.args, self.uargs, self.jdss)
 
     def delete(self):
         target_name = self.args['target_name']
