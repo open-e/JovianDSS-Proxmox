@@ -189,6 +189,49 @@ $MULTIPATHD = undef if !-X $MULTIPATHD;
 my $DMSETUP = '/usr/sbin/dmsetup';
 $DMSETUP = undef if !-X $DMSETUP;
 
+# Bounds of the host device-layer command chokepoint (multipath_cmd) and the
+# volume-activation reactivation cycle
+# (docs/design/volume-activation-with-reactivation.md, Table 4b).
+use constant {
+    # multipath_cmd timeout tiers (seconds; the TERM bound - the wrapper's
+    # SIGKILL escalation follows MULTIPATH_CMD_KILL_GRACE later, and
+    # run_command's last-resort kill sits MULTIPATH_CMD_BACKSTOP_MARGIN
+    # above that; the whole ladder fits under the multipath lock's 60 s
+    # hold cap).
+    MULTIPATH_CMD_TIMEOUT_DEFAULT          => 20,
+    MULTIPATH_CMD_TIMEOUT                  => 20,
+    MULTIPATHD_CMD_TIMEOUT_FAST            => 5,
+    MULTIPATH_CMD_TIMEOUT_MAX              => 30,
+    MULTIPATH_CMD_KILL_GRACE               => 5,
+    MULTIPATH_CMD_BACKSTOP_MARGIN          => 5,
+    # Age bound of the stale-cookie sweep - MINUTES (udevcomplete_all's own
+    # unit, unlike every other constant here).
+    MULTIPATH_COOKIE_STALE_AGE             => 3,
+    # Staging rounds (the volume_stage_multipath driver loop; deliberately
+    # smaller than the previous hardcoded 60 - the reactivation cycle
+    # supplies the deep retries).
+    MULTIPATH_STAGE_ATTEMPTS               => 20,
+    MULTIPATH_STAGE_SLEEP                  => 1,
+    MULTIPATH_VPD_WAIT_ATTEMPTS            => 30,
+    MULTIPATH_VPD_WAIT_SLEEP               => 1,
+    # Unstage bounds - both keep today's effective behavior: the wait exits
+    # early the moment the device is free, so the full bound is paid only
+    # while something genuinely holds it (the migration corruption window
+    # the wait guards).
+    MULTIPATH_UNSTAGE_WAIT_UNUSED_ATTEMPTS => 60,
+    MULTIPATH_UNSTAGE_WAIT_UNUSED_SLEEP    => 1,
+    MULTIPATH_UNSTAGE_REMOVE_ATTEMPTS      => 10,
+    MULTIPATH_UNSTAGE_REMOVE_SETTLE        => 1,
+    MULTIPATH_UNSTAGE_BLOCKER_WAIT         => 5,
+    MULTIPATH_UNSTAGE_REMOVE_SLEEP         => 2,
+    # The reactivation cycle in volume_activate.
+    VOLUME_ACTIVATE_CYCLE_ATTEMPTS         => 4,
+    VOLUME_ACTIVATE_CYCLE_SLEEP            => 5,
+    VOLUME_ACTIVATE_CYCLE_MIN_BUDGET       => 120,
+    VOLUME_ACTIVATE_VERIFY_ATTEMPTS        => 10,
+    VOLUME_ACTIVATE_VERIFY_SLEEP           => 1,
+};
+
 use constant {
     DEFAULT_BLOCK_SIZE                => '16K',
     DEFAULT_CONTENT_SIZE              => 100,
@@ -909,6 +952,27 @@ sub lock_properties {
             type        => 'integer',
             minimum     => 0,
         },
+        multipath_lock_type => {
+            description => "Scope of the multipath host-device-command lock",
+            type        => 'string',
+            enum        => [ 'node', 'cluster' ],
+        },
+        multipath_lock_path => {
+            description => "Directory override for the multipath lock"
+                         . " (must suit the chosen type's backend)",
+            type        => 'string',
+        },
+        multipath_lock_acquire_timeout => {
+            description => "Seconds to wait to acquire the multipath lock",
+            type        => 'integer',
+            minimum     => 1,
+        },
+        multipath_lock_hold_timeout => {
+            description => "Hold cap in seconds for the multipath lock"
+                         . " (0 disables the wall-clock deadline)",
+            type        => 'integer',
+            minimum     => 0,
+        },
     };
 }
 
@@ -1079,6 +1143,109 @@ sub cmd_log_output {
         (my $a = $_) =~ s/'/'\\''/g; "'$a'"
     } @$cmd;
     debugmsg( $ctx, $level, "CMD ${cmd_str} output ${data}");
+}
+
+# multipath_cmd($ctx, $cmd, $timeout, $outfunc)
+#   $cmd      argv arrayref of ONE multipath/multipathd/udevadm/dmsetup
+#             invocation
+#   $timeout  seconds for the command (TERM bound), or undef ->
+#             MULTIPATH_CMD_TIMEOUT_DEFAULT; clamped to
+#             MULTIPATH_CMD_TIMEOUT_MAX
+#   $outfunc  optional stdout line handler (default: capture + debug log)
+# The locked chokepoint for every host device-layer command, mirroring how
+# joviandss_cmd is the single chokepoint for jdssc: runs the one command
+# under the node-scope 'multipath' lock (docs/design/
+# volume-activation-with-reactivation.md). The locked body is the bare
+# run - the lock design's leaf rule: it takes no other with_lock and never
+# calls joviandss_cmd. All retry sleeps stay at the callers, OUTSIDE the
+# lock. Returns { exitcode, out } (fixed shape). A failing command reports
+# through ->{exitcode} (noerr) instead of dying; a lock-machinery failure
+# deliberately propagates - the reactivation cycle's error classification
+# decides what happens next.
+sub multipath_cmd {
+    my ( $ctx, $cmd, $timeout, $outfunc ) = @_;
+
+    $timeout //= MULTIPATH_CMD_TIMEOUT_DEFAULT;
+    $timeout = MULTIPATH_CMD_TIMEOUT_MAX
+        if $timeout > MULTIPATH_CMD_TIMEOUT_MAX;
+    $timeout = 1 if $timeout < 1;   # coreutils timeout treats 0 as NO
+                                    # bound - it would disarm the
+                                    # TERM-first ladder, leaving only
+                                    # run_command's SIGKILL backstop
+
+    my $out = '';
+    my $capture = $outfunc // sub {
+        my ($line) = @_;
+        $out .= "$line\n";
+        cmd_log_output( $ctx, 'debug', $cmd, $line );
+    };
+
+    # TERM-first bounding: coreutils timeout(1) sends SIGTERM at $timeout -
+    # multipath's signal handler releases the IPC semaphore (ISSUES.md
+    # Issue 2) - and escalates to SIGKILL only MULTIPATH_CMD_KILL_GRACE
+    # later. run_command's own kill is SIGKILL, the exact re-strand hazard
+    # this ladder exists to avoid, so it is armed a full
+    # MULTIPATH_CMD_BACKSTOP_MARGIN above the escalation: it can only fire
+    # after the graceful termination already failed.
+    my $tcmd = [ '/usr/bin/timeout', '--signal=TERM',
+                 '--kill-after=' . MULTIPATH_CMD_KILL_GRACE,
+                 $timeout, @$cmd ];
+
+    my $exitcode;
+    my $run = sub {
+        $exitcode = run_command( $tcmd,
+            outfunc => $capture,
+            errfunc => sub { cmd_log_output( $ctx, 'error', $cmd, shift ) },
+            timeout => $timeout + MULTIPATH_CMD_KILL_GRACE
+                       + MULTIPATH_CMD_BACKSTOP_MARGIN,
+            noerr   => 1,
+        );
+    };
+    OpenEJovianDSS::Lock::with_lock( $ctx, 'multipath', undef, undef, $run );
+
+    # Stranded-cookie signature (124 = TERM'd at the bound, 137 = KILL'd
+    # after the grace): remembered on $ctx for the reactivation cycle's
+    # sweep gate (_multipath_cookie_sweep) - the chokepoint itself retries
+    # and repairs nothing.
+    $ctx->{_multipath_cmd_ladder_exhausted} = 1
+        if defined($exitcode) && ( $exitcode == 124 || $exitcode == 137 );
+
+    return { exitcode => $exitcode, out => $out };
+}
+
+# Probe-then-sweep for stranded device-mapper udev cookies (ISSUES.md
+# Issue 2: a cookie whose owner was SIGKILL'd is never completed by anyone,
+# and every later waiter blocks forever in semtimedop). Called from
+# volume_activate's failure branch - only while the 124/137 strand
+# signature is armed, before the teardown. Both commands route through
+# multipath_cmd - same node lock, same bounds. Returns the number of
+# outstanding cookies found (diagnostic).
+sub _multipath_cookie_sweep {
+    my ($ctx) = @_;
+
+    my $probe = multipath_cmd( $ctx, [ $DMSETUP, 'udevcookies' ],
+                               MULTIPATH_CMD_TIMEOUT );
+    return 0                              # dm layer unreachable - nothing to do
+        if !defined( $probe->{exitcode} ) || $probe->{exitcode} != 0;
+
+    # udevcookies prints a header row and a version-dependent column
+    # layout; matching cookie lines by the leading 0x is the portable read.
+    my @cookies = grep { /^0x/ } split /\n/, $probe->{out};
+    return 0 if !@cookies;                # no outstanding cookies - nothing to sweep
+
+    debugmsg( $ctx, 'warn',
+        scalar(@cookies) . " outstanding udev cookie(s) after a failed "
+      . "activation attempt; completing those older than "
+      . MULTIPATH_COOKIE_STALE_AGE . " minutes" );
+
+    # Age-bounded: touches nothing younger than MULTIPATH_COOKIE_STALE_AGE
+    # minutes - far above any legitimate udev latency, so live operations
+    # (including node-local LVM, which shares the cookie mechanism) are
+    # never completed early. -y answers dmsetup's confirmation prompt.
+    multipath_cmd( $ctx,
+        [ $DMSETUP, '-y', 'udevcomplete_all', MULTIPATH_COOKIE_STALE_AGE ] );
+
+    return scalar(@cookies);
 }
 
 # Returns a hash with the snapshot names as keys and the following data:
@@ -1637,7 +1804,13 @@ sub target_active_info {
 sub target_get_sessions {
     my ( $ctx, $target_name ) = @_;
 
-    my $pool = get_pool( $ctx );
+    my $pool = get_pool( $ctx );    # untainted inside get_pool
+
+    # Untaint the target name (regex-capture via safe_word): it arrives from
+    # parsed jdssc output — tainted under -T — and an unsanitized exec dies
+    # with "Insecure dependency", which the session gate would misread as a
+    # permanently failed query (the volume_unpublish taint lesson).
+    $target_name = safe_word( clean_word($target_name), 'target name' );
 
     debugmsg( $ctx, "debug", "Getting sessions for target ${target_name}\n" );
 
@@ -1690,6 +1863,35 @@ sub get_local_initiator_name {
     debugmsg( $ctx, "debug", "Local initiator name is ${initiator_name}\n" );
 
     return $initiator_name;
+}
+
+# Foreign-session probe for the reactivation cycle's recovery detach:
+# returns an arrayref of initiator IQNs - OTHER THAN THIS NODE'S - holding
+# active sessions on $targetname; empty means "only local sessions (or
+# none) - safe to detach". Dies when the query fails; the caller reads a
+# die as "no evidence, no detach". The local identity is what the node's
+# own initiator sends on login (/etc/iscsi/initiatorname.iscsi), which is
+# byte-for-byte what the appliance reports back - compared
+# case-insensitively anyway (RFC 3722 prescribes lowercase; guard against
+# case drift). target_get_sessions groups by initiator, so a multipath
+# node's several sessions (one per portal) are one key here.
+sub _target_foreign_sessions {
+    my ( $ctx, $targetname ) = @_;
+
+    my $sessions = target_get_sessions( $ctx, $targetname );  # initiator -> [ips]
+    my $local_initiator = lc( get_local_initiator_name($ctx) );
+
+    my @foreign;
+    for my $initiator ( sort keys %$sessions ) {
+        push @foreign, $initiator
+            if lc($initiator) ne $local_initiator;
+    }
+
+    debugmsg( $ctx, 'debug',
+        "Target ${targetname} foreign sessions: "
+      . ( @foreign ? join( ',', @foreign ) : 'none' ) );
+
+    return \@foreign;
 }
 
 sub get_vm_target_group_name {
@@ -1976,14 +2178,19 @@ sub _rescan_target_hosts {
     }
 }
 
+# $expected_size (option A, finding #23): the authoritative control-plane
+# size. When given, the exit contract requires the exported LUN to report
+# this exact non-zero capacity (a fresh READ CAPACITY via rescan-then-read)
+# before returning - the backend-export health check at the raw-LUN layer.
+# undef falls back to "non-zero capacity" (still catches a size-0 export).
 sub volume_stage_iscsi {
-    my ( $ctx, $targetname, $lunid, $hosts, $scsiid ) = @_;
+    my ( $ctx, $targetname, $lunid, $hosts, $scsiid, $expected_size ) = @_;
 
     debugmsg( $ctx, "debug", "Stage target ${targetname} lun ${lunid} over addresses @$hosts\n" );
 
-    # Fast path: block device already present.
+    # Fast path: block device already present AND reporting the right size.
     my $serial_path = block_device_path_from_serial( $scsiid, 0 );
-    if ( -b $serial_path ) {
+    if ( -b $serial_path && _iscsi_capacity_ok( $ctx, $serial_path, $expected_size ) ) {
         return [$serial_path];
     }
 
@@ -2027,6 +2234,12 @@ sub volume_stage_iscsi {
     my $max_login_attempts = 10;
 
     for my $attempt (1 .. $max_login_attempts) {
+
+        # Cooperation tick: refresh every held outer lock and run its
+        # hold-deadline check - the iSCSI phase runs no locked commands,
+        # so without explicit ticks it is the activation's longest
+        # uncooperative stretch (volume-activation design, follow-up #4).
+        OpenEJovianDSS::Lock::refresh_locks($ctx);
 
         # On retries: poll for sessions that may have appeared in the background
         # during iscsid's FAILED->IN-LOGIN->LOGGED-IN recovery cycle.
@@ -2204,12 +2417,26 @@ sub volume_stage_iscsi {
     }
 
     for ( my $i = 1 ; $i <= 240 ; $i++ ) {
+        # The device must be present AND report the correct non-zero
+        # capacity (option A / finding #23): a present-but-wrong-size LUN
+        # is SCST's under-load export failure - looks fine, non-functional.
+        # _iscsi_capacity_ok forces a fresh READ CAPACITY (rescan-then-read).
         if ( -b $serial_path ) {
-            debugmsg( $ctx, "debug", "Stage iSCSI block device ${serial_path}\n" );
-            return [$serial_path];
+            if ( _iscsi_capacity_ok( $ctx, $serial_path, $expected_size ) ) {
+                debugmsg( $ctx, "debug", "Stage iSCSI block device ${serial_path}\n" );
+                return [$serial_path];
+            }
+            debugmsg( $ctx, "debug",
+                "iSCSI device ${serial_path} present but capacity not yet "
+              . "verified against " . ( $expected_size || 'non-zero' )
+              . " (attempt ${i})\n" );
+        } else {
+            debugmsg( $ctx, "debug", "Waiting for block device ${serial_path} attempt ${i}\n" );
         }
 
-        debugmsg( $ctx, "debug", "Waiting for block device ${serial_path} attempt ${i}\n" );
+        # Cooperation tick every 10th wait tick (follow-up #4): refresh
+        # held locks + hold-deadline check inside the 240 s device wait.
+        OpenEJovianDSS::Lock::refresh_locks($ctx) if $i % 10 == 0;
 
         sleep(1);
 
@@ -2225,242 +2452,288 @@ sub volume_stage_iscsi {
     debugmsg( $ctx, "warn",
         "Unable to identify block device for scsi id ${scsiid}\n" );
 
-    die "Unable to locate target ${targetname} block device location.\n";
+    die "Unable to verify target ${targetname} block device "
+      . "(present + correct capacity) for scsi id ${scsiid}.\n";
+}
+
+# Backend-export capacity health check (option A, finding #23). Returns
+# true only when the block device at $path reports a non-zero size that
+# matches $expected (when given). CRITICAL: it forces a fresh READ CAPACITY
+# first (write to the device's /sys rescan), because blockdev --getsize64
+# reads the kernel's CACHED capacity - reading the cache alone could show a
+# stale-but-plausible value and miss a broken export (finding #23,
+# measured). $path is a /dev/disk/by-id/scsi-<id> symlink to the sd device;
+# these are read-only device / sysfs operations, deliberately NOT under the
+# multipath lock (Table 1 "not locked").
+sub _iscsi_capacity_ok {
+    my ( $ctx, $path, $expected ) = @_;
+
+    # Force READ CAPACITY on the underlying sd device (untaint the sd name
+    # from the resolved symlink before using it in a /sys path).
+    my $real = eval { Cwd::abs_path($path) };
+    if ( defined($real) && $real =~ m{^/dev/(sd[a-z]+)$} ) {
+        my $rescan = "/sys/block/$1/device/rescan";
+        if ( -w $rescan ) {
+            eval {
+                open my $fh, '>', $rescan or die "open ${rescan}: $!\n";
+                print $fh "1"              or die "write ${rescan}: $!\n";
+                close $fh                  or die "close ${rescan}: $!\n";
+            };
+            debugmsg( $ctx, 'debug', "READ CAPACITY rescan of $1 failed: $@" ) if $@;
+        }
+    }
+
+    my $sz;
+    my $cmd = [ '/sbin/blockdev', '--getsize64', $path ];
+    eval {
+        run_command( $cmd,
+            outfunc => sub { my $l = shift; $sz = int($1) if $l =~ /^(\d+)$/; },
+            errfunc => sub { cmd_log_output( $ctx, 'error', $cmd, shift ); },
+            noerr   => 1 );
+    };
+
+    return 0 if !defined($sz) || $sz == 0;          # zero never verifies
+    return 1 if !$expected;                          # non-zero suffices
+    return int($sz) == int($expected) ? 1 : 0;
 }
 
 sub volume_stage_multipath {
-    my ( $ctx, $scsiid, $block_devs ) = @_;
-    $scsiid = clean_word($scsiid);
+    my ( $ctx, $scsiid, $block_devs, $attempts, $verify_map ) = @_;
 
-    my $mpath;
+    $scsiid    = safe_word( clean_word($scsiid), 'multipath scsi id' );
+    $attempts //= MULTIPATH_STAGE_ATTEMPTS;
 
-    if ( $scsiid =~ /^([\:\-\@\w.\/]+)$/ ) {
-        my $id = $1;
+    my $mpath = clean_word( block_device_path_from_serial( $scsiid, 1 ) );
 
-        eval {
-            my $cmd = [ $MULTIPATH, '-a', $id ];
-            run_command(
-                $cmd ,
-                outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-                noerr   => 1
-            );
-        };
-
-        my $is_multipath = 1;
-
-        $mpath = block_device_path_from_serial( $id, $is_multipath);
-
-        # Phase 1: Wait for SCSI VPD inquiry to complete.
-        # The /dev/disk/by-id/scsi-$id symlink is created by udev after the
-        # kernel reads the device serial via SCSI inquiry.  multipathd cannot
-        # associate paths with our WWID until this is done.  During heavy
-        # concurrent operations (many clones) the inquiry queue backs up and
-        # this can take 30+ seconds.
-        my $scsi_by_id = "/dev/disk/by-id/scsi-${id}";
-        my $paths_ready = 0;
-        for my $wait ( 1 .. 60 ) {
-            if ( -e $scsi_by_id ) {
-                $paths_ready = 1;
-                debugmsg( $ctx, "debug",
-                    "SCSI device ${scsi_by_id} ready after ${wait}s wait" );
-                last;
-            }
-            if ( $wait == 1 || $wait % 10 == 0 ) {
-                debugmsg( $ctx, "debug",
-                    "Waiting for SCSI device ${scsi_by_id} (${wait}/60)" );
-            }
-            sleep(1);
-        }
-        unless ($paths_ready) {
-            debugmsg( $ctx, "warn",
-                "SCSI device ${scsi_by_id} not found after 60s, "
-                . "attempting multipath creation anyway" );
-        }
-
-        # Resolve iSCSI by-path symlinks to real sd device names so we can
-        # explicitly register them with multipathd.  Under concurrent load,
-        # udev events may be delayed and multipathd might not know about the
-        # paths yet, causing "multipathd add map" to fail.
-        my @sd_devnames;
-        if ($block_devs && ref($block_devs) eq 'ARRAY') {
-            for my $bp (@$block_devs) {
-                my $real = Cwd::abs_path($bp);
-                if ($real && $real =~ m{^/dev/(sd[a-z]+)$}) {
-                    push @sd_devnames, $1;
-                }
-            }
-            if (@sd_devnames) {
-                debugmsg( $ctx, "debug",
-                    "Resolved iSCSI paths for multipath: " . join(', ', @sd_devnames) );
-            }
-        }
-
-        # Phase 2: Create the multipath map.
-        # Under concurrent load (many clones), multipathd gets overwhelmed
-        # and "add map" fails.  The root cause is that udev events back up
-        # under load, so multipathd doesn't know about the new paths.
-        #
-        # IMPORTANT: Do NOT use "udevadm trigger" here — it generates
-        # CHANGE events on sd devices which causes multipathd to re-evaluate
-        # paths, disrupting existing multipath devices that are actively
-        # being used for data copies (causes qemu-img I/O errors).
-        for my $attempt ( 1 .. 60) {
-
-            # Explicitly register paths with multipathd before creating
-            # the map.  This ensures multipathd knows which sd devices
-            # belong to this WWID, even if udev events were delayed.
-            for my $devname (@sd_devnames) {
-                eval {
-                    my $cmd = [ $MULTIPATHD, 'add', 'path', $devname ];
-                    run_command(
-                        $cmd,
-                        outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                        errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-                        timeout  => 20,
-                        noerr   => 1
-                    );
-                };
-            }
-
-            # TODO: remove once multipath device appearance is reliable under load
-            # Trigger udev rescan for the specific sd devices belonging to this
-            # WWID every 4th attempt.  Unlike a broad "udevadm trigger -t all",
-            # targeting individual sysfs paths only generates events for these
-            # devices, avoiding disruption to other active multipath devices.
-            if ( $attempt % 4 == 0 ) {
-                if (@sd_devnames) {
-                    for my $devname (@sd_devnames) {
-                        eval {
-                            my $cmd = [ 'udevadm', 'trigger',
-                                        '/sys/block/' . $devname ];
-                            run_command(
-                                $cmd,
-                                outfunc => sub { },
-                                errfunc => sub {
-                                    cmd_log_output($ctx, 'debug', $cmd, shift);
-                                },
-                                timeout  => 20,
-                                noerr => 1
-                            );
-                        };
-                    }
-                    debugmsg( $ctx, 'debug',
-                        "Triggered udev rescan for devices: "
-                        . join(', ', @sd_devnames)
-                        . " (attempt ${attempt})" );
-                } else {
-                    eval {
-                        my $cmd = [ 'udevadm', 'trigger',
-                                    '--subsystem-match=block',
-                                    "--property-match=ID_SERIAL=${id}" ];
-                        run_command(
-                            $cmd,
-                            outfunc => sub { },
-                            errfunc => sub {
-                                cmd_log_output($ctx, 'debug', $cmd, shift);
-                            },
-                            timeout  => 20,
-                            noerr => 1
-                        );
-                    };
-                    debugmsg( $ctx, 'debug',
-                        "Triggered udev rescan for scsiid ${id} "
-                        . "(attempt ${attempt})" );
-                }
-            }
-
-            # On first attempt and every 5th attempt, try the multipath
-            # CLI which does a heavier scan.  On other attempts, use only
-            # the lighter multipathd daemon commands.
-            if ( $attempt == 1 || $attempt % 5 == 0 ) {
-                eval {
-                    my $cmd = [ $MULTIPATH, $id ];
-                    run_command(
-                        $cmd,
-                        outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                        errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-                        noerr   => 1,
-                        timeout => 30
-                    );
-                };
-            }
-
-            $mpath = clean_word($mpath);
-            if ( -b $mpath ) {
-                return $mpath;
-            }
-
-            debugmsg( $ctx,
-                    "debug",
-                    "Unable to identify block device mapper name for "
-                    . "scsiid ${id} "
-                    . "attempt ${attempt}"
-                );
-
-            if ( $attempt % 15 == 0 ) {
-                debugmsg( $ctx,
-                    "debug",
-                    "Conducting multipath del map for ${id} in attempt to make multipath device reappear"
-                );
-                eval {
-                    my $cmd = [ $MULTIPATHD, 'del', 'map', $id ];
-                    run_command( $cmd, timeout => 10, noerr => 1 );
-                };
-                sleep(5);
-            }
-            eval {
-                my $cmd = [ $MULTIPATH, '-a', $id ];
-                run_command(
-                    $cmd ,
-                    outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-                    timeout  => 20,
-                    noerr   => 1
-                );
-            };
-
-            eval {
-                my $cmd = [ $MULTIPATHD, 'add', 'map', $id ];
-                run_command(
-                    $cmd ,
-                    outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-                    timeout  => 20,
-                    noerr   => 1
-                );
-            };
-
-            # Every 10th attempt, try a full multipathd reconfigure as a
-            # heavier fallback.  This forces the daemon to re-read all
-            # paths and recreate maps from scratch.
-            if ( $attempt % 10 == 0 ) {
-                debugmsg( $ctx, "debug",
-                    "Attempting multipathd reconfigure for scsiid ${id} "
-                    . "(attempt ${attempt})" );
-                eval {
-                    my $cmd = [ $MULTIPATHD, 'reconfigure' ];
-                    run_command(
-                        $cmd,
-                        outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                        errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-                        noerr   => 1,
-                        timeout => 30
-                    );
-                };
-            }
-            sleep(2);
-        }
-    } else {
-        die "Invalid characters in scsiid: ${scsiid}";
-    }
-
-    $mpath = clean_word($mpath);
+    # Fast path - the map already exists (typical for the direct callers
+    # re-resolving an active volume): return before any command, no lock
+    # taken at all. Mirrors volume_stage_iscsi's own fast path.
+    # $verify_map (set by the ACTIVATION flow - every cycle; direct callers
+    # keep the bare -b): existence is not evidence there - a leftover map
+    # whose teardown could not remove it, or one marked for deferred
+    # removal, still owns a device node while its paths belong to a
+    # logged-out session; trusting it would replay the same wedged map,
+    # and size verification cannot catch a dead-but-intact map (blockdev
+    # --getsize64 answers from the dm table without touching a path).
+    # Require at least one active path before returning, else fall through
+    # into the rounds and rebuild/repair in place.
     if ( -b $mpath ) {
-        return $mpath;
+        return $mpath if !$verify_map;
+        return $mpath if _multipath_map_has_active_path( $ctx, $scsiid );
+        debugmsg( $ctx, 'warn',
+            "Existing map for ${scsiid} has no active path - rebuilding" );
     }
 
-    die "Unable to identify the multipath name for scsiid ${scsiid}\n";
+    # Whitelist the WWID FIRST: it needs no device present, and multipathd
+    # reacts to udev events on its own - so the VPD wait below overlaps
+    # with the daemon already claiming paths as they appear instead of
+    # being dead time.
+    multipath_cmd( $ctx, [ $MULTIPATH, '-a', $scsiid ],
+                   MULTIPATH_CMD_TIMEOUT );
+
+    # Phase 1 - wait for the SCSI VPD symlink (multipathd cannot associate
+    # paths with the WWID before the inquiry completes; under load the
+    # inquiry queue backs up 30+ s). In the ACTIVATION flow this is a no-op
+    # guard: volume_stage_iscsi's exit condition is this very symlink - it
+    # waits up to 240 s for it, rescanning, or dies - so the first -e here
+    # succeeds with zero sleeps. The wait only ever waits for the direct
+    # callers that stage multipath without a fresh iSCSI stage
+    # (block_device_path_from_lun_rec, lun_record_update_device).
+    my $scsi_by_id = block_device_path_from_serial( $scsiid, 0 );
+    for my $tick ( 1 .. MULTIPATH_VPD_WAIT_ATTEMPTS ) {
+        last if -e $scsi_by_id;
+        debugmsg( $ctx, 'debug',
+            "Waiting for SCSI device ${scsi_by_id} (${tick})" )
+            if $tick == 1 || $tick % 10 == 0;
+        sleep(MULTIPATH_VPD_WAIT_SLEEP);
+    }
+    debugmsg( $ctx, 'warn',
+        "SCSI device ${scsi_by_id} not found, attempting staging anyway" )
+        if !-e $scsi_by_id;
+
+    # Resolve iSCSI by-path symlinks to sd names ONCE - reused every round.
+    my $sd_devnames = [];
+    if ( $block_devs && ref($block_devs) eq 'ARRAY' ) {
+        for my $bp (@$block_devs) {
+            my $real = Cwd::abs_path($bp);
+            push @$sd_devnames, $1 if $real && $real =~ m{^/dev/(sd[a-z]+)$};
+        }
+        if (@$sd_devnames) {
+            debugmsg( $ctx, 'debug',
+                "Resolved iSCSI paths for multipath: "
+              . join( ', ', @$sd_devnames ) );
+        }
+    }
+
+    # Phase 2 - bounded staging rounds; sleeps out here, never under the
+    # lock. ACCEPTANCE runs at the TOP of each iteration - after the
+    # previous round's sleep, so multipathd's path checker has had its
+    # window before a fresh map is judged - and, with the settle check
+    # below, is the rounds' only gate: a map is returned only with at
+    # least one active path; the round's return value is advisory (its -b
+    # short-circuits only stop escalation within the round).
+    # $last: the final round of a REAL ladder fires EVERY escalation
+    # whatever its modulo gate - the last chance must not depend on the
+    # attempts count's divisibility. An attempts bound of 1 requests one
+    # GENTLE repair round instead (the verify loop's embedded re-stage),
+    # so the blast is suppressed: $attempts > 1.
+    for my $attempt ( 1 .. $attempts ) {
+        return $mpath
+            if -b $mpath && _multipath_map_has_active_path( $ctx, $scsiid );
+        my $last = $attempt == $attempts && $attempts > 1;
+        _volume_stage_multipath( $ctx, $scsiid, $sd_devnames,
+                                 $attempt, $last );
+        sleep(MULTIPATH_STAGE_SLEEP);    # after the final round this is
+                                         # the settle window for its async
+                                         # escalations - see below
+    }
+
+    # The final round fired trigger/reconfigure-class escalations whose
+    # effect lands asynchronously - look once more after the settle sleep
+    # instead of dying on their heels; same acceptance predicate, never a
+    # bare -b.
+    return $mpath
+        if -b $mpath && _multipath_map_has_active_path( $ctx, $scsiid );
+
+    die "Unable to stage multipath device for scsiid ${scsiid} "
+      . "after ${attempts} attempts\n";
+}
+
+# One staging round - no loops, no sleeps (the caller owns both), NO
+# acceptance: the driver's loop-top predicate is the only judge of success
+# (an entry -b return here would re-trust the very zombie map the driver's
+# fast path had just rejected, before any repair command ran). The -b
+# short-circuits below only stop further escalation inside the round; the
+# returned path is advisory. The modulo escalation schedule is preserved
+# from the previous 60-round loop MINUS its %15 del-map recovery - the
+# reactivation cycle's teardown supersedes it - and the round count shrank
+# instead (MULTIPATH_STAGE_ATTEMPTS): the cycle now supplies the deep
+# retries a broken stack actually needs. On the final round of a real
+# ladder ($last) every escalation fires regardless of its modulo gate.
+# NOTE a deliberate consequence of the -b short-circuits: when the node
+# PRE-EXISTS (a rejected zombie), every round returns right after
+# add path / -a / add map - the escalations never fire. By design: the
+# escalation ladder exists to MATERIALIZE a missing node; attaching paths
+# to an existing map is exactly the add path / add map pair, and a daemon
+# too wedged for those fails the attempt into the cycle's teardown, which
+# removes the node - re-opening the full ladder for the next cycle's
+# rebuild.
+sub _volume_stage_multipath {
+    my ( $ctx, $scsiid, $sd_devnames, $attempt, $last ) = @_;
+
+    my $mpath = clean_word( block_device_path_from_serial( $scsiid, 1 ) );
+
+    # Register the resolved sd paths with multipathd FIRST - under load
+    # udev events lag and map creation fails unless the daemon is told its
+    # paths explicitly.
+    multipath_cmd( $ctx, [ $MULTIPATHD, 'add', 'path', $_ ],
+                   MULTIPATH_CMD_TIMEOUT_MAX ) for @$sd_devnames;
+
+    # Re-assert the whitelist (the driver did it once before its VPD wait).
+    multipath_cmd( $ctx, [ $MULTIPATH, '-a', $scsiid ],
+                   MULTIPATH_CMD_TIMEOUT );
+    multipath_cmd( $ctx, [ $MULTIPATHD, 'add', 'map', $scsiid ],
+                   MULTIPATH_CMD_TIMEOUT_MAX );
+    return $mpath if -b $mpath;
+
+    # Escalations, cheapest first:
+    if ( $last || $attempt == 1 || $attempt % 5 == 0 ) {   # heavier per-WWID scan
+        multipath_cmd( $ctx, [ $MULTIPATH, $scsiid ], MULTIPATH_CMD_TIMEOUT_MAX );
+        return $mpath if -b $mpath;
+    }
+
+    if ( $last || $attempt % 4 == 0 ) {              # udev event replay
+        if (@$sd_devnames) {                         # targeted - never broad
+            multipath_cmd( $ctx, [ 'udevadm', 'trigger', "/sys/block/$_" ],
+                           MULTIPATH_CMD_TIMEOUT_MAX ) for @$sd_devnames;
+        } else {
+            multipath_cmd( $ctx, [ 'udevadm', 'trigger',
+                                   '--subsystem-match=block',
+                                   "--property-match=ID_SERIAL=${scsiid}" ],
+                           MULTIPATH_CMD_TIMEOUT );
+        }
+        return $mpath if -b $mpath;
+    }
+
+    if ( $last || $attempt % 10 == 0 ) {             # daemon-wide re-read
+        multipath_cmd( $ctx, [ $MULTIPATHD, 'reconfigure' ],
+                       MULTIPATH_CMD_TIMEOUT_MAX );
+        return $mpath if -b $mpath;
+    }
+
+    return -b $mpath ? $mpath : undef;
+}
+
+# The staging exit contract's acceptance probe: ONE locked
+# `multipath -ll <wwid>` read; true when at least one PATH row reports the
+# dm state `active` - a path the kernel will route IO to. Path-GROUP rows
+# (`status=active`) are ignored: a group can be the serving group while
+# every path inside it has failed. Command failure, timeout or empty
+# output all return 0 - no evidence reads as "no active path", failing
+# toward the rebuild rounds and, ultimately, the reactivation cycle's
+# teardown (never toward trusting a zombie map). A fresh map whose paths
+# the checker has not visited yet can legitimately return 0 for a round or
+# two - the staging driver probes at its loop top, after each inter-round
+# sleep, precisely to absorb that window. PARSE IS LOAD-BEARING: a false
+# "no active path" fails activation through every cycle - if `-ll`
+# scraping proves fragile across multipath-tools versions, the fallback
+# evidence is `dmsetup status <name>` A-flag counting
+# (get_device_mapper_name supplies the name).
+sub _multipath_map_has_active_path {
+    my ( $ctx, $scsiid ) = @_;
+
+    my $cmd    = [ $MULTIPATH, '-ll', $scsiid ];
+    my $active = 0;
+    my $lines  = 0;
+    my $res    = multipath_cmd( $ctx, $cmd, MULTIPATH_CMD_TIMEOUT, sub {
+        my ($line) = @_;
+        $lines++;
+        cmd_log_output( $ctx, 'debug', $cmd, $line );
+        # PATH rows carry an H:C:T:L tuple then devnode and major:minor
+        # ("7:0:0:0 sdb 8:16 active ready running"); require the dm state
+        # column to say `active`, and disqualify a row whose checker
+        # already says `faulty` (checker verdicts lag dm state).
+        $active = 1
+            if $line =~ /\b\d+:\d+:\d+:\d+\s+\S+\s+\d+:\d+\s+active\b/
+            && $line !~ /\bfaulty\b/;
+    } );
+
+    # Always leave a trace: an empty -ll logs no output lines at all, which
+    # would make a failing probe invisible in the debug log without this.
+    debugmsg( $ctx, 'debug',
+        "Map active-path probe for ${scsiid}: exitcode "
+      . ( $res->{exitcode} // 'undef' )
+      . ", lines ${lines}, active ${active}" );
+
+    return 1 if $active
+        && defined( $res->{exitcode} ) && $res->{exitcode} == 0;
+
+    # Fallback evidence - dmsetup status A-flag counting: `multipath -ll`
+    # has been OBSERVED returning exit 0 with EMPTY output for a live,
+    # seconds-old map (PVE 9.1, 2026-07-03: 40 consecutive empty reads
+    # during one activation while the map stayed assembled and healthy).
+    # Silence is not evidence of death when the dm node exists - ask
+    # device-mapper directly. A multipath status line carries one A
+    # (active) or F (failed) flag per path after each major:minor:
+    # "0 8192 multipath 2 0 0 0 1 1 A 0 2 0 8:208 A 0 65:0 A 0".
+    if ( $lines == 0 && -b block_device_path_from_serial( $scsiid, 1 ) ) {
+        my $dmactive = 0;
+        my $dcmd = [ $DMSETUP, 'status', $scsiid ];
+        my $dres = multipath_cmd( $ctx, $dcmd, MULTIPATH_CMD_TIMEOUT, sub {
+            my ($line) = @_;
+            cmd_log_output( $ctx, 'debug', $dcmd, $line );
+            $dmactive = 1
+                if $line =~ /\bmultipath\b/
+                && $line =~ /\d+:\d+\s+A\b/;
+        } );
+        debugmsg( $ctx, 'debug',
+            "Map active-path dmsetup fallback for ${scsiid}: exitcode "
+          . ( $dres->{exitcode} // 'undef' ) . ", active ${dmactive}" );
+        return 1 if $dmactive
+            && defined( $dres->{exitcode} ) && $dres->{exitcode} == 0;
+    }
+
+    return 0;
 }
 
 # This function provides expecte path of block device
@@ -2552,21 +2825,15 @@ sub get_device_mapper_name {
         my $id = $1;
 
         my $cmd = [ $MULTIPATH, '-ll', $id ];
-        run_command(
-            $cmd ,
-            outfunc => sub {
-                    my $line = shift;
-                    chomp $line;
-                    cmd_log_output($ctx, 'debug', $cmd, $line);
-                    if ( $line =~ /\b$wwid\b/ ) {
-                        my @parts = split( /\s+/, $line );
-                        $device_mapper_name = $parts[0];
-                    }
-                },
-            errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-            timeout  => 5,
-            noerr   => 1
-        );
+        multipath_cmd( $ctx, $cmd, MULTIPATH_CMD_TIMEOUT, sub {
+            my $line = shift;
+            chomp $line;
+            cmd_log_output( $ctx, 'debug', $cmd, $line );
+            if ( $line =~ /\b$wwid\b/ ) {
+                my @parts = split( /\s+/, $line );
+                $device_mapper_name = $parts[0];
+            }
+        } );
     } else {
         die "Invalid characters in wwid: ${wwid}\n";
     }
@@ -2874,280 +3141,187 @@ sub volume_unstage_iscsi {
 }
 
 sub volume_unstage_multipath {
-    my ( $ctx, $scsiid ) = @_;
+    my ( $ctx, $scsiid, $attempts_wait_unused, $attempts_remove_device ) = @_;
 
-    # Driver should not commit any write operation including sync before unmounting
-    # Because that might lead to data corruption in case of active migration
-    # Also we do not do any unmounting to volume as that might cause unexpected writes
+    # No writes or sync before unmounting, and no unmounting of the volume -
+    # unexpected writes during an active migration are a data-corruption
+    # hazard.
 
-    # Validate SCSI ID early to prevent injection attacks
-    unless ( $scsiid =~ /^([\:\-\@\w.\/]+)$/ ) {
-        die "SCSI ID contains forbidden symbols: ${scsiid}\n";
+    $scsiid = safe_word( clean_word($scsiid), 'multipath scsi id' );
+    $attempts_wait_unused   //= MULTIPATH_UNSTAGE_WAIT_UNUSED_ATTEMPTS;
+    $attempts_remove_device //= MULTIPATH_UNSTAGE_REMOVE_ATTEMPTS;
+
+    debugmsg( $ctx, 'debug', "Volume unstage multipath scsiid ${scsiid}" );
+
+    # Phase 1 - wait for the device to fall unused (Proxmox may deactivate
+    # before qemu is gone; racing that is the corruption hazard above). One
+    # tick per call - the loop and the sleep live here, mirroring the
+    # staging split; no post-loop recheck is needed (we proceed either
+    # way), so the sleep is skipped on the last tick.
+    my $device_ready = 0;
+    for my $tick ( 1 .. $attempts_wait_unused ) {
+        $device_ready =
+            _volume_unstage_multipath_wait_unused( $ctx, $scsiid, $tick );
+        last if $device_ready;
+        sleep(MULTIPATH_UNSTAGE_WAIT_UNUSED_SLEEP)
+            if $tick < $attempts_wait_unused;
     }
-    my $clean_scsiid = $1;
+    debugmsg( $ctx, 'warn',
+        "Device ${scsiid} may still be in use, proceeding with cleanup" )
+        unless $device_ready;
 
-    debugmsg( $ctx, "debug", "Volume unstage multipath scsiid ${clean_scsiid}" );
-
-    # Phase 1: Wait for device to become unused
-    # There are strong suspicions that proxmox does not terminate qemu during migration
-    # before calling volume deactivation. This prevents data corruption.
-    my $device_ready = _volume_unstage_multipath_wait_unused($ctx, $clean_scsiid);
-    unless ($device_ready) {
-        debugmsg( $ctx, "warn", "Device ${clean_scsiid} may still be in use, proceeding with cleanup" );
+    # Phase 2 - removal rounds. One round per call; the round's own tail
+    # (blocker grace) is the inter-round pacing, so no sleep here.
+    my $removed = 0;
+    for my $round ( 1 .. $attempts_remove_device ) {
+        $removed = _volume_unstage_multipath_remove_device( $ctx, $scsiid,
+                                                            $round );
+        last if $removed;
     }
 
-    # Phase 2: Remove multipath device with retries
-    my $cleanup_successful = _volume_unstage_multipath_remove_device($ctx, $clean_scsiid);
-
-    if ($cleanup_successful) {
-        debugmsg( $ctx, "debug", "Volume unstage multipath scsiid ${clean_scsiid} completed successfully" );
-        return;
-    } else {
-        die "Failed to remove multipath device for SCSI ID ${clean_scsiid} after multiple attempts\n";
+    # Final fallback - AFTER the rounds, never inside one: deferred removal
+    # marks the device to disappear when its last opener closes it. A
+    # device that vanished on its own between the last round and this probe
+    # counts as removed (the previous code read that as failure).
+    if ( !$removed ) {
+        if ( _dmsetup_device_exists( $ctx, $scsiid ) ) {
+            debugmsg( $ctx, 'info',
+                "Using deferred dmsetup removal for ${scsiid}" );
+            my $res = multipath_cmd( $ctx,
+                [ $DMSETUP, 'remove', '--deferred', $scsiid ],
+                MULTIPATH_CMD_TIMEOUT_MAX );
+            die "Failed to remove multipath device for SCSI ID ${scsiid}: "
+              . "${attempts_remove_device} rounds exhausted and deferred "
+              . "removal failed\n"
+                if !defined( $res->{exitcode} ) || $res->{exitcode} != 0;
+        }
+        # else: gone on its own - success
     }
+
+    return;
 }
 
+# ONE wait-unused tick - returns 1 when the mapper device is free or gone
+# (stop waiting, removal may proceed), 0 while a process still holds it
+# (wait another tick). No outer catch-all eval: a `multipath` lock failure
+# inside get_device_mapper_name propagates by design - in the reactivation
+# teardown the per-step best-effort wrapper warns and moves on (fatal lock
+# errors rethrow through it); in a standalone deactivation it fails the
+# operation loud.
 sub _volume_unstage_multipath_wait_unused {
-    my ( $ctx, $scsiid ) = @_;
+    my ( $ctx, $scsiid, $tick ) = @_;
 
-    # Before we try to remove multipath device
-    # Let's check if no process is using it
-    # The problem with such approach is that there might be some data syscalls to multipath
-    # block device that remain unfinished while we conduct multipath deactivation
-    # That might probably affect volume migration under heavy load when part of that data gets buffered
+    my $mapper_name = get_device_mapper_name( $ctx, $scsiid );   # locked probe
+    return 1 if !defined $mapper_name;        # no map - nothing to wait on
 
-    for my $tick ( 1 .. 60) {
-        # lets give it 1 minute to finish its business
-        my $should_continue = 1;
+    if ( $mapper_name !~ /^([\:\-\@\w.\/]+)$/ ) {
+        debugmsg( $ctx, 'debug',
+            "Multipath device mapper name is incorrect: ${mapper_name}" );
+        return 1;                             # unusable name - proceed
+    }
+    my $mapper_path = "/dev/mapper/$1";       # mapper-NAME path - the one
+                                              # place the serial helper
+                                              # cannot build
+    return 1 if !-b $mapper_path;             # node gone - nothing to wait
+                                              # on (the previous loop kept
+                                              # waiting here)
 
+    # lsof/ps are read-only process queries - deliberately NOT under the
+    # lock. lsof -t exits non-zero when NOBODY holds the device - the
+    # success case - so noerr is required; an empty pid list means "free".
+    my $pid;
+    my $cmd = [ 'lsof', '-t', $mapper_path ];
+    eval {
+        run_command( $cmd,
+            outfunc => sub { $pid = clean_word(shift); },  # last line wins -
+                                                           # diagnostics only
+            errfunc => sub { cmd_log_output( $ctx, 'error', $cmd, shift ) },
+            noerr   => 1,
+        );
+    };
+    if ($@) {
+        debugmsg( $ctx, 'warn',
+            "Unable to identify mapper user for ${mapper_path}: $@" );
+        return 1;                             # cannot tell - proceed
+    }
+    return 1 if !$pid;                        # free
+
+    # Still held - name the blocker for diagnostics, gated so a long wait
+    # does not emit one warning per tick.
+    if ( ( $tick == 1 || $tick % 10 == 0 ) && $pid =~ /^([\:\-\@\w.\/]+)$/ ) {
+        my $blocker_name;
+        my $pscmd = [ 'ps', '-o', 'comm=', '-p', $1 ];
         eval {
-            my $pid;
-            my $blocker_name;
-
-            my $mapper_name = get_device_mapper_name( $ctx, $scsiid );
-
-            # Check if mapper exists and is valid
-            if ( !defined($mapper_name) ) {
-                debugmsg( $ctx, "debug", "Multipath device mapper name is not defined");
-                $should_continue = 0;
-                return;
-            }
-
-            if ( $mapper_name !~ /^([\:\-\@\w.\/]+)$/ ) {
-                debugmsg( $ctx, "debug", "Multipath device mapper name is incorrect: ${mapper_name}");
-                $should_continue = 0;
-                return;
-            }
-
-            my $clean_mapper_name = $1;
-            my $mapper_path = "/dev/mapper/${clean_mapper_name}";
-
-            # Check if mapper device file exists
-            if ( !-b $mapper_path ) {
-                debugmsg( $ctx, "debug", "Multipath device mapping ${mapper_path} does not exist");
-                return;
-            }
-
-            # Check device usage
-            debugmsg( $ctx, "debug", "Check usage of multipath mapping ${mapper_path}" );
-            my $cmd = [ 'lsof', '-t', $mapper_path ];
-            eval {
-                run_command(
-                    $cmd,
-                    outfunc => sub {
-                        $pid = clean_word(shift);
-                        cmd_log_output($ctx, 'debug', $cmd, $pid);
-                    },
-                    errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); }
-                );
-            };
-            if ($@) {
-                my $err = $@;
-                debugmsg( $ctx, "warn", "Unable to identify mapper user for ${mapper_path}: ${err}");
-                $should_continue = 0;
-                return 1;
-            }
-
-            debugmsg( $ctx, "debug", "Multipath device mapping ${mapper_path} is used by ${pid}");
-
-            if ($pid) {
-                $pid = clean_word($pid);
-                debugmsg( $ctx, 'debug', "Block device with SCSI ${scsiid} is used by ${pid}" );
-
-                # Get process name for diagnostics
-                if ( $pid =~ /^([\:\-\@\w.\/]+)$/ ) {
-                    my $clean_pid = $1;
-                    my $cmd = [ 'ps', '-o', 'comm=', '-p', $clean_pid ];
-                    run_command(
-                        $cmd,
-                        outfunc => sub {
-                            $blocker_name = clean_word(shift);
-                            cmd_log_output($ctx, 'debug', $cmd, $blocker_name);
-                        },
-                        errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); }
-                    );
-                    my $warningmsg = "Multipath device "
-                        . "with scsi id ${scsiid}, "
-                        . "is used by ${blocker_name} with pid ${pid}";
-                    debugmsg( $ctx, 'warn', $warningmsg );
-                    warn "${warningmsg}\n";
-                }
-            } else {
-                debugmsg( $ctx, 'debug', "Block device with SCSI ${scsiid} is not used" );
-                $should_continue = 0;
-            }
+            run_command( $pscmd,
+                outfunc => sub { $blocker_name = clean_word(shift); },
+                errfunc => sub { cmd_log_output( $ctx, 'error', $pscmd, shift ) },
+                noerr   => 1,
+            );
         };
-
-        if ($@) {
-            debugmsg( $ctx, 'warn', "Error during device usage check: $@" );
-        }
-
-        # Exit loop if device is unused or we encountered an exit condition
-        unless ($should_continue) {
-            return 1;
-        }
-
-        sleep(1);
+        $blocker_name //= 'unknown';
+        my $warningmsg = "Multipath device with scsi id ${scsiid} "
+                       . "is used by ${blocker_name} with pid ${pid}";
+        debugmsg( $ctx, 'warn', $warningmsg );
+        warn "${warningmsg}\n";
     }
 
-    return 1; # Always return success after timeout
+    return 0;                                 # still in use - wait another tick
 }
 
+# ONE removal round - returns 1 when map and dm device are gone, 0 when
+# something still holds them (the caller retries; the deferred fallback
+# runs in the caller AFTER the rounds). $scsiid arrives sanitized by the
+# caller. The round tail's blocker grace doubles as the inter-round
+# pacing - the caller's loop adds no sleep.
 sub _volume_unstage_multipath_remove_device {
-    my ( $ctx, $scsiid ) = @_;
+    my ( $ctx, $scsiid, $round ) = @_;
 
-    unless ( $scsiid =~ /^([\:\-\@\w.\/]+)$/ ) {
-        debugmsg( $ctx, 'warn', "SCSI ID contains forbidden symbols: ${scsiid}" );
-        return 0;
-    }
-    my $clean_scsiid = $1;
+    debugmsg( $ctx, 'debug',
+        "Multipath removal round ${round} for SCSI ID ${scsiid}" );
 
-    for my $attempt ( 1 .. 10) {
-        debugmsg( $ctx, "debug", "Multipath removal attempt ${attempt}/10 for SCSI ID ${clean_scsiid}" );
+    # Step 1 - un-whitelist the WWID.
+    multipath_cmd( $ctx, [ $MULTIPATH, '-w', $scsiid ] );
 
-        # Step 1: Remove SCSI ID from WWID file
-        eval {
-            my $cmd = [ $MULTIPATH, '-w', $clean_scsiid ];
-            run_command(
-                $cmd,
-                outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-                timeout  => 20,
-                noerr   => 1
-            );
-        };
-        if ($@) {
-            debugmsg( $ctx, 'warn', "Unable to remove scsi id ${clean_scsiid} from wwid file: $@" );
+    # Step 2 - drop the map: daemon first, then flush (-f, never a bare
+    # rescan, which would recreate the device), then daemon again if the
+    # map survived. Order preserved from the previous code.
+    multipath_cmd( $ctx, [ $MULTIPATHD, 'del', 'map', $scsiid ],
+                   MULTIPATHD_CMD_TIMEOUT_FAST ) if $MULTIPATHD;
+    multipath_cmd( $ctx, [ $MULTIPATH, '-f', $scsiid ],
+                   MULTIPATH_CMD_TIMEOUT_MAX );
+    multipath_cmd( $ctx, [ $MULTIPATHD, 'del', 'map', $scsiid ],
+                   MULTIPATHD_CMD_TIMEOUT_FAST )
+        if $MULTIPATHD && _multipathd_map_exists( $ctx, $scsiid );
+
+    # Step 3 - the flush can leave an orphaned dm device; probe with
+    # dmsetup (multipath -ll only sees the multipath map) and remove it
+    # directly.
+    return 1 if !_dmsetup_device_exists( $ctx, $scsiid );
+
+    multipath_cmd( $ctx, [ $DMSETUP, 'remove', '-f', $scsiid ],
+                   MULTIPATH_CMD_TIMEOUT_MAX );
+
+    sleep(MULTIPATH_UNSTAGE_REMOVE_SETTLE);       # let the removal land
+    return 1 if !_dmsetup_device_exists( $ctx, $scsiid );
+
+    # Still held - bounded grace for the blocker before the next round.
+    my $mapper_name = get_device_mapper_name( $ctx, $scsiid ) // $scsiid;
+    my $blocker_pid =
+        _volume_unstage_multipath_get_blocker( $ctx, $scsiid, $mapper_name );
+    if ($blocker_pid) {
+        debugmsg( $ctx, 'debug',
+            "Waiting for blocker pid ${blocker_pid} (round ${round})" );
+        for ( 1 .. MULTIPATH_UNSTAGE_BLOCKER_WAIT ) {    # 1 s ticks
+            last unless -d "/proc/${blocker_pid}";
+            sleep(1);
         }
-
-
-
-        # Step 2: Flush (remove) the multipath device map.
-        # Using -f (flush) instead of bare $scsiid which would
-        # recreate/refresh the device — the opposite of what we want.
-        
-        #TODO: review this section
-        if ($MULTIPATHD) {
-            eval {
-                my $cmd = [ $MULTIPATHD, 'del', 'map', $clean_scsiid ];
-                run_command( $cmd,
-                    outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-                    timeout => 10, noerr => 1
-                );
-            };
-            if ($@) { debugmsg( $ctx, 'warn', "multipathd del map failed for ${clean_scsiid}: $@" ); }
-        }
-
-        eval {
-            my $cmd = [ $MULTIPATH, '-f', $clean_scsiid ];
-            run_command(
-                $cmd,
-                outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-                noerr   => 1,
-                timeout => 30
-            );
-        };
-
-        if (_multipathd_map_exists($ctx, $clean_scsiid)) {
-            if ($MULTIPATHD) {
-                eval {
-                    my $cmd = [ $MULTIPATHD, 'del', 'map', $clean_scsiid ];
-                    run_command( $cmd, timeout => 10, noerr => 1 );
-                };
-            }
-        }
-
-        # Step 3: Always attempt dmsetup removal.
-        # multipath -f removes the multipath map but can leave
-        # an orphaned dm device behind.  Use dmsetup info to check
-        # if the dm device exists (not multipath -ll which only
-        # sees the multipath map).
-        my $dm_exists = _dmsetup_device_exists($ctx, $clean_scsiid);
-        unless ($dm_exists) {
-            debugmsg( $ctx, "debug", "Volume unstage multipath scsiid ${clean_scsiid} done (flush)" );
-            return 1;
-        }
-
-        eval {
-            my $cmd = [ $DMSETUP, "remove", "-f", $clean_scsiid ];
-            run_command( $cmd,
-                outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-                timeout  => 20,
-                noerr   => 1
-            );
-        };
-        if ($@) {
-            debugmsg( $ctx, 'warn', "dmsetup remove failed for ${clean_scsiid}: $@" );
-        }
-
-        # Check if dmsetup removal succeeded
-        sleep(1);
-        $dm_exists = _dmsetup_device_exists($ctx, $clean_scsiid);
-        unless ($dm_exists) {
-            debugmsg( $ctx, "debug", "Volume unstage multipath scsiid ${clean_scsiid} done (dmsetup)" );
-            return 1;
-        }
-
-        # Identify what is blocking removal and wait for it
-        my $mapper_name = get_device_mapper_name( $ctx, $clean_scsiid );
-        $mapper_name = $clean_scsiid unless defined($mapper_name);
-        my $blocker_pid = _volume_unstage_multipath_get_blocker($ctx, $clean_scsiid, $mapper_name);
-        if ($blocker_pid) {
-            debugmsg( $ctx, "debug", "Waiting for blocker pid ${blocker_pid} to finish (attempt ${attempt})" );
-            # Wait up to 5 seconds for the blocker to finish
-            for my $wait (1 .. 5) {
-                last unless -d "/proc/${blocker_pid}";
-                sleep(1);
-            }
-        } else {
-            sleep(2);
-        }
-
-        debugmsg( $ctx, "debug", "Unable to remove multipath mapping for scsiid ${clean_scsiid} in attempt ${attempt}" );
+    } else {
+        sleep(MULTIPATH_UNSTAGE_REMOVE_SLEEP);
     }
 
-    # Final fallback: deferred removal — device will be removed when
-    # the last opener (e.g. vgs) closes it.
-    if (_dmsetup_device_exists($ctx, $clean_scsiid)) {
-        debugmsg( $ctx, "info", "Using deferred dmsetup removal for ${clean_scsiid}" );
-        eval {
-            my $cmd = [ $DMSETUP, "remove", "--deferred", $clean_scsiid ];
-            run_command( $cmd,
-                outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-                timeout  => 20,
-                noerr   => 1
-            );
-        };
-        # Deferred removal is "best effort" — the device will disappear
-        # when the last holder releases it, so we return success.
-        return 1;
-    }
-
-    return 0; # All attempts failed and deferred removal not possible
+    debugmsg( $ctx, 'debug',
+        "Multipath mapping for ${scsiid} still present after round ${round}" );
+    return 0;
 }
 
 # Check if a device-mapper device exists by SCSI ID / dm name.
@@ -3158,19 +3332,12 @@ sub _dmsetup_device_exists {
     my ( $ctx, $name ) = @_;
 
     my $exists = 0;
-    eval {
-        my $cmd = [ $DMSETUP, "info", $name ];
-        run_command( $cmd,
-            outfunc => sub {
-                my $line = shift;
-                $exists = 1 if $line =~ /State:\s+ACTIVE/;
-                cmd_log_output($ctx, 'debug', $cmd, $line);
-            },
-            errfunc => sub { },  # suppress "device not found" errors
-            timeout  => 20,
-            noerr   => 1
-        );
-    };
+    my $cmd = [ $DMSETUP, "info", $name ];
+    multipath_cmd( $ctx, $cmd, MULTIPATH_CMD_TIMEOUT, sub {
+        my $line = shift;
+        $exists = 1 if $line =~ /State:\s+ACTIVE/;
+        cmd_log_output( $ctx, 'debug', $cmd, $line );
+    } );
     return $exists;
 }
 
@@ -3261,22 +3428,18 @@ sub _volume_unstage_multipath_get_blocker {
     return $pid;
 }
 
-# TODO: review this code
 sub _multipathd_map_exists {
     my ( $ctx, $wwid ) = @_;
+
     my $found = 0;
-    eval {
-        my $cmd = [ $MULTIPATH, '-ll', $wwid ];
-        run_command( $cmd,
-            outfunc => sub { my $line = shift; $found = 1 if $line =~ /\Q$wwid\E/;
-                             cmd_log_output($ctx, 'debug', $cmd, $line); },
-            errfunc => sub { },
-            timeout => 15, noerr => 1
-        );
-    };
+    my $cmd = [ $MULTIPATH, '-ll', $wwid ];
+    multipath_cmd( $ctx, $cmd, MULTIPATH_CMD_TIMEOUT, sub {
+        my $line = shift;
+        $found = 1 if $line =~ /\Q$wwid\E/;
+        cmd_log_output( $ctx, 'debug', $cmd, $line );
+    } );
     return $found;
 }
-
 
 sub volume_unpublish {
     my ( $ctx, $vmid, $volname, $snapname, $content_volume_flag ) = @_;
@@ -3721,7 +3884,7 @@ sub volume_deactivate_by_lun_record {
         my $unstage_multipath_done = 0;
         for my $attempt ( 1 .. 3) {
             eval {
-                volume_unstage_multipath( $ctx, $lunrecord->{scsiid}, 10, 20 );
+                volume_unstage_multipath( $ctx, $lunrecord->{scsiid} );
             };
             my $cerr = $@;
             if ($cerr) {
@@ -3765,23 +3928,7 @@ sub volume_activate {
         $vmid, $volname, $snapname,
         $content_volume_flag ) = @_;
 
-    my $published                 = 0;
-    my $iscsi_staged              = 0;
-    my $scsiid_acquired           = 0;
-    my $multipath_staged          = 0;
-    my $local_record_created      = 0;
-
-    my $block_devs;
-    my $tinfo; # Target information when it is published
-
     my $tgname;
-    my $scsiid;
-    my $shared = get_shared( $ctx );
-    my $multipath = get_multipath( $ctx );
-    my $targetname;
-    my $lunid;
-    my $hosts;
-
     if ( defined($content_volume_flag) && $content_volume_flag != 0 ) {
         $tgname = get_content_target_group_name($ctx);
     } else {
@@ -3793,144 +3940,292 @@ sub volume_activate {
           . safe_var_print( "snapshot", $snapname )
           . "\n" );
 
-    eval {
-        $published = 1;
-        $tinfo = volume_publish($ctx,
-                                $tgname,
-                                $volname,
-                                $snapname,
-                                $content_volume_flag
-        );
+    my $last_err;
+    delete $ctx->{_multipath_cmd_ladder_exhausted};   # isolate from earlier
+                                                      # operations on this
+                                                      # $ctx - ONCE, not per
+                                                      # cycle: a signature
+                                                      # set inside a
+                                                      # teardown or sweep
+                                                      # must survive into
+                                                      # the next attempt's
+                                                      # gate
+    for my $cycle ( 1 .. VOLUME_ACTIVATE_CYCLE_ATTEMPTS ) {
+        my $state = {};    # reached stages + target coordinates - the
+                           # teardown reads it
+        my $block_devs = eval {
+            _volume_activate_attempt( $ctx, $vmid, $volname, $snapname,
+                                      $content_volume_flag, $tgname, $state,
+                                      $cycle );
+        };
+        return $block_devs if !$@ && defined($block_devs);
 
-        if ($tinfo) {
-            $targetname = $tinfo->{target};
-            $lunid = $tinfo->{lunid};
-            $hosts = $tinfo->{iplist};
-            $scsiid = $tinfo->{scsiid};
-        } else {
-            die "Publishing volume ${volname} " . safe_var_print( "snapshot", $snapname ) .
-                " failed to provide target info\n";
-        }
+        $last_err = $@ || "activation produced no block devices\n";
+        debugmsg( $ctx, 'warn',
+            "Activation cycle ${cycle} of volume ${volname} "
+          . safe_var_print( 'snapshot', $snapname )
+          . " failed: ${last_err}" );
 
-        $iscsi_staged = 1;
-        my $tbdlist = volume_stage_iscsi(
-            $ctx,
-            $targetname,
-            $lunid,
-            $hosts,
-            $scsiid,
-        );
-        $block_devs = $tbdlist;
+        # ERROR CLASSIFICATION - before any recovery machinery runs.
+        #
+        # (1) FATAL: a marked lock-machinery die (hold-cap overrun, hold
+        # alarm) means the locks protecting this operation can no longer
+        # be trusted; retrying - or even running the teardown, whose steps
+        # touch shared state up to and including the target detach - would
+        # race whoever may have stale-reclaimed them. Rethrow: die ->
+        # unwind -> every held lock released. The stack residue is
+        # deliberate - nothing touches shared state without valid locks;
+        # the next activation rebuilds or fast-paths over whatever is
+        # left.
+        die $last_err
+            if OpenEJovianDSS::Lock::lock_error_fatal($last_err);
 
-        unless (scalar(@$block_devs) >= 1) {
-            die "Unable to connect to any storage address\n";
-        }
+        # (2) CONTENTION: an acquire timeout reports a lock that was NEVER
+        # OBTAINED - nothing was modified under it, every held lock is
+        # still valid, and nothing says the device stack is broken.
+        # Teardown buys nothing: skip the sweep and the teardown, and
+        # re-attempt over whatever the attempt left behind
+        # (publish/login/staging all fast-path or re-run idempotently).
+        # On the pre-final-cycle pass this also skips the recovery detach -
+        # deliberate: contention is not the backend wedge the detach
+        # exists to reset.
+        if ( !OpenEJovianDSS::Lock::lock_error_acquire($last_err) ) {
 
-        if (defined( $scsiid ) ) {
-            $scsiid_acquired = 1;
-        } else {
-            die "Unable to identify scsi id for ${volname}" .
-                safe_var_print( "snapshot", $snapname ) . "\n";
-        }
+            # (3) DEVICE/STAGING FAILURE - repair, tear down, rebuild.
 
-        if ($multipath) {
-            $multipath_staged = 1;
-            my $multipath_path = volume_stage_multipath( $ctx, $scsiid, $block_devs );
-            my $mpdl = [ clean_word($multipath_path) ];
-            $block_devs = $mpdl;
-        }
-
-        my $size = volume_get_size( $ctx, $volname);
-
-        $local_record_created      = 1;
-        my $ltlfile;
-
-        $ltlfile = lun_record_local_create(
-                $ctx,
-                $targetname, $lunid, $volname, $snapname,
-                $scsiid, $size,
-                $multipath, $shared,
-                @{ $hosts } );
-        # We do it to recheck device size and properties
-        # That is needed to ensure that proxmox recognize device as present
-        # after volume migrates back
-        my $lunrec = lun_record_local_get_by_path( $ctx, $ltlfile );
-        lun_record_update_device( $ctx, $targetname, $lunid, $ltlfile, $lunrec, $size );
-
-    };
-    my $err = $@;
-
-    if ($err) {
-        warn "Volume ${volname} " . safe_var_print( "snapshot", $snapname ) . " activation failed: $err";
-
-        my $local_cleanup = 0;
-
-
-        # Logout iSCSI BEFORE removing multipath — same rationale as
-        # in the normal deactivation path (see volume_deactivate).
-        if ( $iscsi_staged ) {
-            volume_unstage_iscsi_device( $ctx, $targetname, $lunid, $hosts );
-        }
-
-        if ($multipath_staged) {
-            eval {
-                volume_unstage_multipath( $ctx, $scsiid );
-            };
-            my $cerr = $@;
-            if ($cerr) {
-                $local_cleanup = 1;
-                warn "volume_unstage_multipath failed: $@" if $@;
-            }
-        }
-
-        # volume_unstage_iscsi call is moved to lun_record_local_delete
-
-        if ( $snapname ) {
-            # We do not delete target on joviandss as this will lead to race condition
-            # in case of migration
-            if ( $published ) {
-                eval {
-                    volume_unpublish( $ctx, $vmid, $volname, $snapname, undef );
-                };
-                my $cerr = $@;
-                if ($cerr) {
-                    $local_cleanup = 1;
-                    warn "unpublish_volume failed: $@" if $@;
+            # Stale-cookie sweep BEFORE the teardown - and only while the
+            # strand signature is armed: set by this attempt, or re-armed
+            # by the previous teardown's/sweep's own hung command (exit
+            # 124/137: survived the whole termination ladder; recorded on
+            # $ctx by multipath_cmd). If a stranded cookie broke the
+            # attempt, the teardown's dm commands would hang on it too.
+            # Best-effort - must not mask $last_err - except a fatal lock
+            # error, which rethrows.
+            if ( delete $ctx->{_multipath_cmd_ladder_exhausted} ) {
+                eval { _multipath_cookie_sweep($ctx) };
+                if ($@) {
+                    die $@ if OpenEJovianDSS::Lock::lock_error_fatal($@);
+                    debugmsg( $ctx, 'warn', "Stale-cookie sweep failed: $@" );
                 }
             }
-        }
 
-        # This is a last step of volume activation error handling
-        # We alsways do lun record delete as this function checks for volumes provided by given iscsi target
-        # and conducts iscsi logout if none is present
-
-        if (defined($targetname) && defined($lunid) && $targetname ne "" && $lunid ne "") {
+            # Teardown so the next cycle rebuilds the stack from a clean
+            # slate. ONE pass: its steps are individually best-effort, so
+            # short of a fatal lock error - which rethrows - a pass cannot
+            # fail; convergence across step failures is supplied by the
+            # CYCLES themselves, whose every later failure runs this
+            # teardown again over the residue. The pass BEFORE THE FINAL
+            # CYCLE - and only that one - adds the target detach
+            # (volume_unpublish): a one-shot recovery for backend state a
+            # logout-level teardown cannot reset, gated on session
+            # evidence - skipped while JovianDSS shows a foreign initiator
+            # on the target.
             eval {
-                lun_record_local_delete( $ctx, $targetname, $lunid, $volname, $snapname );
+                _volume_deactivate_attempt( $ctx, $vmid, $volname,
+                                            $snapname, $tgname, $state,
+                                            $cycle );
             };
-        } else {
-            debugmsg($ctx, 'debug', "Skipping volume ${volname} "
-                     . safe_var_print( "snapshot", $snapname ) . ' '
-                     .  'local LUN record delete - invalid target name or LUN ID'
-                     . "\n" );
-        }
-
-        my $cerr = $@;
-        if ($cerr) {
-            $local_cleanup = 1;
-            if ($local_record_created) {
-                warn "delete_lun_record failed: $@" if $@;
+            if ($@) {
+                # Defensive: reachable by a fatal lock error (which must
+                # rethrow) or a future unwrapped step.
+                die $@ if OpenEJovianDSS::Lock::lock_error_fatal($@);
+                debugmsg( $ctx, 'warn',
+                    "Teardown after failed activation cycle ${cycle} "
+                  . "failed: $@" );
             }
         }
-        die $err;
+
+        # Pre-cycle budget check: starting another cycle with less than a
+        # typical cycle's budget left on the method lock's hold deadline
+        # only moves the hold-cap die into the middle of the next attempt -
+        # fail NOW, with the real error, while this cycle's teardown has
+        # already run.
+        if ( $cycle < VOLUME_ACTIVATE_CYCLE_ATTEMPTS ) {
+            my $remaining =
+                OpenEJovianDSS::Lock::lock_deadline_remaining($ctx);
+            die $last_err
+                if defined($remaining)
+                && $remaining < VOLUME_ACTIVATE_CYCLE_MIN_BUDGET;
+            sleep(VOLUME_ACTIVATE_CYCLE_SLEEP);
+        }
     }
-    unless ( defined( $block_devs ) ) {
-        die "Unable to provide block device for volume ${volname}"
-                . safe_var_print( "snapshot", $snapname )
-                . " after activation\n";
-    } else {
-        return $block_devs;
+
+    die "Activation of volume ${volname} "
+      . safe_var_print( 'snapshot', $snapname )
+      . " failed after " . VOLUME_ACTIVATE_CYCLE_ATTEMPTS
+      . " cycles: ${last_err}";
+}
+
+# ONE activation attempt - the previous volume_activate eval body. The
+# reached-stage flags are set BEFORE each action: if a step dies midway,
+# its inverse still runs in the teardown. Returns the block-device list;
+# dies on any failure.
+sub _volume_activate_attempt {
+    # $vmid and $cycle are unused in this body - kept for signature
+    # symmetry with _volume_deactivate_attempt, which needs them
+    # (volume_unpublish; the detach rung's cycle gate).
+    my ( $ctx, $vmid, $volname, $snapname, $content_volume_flag,
+         $tgname, $state, $cycle ) = @_;
+
+    my $multipath = get_multipath($ctx);
+    my $shared    = get_shared($ctx);
+
+    # Recorded for the teardown: volume_unpublish derives the target group
+    # from the flag - without it a content volume would be unpublished
+    # against the VM target group.
+    $state->{content_volume_flag} = $content_volume_flag;
+
+    # Stage 1 - attach the volume to its target (jdssc).
+    $state->{published} = 1;
+    my $tinfo = volume_publish( $ctx, $tgname, $volname, $snapname,
+                                $content_volume_flag );
+    die "Publishing volume ${volname} "
+      . safe_var_print( 'snapshot', $snapname )
+      . " failed to provide target info\n"
+        if !$tinfo;
+
+    # Target coordinates - recorded for the teardown's inverse steps.
+    $state->{targetname} = $tinfo->{target};
+    $state->{lunid}      = $tinfo->{lunid};
+    $state->{hosts}      = $tinfo->{iplist};
+    $state->{scsiid}     = $tinfo->{scsiid};
+
+    # Checked BEFORE the login (previously it was checked after - a
+    # missing scsi id wasted a full iSCSI stage before failing).
+    die "Unable to identify scsi id for ${volname}"
+      . safe_var_print( 'snapshot', $snapname ) . "\n"
+        if !defined $state->{scsiid};
+
+    # The authoritative (control-plane) size, fetched BEFORE staging so the
+    # iSCSI exit contract can verify the exported LUN against it (option A,
+    # finding #23). REST volsize is independent of the iSCSI data-plane
+    # export, so comparing the two is the backend-export health cross-check.
+    my $size = volume_get_size( $ctx, $volname );
+
+    # Stage 2 - iSCSI login + capacity verification; exits only with the
+    # device present, udev done, AND reporting the correct non-zero size
+    # (a wrong/zero capacity means SCST exported the LUN wrong under load -
+    # the backend-export failure the size check exists to catch, now
+    # detected at the raw-LUN layer, finding #23).
+    $state->{iscsi_staged} = 1;
+    my $block_devs = volume_stage_iscsi( $ctx, $state->{targetname},
+                                         $state->{lunid}, $state->{hosts},
+                                         $state->{scsiid}, $size );
+    die "Unable to connect to any storage address\n"
+        if !( $block_devs && @$block_devs );
+
+    # Stage 3 - multipath map (when enabled). $verify_map is TRUE on EVERY
+    # cycle: a leftover map from an EARLIER failed operation passes a bare
+    # -b in cycle 1 just as a torn-down attempt's map does in cycle 2. No
+    # size check here - the map's size derives from the sd, which Stage 2
+    # already verified (option A: no dm-layer size reconcile, no churn).
+    if ($multipath) {
+        $state->{multipath_staged} = 1;
+        my $mpath = volume_stage_multipath( $ctx, $state->{scsiid},
+                                            $block_devs, undef, 1 );
+        $block_devs = [ clean_word($mpath) ];
     }
+
+    # Stage 4 - persist the LUN record. Verification is done (Stage 2 for
+    # size, Stage 3 for the live map); the strict post-staging verify loop
+    # is retired from the activation flow (option A). lun_record_local_create
+    # stores the authoritative $size, so the record is correct by
+    # construction - no lun_record_update_device recheck needed.
+    $state->{record_created} = 1;
+    lun_record_local_create( $ctx,
+        $state->{targetname}, $state->{lunid}, $volname, $snapname,
+        $state->{scsiid}, $size, $multipath, $shared,
+        @{ $state->{hosts} } );
+
+    return $block_devs;
+}
+
+# The complete inverse of one activation attempt. Each step is best-effort
+# (eval + warn) so one failed step never blocks the rest - EXCEPT a fatal
+# lock error, which rethrows (lock_error_fatal: a step must not continue
+# past evidence that its locks no longer protect it). Reads the
+# reached-stage flags and target coordinates from $state; $cycle gates the
+# recovery detach.
+sub _volume_deactivate_attempt {
+    my ( $ctx, $vmid, $volname, $snapname, $tgname, $state, $cycle ) = @_;
+
+    # Best-effort step wrapper with the fatal-error exception.
+    my $step = sub {
+        my ($code) = @_;
+        eval { $code->() };
+        if ($@) {
+            die $@ if OpenEJovianDSS::Lock::lock_error_fatal($@);
+            debugmsg( $ctx, 'warn', "Deactivation step failed: $@" );
+        }
+    };
+
+    # 1 - iSCSI logout FIRST, so multipath removal cannot resurrect the
+    # device (the multipath refresh commands recreate it while iSCSI paths
+    # are still active - same rationale as the normal deactivation path).
+    $step->( sub {
+        volume_unstage_iscsi_device( $ctx, $state->{targetname},
+                                     $state->{lunid}, $state->{hosts} );
+    } ) if $state->{iscsi_staged};
+
+    # 2 - multipath unstage (wait-unused ticks + removal rounds, the
+    # unstage constants' defaults).
+    $step->( sub { volume_unstage_multipath( $ctx, $state->{scsiid} ) } )
+        if $state->{multipath_staged} && defined $state->{scsiid};
+
+    # 3 - unpublish. Snapshots keep the previous cleanup in EVERY pass
+    # (that is unchanged behavior, not the recovery detach). For volumes,
+    # this is the RECOVERY DETACH, behind two gates, neither of them
+    # temporal:
+    #   (a) CYCLE POSITION: only the teardown BEFORE THE FINAL CYCLE -
+    #       counter-keyed and structural.
+    #   (b) SESSION EVIDENCE: JovianDSS must show no foreign initiator on
+    #       the target; a failed query counts as foreign - no evidence,
+    #       no detach.
+    if ( defined $snapname ) {
+        $step->( sub {
+            volume_unpublish( $ctx, $vmid, $volname, $snapname,
+                              $state->{content_volume_flag} );
+        } ) if $state->{published};
+    }
+    elsif ( $state->{published}
+         && defined $state->{targetname}   # publish may have died before
+                                           # returning coordinates -
+                                           # nothing to probe or detach
+         && $cycle == VOLUME_ACTIVATE_CYCLE_ATTEMPTS - 1 )
+    {
+        my $foreign = eval {
+            _target_foreign_sessions( $ctx, $state->{targetname} );
+        };
+        if ($@) {
+            die $@ if OpenEJovianDSS::Lock::lock_error_fatal($@);
+            debugmsg( $ctx, 'warn',
+                "Session query for $state->{targetname} failed - "
+              . "skipping recovery detach (no evidence, no detach): $@" );
+        }
+        elsif (@$foreign) {
+            my $warningmsg =
+                "Skipping recovery detach of volume ${volname}: target "
+              . "$state->{targetname} has foreign session(s) from "
+              . join( ',', @$foreign );
+            debugmsg( $ctx, 'warn', $warningmsg );
+            warn "${warningmsg}\n";
+        }
+        else {
+            $step->( sub {
+                volume_unpublish( $ctx, $vmid, $volname, $snapname,
+                                  $state->{content_volume_flag} );
+            } );
+        }
+    }
+
+    # 4 - LUN record delete LAST: it checks the target's remaining volumes
+    # and performs the residual iSCSI logout when none are left.
+    $step->( sub {
+        lun_record_local_delete( $ctx, $state->{targetname},
+                                 $state->{lunid}, $volname, $snapname );
+    } ) if defined $state->{targetname} && defined $state->{lunid};
+
+    return;
 }
 
 sub volume_deactivate {
@@ -4047,18 +4342,31 @@ sub volume_deactivate {
 }
 
 sub lun_record_update_device {
-    my ( $ctx, $targetname, $lunid, $lunrecpath, $lunrec, $expectedsize ) = @_;
+    my ( $ctx, $targetname, $lunid, $lunrecpath, $lunrec, $expectedsize,
+         $strict ) = @_;
     my $storeid = $ctx->{storeid};
 
     unless(defined($lunrec)) {
         confess "Undefined lun record for updating\n";
     }
 
-    my @hosts = @{ $lunrec->{hosts} };
-    my $multipath = $lunrec->{multipath};
+    # An expected size of 0 can never verify a device - treat it as "no
+    # expected size supplied" (a zero-size device still fails).
+    undef $expectedsize if defined($expectedsize) && !$expectedsize;
 
-    my @update_device_try = ( 1 .. 10 );
-    foreach (@update_device_try) {
+    my $storage_multipath = get_multipath($ctx);
+    # Untaint the scsiid from the on-disk record ONCE at the boundary: the
+    # verify loop feeds it directly into command argv (udevadm ID_SERIAL,
+    # `multipath -ll`, `dmsetup status`) and the /dev/mapper path, so an
+    # unsanitized value from the record file would exec-die under taint.
+    my $scsiid = $lunrec->{scsiid};
+    $scsiid = safe_word( clean_word($scsiid), 'multipath scsi id' )
+        if defined $scsiid;
+
+    my $verified   = 0;
+    my $last_state = 'device node absent';
+
+    for my $round ( 1 .. VOLUME_ACTIVATE_VERIFY_ATTEMPTS ) {
 
         _rescan_target_hosts( $ctx, $targetname, $lunid );
 
@@ -4090,7 +4398,6 @@ sub lun_record_update_device {
             close $fh     or die "Cannot close ${rescan_file} $!";
         }
 
-
         eval {
             my $cmd = [ $ISCSIADM, '-m', 'session', '--rescan' ];
 
@@ -4110,16 +4417,16 @@ sub lun_record_update_device {
             );
         };
 
-        eval {
-            my $cmd = [ 'udevadm', 'trigger', '-t', 'all' ];
-            run_command( $cmd,
-                outfunc => sub { },
-                errmsg =>
-                  "Failed to update udev devices after iscsi target attachment",
-                noerr   => 1
-              );
-        };
-        if ( get_multipath($ctx) ) {
+        # WWID-scoped udev replay - the previous broad `-t all` trigger
+        # disrupted active multipath devices.
+        if ( defined($scsiid) ) {
+            multipath_cmd( $ctx, [ 'udevadm', 'trigger',
+                                   '--subsystem-match=block',
+                                   "--property-match=ID_SERIAL=${scsiid}" ],
+                           MULTIPATH_CMD_TIMEOUT );
+        }
+
+        if ( $storage_multipath && defined($scsiid) ) {
 
             unless ($lunrec->{multipath}) {
                 $lunrec->{multipath} = 1;
@@ -4128,30 +4435,69 @@ sub lun_record_update_device {
                                          $lunrec->{volname}, $lunrec->{snapname},
                                          $lunrec );
             }
-            $block_device_path = volume_stage_multipath( $ctx, $lunrec->{scsiid} );
-            eval {
-                my $cmd = [ $MULTIPATH, '-r', ${block_device_path} ];
-                run_command(
-                    $cmd ,
-                    outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-                    noerr   => 1
-                );
-                $cmd = [ $MULTIPATH, 'reconfigure'];
-                run_command(
-                    $cmd ,
-                    outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-                    errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-                    noerr   => 1
-                );
-            };
+
+            my $mpath = clean_word( block_device_path_from_serial( $scsiid, 1 ) );
+            if ( -b $mpath ) {
+                $block_device_path = $mpath;
+            } else {
+                # Re-stage only when the map node is MISSING - one gentle
+                # staging round (an attempts bound of 1 suppresses the
+                # final-round escalation blast); eval-wrapped: its die is
+                # this round's failure, not a lenient-caller abort.
+                eval {
+                    $block_device_path =
+                        volume_stage_multipath( $ctx, $scsiid, undef, 1 );
+                };
+                if ($@) {
+                    die $@ if OpenEJovianDSS::Lock::lock_error_fatal($@);
+                    debugmsg( $ctx, 'debug',
+                        "Verify round ${round}: multipath re-stage "
+                      . "failed: $@" );
+                }
+            }
+
+            if ( defined($block_device_path) && -b $block_device_path ) {
+                multipath_cmd( $ctx, [ $MULTIPATH, '-r', $block_device_path ],
+                               MULTIPATH_CMD_TIMEOUT_DEFAULT );
+                # Heavy daemon-wide re-read on a sparse schedule only (the
+                # previous `multipath reconfigure` was an invalid
+                # invocation - a silent no-op).
+                multipath_cmd( $ctx, [ $MULTIPATHD, 'reconfigure' ],
+                               MULTIPATH_CMD_TIMEOUT_MAX )
+                    if $round % 5 == 0;
+            }
         }
 
-        sleep(1);
+        sleep(1);    # let the rescans land before judging
 
-        unless( -b $block_device_path ) {
+        # Full per-round trace of what verification is looking at, so a
+        # "map has no active path" / "size 0" failure shows exactly which
+        # rounds saw what (the trailing state is only the LAST round's).
+        my $mnode = ( $storage_multipath && defined($scsiid) )
+                  ? ( -b block_device_path_from_serial( $scsiid, 1 ) ? 1 : 0 )
+                  : 'n/a';
+        debugmsg( $ctx, 'debug',
+            "Verify round ${round}/" . VOLUME_ACTIVATE_VERIFY_ATTEMPTS
+          . " for target ${targetname} lun ${lunid}: "
+          . "iscsi_path=" . ( defined($block_device_path) ? $block_device_path : 'undef' )
+          . " mapper_node=${mnode}" );
+
+        unless ( defined($block_device_path) && -b $block_device_path ) {
+            $last_state = 'device node absent';
+            sleep(VOLUME_ACTIVATE_VERIFY_SLEEP);
             next;
         }
+
+        # Path evidence for multipath devices: size cannot expose a
+        # dead-but-intact map (blockdev --getsize64 answers from the dm
+        # table without touching a path).
+        if ( $storage_multipath && defined($scsiid)
+          && !_multipath_map_has_active_path( $ctx, $scsiid ) ) {
+            $last_state = 'map has no active path';
+            sleep(VOLUME_ACTIVATE_VERIFY_SLEEP);
+            next;
+        }
+
         my $updated_size;
         eval {
             my $cmd = [ '/sbin/blockdev', '--getsize64', $block_device_path ];
@@ -4168,21 +4514,50 @@ sub lun_record_update_device {
             );
         };
 
-        if ($expectedsize) {
+        # A zero size never verifies - the observed wedged-attachment
+        # failure this check exists for.
+        if ( !defined($updated_size) || $updated_size == 0 ) {
+            $last_state = 'device size 0';
+            sleep(VOLUME_ACTIVATE_VERIFY_SLEEP);
+            next;
+        }
+
+        if ( defined($expectedsize) ) {
             if ( int($updated_size) == int($expectedsize) ) {
                 $lunrec->{size} = $expectedsize;
                 lun_record_local_update( $ctx,
                                          $targetname, $lunid,
                                          $lunrec->{volname}, $lunrec->{snapname},
                                          $lunrec );
+                $verified = 1;
                 last;
             }
+            $last_state = "device size ${updated_size} does not match "
+                        . "expected ${expectedsize}";
+            sleep(VOLUME_ACTIVATE_VERIFY_SLEEP);
+            next;
         }
-        else {
-            last;
-        }
-        sleep(1);
+
+        # No expected size supplied - device present with non-zero size
+        # suffices.
+        $verified = 1;
+        last;
     }
+
+    return if $verified;
+
+    my $failmsg = "Device verification for target ${targetname} "
+                . "lun ${lunid} failed after "
+                . VOLUME_ACTIVATE_VERIFY_ATTEMPTS
+                . " rounds: ${last_state}\n";
+
+    # STRICT (the activation flow) dies - the reactivation cycle's
+    # teardown and re-login are the repair; LENIENT (default -
+    # volume_update_size, the cross-node resize flow) warns and returns: a
+    # transient mismatch there is expected while rescans propagate.
+    die $failmsg if $strict;
+    debugmsg( $ctx, 'warn', $failmsg );
+    return;
 }
 
 sub volume_update_size {
