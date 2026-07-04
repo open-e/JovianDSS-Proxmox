@@ -311,7 +311,7 @@ class and its default scope.
 |---|---|---|---|---|
 | `jdssc_cluster` | JovianDSS REST API — jdssc commands that must serialize **cluster-wide** | inside `joviandss_cmd`, for cluster-scoped commands | `cluster` | planned |
 | `jdssc_node` | JovianDSS REST API — jdssc commands safe to serialize **per host only** | inside `joviandss_cmd`, for node-scoped commands | `node` | planned |
-| `multipath` | the host `multipath` service (system-wide device map + semaphore) | around each `multipath` call | `node` | reserved (follow-up) |
+| `multipath` | the host `multipath` service (system-wide device map + semaphore) | inside `multipath_cmd`, around each single `multipath` / `multipathd` / `udevadm` / `dmsetup` invocation | `node` | **active** — wired by [`volume-activation-with-reactivation.md`](volume-activation-with-reactivation.md) (implemented 2026-07-03) |
 | `vm` | operations on one VM (per-vmid method lock) | method wrappers, `with_lock($ctx, 'vm', $vmid, …)` | `vm` | existing |
 | `storage` | operations on one storeid (per-storage method lock) | method wrappers, `with_lock($ctx, 'storage', undef, …)` | `storage` | existing |
 
@@ -1457,8 +1457,8 @@ including the findings section, which reviews current code). Map-lookup syntax
 | `LOCK_CLASS_JDSSC_NODE_DEFAULT_TYPE` | default scope of the `jdssc_node` class. |
 | `LOCK_CLASS_JDSSC_NODE_ACQUIRE_TIMEOUT` | `jdssc_node` wait-to-acquire — local and brief; a longer wait usually signals a stuck holder. |
 | `LOCK_CLASS_JDSSC_NODE_HOLD_TIMEOUT` | `jdssc_node` hold cap (bracket note below the tables). |
-| `LOCK_CLASS_MULTIPATH_DEFAULT_TYPE` | default scope of the reserved `multipath` class. |
-| `LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT` | `multipath` wait-to-acquire — local and brief. |
+| `LOCK_CLASS_MULTIPATH_DEFAULT_TYPE` | default scope of the `multipath` class (active since the volume-activation design). |
+| `LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT` | `multipath` wait-to-acquire — raised by the volume-activation design to outlast one full worst-case hold of `multipath_cmd`'s TERM-first termination ladder with headroom; a deeper queue times out into that design's contention class (retried without teardown). |
 | `LOCK_CLASS_MULTIPATH_HOLD_TIMEOUT` | `multipath` hold cap. |
 | `LOCK_CLASS_VM_DEFAULT_TYPE` | default scope of the `vm` method-lock class (shared → pmxcfs, non-shared → `flock`). |
 | `LOCK_CLASS_VM_ACQUIRE_TIMEOUT` | `vm` wait-to-acquire — method operations legitimately hold 30–90 s, so waiters wait long (Finding #9). |
@@ -1489,14 +1489,14 @@ including the findings section, which reviews current code). Map-lookup syntax
 | `LOCK_CLASS_JDSSC_NODE_ACQUIRE_TIMEOUT` | 10 | seconds | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_JDSSC_NODE_HOLD_TIMEOUT` | 119 | seconds | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_MULTIPATH_DEFAULT_TYPE` | `node` | scope | `OpenEJovianDSS::Lock` |
-| `LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT` | 10 | seconds | `OpenEJovianDSS::Lock` |
+| `LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT` | 60 (was 10; raised by `volume-activation-with-reactivation.md`) | seconds | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_MULTIPATH_HOLD_TIMEOUT` | 60 | seconds | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_VM_DEFAULT_TYPE` | `vm` | scope | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_VM_ACQUIRE_TIMEOUT` | 600 | seconds | `OpenEJovianDSS::Lock` |
-| `LOCK_CLASS_VM_HOLD_TIMEOUT` | 600 | seconds | `OpenEJovianDSS::Lock` |
+| `LOCK_CLASS_VM_HOLD_TIMEOUT` | 1320 (was 600; raised by `volume-activation-with-reactivation.md` — the reactivation-cycle budget) | seconds | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_STORAGE_DEFAULT_TYPE` | `storage` | scope | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_STORAGE_ACQUIRE_TIMEOUT` | 600 | seconds | `OpenEJovianDSS::Lock` |
-| `LOCK_CLASS_STORAGE_HOLD_TIMEOUT` | 600 | seconds | `OpenEJovianDSS::Lock` |
+| `LOCK_CLASS_STORAGE_HOLD_TIMEOUT` | 1320 (was 600; in step with the `vm` class) | seconds | `OpenEJovianDSS::Lock` |
 
 The wiring maps (`LOCK_DEFAULT_TYPE`, `LOCK_CLASS_ACQUIRE_TIMEOUT`,
 `LOCK_CLASS_HOLD_TIMEOUT`) and `LOCK_CLASS_PROPERTY` define no values, so they have no

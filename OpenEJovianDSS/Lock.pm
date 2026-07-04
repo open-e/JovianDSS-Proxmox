@@ -80,7 +80,12 @@ use constant LOCK_CLASS_STORAGE_DEFAULT_TYPE       => 'storage';
 # seconds to WAIT to acquire, per class
 use constant LOCK_CLASS_JDSSC_CLUSTER_ACQUIRE_TIMEOUT => 600;    # = PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX
 use constant LOCK_CLASS_JDSSC_NODE_ACQUIRE_TIMEOUT    => 10;
-use constant LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT     => 10;
+# Raised from 10 with the volume-activation design: a waiter must outlast one
+# full worst-case command hold (MULTIPATH_CMD_TIMEOUT_MAX + KILL_GRACE +
+# BACKSTOP_MARGIN = 40 s ladder) with real headroom; a deeper queue can still
+# time a waiter out — that is the reactivation cycle's contention class
+# (lock_error_acquire), retried without teardown.
+use constant LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT     => 60;
 use constant LOCK_CLASS_VM_ACQUIRE_TIMEOUT            => 600;
 use constant LOCK_CLASS_STORAGE_ACQUIRE_TIMEOUT       => 600;
 
@@ -90,8 +95,13 @@ use constant LOCK_CLASS_STORAGE_ACQUIRE_TIMEOUT       => 600;
 use constant LOCK_CLASS_JDSSC_CLUSTER_HOLD_TIMEOUT => 119;
 use constant LOCK_CLASS_JDSSC_NODE_HOLD_TIMEOUT    => 119;
 use constant LOCK_CLASS_MULTIPATH_HOLD_TIMEOUT     => 60;
-use constant LOCK_CLASS_VM_HOLD_TIMEOUT            => 600;
-use constant LOCK_CLASS_STORAGE_HOLD_TIMEOUT       => 600;
+# Raised from 600 with the volume-activation design: the whole reactivation
+# cycle (pessimistic four-cycle budget plus the pre-final-cycle session probe,
+# ~13–17 min worst) must fit inside the method-lock deadline with headroom
+# instead of dying mid-recovery; the deadline stays the loud backstop beyond
+# that (its die carries LOCK_FATAL_ERROR_MARKER and is never absorbed).
+use constant LOCK_CLASS_VM_HOLD_TIMEOUT            => 1320;
+use constant LOCK_CLASS_STORAGE_HOLD_TIMEOUT       => 1320;
 
 # class-key → constant wiring, used by the getters for runtime dispatch.
 # LOCK_DEFAULT_TYPE's key set doubles as the valid-class list (with_lock dies
@@ -134,6 +144,14 @@ use constant LOCK_CLASS_PROPERTY => {
     storage       => { type => 'storage_lock_type',       dir => 'storage_lock_path',
                        acquire => 'storage_lock_acquire_timeout',       hold => 'storage_lock_hold_timeout' },
 };
+
+# Marker prefixed to every lock-machinery die that must never be swallowed by
+# best-effort machinery — today the two hold-enforcement dies (refresh_locks's
+# hold-cap overrun, run_bounded's hold alarm). lock_error_fatal detects it by
+# SUBSTRING match, so outer error prefixing (e.g. _cluster_lock_attempt's
+# machinery prefix) survives. Any future must-not-swallow lock error joins by
+# adopting the prefix.
+use constant LOCK_FATAL_ERROR_MARKER => 'joviandss-lock-fatal:';
 
 # ---------------------------------------------------------------------------
 # Per-class property getters
@@ -286,8 +304,10 @@ sub refresh_locks {
         next if defined $skip_path && $lock->{path} eq $skip_path;
 
         # Wall-clock hold cap: overrun → die → the normal exception-safe
-        # unwind releases everything held.
-        die "lock '$lock->{path}' held past its hold cap — aborting to release it\n"
+        # unwind releases everything held. The marker keeps this die out of
+        # every best-effort eval (lock_error_fatal).
+        die LOCK_FATAL_ERROR_MARKER
+          . " lock '$lock->{path}' held past its hold cap — aborting to release it\n"
             if $lock->{deadline} && time() > $lock->{deadline};
 
         if ($lock->{backend} eq 'cluster') {
@@ -329,7 +349,8 @@ sub run_bounded {
     my $res;
     my $ok = eval {
         local $SIG{ALRM} =
-            sub { die "lock hold exceeded ${max_hold}s — aborting to release the lock\n" };
+            sub { die LOCK_FATAL_ERROR_MARKER
+                    . " lock hold exceeded ${max_hold}s — aborting to release the lock\n" };
         alarm($max_hold);
         $res = $code->(@param);
         alarm(0);
@@ -340,6 +361,60 @@ sub run_bounded {
     alarm($prev) if $prev;               # restore outer alarm (best-effort)
     die $err if !$ok;
     return $res;
+}
+
+# ---------------------------------------------------------------------------
+# Error classification helpers (volume-activation-with-reactivation design)
+# ---------------------------------------------------------------------------
+
+# True when $err is a lock-machinery die that must never be swallowed by
+# best-effort machinery (hold-cap overrun, hold alarm): the locks protecting
+# the operation can no longer be trusted, so recovery machinery must rethrow
+# instead of absorbing it. Substring match — outer error prefixing survives.
+# Returns false for acquisition timeouts: those report contention for a lock
+# not yet held and stay retryable (lock_error_acquire).
+sub lock_error_fatal {
+    my ($err) = @_;
+
+    return 0 if !defined $err;
+    return index($err, LOCK_FATAL_ERROR_MARKER) >= 0 ? 1 : 0;
+}
+
+# True when $err is a lock ACQUISITION timeout — a lock that was NEVER
+# obtained: nothing was modified under it and every held lock is still valid
+# (the reactivation cycle's contention class, retried without teardown).
+# Three shapes escape to callers:
+#   - "got lock request timeout"  — cluster backend, acquire budget spent
+#     (_cluster_lock_path's final error; its internal "acquire timeout" is
+#     normally consumed by the retry loop)
+#   - "acquire timeout"           — cluster backend, single-attempt form
+#   - "can't lock file '...' - got timeout" — node backend (PVE::Tools::
+#     lock_file flock wait); the "can't lock file" prefix is REQUIRED here:
+#     a bare "got timeout" is run_command's process-timeout die and must
+#     never classify as lock contention.
+sub lock_error_acquire {
+    my ($err) = @_;
+
+    return 0 if !defined $err;
+    return 1 if $err =~ /got lock request timeout/;
+    return 1 if $err =~ /acquire timeout/;
+    return 1 if $err =~ /can't lock file '[^']*' - got timeout/;
+    return 0;
+}
+
+# Seconds until the nearest hold deadline among the locks held in
+# $ctx->{_held_locks} (undef when none is armed); read-only on the registry.
+# Backs the reactivation cycle's pre-cycle budget check.
+sub lock_deadline_remaining {
+    my ($ctx) = @_;
+
+    my $remaining;
+    for my $lock (@{ $ctx->{_held_locks} }) {
+        next unless $lock->{deadline};
+        my $left = $lock->{deadline} - time();
+        $remaining = $left if !defined($remaining) || $left < $remaining;
+    }
+    return $remaining;
 }
 
 # ---------------------------------------------------------------------------
