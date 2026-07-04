@@ -57,11 +57,6 @@ our @EXPORT_OK = qw(
     parse_export_path
     nas_private_mounts_volname_snapname
 
-    get_password_file_path
-    get_user_password
-    password_file_set_password
-    password_file_delete
-
     nas_sname
     nas_vmid_from_sname
     nas_snapid_from_sname
@@ -119,16 +114,15 @@ sub _vmid_from_volname {
 }
 
 sub snapshot_info {
-    my ( $scfg, $storeid, $dataset, $volname ) = @_;
+    my ( $ctx, $dataset, $volname ) = @_;
 
-    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
+    my $scfg = $ctx->{scfg};
     my $vmid = _vmid_from_volname($volname);
     my $pool = pool_name_get( $scfg );
 
     # Use -d flag because dataset name from export property is the exact dataset name on JovianDSS
-    my $output = joviandss_cmd(
-        $scfg,
-        $storeid,
+    my $output = OpenEJovianDSS::Common::joviandss_cmd(
+        $ctx,
         [
             'pool', $pool, 'nas_volume', '-d', $dataset,
             'snapshots', 'list', '--creation'
@@ -162,11 +156,10 @@ sub snapshot_info {
 # NAS volume activation for NFS snapshot rollback
 # Creates clone, temporary share, and mounts it for file copying
 sub snapshot_activate {
-    my ( $scfg, $storeid, $pool, $dataset, $vmid, $volname, $snapname, $sharepath ) = @_;
+    my ( $ctx, $pool, $dataset, $vmid, $volname, $snapname, $sharepath ) = @_;
 
     # TODO: Make sure that clone is mounted as READONLY
 
-    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
     my $server = OpenEJovianDSS::Common::get_data_address($ctx);
 
     OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
@@ -180,8 +173,8 @@ sub snapshot_activate {
     # Create snapshots directory if it doesn't exist
 
     if (-d $snapmntpath) {
-        if ( path_is_mnt( $scfg, $snapmntpath ) ){
-            if ( path_is_nfs( $scfg,  $snapmntpath, $sharepath, $server ) ) {
+        if ( path_is_mnt( $ctx, $snapmntpath ) ){
+            if ( path_is_nfs( $ctx, $snapmntpath, $sharepath, $server ) ) {
                 OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
                     "snapshot_activate: ${snapmntpath} already mounted"
                     . " with correct NFS share ${server}:${sharepath}, reusing\n" );
@@ -190,7 +183,7 @@ sub snapshot_activate {
                 OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
                     "snapshot_activate: ${snapmntpath} mounted with different"
                     . " source, unmounting before remount\n" );
-                umount( $scfg, $storeid, $snapmntpath );
+                umount( $ctx, $snapmntpath );
             }
         }
     } else {
@@ -241,9 +234,8 @@ sub snapshot_activate {
 # NAS volume deactivation for NFS snapshot rollback cleanup
 # Unmounts share and unpublishes snapshot (deletes share and clone)
 sub snapshot_deactivate {
-    my ( $scfg, $storeid, $dataset, $vmid, $volname, $snapname ) = @_;
+    my ( $ctx, $dataset, $vmid, $volname, $snapname ) = @_;
 
-    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
     OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
         "Deactivating NAS dataset ${dataset} volume ${volname} snapshot ${snapname}\n" );
 
@@ -252,15 +244,15 @@ sub snapshot_deactivate {
             nas_private_mounts_volname_snapname($vmid, $volname, $snapname)
         );
     return 1 if ( !-d $snapshot_dir);
-    if ( path_is_mnt( $scfg, $snapshot_dir ) ){
-        umount ( $scfg, $storeid, $snapshot_dir );
+    if ( path_is_mnt( $ctx, $snapshot_dir ) ){
+        umount ( $ctx, $snapshot_dir );
     }
     return 1;
 }
 
 
 sub path_is_empty {
-    my ($scfg, $path) = @_;
+    my ($ctx, $path) = @_;
 
     if ( ! -d $path) {
         if (-e $path) {
@@ -281,9 +273,8 @@ sub path_is_empty {
 }
 
 sub snapshot_deactivate_unpublish {
-    my ( $scfg, $storeid, $datname, $vmid, $volname, $snapname ) = @_;
+    my ( $ctx, $datname, $vmid, $volname, $snapname ) = @_;
 
-    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
     my $dir = File::Spec->catdir(
             OpenEJovianDSS::Common::get_path($ctx),
             nas_private_mounts_volname_snapname($vmid, $volname, $snapname)
@@ -297,13 +288,13 @@ sub snapshot_deactivate_unpublish {
             if ( -d $snapshot_dir) {
                 OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
                     "Deactivating volume ${volname} snapshot entry ${snapname} with path ${snapshot_dir}" );
-                snapshot_deactivate( $scfg, $storeid, $datname, $vmid, $volname, $snapname );
+                snapshot_deactivate( $ctx, $datname, $vmid, $volname, $snapname );
             }
-            snapshot_unpublish( $scfg, $storeid, $datname, $volname, $snapname );
+            snapshot_unpublish( $ctx, $datname, $volname, $snapname );
             OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
                     "Unpublishing ${volname} snapshot entry ${snapname} done" );
 
-            if (! path_is_mnt($scfg, $snapshot_dir) && path_is_empty($scfg, $snapshot_dir)) {
+            if (! path_is_mnt($ctx, $snapshot_dir) && path_is_empty($ctx, $snapshot_dir)) {
                 OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
                     "Removing ${snapshot_dir}" );
                 rmdir($snapshot_dir);
@@ -328,9 +319,8 @@ sub snapshot_deactivate_unpublish {
 # NAS volume deactivation for NFS snapshot rollback cleanup
 # Unmounts share and unpublishes snapshot (deletes share and clone)
 sub all_snapshots_deactivate_unpublish {
-    my ( $scfg, $storeid, $datname, $vmid, $volname ) = @_;
+    my ( $ctx, $datname, $vmid, $volname ) = @_;
 
-    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
     OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
         "Deactivating all snapshots for NAS dataset ${datname} volume ${volname}\n" );
 
@@ -338,7 +328,7 @@ sub all_snapshots_deactivate_unpublish {
 
     my $volume_dir = OpenEJovianDSS::Common::get_path($ctx) . "/$pmv";
 
-    if ( path_is_empty($scfg, $volume_dir ) ) {
+    if ( path_is_empty($ctx, $volume_dir ) ) {
         rmdir($volume_dir);
         return 1;
     }
@@ -361,7 +351,7 @@ sub all_snapshots_deactivate_unpublish {
         my $snapname = $entry;
 
         eval {
-            snapshot_deactivate_unpublish( $scfg, $storeid, $datname, $vmid, $volname, $snapname );
+            snapshot_deactivate_unpublish( $ctx, $datname, $vmid, $volname, $snapname );
         };
         if ($@) {
             $last_error = $@;
@@ -370,7 +360,7 @@ sub all_snapshots_deactivate_unpublish {
     };
 
     if ( $no_error ) {
-        if( path_is_empty($scfg, $volume_dir)) {
+        if( path_is_empty($ctx, $volume_dir)) {
             rmdir($volume_dir);
         }
         return 1;
@@ -380,9 +370,8 @@ sub all_snapshots_deactivate_unpublish {
 
 
 sub path_is_mnt {
-    my ( $scfg,  $path) = @_;
+    my ( $ctx, $path ) = @_;
 
-    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, '');
     my $path_safe = OpenEJovianDSS::Common::safe_word($path, 'Mounting path');
 
     return 0 if ( ! -d $path_safe );
@@ -453,11 +442,10 @@ sub address_normalize {
 };
 
 sub path_is_nfs {
-    my ( $scfg,  $snapmntpath, $sharepath, $shareip ) = @_;
+    my ( $ctx, $snapmntpath, $sharepath, $shareip ) = @_;
     # sharepath and shareip are optional
     # they will be checked if they are not undef
     # sharepath is a path of form <pool name>/<share name>
-    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, '');
 
     # TODO: consider extending this function with check for IP
     # and share name
@@ -521,7 +509,7 @@ sub path_is_nfs {
 }
 
 sub mount {
-    my ( $scfg, $storeid, $data_address, $sharepath, $sharemntpath, $options) = @_;
+    my ( $ctx, $data_address, $sharepath, $sharemntpath, $options) = @_;
 
     $data_address = "[$data_address]" if Net::IP::ip_is_ipv6($data_address);
     my $source_dirty = "$data_address:$sharepath";
@@ -540,9 +528,8 @@ sub mount {
 }
 
 sub umount {
-    my ( $scfg, $storeid, $mntdirty ) = @_;
+    my ( $ctx, $mntdirty ) = @_;
 
-    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
     OpenEJovianDSS::Common::debugmsg( $ctx, "debug", "Umounting snapshotdir ${mntdirty}" );
 
     my $mntclean;
@@ -554,7 +541,7 @@ sub umount {
 
     return if ( ! -d $mntclean );
 
-    my $is_mnt = path_is_mnt( $scfg,  $mntclean);
+    my $is_mnt = path_is_mnt( $ctx, $mntclean);
 
     if ($is_mnt) {
         # is a mountpoint
@@ -589,7 +576,7 @@ sub umount {
                 "Unmounting has error: ${umount_err}\n" );
         }
 
-        $is_mnt = path_is_mnt( $scfg,  $mntclean);
+        $is_mnt = path_is_mnt( $ctx, $mntclean);
 
         if ($is_mnt) {
             # is a mountpoint
@@ -622,7 +609,7 @@ sub umount {
         warn "Unmounting of ${mntclean} failed: ${umount_err}";
     }
 
-    $is_mnt = path_is_mnt( $scfg,  $mntclean);
+    $is_mnt = path_is_mnt( $ctx, $mntclean);
 
     if ( ! $is_mnt) {
         # is not a mountpoint
@@ -634,9 +621,9 @@ sub umount {
 }
 
 sub snapshot_publish {
-    my ( $scfg, $storeid, $datname, $volname, $snapname ) = @_;
+    my ( $ctx, $datname, $volname, $snapname ) = @_;
 
-    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
+    my $scfg = $ctx->{scfg};
     my $pool = pool_name_get( $scfg );
     my $vmid = _vmid_from_volname($volname);
     my $internal_snap = nas_sname($snapname, $vmid);
@@ -644,7 +631,7 @@ sub snapshot_publish {
     OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
         "Publishing snapshot ${snapname} (${internal_snap}) for volume ${volname} from dataset ${datname}\n" );
 
-    my $cmd_output = joviandss_cmd( $scfg, $storeid,
+    my $cmd_output = OpenEJovianDSS::Common::joviandss_cmd( $ctx,
         [ "pool", $pool,
           "nas_volume", "-d", $datname,
           "snapshot", $internal_snap,
@@ -682,9 +669,9 @@ sub snapshot_publish {
 
 
 sub snapshot_unpublish {
-    my ( $scfg, $storeid, $datname, $volname, $snapname ) = @_;
+    my ( $ctx, $datname, $volname, $snapname ) = @_;
 
-    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
+    my $scfg = $ctx->{scfg};
     my $pool = pool_name_get( $scfg );
     my $vmid = _vmid_from_volname($volname);
     my $internal_snap = nas_sname($snapname, $vmid);
@@ -694,8 +681,8 @@ sub snapshot_unpublish {
     $pool = OpenEJovianDSS::Common::safe_word($pool, 'Pool name');
     $datname = OpenEJovianDSS::Common::safe_word($datname, 'Dataset name');
     $internal_snap = OpenEJovianDSS::Common::safe_word($internal_snap, 'Snapshot name');
-    joviandss_cmd(
-        $scfg, $storeid,
+    OpenEJovianDSS::Common::joviandss_cmd(
+        $ctx,
         [ 'pool', $pool,
           'nas_volume', '-d', $datname,
           'snapshot', $internal_snap,
@@ -739,56 +726,8 @@ sub dataset_name_get {
     return $dataset_name;
 }
 
-# Password management — NFS-specific path: joviandss-nfs/<storeid>.pw
-
-my $NFS_PASSWORD_DIR = '/etc/pve/priv/storage/joviandss-nfs';
-
-sub get_password_file_path {
-    my ($ctx) = @_;
-    my $storeid = $ctx->{storeid};
-    return "${NFS_PASSWORD_DIR}/${storeid}.pw";
-}
-
-sub get_user_password {
-    my ($ctx) = @_;
-
-    my $pwfile_path = get_password_file_path($ctx);
-    return undef if ! -f $pwfile_path;
-
-    my $content = file_get_contents($pwfile_path);
-    my $config = {};
-    foreach my $line (split /\n/, $content) {
-        $line =~ s/^\s+|\s+$//g;
-        next if $line =~ /^#/ || $line eq '';
-        if ($line =~ /^(\S+)\s+(.+)$/) {
-            $config->{$1} = $2;
-        }
-    }
-    return $config->{user_password};
-}
-
-sub password_file_set_password {
-    my ($ctx, $password) = @_;
-
-    my $pwfile_path = get_password_file_path($ctx);
-    if (! -d $NFS_PASSWORD_DIR) {
-        File::Path::make_path($NFS_PASSWORD_DIR, { mode => 0700 });
-    }
-    file_set_contents($pwfile_path, "user_password $password\n", 0600, 1);
-}
-
-sub password_file_delete {
-    my ($ctx) = @_;
-    my $pwfile_path = get_password_file_path($ctx);
-    unlink $pwfile_path;
-}
-
-sub joviandss_cmd {
-    my ( $scfg, $storeid, $cmd, $timeout, $retries, $force_debug_level ) = @_;
-    my $ctx = OpenEJovianDSS::Common::new_ctx($scfg, $storeid // '');
-    my $password = get_user_password($ctx);
-    return OpenEJovianDSS::Common::joviandss_cmd(
-        $ctx, $cmd, $timeout, $retries, $force_debug_level, $password);
-}
+# Password resolution and the jdssc wrapper moved to OpenEJovianDSS::Common
+# (type-aware credential resolution): NFS now calls Common::joviandss_cmd and
+# Common::password_file_* directly.
 
 1;

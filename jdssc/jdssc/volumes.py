@@ -95,6 +95,10 @@ class Volumes():
                               required=True,
                               dest='volume_prefix',
                               help='Prefix for the new volume')
+        freename.add_argument('--suffix',
+                              required=False,
+                              dest='volume_suffix',
+                              help='Suffix for the new volume')
         freename.add_argument('--cluster-prefix',
                               dest='cluster_prefix',
                               type=str,
@@ -238,6 +242,8 @@ class Volumes():
         if cluster_prefix:
             search_prefix = "{0}_{1}".format(cluster_prefix, volume_prefix)
 
+        volume_suffix = self.args.get('volume_suffix')
+
         present_volumes = []
         data = self.jdss.list_volumes()
 
@@ -247,9 +253,27 @@ class Volumes():
                 continue
 
         for i in range(0, sys.maxsize):
-            if search_prefix + str(i) not in present_volumes:
-                print(volume_prefix + str(i))
-                return
+            nname = volume_prefix + str(i)
+            if volume_suffix:
+                nname = nname + volume_suffix
+
+            # Compare and look up using the stored (clustered) idname so
+            # existing volumes are detected, but return the bare name below.
+            nname_stored = nname
+            if cluster_prefix:
+                nname_stored = "{0}_{1}".format(cluster_prefix, nname)
+
+            if nname_stored not in present_volumes:
+
+                vd = {'id': nname_stored}
+                try:
+                    data = self.jdss.get_volume(vd)
+                except jexc.JDSSVolumeNotFoundException:
+                    print(nname)
+                    return
+                except jexc.JDSSResourceNotFoundException:
+                    print(nname)
+                    return
         raise Exception("Unable to find free volume name")
 
     def list(self):

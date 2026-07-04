@@ -17,6 +17,7 @@ import argparse
 import logging
 import sys
 
+import jdssc.sessions as sessions
 from jdssc.jovian_common import exception as jexc
 
 """Singular iSCSI target operations addressed by full IQN."""
@@ -29,6 +30,7 @@ class Target():
 
         self.ta = {'delete': self.delete,
                    'get': self.get,
+                   'sessions': self.sessions,
                    'update': self.update}
 
         self.args = args
@@ -37,7 +39,7 @@ class Target():
         self.uargs = argst[1]
         self.jdss = jdss
 
-        if 'target_action' in self.args:
+        if self.args.get('target_action'):
             self.ta[self.args.pop('target_action')]()
         else:
             sys.exit(1)
@@ -52,6 +54,8 @@ class Target():
         parsers.add_parser('get')
 
         parsers.add_parser('delete')
+
+        parsers.add_parser('sessions')
 
         update = parsers.add_parser('update')
         update.add_argument('--chap-user',
@@ -83,6 +87,9 @@ class Target():
             sys.exit(1)
         print(data)
 
+    def sessions(self):
+        sessions.Sessions(self.args, self.uargs, self.jdss)
+
     def delete(self):
         target_name = self.args['target_name']
         try:
@@ -96,9 +103,9 @@ class Target():
 
     def update(self):
         target_name = self.args['target_name']
-        no_chap    = self.args.get('no_chap', False)
-        chap_user  = self.args.get('chap_user')
-        chap_pass  = self.args.get('chap_password')
+        no_chap = self.args.get('no_chap', False)
+        chap_user = self.args.get('chap_user')
+        chap_pass = self.args.get('chap_password')
 
         if no_chap and (chap_user or chap_pass):
             LOG.error("--no-chap cannot be combined with "
@@ -113,6 +120,10 @@ class Target():
             if bool(chap_user) != bool(chap_pass):
                 LOG.error("--chap-user and --chap-password must be "
                           "provided together")
+                sys.exit(1)
+            if ' ' in (chap_user or '') or ' ' in (chap_pass or ''):
+                LOG.error("--chap-user and --chap-password must not "
+                          "contain spaces")
                 sys.exit(1)
 
         provider_auth = (

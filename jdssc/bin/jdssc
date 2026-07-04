@@ -344,15 +344,14 @@ def main():
 
     config = unify_config_options(args, config)
     setup_logging(args, config)
+
     # list available commands
     cmd = {'pool': pool.Pools,
            'hosts': hosts,
            'cfg': cfg}
 
     jdss = driver.JovianDSSDriver(config)
-
     args = vars(args)
-    # Run command
     cmd[args.pop('command')](args, uargs, jdss)
 
 

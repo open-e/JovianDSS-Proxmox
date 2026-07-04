@@ -111,7 +111,7 @@ class JovianDSSRESTProxy(object):
         :param json_data: data
         """
         out = None
-        for i in range(50):
+        for i in range(17):
 
             for i in range(len(self.hosts)):
                 try:
@@ -157,6 +157,9 @@ class JovianDSSRESTProxy(object):
 
                 LOG.debug("Geting %(data)s from %(t)s to %(addr)s",
                           {'data': out, 't': request_method, 'addr': addr})
+
+                if request_method == 'GET' and out is None:
+                    continue
                 return out
 
             # Adding 3 sec sleep delay
@@ -180,7 +183,7 @@ class JovianDSSRESTProxy(object):
                             apiv=apiv)
 
     @retry(json.JSONDecodeError,
-           tries=50)
+           tries=5)
     def _send(self, pr):
         """Send prepared request
 

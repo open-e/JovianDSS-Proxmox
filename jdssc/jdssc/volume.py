@@ -133,6 +133,11 @@ class Volume():
 
         rename = parsers.add_parser('rename')
         rename.add_argument('new_name', type=str, help='New volume name')
+        rename.add_argument('--idempotent-scsi-id',
+                            dest='idempotent_scsi_id',
+                            type=str,
+                            default=None,
+                            help='Operation should be idempotent over specific scsi id')
 
         resize = parsers.add_parser('resize')
         resize.add_argument('--add',
@@ -274,8 +279,14 @@ class Volume():
 
     def rename(self):
 
-        self.jdss.rename_volume(self.args['volume_name'],
-                                self.args['new_name'])
+        try:
+            self.jdss.rename_volume(self.args['volume_name'],
+                                    self.args['new_name'],
+                                    idempotent=self.args['idempotent_scsi_id'])
+
+        except Exception as err:
+            LOG.error(err)
+            exit(1)
 
     def resize(self):
 
@@ -297,6 +308,6 @@ class Volume():
             volume = {'id': volume_name}
             d = self.jdss.get_volume(volume,
                                      direct_mode=self.args['direct_mode'])
-            if int(d['size']) != size:
-                time.sleep(1)
-                continue
+            if int(d['size']) >= int(size):
+                return
+            time.sleep(1)

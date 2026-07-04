@@ -178,6 +178,14 @@ class JDSSResourceIsBusyException(JDSSException):
         super().__init__(self.message)
 
 
+class JDSSCfgParserException(JDSSException):
+    """Resource have dependents"""
+
+    def __init__(self, msg):
+        self.message = ("JDSS parser error: %(msg)s ." % {'msg': msg})
+        super().__init__(self.message)
+
+
 class JDSSResourceVolumeIsBusyException(JDSSException):
 
     def __init__(self, volume, clones):
