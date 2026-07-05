@@ -527,107 +527,136 @@ Filename is always `joviandss-lock-<class>` (+ `-<id>` for id-keyed classes: `vm
 | `node` | `flock` (always) | `/run/lock/` (host-local, one per PVE server) · `/run/lock/joviandss-lock-<class>[-<id>]` |
 | `vm` / `storage` | pmxcfs if `get_shared($ctx)` else `flock` | shared → `/etc/pve/priv/lock/…` · non-shared → `<path>/private/lock/…` (filename e.g. `joviandss-lock-vm-101`, `joviandss-lock-storage-<storeid>`) |
 
-`_lock_exec` is the private mechanism — the explicit-path primitive that dispatches by
-backend, brackets the work with the re-entry guard, and wraps the body in the hold cap
-(deadline + `run_bounded`) and `run_refreshed`, so every held lock is kept alive around
-it. The caller therefore never invokes any of these itself — taking the lock *is* what
-caps and refreshes:
+`_lock_exec` is the private mechanism — the **phase sequencer** (refactored
+2026-07-05; see the delta record in [Implementation Notes](#implementation-notes)).
+Two nested brackets, each with a single owner: OUTER bookkeeping
+(`_lock_ctx_commission` → `_lock_ctx_decommission`, the latter a never-dying
+finalizer that runs on every path) and INNER ownership (`_lock_acquire` →
+`_lock_divest` — divest runs explicitly for both anticipated outcomes, success
+and body death, so the finalizer's divest branch stays a pure anomaly
+tripwire). All timing policy is frozen into the registry record at commission;
+every later phase reads the record and is never handed a number. The caller
+never caps or refreshes anything itself — taking the lock *is* what caps and
+refreshes:
 
 ```perl
 # _lock_exec($ctx, $backend, $path, $timeout, $max_hold, $code, @param)  — exclusive only.
 sub _lock_exec {
     my ($ctx, $backend, $path, $timeout, $max_hold, $code, @param) = @_;
 
-    _lock_enter($ctx, $backend, $path);     # re-entry guard + register in _held_locks
-
-    # Run the body under two wrappers: run_bounded is the pure-Perl-hang backstop, and
-    # run_refreshed keeps every held lock alive around it (exception-safe, fires before
-    # and after the body) — its refresh_locks calls also enforce the wall-clock hold
-    # deadline. The deadline is armed first: the body runs only once the lock is held,
-    # so this marks the start of the wall-clock hold (NOT _lock_enter, which precedes
-    # the acquisition wait).
-    #
-    # Cluster-backend alarm ceiling (Finding #15): a wedged pure-Perl holder reaches no
-    # cooperation point, so only the alarm can stop it — and on pmxcfs it must die
-    # BEFORE a waiter could stale-reclaim at CFS_LOCK_TIMEOUT. The constant is the
-    # ceiling; it applies even when the class cap is 0 (a backend-correctness
-    # invariant, not a class property). The wall-clock deadline keeps the full class cap.
-    my $alarm_cap = $max_hold;
-    if ( $backend eq 'cluster' ) {
-        my $ceiling = OpenEJovianDSS::Common::PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX();
-        if ( !$alarm_cap || $alarm_cap > $ceiling ) {
-            $alarm_cap = $ceiling;
-        }
-    }
-    my $body = sub {
-        _lock_arm_deadline($ctx, $path, $max_hold);
-        return run_bounded($alarm_cap, sub { run_refreshed($ctx, $code, @param) });
-    };
+    # registry + re-entry guard; commissioned = registered, NOT owned
+    my $lock_id = _lock_ctx_commission($ctx, $backend, $path, $timeout, $max_hold);
 
     my $res;
     my $ok = eval {
-        if ($backend eq 'cluster') {
-            $res = _cluster_lock_path($ctx, $path, $timeout, $body);   # mkdir + retry
-            die $@ if $@;   # keeps _cluster_lock's convention: undef + $@ on any failure
-                            # (acquisition or $code), never a die — normalize it here
-        } else { # node
-            $timeout ||= 10;   # last-resort fallback; per-class default already applied in with_lock
-            $res = PVE::Tools::lock_file($path, $timeout, $body);      # flock LOCK_EX
-            die $@ if $@;   # lock_file signals acquisition failure / $code die via $@, not by dying
-        }
+        # the backend flips owned=1 at the instant of mkdir/flock success, so
+        # ANY later die in this eval — the id cross-check, a signal landing
+        # between acquire and run_bounded's alarm suspension, cfs_update,
+        # the body, a hold-cap death — routes through the one divest below
+        my $lock_id_acquired = _lock_acquire($ctx, $lock_id);
+        Carp::confess( "LOCK BUG: acquired '" . ( $lock_id_acquired // 'undef' )
+                     . "' != commissioned '$lock_id'" )
+            if !defined($lock_id_acquired) || $lock_id_acquired ne $lock_id;
+
+        $res = run_bounded($ctx, $lock_id,
+                 sub { run_refreshed($ctx, $code, @param) });
         1;
     };
-    my $err = $@;
-    _lock_leave($ctx, $path);               # unregister (backend has already released)
+    my $err = $@;                        # capture BEFORE divest can clobber $@
+
+    # Unconditional: the ONE release site for every outcome. The owned-guard
+    # inside is load-bearing — after a failed acquisition it is a no-op, and
+    # it must be (the lock dir/flock belongs to the CURRENT holder).
+    _lock_divest($ctx, $lock_id);
+
+    _lock_ctx_decommission($ctx, $lock_id);   # FINALIZER — never dies; a divest
+                                              # in there means an impossible path
+
     die $err if !$ok;
     return $res;        # single scalar/ref — see "Return convention" below
 }
 ```
 
+The path walk: **success** → commission, acquire, body, divest, decommission.
+**Acquire failure** → never owned; divest is a no-op by the owned-guard (it
+must be — the lock belongs to the current holder); decommission removes the
+record; the acquisition error propagates natively — acquisition and body
+errors can never be confused, because acquisition errors originate in a frame
+where no body has ever run (this removes the old `_cluster_lock_path` retry
+wrapper's `$@`-regex classification and the body-re-run hazard it carried).
+**Body / hold-cap death, id-mismatch confess, or a stray signal anywhere
+after ownership** → the same unconditional divest releases, then rethrow —
+the finalizer stays silent on all of these. Its divest branch is reachable
+only through the one irreducible residual: a die landing on the single
+assignment between the backend's syscall succeeding and the `owned` flip
+(accepted; stale reclaim / process death back it up).
+
 The hold cap is enforced by **two cooperating mechanisms** driven by the one per-class
-value (resolution of Open question #2). `run_bounded` is the **pure-Perl-hang backstop**:
-once the lock is held it arms a `SIGALRM` for the alarm cap (`$max_hold`, ceilinged on
-the cluster backend — below), and if un-suspended
-Perl execution overruns it aborts with a `die`, so the lock releases on unwind — `fd`
-close for node, `rmdir` for cluster. Nested alarm users (`run_command`'s inline
-save/restore in `PVE::Cmd::run`, and `run_with_timeout` under every `lock_file` wait)
-*suspend* that alarm, so its reach is exactly the hang class safe signals can catch: a
-Perl loop or hang outside any command. The
-**wall-clock** bound is the companion **deadline check**: `_lock_arm_deadline` records
-`time() + $max_hold` on the lock's `_held_locks` entry at acquisition, and
-`refresh_locks` dies when any held lock is past its deadline — enforced at every
-cooperation point (before and after each jdssc run, and each poll-loop iteration), i.e.
-between commands, never mid-command. On the **cluster** backend the alarm is
-additionally **ceilinged at `PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX`** regardless of the class
-cap — even `0` (Finding #15): a wedged pure-Perl holder reaches no cooperation point, so
-only the alarm can stop it, and on pmxcfs it must die before a waiter could
-stale-reclaim at `CFS_LOCK_TIMEOUT`. Together they bound a hung-but-alive holder, which
-the node `flock` backend otherwise cannot break (flock has no idle expiry):
+value (resolution of Open question #2), both reading the **record** frozen at
+commission. `run_bounded` is the **pure-Perl-hang backstop**: once the lock is held it
+arms a `SIGALRM` for the record's `alarm_cap` (the class cap, ceilinged on the cluster
+backend at commission), and if un-suspended Perl execution overruns it aborts with a
+`die`, so the lock releases on unwind — `fd` close for node, `rmdir` for cluster.
+Nested alarm users (`run_command`'s inline save/restore in `PVE::Cmd::run`, and
+`run_with_timeout` under the node acquire wait) *suspend* that alarm, so its reach is
+exactly the hang class safe signals can catch: a Perl loop or hang outside any command.
+The **wall-clock** bound is the companion **deadline check**: `_lock_acquire` records
+`time() + max_hold` on the record as its final act, and `refresh_locks` dies when any
+owned lock is past its deadline — enforced at every cooperation point (before and after
+each jdssc run, and each poll-loop iteration), i.e. between commands, never
+mid-command. On the **cluster** backend the alarm cap is **ceilinged at
+`PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX`** regardless of the class cap — even `0`
+(Finding #15): a wedged pure-Perl holder reaches no cooperation point, so only the
+alarm can stop it, and on pmxcfs it must die before a waiter could stale-reclaim at
+`CFS_LOCK_TIMEOUT`. Together they bound a hung-but-alive holder, which the node `flock`
+backend otherwise cannot break (flock has no idle expiry):
 
 ```perl
-# run_bounded($max_hold, $code, @param) — pure-Perl-hang backstop: run the held body under
-# a hold alarm. Overrun → die → lock releases on unwind. $max_hold 0/undef → no cap. Outer
-# alarm saved/restored. Nested alarm users (run_command, lock_file waits) suspend this
-# alarm — the wall-clock hold bound is the deadline check in refresh_locks, not this.
+# run_bounded($ctx, $lock_id, $code, @param) — pure-Perl-hang backstop for the section
+# holding $lock_id: the alarm cap AND the diagnostic label are read from the record
+# (alarm_cap 0 → no alarm section; no cap/record skew is possible). Overrun → die
+# (naming the lock) → lock releases on unwind. Nested alarm users (run_command,
+# run_with_timeout waits) suspend this alarm — the wall-clock hold bound is the
+# deadline check in refresh_locks, not this.
+#
+# The alarm budget is SINCE THE LAST COOPERATION POINT, not since acquisition (re-arm
+# delta, 2026-07-05; registry-derived since the acquire/divest refactor): every
+# refresh_locks re-arms the innermost armed section — the LAST registry record that is
+# owned with a nonzero alarm_cap — because a refresh proves the holder is not wedged
+# and has just utime'd every owned cluster dir, so the alarm and the stale-reclaim
+# clocks restart from the same epoch. On exit the ENCLOSING armed section (same
+# derivation, excluding the exiting id — its record is still owned at that instant) is
+# re-armed to its full cap: exiting a section is a cooperation point, and restoring the
+# remainder frozen at entry would leave the outer alarm stale-depleted after a long,
+# cooperative inner section. With no enclosing section, the suspended foreign alarm
+# (e.g. PVE core's own run_with_timeout) is restored untouched. Sections nest in
+# commission order because _lock_exec is run_bounded's sole caller — a load-bearing
+# invariant.
+#
 # Deliberately NO kill here: this wrapper owns no process (a runaway jdssc is killed by
 # run_command's own timeout — kill(9) in PVE::Cmd::run); its enforcement is the die,
 # whose unwind is what releases the lock.
 sub run_bounded {
-    my ($max_hold, $code, @param) = @_;
-    return $code->(@param) unless $max_hold;
-    my $prev = alarm(0);                 # suspend any outer alarm
+    my ($ctx, $lock_id, $code, @param) = @_;
+    my $lock = _lock_record($ctx, $lock_id)
+        or Carp::confess("LOCK BUG: run_bounded('$lock_id') without a commissioned record");
+    my $cap = $lock->{alarm_cap};
+    return $code->(@param) unless $cap;
+    my $prev = alarm(0);                 # suspend any outer/foreign alarm
     my $res;
     my $ok = eval {
         local $SIG{ALRM} =
-            sub { die "lock hold exceeded ${max_hold}s — aborting to release the lock\n" };
-        alarm($max_hold);
+            sub { die "lock '$lock_id' hold exceeded ${cap}s — aborting to release it\n" };
+        alarm($cap);
         $res = $code->(@param);
         alarm(0);
         1;
     };
     my $err = $@;
     alarm(0);
-    alarm($prev) if $prev;               # restore outer alarm (best-effort)
+    my $enclosing = _lock_alarm_innermost($ctx, $lock_id);
+    if    ($enclosing) { alarm( $enclosing->{alarm_cap} ) }  # exit = cooperation point
+    elsif ($prev)      { alarm($prev) }                      # foreign alarm untouched
     die $err if !$ok;
     return $res;
 }
@@ -650,30 +679,43 @@ accepted sharp edge (fail-loud, value #1): a deadline can expire just after usef
 completed, failing the operation at the post-run check even though its last command
 succeeded — the same trade any hold cap makes.
 
-`_cluster_lock_path` is a thin acquisition-timeout retry wrapper around the existing
-`_cluster_lock_attempt` (which already takes an explicit `$lockpath`); it **replaces**
-the retired name-building `_cluster_lock`. Path construction lives only in
-`_lock_resolve` — callers pass a **class + id**, never a path or a scope. One piece of
-`_cluster_lock_attempt` is **retired with this design**: its internal hardcoded 119 s
-execution alarm around `$code` (`Lock.pm:116–117`). The per-class hold cap
-(`run_bounded` + the `refresh_locks` deadline) supersedes it — keeping it would re-cap
-every cluster-backend class at 119 s regardless of `<class>_lock_hold_timeout` (a `vm`
-hold of `LOCK_CLASS_VM_HOLD_TIMEOUT` would silently shrink to the hardcoded 119 s, and
-`0` = no cap would be impossible).
-The attempt keeps its outer-alarm save/restore and its acquisition alarm; only the
-post-acquisition execution alarm goes — **superseded by the cluster-backend alarm
-ceiling** (`_lock_exec` caps the `run_bounded` alarm at
-`PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX` — Finding #15), which restores the same
-wedged-holder protection with a named constant instead of a hardcode.
+Acquisition itself is one function pair (acquire/divest refactor, 2026-07-05 —
+decision record in [Implementation Notes](#implementation-notes)):
+**`_lock_acquire($ctx, $lock_id)`** looks up the commissioned record (confess
+without one — an unregistered cluster lock would never be refreshed), runs a
+`refresh_locks($ctx)` **cooperation point** — a wait the enclosing hold budget has
+already outlived dies before it starts, with the true hold-cap fatal rather than a
+doomed wait's disguised contention error, and the node backend enters its blind
+kernel block with every outer clock freshly reset — then dispatches to
+`_lock_acquire_cluster` (the pmxcfs `mkdir` poll loop with deadline accounting,
+stale-poke, held-outer-lock refresh, jittered backoff, quorum check, and
+`cfs_update`) or `_lock_acquire_node` (exclusive `flock(LOCK_EX)` taken directly,
+bounded by `PVE::Tools::run_with_timeout`) — each of which flips `owned=1` at the
+instant its syscall succeeds, so any later die routes through the sequencer's
+unconditional divest — then arms the deadline. It **dies on any failure** with a
+canonical error — cluster:
+`joviandss-lock '<id>' error: got lock request timeout` (deliberately not the
+literal "got timeout": cluster contention stays out of `joviandss_cmd`'s
+timeout-retry class); node: `can't lock file '<path>' - got timeout` (the exact
+shape `lock_error_acquire` always matched, now emitted by our own code instead of
+depended on in PVE's). **`_lock_divest($ctx, $lock_id)`** ends ownership — an
+alarm-guarded `rmdir` (`LOCK_DIVEST_GUARD_TIMEOUT`: a wedged FUSE call must not
+hang the unwind) or an fh close — never dies, and is idempotent via the record's
+`owned` flag. `PVE::Tools::lock_file` is no longer used: it is a run-callback
+wrapper that cannot express a separable acquire, its per-PID re-entry counter is
+unreachable behind our guard, and its internal 10 s timeout default is unreachable
+behind `with_lock`'s per-class resolution. Path construction still lives only in
+`_lock_resolve` — callers pass a **class + id**, never a path or a scope. The old
+hardcoded 119 s execution alarm of the retired `_cluster_lock_attempt` remains
+superseded by the cluster-backend alarm ceiling (Finding #15).
 
 #### Return convention — a locked block returns a fixed shape, never `wantarray`
 
-The code block passed to `with_lock` is run through
-`PVE::Tools::lock_file`, which invokes it in **scalar context**
-(`$res = eval { &$code(@param) }`, `Tools.pm:267`). Any list a block returns is therefore
-collapsed to a single value *inside* `lock_file`, before the lock layer ever sees it — so
-a `wantarray ? @res : $res[0]` in `_lock_exec` / `run_refreshed` would advertise a list
-contract the backend cannot honor (it could only ever yield one element). The lock
+The lock brackets (`run_bounded` → `run_refreshed`) invoke the block in **scalar
+context** (`$res = eval { $code->(@param) }`). Any list a block returns is therefore
+collapsed to a single value before the caller sees it — so a
+`wantarray ? @res : $res[0]` in `_lock_exec` / `run_refreshed` would advertise a list
+contract the machinery cannot honor (it could only ever yield one element). The lock
 primitives consequently pass a **single scalar straight through** (`return $res`) and do
 **not** branch on `wantarray`.
 
@@ -905,22 +947,26 @@ the cluster-assuming `touch_cluster_lock` / `_active_locks`. `refresh_locks` als
 doubles as the **wall-clock hold-cap enforcement point** (Open question #2 resolution):
 each call first checks every held lock's `deadline` and dies on overrun.
 
-`$ctx->{_held_locks}` is initialized to `[]` in `new_ctx`; records are added by
-`_lock_enter` (before acquisition) and removed **by path** by `_lock_leave` (never a
-LIFO `pop` — see Finding #11) and have the form
-`{ backend => 'cluster' | 'node', path => ..., acquired_at => <backtrace>, deadline => ... }`.
-`deadline` is `undef` until `_lock_arm_deadline` sets it to `time() + max_hold` **at
-acquisition** (the top of the locked body) — never at `_lock_enter`, which precedes the
-acquisition wait; arming early would charge a contended acquisition (up to
+`$ctx->{_held_locks}` is initialized to `[]` in `new_ctx`; one record per lock,
+added by `_lock_ctx_commission` (before acquisition) and removed **by path** by
+`_lock_ctx_decommission` (never a LIFO `pop` — see Finding #11). The record is the
+single store every phase enriches:
+`{ backend, path, acquire_timeout, max_hold, alarm_cap, owned, fh, deadline,
+acquired_at }` — commission freezes the timing policy (including the
+cluster-ceilinged `alarm_cap`), `_lock_acquire` flips `owned`, parks the node `fh`
+and arms `deadline` as its final act, `_lock_divest` clears them. The deadline is
+**never** armed at commission, which precedes the acquisition wait: arming early
+would charge a contended acquisition (up to
 `LOCK_CLASS_JDSSC_GENERAL_ACQUIRE_TIMEOUT` — several times the hold cap) against
-`LOCK_CLASS_JDSSC_GENERAL_HOLD_TIMEOUT` and kill the operation on its first refresh.
-An uncapped class (`hold_timeout` 0) keeps `deadline` undef.
+`LOCK_CLASS_JDSSC_GENERAL_HOLD_TIMEOUT` and kill the operation on its first
+refresh. An uncapped class (`hold_timeout` 0) keeps `deadline` undef.
 
 ```perl
 sub refresh_locks {
-    my ($ctx, $skip_path) = @_;                      # $skip_path: a lock being acquired right now
+    my ($ctx, $skip_path) = @_;                      # $skip_path: the poll loop's own target
     for my $lock (@{ $ctx->{_held_locks} }) {
-        next if defined $skip_path && $lock->{path} eq $skip_path;
+        next if !$lock->{owned};                     # in-flight target keeps its stale-poke;
+        next if defined $skip_path && $lock->{path} eq $skip_path;   # divested: nothing to keep alive
 
         # Wall-clock hold cap (Open question #2 resolution (b)): every cooperation
         # point checks the deadline armed at acquisition; overrun → die → the normal
@@ -932,6 +978,15 @@ sub refresh_locks {
             utime(undef, undef, $lock->{path});      # pmxcfs: reset the CFS_LOCK_TIMEOUT idle timer
         }
         # 'node' (flock): no-op — never expires
+    }
+
+    # Re-arm the innermost armed alarm section (see run_bounded): a refresh is
+    # proof of cooperation — the wedge budget restarts from the same epoch as
+    # the stale-reclaim clocks just reset above. Skipped for poll-loop calls
+    # ($skip_path set): during a cluster acquisition the poll owns the alarm.
+    if ( !defined $skip_path ) {
+        my $inner = _lock_alarm_innermost($ctx);
+        alarm( $inner->{alarm_cap} ) if $inner;
     }
 }
 ```
@@ -990,37 +1045,42 @@ directly — see [Finding #8](#implementation-findings-code-review--to-resolve).
 ### Lock release
 [Lock_release](#lock-release)
 
-Release mirrors acquisition, differs by backend, and **both are exception-safe** —
-the lock drops whether `$code` returns or dies.
+Release is one function, `_lock_divest($ctx, $lock_id)` — **never dies** (it runs on
+unwind paths where a die would mask the original error), **idempotent** via the
+record's `owned` flag, and called from exactly two places: **unconditionally** in
+`_lock_exec` after the single eval (the one release site for every outcome — the
+owned-guard makes it a no-op after a failed acquisition, which is load-bearing:
+the lock belongs to the current holder), and by the `_lock_ctx_decommission`
+finalizer as the anomaly tripwire.
 
-- **Cluster (pmxcfs `mkdir`):** the lock is a directory, released by `rmdir $lockpath`
-  in `_cluster_lock_attempt`'s cleanup (after the `eval` around `$code`, so it fires
-  on success and on die), followed by restoring the **caller's outer alarm**
-  (`alarm($prev_alarm)` — the attempt's own internal execution alarm is retired; the
-  hold cap is `run_bounded` + the deadline). Because
-  `refresh_locks` only runs *inside* `$code` (lock firmly held), no refresh can ever
-  `utime` a just-released directory.
-- **Node (`flock`):** no explicit unlock — `lock_file` holds the fd only for the
-  duration of `$code`; on return or unwind the fd closes and the kernel drops the
+- **Cluster (pmxcfs `mkdir`):** `rmdir` of the lock directory, **alarm-guarded** by
+  `LOCK_DIVEST_GUARD_TIMEOUT` — a wedged FUSE call must not hang the unwind at
+  exactly the moment things are already failing; on expiry or failure the dir is
+  warned about and left to the waiters' normal `utime(0,0)` stale reclaim. Because
+  `refresh_locks` skips non-owned records, no refresh can ever `utime` a
+  just-released directory.
+- **Node (`flock`):** the fh parked in the record is closed; the kernel drops the
   lock (also on process death).
 
 **Guarantees (both backends):**
 
-- Released on **every** exit path — success, `$code` die, or acquisition failure
-  (nothing acquired → nothing to release).
-- Nothing held is left behind once `with_lock` returns **or dies** — `_lock_exec` runs
-  `_lock_leave` and the backend cleanup before re-raising, so the die path leaks nothing.
-  The only lingering artifact is a pmxcfs lock directory from a **crashed** holder,
-  reclaimed via the stale-lock path (a waiter's `utime(0,0)` after `CFS_LOCK_TIMEOUT`). A crashed
-  `flock` holder needs no cleanup.
-- `_held_locks` stays in sync (registered at `_lock_enter` before acquisition, removed
-  by path at `_lock_leave` on every exit), so `refresh_locks` only ever touches locks
-  this operation is holding or acquiring.
-- **Release always frees the lock that was acquired.** `with_lock` resolves backend +
-  path **once, at acquire**, and reuses those exact values at release — never
-  recomputes. So a lock whose path depends on mutable config (a `vm` / `storage` lock
-  keyed off `get_shared($ctx)`) releases correctly even if that input flips
-  **shared → non-shared** mid-flight. This is what makes `shared`-dependent paths safe.
+- Released on **every** exit path — success, body die, acquisition failure (nothing
+  acquired → `owned` never set → nothing to release), and even impossible paths
+  (the finalizer divests anything still owned, loudly).
+- Nothing held is left behind once `with_lock` returns **or dies** — `_lock_exec`
+  runs `_lock_divest` and `_lock_ctx_decommission` before re-raising, so the die
+  path leaks nothing. The only lingering artifact is a pmxcfs lock directory from a
+  **crashed** holder, reclaimed via the stale-lock path (a waiter's `utime(0,0)`
+  after `CFS_LOCK_TIMEOUT`). A crashed `flock` holder needs no cleanup.
+- `_held_locks` stays in sync (record created at commission before acquisition,
+  removed by path at decommission on every exit), so `refresh_locks` only ever
+  touches locks this operation owns.
+- **Release always frees the lock that was acquired.** The backend and path are
+  frozen into the record **once, at commission**, and divest reuses those exact
+  values — never recomputes. So a lock whose path depends on mutable config (a
+  `vm` / `storage` lock keyed off `get_shared($ctx)`) releases correctly even if
+  that input flips **shared → non-shared** mid-flight. This is what makes
+  `shared`-dependent paths safe.
 
 ### Re-entrancy and deadlock
 [Re_entrancy_and_deadlock](#re-entrancy-and-deadlock)
@@ -1035,8 +1095,8 @@ uses):
 ```perl
 use Carp ();
 
-sub _lock_enter {
-    my ($ctx, $backend, $path) = @_;
+sub _lock_ctx_commission {
+    my ($ctx, $backend, $path, $timeout, $max_hold) = @_;
 
     for my $lock (@{ $ctx->{_held_locks} }) {
         next if $lock->{path} ne $path;
@@ -1047,16 +1107,36 @@ sub _lock_enter {
           . "=== re-lock attempted here ===" );     # confess appends the current stack
     }
 
+    my $alarm_cap = $max_hold;                      # resolve-and-freeze: the cluster
+    if ( $backend eq 'cluster' ) {                  # ceiling is applied HERE, once
+        my $ceiling = OpenEJovianDSS::Common::PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX();
+        $alarm_cap = $ceiling if !$alarm_cap || $alarm_cap > $ceiling;
+    }
+
     push @{ $ctx->{_held_locks} },
-        { backend     => $backend,
-          path        => $path,
-          acquired_at => Carp::longmess("acquired '$path'"),
-          deadline    => undef };   # armed at acquisition by _lock_arm_deadline
+        { backend         => $backend,
+          path            => $path,
+          acquire_timeout => $timeout,
+          max_hold        => $max_hold,
+          alarm_cap       => $alarm_cap,
+          owned           => 0,       # flipped by _lock_acquire
+          fh              => undef,   # node backend: parked by _lock_acquire
+          deadline        => undef,   # armed by _lock_acquire at ownership
+          acquired_at     => Carp::longmess("commissioned '$path'") };
+
+    return $path;    # the lock id IS the resolved path (unique per the guard)
 }
 
-sub _lock_leave {
-    my ($ctx, $path) = @_;
-    @{ $ctx->{_held_locks} } = grep { $_->{path} ne $path } @{ $ctx->{_held_locks} };
+sub _lock_ctx_decommission {           # the FINALIZER — never dies; a divest
+    my ($ctx, $lock_id) = @_;          # here means an impossible path executed
+
+    my $lock = _lock_record($ctx, $lock_id) or return;
+    if ($lock->{owned}) {
+        # warn loudly (best-effort) and release anyway
+        _lock_divest($ctx, $lock_id);
+    }
+    @{ $ctx->{_held_locks} } =
+        grep { $_->{path} ne $lock_id } @{ $ctx->{_held_locks} };
 }
 ```
 
@@ -1153,23 +1233,26 @@ backend.)
 ### Timeout and retry
 [Timeout_and_retry](#timeout-and-retry)
 
-- **Cluster backend** (`_cluster_lock_path`): `with_lock` resolves the acquire wait via
-  `get_lock_class_acquire_timeout($ctx, $lock_class)` — for `jdssc_general` that is
-  **`LOCK_CLASS_JDSSC_GENERAL_ACQUIRE_TIMEOUT`** (kept equal to
-  `PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX`, the named cluster-acquire bound that
-  replaces the old hardcoded `max_total = 1200` — Finding #13) — and passes it into the
-  retry loop (retrying only on *acquisition* timeout); a busy cluster waits, then
-  **dies** with `got lock request timeout` once the bound is hit — a bounded wait, not
-  an infinite one.
-- **Node backend** (`lock_file`): `with_lock` resolves the acquire wait **per class** via
-  `get_lock_class_acquire_timeout($ctx, $lock_class)` —
+- **Cluster backend** (`_lock_acquire_cluster`): the acquire wait is frozen into the
+  record at commission via `get_lock_class_acquire_timeout($ctx, $lock_class)` — for
+  `jdssc_general` that is **`LOCK_CLASS_JDSSC_GENERAL_ACQUIRE_TIMEOUT`** (kept equal
+  to `PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX`, the named cluster-acquire bound
+  that replaces the old hardcoded `max_total = 1200` — Finding #13) — and drives the
+  poll loop's deadline accounting; a busy cluster waits, then **dies** with
+  `got lock request timeout` once the bound is hit — a bounded wait, not an
+  infinite one, raised directly by the acquire (no retry wrapper exists: since the
+  acquire/divest refactor an acquisition error can never be anything else, so
+  there is nothing to classify or re-attempt).
+- **Node backend** (`_lock_acquire_node`): same freeze, per class —
   `LOCK_CLASS_JDSSC_INFO_ACQUIRE_TIMEOUT` / `LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT`,
   `LOCK_CLASS_VM_ACQUIRE_TIMEOUT` / `LOCK_CLASS_STORAGE_ACQUIRE_TIMEOUT`
-  (preserving today's `_node_lock` default — Finding #9); `_lock_exec` keeps a
-  bare `$timeout ||= 10` only as a last-resort fallback. The short-lived `jdssc_info`
-  locks are local and brief — a wait beyond `LOCK_CLASS_JDSSC_INFO_ACQUIRE_TIMEOUT`
-  usually signals a stuck holder — while method locks (`vm`/`storage`) legitimately wait
-  up to their much larger acquire bound. Tunable per class via
+  (preserving the old `_node_lock` default — Finding #9); the `flock` wait is
+  bounded by `PVE::Tools::run_with_timeout`, and there is **no fallback anywhere**:
+  a caller bypassing `with_lock`'s resolution reaches `run_with_timeout` with an
+  unusable bound and fails loud immediately. The short-lived `jdssc_info` locks are
+  local and brief — a wait beyond `LOCK_CLASS_JDSSC_INFO_ACQUIRE_TIMEOUT` usually
+  signals a stuck holder — while method locks (`vm`/`storage`) legitimately wait up
+  to their much larger acquire bound. Tunable per class via
   `<class>_lock_acquire_timeout`.
 - A failed acquisition is **re-raised as a die** by `_lock_exec` (it rethrows the
   backend's `$@`), so it flows into `joviandss_cmd`'s existing retry/`die` handling like
@@ -1185,7 +1268,7 @@ these rules (the `flock` backend needs none of this — the kernel blocks the wa
   pmxcfs reclaim a dead holder's lock after `CFS_LOCK_TIMEOUT`; skip it and a stale lock is
   never reclaimed. A `utime` must therefore fire well inside the `CFS_LOCK_TIMEOUT` window.
 - **Refresh the already-held *outer* locks each iteration.** A long acquisition wait must
-  not let a lock this `$ctx` *already holds* go stale. `_lock_enter` has pushed the
+  not let a lock this `$ctx` *already holds* go stale. `_lock_ctx_commission` has pushed the
   in-flight target onto `_held_locks` before the loop starts, so each iteration also calls
   `refresh_locks($ctx, $lockpath)` — refreshing every other held lock (e.g. the outer
   method lock) to `now`, while **skipping `$lockpath`** so the target keeps its
@@ -1238,22 +1321,21 @@ these rules (the `flock` backend needs none of this — the kernel blocks the wa
 [Error_propagation](#error-propagation)
 
 `with_lock` **dies on any failure** — it never returns a failure silently — so the
-caller needs only one `eval`. The backend conventions `_lock_exec` normalizes into that
-die:
+caller needs only one `eval`. Since the acquire/divest refactor there is nothing to
+normalize: every phase **dies natively** in its own frame.
 
-- **Cluster** (`_cluster_lock_attempt`): distinguishes lock-machinery errors (prefixed)
-  from `$code` errors (re-raised as-is) via `$is_code_err`, and maps quorum loss to a
-  clear message. Like today's `_cluster_lock`, it (and the `_cluster_lock_path` wrapper)
-  **returns `undef` and sets `$@`** on any failure — it does **not** die.
-- **Node** (`lock_file`): sets `$@ = "can't lock file '…' - …"` on acquisition
-  failure/timeout, and leaves a `$code` error in `$@` too — it returns `undef` rather
-  than dying.
-
-Both backends therefore share one convention — undef + `$@`, never a die — and
-`_lock_exec` does `die $@ if $@` after **each** of them. This normalization is
-load-bearing: without it, a completed `eval` clears `$@`, and a cluster acquisition
-failure (or `$code` death) would be silently swallowed, with `with_lock` returning
-`undef` as if it had succeeded.
+- **Acquisition errors** originate in `_lock_acquire_*`, where no caller code has
+  ever run — machinery errors are prefixed (`joviandss-lock '<id>' error: …`),
+  quorum loss is mapped to `no quorum!`, and `PVE::Exception` objects are re-raised
+  as-is. No undef+`$@` convention, no `die $@ if $@` bridges, and no possibility of
+  confusing an acquisition error with a body error (the old `_cluster_lock_path`
+  wrapper's `$@`-regex retry filter — and the body-re-run hazard it carried — is
+  gone with the wrapper).
+- **Body errors** propagate through `_lock_exec`'s inner eval, after the explicit
+  `_lock_divest`; hold-cap deaths carry `LOCK_FATAL_ERROR_MARKER`.
+- **Release never contributes errors**: `_lock_divest` and the decommission
+  finalizer are never-dying by contract — a failure there is warned, not thrown,
+  because it would otherwise mask the original error mid-unwind.
 
 Either way `with_lock` dies, so `joviandss_cmd`'s existing `eval` inside its retry loop
 catches it and inspects `$@`/exit code — retrying or, once retries are exhausted, dying,
@@ -1476,6 +1558,7 @@ including the findings section, which reviews current code). Map-lookup syntax
 | `LOCK_CLASS_STORAGE_DEFAULT_TYPE` | default scope of the `storage` method-lock class (shared → pmxcfs, non-shared → `flock`). |
 | `LOCK_CLASS_STORAGE_ACQUIRE_TIMEOUT` | `storage` wait-to-acquire (as `vm` — Finding #9). |
 | `LOCK_CLASS_STORAGE_HOLD_TIMEOUT` | `storage` hold cap. |
+| `LOCK_DIVEST_GUARD_TIMEOUT` | alarm bound on the cluster-backend `rmdir` in `_lock_divest`: release runs on unwind paths where a wedged FUSE call would otherwise hang the process while it still believes it holds the lock; on expiry the dir is warned about and left for the waiters' `utime(0,0)` stale reclaim. |
 | `LOCK_DEFAULT_TYPE` | wiring map, class key → its flat `LOCK_CLASS_<CLASS>_DEFAULT_TYPE` constant; its key set defines the **valid classes** — `with_lock` dies on any other. Defines no values. |
 | `LOCK_CLASS_ACQUIRE_TIMEOUT` | wiring map, class key → its flat `LOCK_CLASS_<CLASS>_ACQUIRE_TIMEOUT` constant; read via `get_lock_class_acquire_timeout` (scfg `<class>_lock_acquire_timeout` override; no global fallback). Resolves Finding #9 — **per-class**, not one global default. Defines no values. |
 | `LOCK_CLASS_HOLD_TIMEOUT` | wiring map, class key → its flat `LOCK_CLASS_<CLASS>_HOLD_TIMEOUT` constant; read via `get_lock_class_hold_timeout` (scfg `<class>_lock_hold_timeout` override; explicit `0` → no deadline — the cluster-backend alarm ceiling of Finding #15 still applies). One value drives **both** hold-cap mechanisms — `run_bounded`'s alarm and the `refresh_locks` deadline (see [Execution alarm](#execution-alarm-and-refresh-interaction), Open question #2). Defines no values. |
@@ -1496,7 +1579,7 @@ including the findings section, which reviews current code). Map-lookup syntax
 | `LOCK_CLASS_JDSSC_GENERAL_ACQUIRE_TIMEOUT` | 600 (= `PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX`) | seconds | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_JDSSC_GENERAL_HOLD_TIMEOUT` | 119 | seconds | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_JDSSC_INFO_DEFAULT_TYPE` | `node` | scope | `OpenEJovianDSS::Lock` |
-| `LOCK_CLASS_JDSSC_INFO_ACQUIRE_TIMEOUT` | 10 | seconds | `OpenEJovianDSS::Lock` |
+| `LOCK_CLASS_JDSSC_INFO_ACQUIRE_TIMEOUT` | 40 (was 10; raised 2026-07-05 — a waiter must outlast one full worst-case command hold with headroom) | seconds | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_JDSSC_INFO_HOLD_TIMEOUT` | 119 | seconds | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_MULTIPATH_DEFAULT_TYPE` | `node` | scope | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT` | 60 (was 10; raised by `volume-activation-with-reactivation.md`) | seconds | `OpenEJovianDSS::Lock` |
@@ -1507,6 +1590,7 @@ including the findings section, which reviews current code). Map-lookup syntax
 | `LOCK_CLASS_STORAGE_DEFAULT_TYPE` | `storage` | scope | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_STORAGE_ACQUIRE_TIMEOUT` | 600 | seconds | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_STORAGE_HOLD_TIMEOUT` | 1320 (was 600; in step with the `vm` class) | seconds | `OpenEJovianDSS::Lock` |
+| `LOCK_DIVEST_GUARD_TIMEOUT` | 5 | seconds | `OpenEJovianDSS::Lock` |
 
 The wiring maps (`LOCK_DEFAULT_TYPE`, `LOCK_CLASS_ACQUIRE_TIMEOUT`,
 `LOCK_CLASS_HOLD_TIMEOUT`) and `LOCK_CLASS_PROPERTY` define no values, so they have no
@@ -1529,7 +1613,7 @@ Related existing constants (context, not introduced here):
 | `DEFAULT_ISCSI_CHANGE_LOCK_TIMEOUT` | 50 s | `OpenEJovianDSS::Common` | **⚠ Marked for deletion.** Was the default acquire wait for the retired iSCSI-target REST lock; backed the inert `iscsi_change_lock_timeout` property. Delete with its getter `get_default_iscsi_change_lock_timeout` (`Common.pm:211`) and the property (Finding #14). |
 | `JOVIANDSS_ISCSI_CHANGE_LOCK_TIMEOUT_MAX` | 115 s | `OpenEJovianDSS::Common` | **⚠ Marked for deletion.** Was the `maximum` for the retired REST lock's `iscsi_change_lock_timeout` property. Delete with its getter `get_max_iscsi_change_lock_timeout` (`Common.pm:209`) and the property's `maximum` (`OpenEJovianDSSPlugin.pm:185`) — see Finding #14. |
 | `JOVIANDSS_ISCSI_LOCK_PATH` | `/etc/pve/priv/lock/joviandss-iscsi-target-global-lock` | `OpenEJovianDSS::Common` | **⚠ Marked for deletion.** Was the default path for the retired REST lock; backed the inert `iscsi_target_global_lock_path` property. Delete with its getter `get_default_iscsi_target_global_lock_path` (`Common.pm:213`) and the property (Finding #14). |
-| `LOCK_EX` | Fcntl exclusive-lock flag | `Fcntl` (Perl core) | Flag passed to `flock()` for the node backend (Table 1; `_lock_exec` node branch). Imported from Fcntl, not defined by the plugin. |
+| `LOCK_EX` | Fcntl exclusive-lock flag | `Fcntl` (Perl core) | Flag passed to `flock()` for the node backend (Table 1; `_lock_acquire_node` since the acquire/divest refactor — previously reached indirectly through `PVE::Tools::lock_file`). Imported from Fcntl, not defined by the plugin. |
 
 ---
 
@@ -1555,33 +1639,52 @@ In `OpenEJovianDSS/Lock.pm`:
 - **`_lock_resolve($ctx, $type, $lock_class, $id)`** — composes the lockid from class + id
   and maps the resolved scope → `(backend, path)`.
 - **`_lock_exec($ctx, $backend, $path, $timeout, $max_hold, $code, @param)`** — the
-  explicit-path primitive that dispatches by backend, brackets the re-entry guard, arms the
-  hold deadline at the top of the locked body (`_lock_arm_deadline`), and wraps the body in
-  `run_bounded` (pure-Perl backstop, ceilinged at `PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX` on the
-  cluster backend — Finding #15) + `run_refreshed` (keep-alive + deadline check) — so
-  `with_lock` auto-caps and auto-refreshes; callers never do either manually.
-- **`_cluster_lock_path($ctx, $path, $timeout, $code, @param)`** — path-based
-  acquisition-timeout retry wrapper around `_cluster_lock_attempt`; keeps its
-  undef-plus-`$@` failure convention (`_lock_exec` converts that to a die — see
-  [Error propagation](#error-propagation)).
-- **`_lock_enter($ctx, $backend, $path)` / `_lock_leave($ctx, $path)`** — the re-entry
-  guard / registry over `$ctx->{_held_locks}` (`Carp::confess` on re-lock).
-- **`refresh_locks($ctx, $skip_path)`** — backend-agnostic keep-alive **and wall-clock
-  hold-cap enforcement** (dies if any held lock is past its `deadline`); the shared
-  primitive, called both by the poll loop and by `run_refreshed`.
-- **`_lock_arm_deadline($ctx, $path, $max_hold)`** — sets the lock's `_held_locks`
-  `deadline` to `time() + $max_hold` at **acquisition** (top of the locked body — not at
-  `_lock_enter`, which precedes the acquisition wait); `0`/undef `$max_hold` → no
-  deadline.
+  **phase sequencer**: commission → acquire (+ id cross-check) → `run_bounded` →
+  `run_refreshed` → body → explicit divest → decommission finalizer; one eval per
+  bracket, one error capture, release guaranteed on every path — so `with_lock`
+  auto-caps and auto-refreshes; callers never do either manually.
+- **`_lock_ctx_commission($ctx, $backend, $path, $timeout, $max_hold)` →
+  `$lock_id`** — registry + re-entry guard (`Carp::confess` on re-lock) and the
+  **resolve-and-freeze point**: the record carries all timing policy (acquire
+  budget, hold cap, cluster-ceilinged `alarm_cap` — Finding #15); commissioned =
+  registered, NOT owned.
+- **`_lock_ctx_decommission($ctx, $lock_id)`** — the never-dying FINALIZER: divests
+  anything still owned (anomaly tripwire — both anticipated outcomes divest
+  explicitly) and removes the record.
+- **`_lock_acquire($ctx, $lock_id)` → `$lock_id`** — blocks per the record taking
+  exclusive ownership; **dies on any failure** (canonical, classifiable errors);
+  its entry is a `refresh_locks` **cooperation point** (an expired enclosing
+  budget dies here, before any wait starts); the backends flip `owned=1` at the
+  instant of syscall success (and park the node fh); the dispatcher then arms
+  the hold deadline. Dispatches to **`_lock_acquire_cluster`** (pmxcfs mkdir poll loop:
+  deadline accounting, stale-poke, held-outer-lock refresh, jittered backoff,
+  quorum check, `cfs_update`) or **`_lock_acquire_node`** (direct
+  `flock(LOCK_EX)` bounded by `PVE::Tools::run_with_timeout`).
+- **`_lock_divest($ctx, $lock_id)`** — ends ownership: alarm-guarded `rmdir`
+  (`LOCK_DIVEST_GUARD_TIMEOUT`) or fh close; **never dies**, idempotent via the
+  `owned` flag.
+- **`_lock_record($ctx, $lock_id)`** — the registry accessor (one record per
+  commissioned lock).
+- **`refresh_locks($ctx, $skip_path)`** — backend-agnostic keep-alive **and
+  wall-clock hold-cap enforcement** (dies if any owned lock is past its
+  `deadline`), and the alarm **re-arm point** (innermost armed section via
+  `_lock_alarm_innermost`); the shared primitive, called both by the poll loop
+  and by `run_refreshed`. Only owned records participate.
+- **`_lock_alarm_innermost($ctx, $exclude_id)`** — the innermost armed alarm
+  section: last registry record owned with a nonzero `alarm_cap`, optionally
+  excluding one id (run_bounded's exit uses it to find its enclosing section).
 - **`run_refreshed($ctx, $code, @param)`** — its exception-safe before/after wrapper,
   applied **automatically by `with_lock`** (via `_lock_exec`) around every locked body —
   an internal mechanism, not a caller-facing helper.
-- **`run_bounded($max_hold, $code, @param)`** — the **pure-Perl-hang backstop**: arms a
-  `SIGALRM` for `$max_hold` s once the lock is held; on overrun the body dies and the lock
-  releases on unwind. Nested alarm users suspend the alarm, so it cannot fire
-  while a command is in flight — the wall-clock bound is the `refresh_locks` deadline
-  check. Applied automatically by `_lock_exec`, which for cluster-backend locks passes at
-  most `PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX` (Finding #15); `0`/undef → no cap.
+- **`run_bounded($ctx, $lock_id, $code, @param)`** — the **pure-Perl-hang backstop**
+  for the section holding `$lock_id`: alarm cap and diagnostic label read from the
+  record (`alarm_cap` 0 → no alarm section); on overrun the body dies (naming the
+  lock) and the lock releases on unwind. Nested alarm users suspend the alarm, so it
+  cannot fire while a command is in flight — the wall-clock bound is the
+  `refresh_locks` deadline check. The budget is measured **since the last
+  cooperation point** (refresh re-arms the innermost armed section; section exit
+  re-arms the enclosing one in full — re-arm delta 2026-07-05, registry-derived
+  since the acquire/divest refactor).
 - **`get_lock_class_hold_timeout($ctx, $lock_class)`** + `LOCK_CLASS_HOLD_TIMEOUT` — per-class hold cap
   (`<class>_lock_hold_timeout` override), with per-class defaults; the one value drives
   both the `run_bounded` alarm and the `refresh_locks` deadline.
@@ -1607,6 +1710,28 @@ In `OpenEJovianDSS/Lock.pm`:
 - **`lock_vm` / `lock_storage`** (the per-VM / per-storage method-lock entry points) —
   **removed**. Method locks become plain `with_lock($ctx, 'vm', $vmid, …)` /
   `with_lock($ctx, 'storage', undef, …)` calls; the ~42 call sites migrate accordingly.
+
+Retired by the acquire/divest refactor (2026-07-05):
+
+- **`_cluster_lock_attempt` / `_cluster_lock_path`** — the callback-hosting
+  acquisition pair. Body execution moved out of the acquisition frame entirely
+  (`_lock_acquire_cluster` acquires and returns), which deletes the `$is_code_err`
+  disentangling flag, the undef+`$@` signalling convention, and the outer wrapper's
+  `$@`-regex retry filter together with the body-re-run hazard it carried (review
+  finding L7, fixed by construction).
+- **`_lock_enter` / `_lock_leave`** — renamed and extended into
+  `_lock_ctx_commission` / `_lock_ctx_decommission` (naming decided 2026-07-05:
+  "enter/leave" read as taking/releasing the lock, which they never did;
+  commissioned = registered + guarded, not owned, and decommission is the
+  never-dying finalizer).
+- **`_lock_arm_deadline`** — folded into `_lock_acquire` as its final act
+  ("armed at acquisition" is now literal).
+- **`PVE::Tools::lock_file`** (external, no longer imported) — a run-callback
+  wrapper that cannot express a separable acquire; its per-PID re-entry counter is
+  unreachable behind our guard and its internal 10 s default is unreachable behind
+  `with_lock`'s per-class resolution. The node backend takes `flock(LOCK_EX)`
+  directly (Fcntl — Table 10), with `PVE::Tools::run_with_timeout` still bounding
+  the wait and the error wording kept byte-identical, now emitted by our code.
 
 ---
 
@@ -1838,9 +1963,17 @@ or during implementation.
     is `0` or exceeds the constant, in which case the constant is the alarm value (the
     ceiling is a pmxcfs-correctness invariant — value #1 — not a class property; `0`
     disables only the wall-clock deadline). The pure-Perl alarm then always fires before a waiter could stale-reclaim,
-    restoring today's protection by design. The ceiling never trips a legitimate run: the
-    alarm is suspended during every command, and the ≥-`run_command`-kill constraint
-    applies to the **deadline**, which keeps the full per-class value.
+    restoring today's protection by design. The ceiling never trips a legitimate run,
+    on two grounds: the alarm is suspended during every *timed* command, and (re-arm
+    delta, 2026-07-05) its budget restarts at every cooperation point — `refresh_locks`
+    re-arms the innermost armed section, derived from the registry
+    (`_lock_alarm_innermost`: last record owned with a nonzero `alarm_cap`) — so the
+    ceiling bounds un-suspended Perl time **since the last refresh**, never a long,
+    cooperating hold (the volume-activation waits under a shared `vm` lock run to their
+    full 1320 s deadline). A wedge still dies within the ceiling of the epoch in which
+    every owned cluster dir was last `utime`'d — i.e. before any waiter can stale-reclaim.
+    The ≥-`run_command`-kill constraint applies to the **deadline**, which keeps the
+    full per-class value.
 
 ---
 
@@ -1874,6 +2007,70 @@ equal-vmid/ascending-order structure preserved.
 ### Deltas decided during implementation
 
 All user-approved; where they touch the spec, the spec sections were updated in place:
+
+- **Hold-alarm re-arm at cooperation points (2026-07-05).** The alarm originally armed
+  once per section and counted *cumulative* un-suspended Perl time since acquisition,
+  while the hazard it guards (pmxcfs stale-reclaim) is measured *since the last
+  refresh* — so the sleep-wait loops the volume-activation design placed under shared
+  `vm` locks (240×`sleep(1)` device wait, login polls, plus untimed `iscsiadm`
+  `run_command` calls that do not suspend the alarm) burned the 117 s ceiling ~2 min
+  into a legitimate activation and killed it with a spurious lock-fatal, making the
+  1320 s reactivation budget unreachable on shared storage. Fix: `refresh_locks`
+  re-arms the innermost armed section after refreshing (skipped for poll-loop calls,
+  which own the alarm for their mkdir bound); section exit re-arms the *enclosing*
+  section to its full cap (exit follows the body's guaranteed post-refresh) instead
+  of restoring the remainder frozen at entry, and hands a suspended foreign alarm
+  back untouched only when no armed section remains. First implemented with a
+  dedicated `$ctx->{_alarm_caps}` stack; the acquire/divest refactor (below)
+  dissolved the stack — the registry record's `owned` flag plus its
+  commission-frozen `alarm_cap` make the innermost armed section derivable from
+  `_held_locks` directly (`_lock_alarm_innermost`), removing the duplicated state.
+  Invariant preserved at any nesting depth: exactly one alarm is armed (the
+  innermost section's), every cooperation point `utime`s all owned cluster dirs, so
+  a wedge dies within the ceiling of the same epoch the reclaim clocks started from.
+
+- **Acquire/divest refactor + phase renames (2026-07-05).** Acquisition was a
+  callback host (`_cluster_lock_path` → `_cluster_lock_attempt(... $body ...)` /
+  `PVE::Tools::lock_file(... $body ...)`), which fused body and machinery errors
+  into one `$@` channel — the undef+`$@` convention, the `$is_code_err` flag, and
+  the retry wrapper's `$@`-regex filter (with its body-re-run hazard, review
+  finding L7) all existed to un-fuse them. `_lock_exec` is now a **phase
+  sequencer**: `_lock_ctx_commission` (registry + guard + resolve-and-freeze of
+  all timing policy into the record; returns the lock id) → one eval holding
+  `_lock_acquire` (dies-or-owns; cluster mkdir poll / direct `flock(LOCK_EX)`
+  under `run_with_timeout` — `PVE::Tools::lock_file` dropped, wording kept
+  byte-identical) and `run_bounded($ctx, $lock_id, …)` (cap and label from the
+  record — no skew possible) → **unconditional** `_lock_divest` (never dies;
+  alarm-guarded rmdir, `LOCK_DIVEST_GUARD_TIMEOUT`; the owned-guard makes it a
+  no-op after failed acquisition — load-bearing, the lock belongs to the
+  current holder) → `_lock_ctx_decommission`, the never-dying finalizer whose
+  divest branch is a pure anomaly tripwire. The eval was collapsed to one
+  (decided 2026-07-05, replacing an intermediate two-eval form): the backends
+  flip `owned=1` at the instant of syscall success and acquire sits inside the
+  guarded region, so a die anywhere after ownership — including a signal
+  landing between acquire and `run_bounded`'s alarm suspension (the enclosing
+  alarm is live there, freshly re-armed by the acquire-entry cooperation
+  point) or `cfs_update` failing after `mkdir` (the internal rollback-rmdir
+  was removed) — routes through the one divest; the finalizer's only
+  reachable trigger is the irreducible single assignment between syscall
+  success and the flag flip. Naming decided 2026-07-05: commissioned =
+  registered + guarded, NOT owned (the old `_lock_enter`/`_lock_leave` names
+  read as taking/releasing the lock, which they never did). L7 is fixed by
+  construction — acquisition errors originate in a frame where no body has
+  ever run. `_lock_acquire`'s entry is additionally a `refresh_locks`
+  cooperation point (decided 2026-07-05): a nested wait whose enclosing hold
+  budget is already exhausted dies before it starts, with the true hold-cap
+  fatal — predictive "enough time for the worst-case wait" gating was
+  considered and rejected (it would refuse healthy operations whose typical
+  wait is ~0, and a clamped variant would misclassify hold-cap exhaustion as
+  retryable contention). Functional coverage: `tests/lock_rearm_test.pl`
+  (30 cases: full happy path on a real flock, forked contended-acquire with
+  canonical error classification, cooperating-hold re-arm, named-lock wedge
+  death, nested-exit full re-arm, skip-path non-re-arm, deadline enforcement,
+  finalizer tripwire, both confess guards, foreign-alarm handoff, the
+  doomed-wait cooperation point at acquire entry, and two `_lock_exec`
+  end-to-end cases proving instant re-acquirability after success and after
+  body death).
 
 - **The Finding #8 clamp is unconditional** — every `joviandss_cmd` call is clamped to
   `PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX`, not only cluster-class ones: an unclamped
