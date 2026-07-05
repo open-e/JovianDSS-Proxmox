@@ -783,6 +783,11 @@ sub _clone_image {
         };
         $err = $@;
         unless ($err) {
+            # Best-effort PRE-ACTIVATION publish (maintainer ruling
+            # 2026-07-05, review F-07 — not a bug): a failure here is
+            # acceptable by design, the authoritative publish happens
+            # inside volume_activate. Errors are deliberately not examined
+            # or rethrown from this warm-up path.
             eval {
                 my $tgname = get_vm_target_group_name($ctx, $vmid);
                 OpenEJovianDSS::Common::volume_publish($ctx, $tgname, $clone_name_clustered, undef, undef);
@@ -931,6 +936,11 @@ sub _alloc_image {
             $err = $@;
 
             unless ($err) {
+                # Best-effort PRE-ACTIVATION publish (maintainer ruling
+                # 2026-07-05, review F-07 — not a bug): a failure here is
+                # acceptable by design, the authoritative publish happens
+                # inside volume_activate. Errors are deliberately not
+                # examined or rethrown from this warm-up path.
                 eval {
                     my $tgname = get_vm_target_group_name($ctx, $vmid);
                     OpenEJovianDSS::Common::volume_publish($ctx, $tgname, $volume_name_clustered, undef, undef);
@@ -1022,6 +1032,18 @@ sub _free_image {
     # Volume deletion will result in deletetion of all its snapshots
     # Therefore we have to detach all volume snapshots that is expected to be
     # removed along side with volume
+    #
+    # DELIBERATELY UNGUARDED (maintainer ruling 2026-07-05, review F-09):
+    # a volume must NEVER be deleted while its deactivation has not
+    # completed — deleting under live node-side state (sessions, maps,
+    # LUN records) breaks the node, and once the volume is gone the plugin
+    # has nothing left to reference for cleanup. Deactivation retries
+    # internally; if it still fails, FAILING THE DELETION is the correct
+    # outcome: the volume stays referencable and the deletion can be
+    # retried after the cause is fixed. This is the asymmetry with
+    # creation-side activation, whose failures leave a referencable
+    # object behind. Supersedes the pre-4e6281d PL-13 warn-and-proceed
+    # guard — do not restore it.
 
     volume_deactivate( $ctx, $vmid,
         $volname_clustered, undef, undef );
@@ -1199,6 +1221,13 @@ sub _volume_snapshot_rollback {
     # Deleted blocker names are returned as "snap:<name>" tokens; we call
     # remove_vm_snapshot_config for each — it is idempotent, so calling it for
     # unmanaged snapshots is harmless.
+    #
+    # Rollback itself is IDEMPOTENT on the JovianDSS side (maintainer
+    # ruling, 2026-07-05, review F-02): a killed or repeated attempt
+    # converges on the same outcome — volume at the snapshot state, newer
+    # blocker snapshots removed — so the timeout retries below are safe.
+    # (This supersedes the pre-4e6281d "never retry rollback" comment; do
+    # not restore retries=0 on the strength of that historical note.)
     my $volname_clustered = volume_name_clustered( $ctx, $volname );
     my $deleted_raw = joviandss_cmd(
         $ctx,

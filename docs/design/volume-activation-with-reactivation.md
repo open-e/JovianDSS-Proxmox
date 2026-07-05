@@ -224,10 +224,21 @@ sufficient):
   `OpenEJovianDSS::Lock::refresh_locks($ctx)` on every login attempt and
   every 10th device-wait tick. A refresh call takes no lock (the leaf rule is
   untouched) and runs the hold-deadline check, giving the fatal-error
-  classification eyes inside the wait. *Residual, accepted:* the periodic
-  `rescan-scsi-bus` escalation can itself run minutes under load — an
-  uncooperative stretch no tick can enter; if the field shows stale reclaims
-  from inside a rescan, bounding the rescan is the follow-up.
+  classification eyes inside the wait. **Amended 2026-07-05 (review F-05):**
+  the per-attempt tick alone was insufficient — one attempt runs the portal
+  logins back-to-back, and each login can block up to the initiator login
+  timeout via an *untimed* command, so ≥4 slow portals could outlast
+  `CFS_LOCK_TIMEOUT` between ticks while waiters poke the held lock
+  (stale-reclaim of a held lock = split-brain). Now every **portal** login is
+  followed by its own `refresh_locks` cooperation point, and the login
+  command itself is bounded end-to-end by `ISCSI_LOGIN_CMD_TIMEOUT` (which
+  must exceed `ISCSI_LOGIN_TIMEOUT`, the value written into the iscsiadm
+  node DB — the command bound reaches a wedged iscsid, which the node-DB
+  timeout cannot). The un-refreshed window is thereby capped at roughly one
+  bounded login, far inside the pmxcfs idle window. *Residual, accepted:*
+  the periodic `rescan-scsi-bus` escalation can itself run minutes under
+  load — an uncooperative stretch no tick can enter; if the field shows
+  stale reclaims from inside a rescan, bounding the rescan is the follow-up.
 
 ---
 
@@ -2059,6 +2070,8 @@ already shipped with the
 | `VOLUME_ACTIVATE_VERIFY_ATTEMPTS` | verification rounds in `lun_record_update_device` before it dies (was 10 silent rounds). |
 | `VOLUME_ACTIVATE_VERIFY_SLEEP` | sleep between verification rounds. |
 | `ISCSI_CAPACITY_PROBE_TIMEOUT` | bound on the `blockdev --getsize64` capacity probe in `_iscsi_capacity_ok` (added 2026-07-05): a wedged/broken export can hang the open or the size ioctl — the very failure the probe detects — and every command under a held lock must carry an explicit timeout. Expiry fails toward retry (round treats it as not-verified). |
+| `ISCSI_LOGIN_TIMEOUT` | initiator-side login timeout written into the iscsiadm node DB (`node.conn[0].timeo.login_timeout`) — was an inline `'30'` literal; named 2026-07-05 (review F-05). |
+| `ISCSI_LOGIN_CMD_TIMEOUT` | end-to-end bound on each per-portal `iscsiadm --login` run (added 2026-07-05, review F-05): reaches a wedged iscsid, which the node-DB timeout cannot. **Invariant: > `ISCSI_LOGIN_TIMEOUT`**, so a legitimate maximal login is never killed by its own wrapper. Expiry counts as a failed login for that host only. |
 | `TARGET_SESSIONS_QUERY_TIMEOUT` | per-run execution timeout of the detach gate's session query (`target_get_sessions` → jdssc `sessions list`) — deliberately short per try: a healthy appliance answers in seconds, so each try fails fast; persistence across transient stalls comes from `TARGET_SESSIONS_QUERY_RETRIES`, not from a long single wait. Replaces the pre-gate `118` literal at `Common.pm:1652`. |
 | `TARGET_SESSIONS_QUERY_RETRIES` | timeout-retries for that query (`joviandss_cmd` retries only on a **process timeout**; error exits die immediately, so a broken appliance still fails fast) — sized to ride out a transient appliance stall rather than forfeit the recovery detach. Worst case ≈ (retries + 1) × (`TARGET_SESSIONS_QUERY_TIMEOUT` + 1) plus 3–8 s inter-retry sleeps, paid only against a hung appliance and only in the pre-final-cycle pass (arithmetic: value notes; contained by the raised hold deadline below). Replaces the pre-gate `5` literal riding the 117 s clamp (~12 minutes worst). |
 | `LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT` | **(changed existing)** the `multipath` class's wait-to-acquire; raised so a waiter outlasts **one** full worst-case command hold with real headroom (`≥ MULTIPATH_CMD_TIMEOUT_MAX + MULTIPATH_CMD_KILL_GRACE + MULTIPATH_CMD_BACKSTOP_MARGIN`; a deeper queue can still time a waiter out — that is the cycle's **contention** class, retried without teardown — finding #20). The lock design's Table 9b row updates at implementation time. |
@@ -2093,6 +2106,8 @@ already shipped with the
 | `VOLUME_ACTIVATE_VERIFY_ATTEMPTS` | 10 | rounds | `OpenEJovianDSS::Common` |
 | `VOLUME_ACTIVATE_VERIFY_SLEEP` | 1 | seconds | `OpenEJovianDSS::Common` |
 | `ISCSI_CAPACITY_PROBE_TIMEOUT` | 10 | seconds | `OpenEJovianDSS::Common` |
+| `ISCSI_LOGIN_TIMEOUT` | 30 | seconds | `OpenEJovianDSS::Common` |
+| `ISCSI_LOGIN_CMD_TIMEOUT` | 35 | seconds | `OpenEJovianDSS::Common` |
 | `TARGET_SESSIONS_QUERY_TIMEOUT` | 30 | seconds | `OpenEJovianDSS::Common` |
 | `TARGET_SESSIONS_QUERY_RETRIES` | 7 | retries | `OpenEJovianDSS::Common` |
 | `LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT` | 60 (was 10) | seconds | `OpenEJovianDSS::Lock` |

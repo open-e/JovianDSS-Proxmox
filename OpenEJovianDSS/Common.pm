@@ -237,6 +237,14 @@ use constant {
     # hold alarm for the duration). On expiry the probe fails toward retry:
     # the round treats it as not-verified, never as an activation error.
     ISCSI_CAPACITY_PROBE_TIMEOUT           => 10,
+    # iSCSI login pacing (volume_stage_iscsi, review F-05). The initiator-
+    # side login timeout is written into the iscsiadm node DB; the command
+    # bound wraps the whole iscsiadm run and MUST exceed the login timeout
+    # (invariant), so a legitimate maximal login is never killed by its own
+    # wrapper — the bound exists for a wedged iscsid, which the node-DB
+    # timeout cannot reach.
+    ISCSI_LOGIN_TIMEOUT                    => 30,
+    ISCSI_LOGIN_CMD_TIMEOUT                => 35,
 };
 
 use constant {
@@ -2317,7 +2325,8 @@ sub volume_stage_iscsi {
                         $ISCSIADM, '--mode', 'node',
                         '-p', $host, '--targetname', $targetname,
                         '-o', 'update',
-                        '-n', 'node.conn[0].timeo.login_timeout', '-v', '30'
+                        '-n', 'node.conn[0].timeo.login_timeout',
+                        '-v', ISCSI_LOGIN_TIMEOUT
                     ];
                     run_command(
                         $cmd,
@@ -2357,7 +2366,12 @@ sub volume_stage_iscsi {
                         $chap_auth_err   = 1 if $line =~ /authorization failure/i;
                         cmd_log_output($ctx,
                             $already_present ? 'debug' : 'warn', $cmd, $line);
-                    }
+                    },
+                    # Bounded end-to-end (review F-05): the node-DB login
+                    # timeout only reaches a responsive iscsid; this kill
+                    # reaches a wedged one. Expiry lands in the eval and
+                    # counts as a failed login for this host only.
+                    timeout => ISCSI_LOGIN_CMD_TIMEOUT
                 );
                 $host_has_session{$host} = 1;
             };
@@ -2382,6 +2396,15 @@ sub volume_stage_iscsi {
                     "iSCSI login succeeded for host ${host} "
                     . "target ${targetname} on attempt ${attempt}/${max_login_attempts}");
             }
+
+            # Per-portal cooperation point (review F-05): each login can
+            # legitimately block up to ISCSI_LOGIN_CMD_TIMEOUT and several
+            # portals run back-to-back — without a refresh between them a
+            # multi-portal attempt could outlast the pmxcfs idle window
+            # while waiters poke the held lock (stale-reclaim of a HELD
+            # lock = split-brain). The refresh also re-arms the wedge
+            # alarm, keeping both clocks on the same epoch.
+            OpenEJovianDSS::Lock::refresh_locks($ctx);
         }
 
         # Step 4: CHAP recovery.
