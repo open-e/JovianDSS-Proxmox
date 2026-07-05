@@ -230,6 +230,13 @@ use constant {
     VOLUME_ACTIVATE_CYCLE_MIN_BUDGET       => 120,
     VOLUME_ACTIVATE_VERIFY_ATTEMPTS        => 10,
     VOLUME_ACTIVATE_VERIFY_SLEEP           => 1,
+    # Bound on the blockdev --getsize64 capacity probe (_iscsi_capacity_ok):
+    # a wedged/broken export can hang the open or the size ioctl — exactly
+    # the failure the probe exists to detect — and every run_command under a
+    # held lock must carry an explicit timeout (its expiry also suspends the
+    # hold alarm for the duration). On expiry the probe fails toward retry:
+    # the round treats it as not-verified, never as an activation error.
+    ISCSI_CAPACITY_PROBE_TIMEOUT           => 10,
 };
 
 use constant {
@@ -2489,12 +2496,28 @@ sub _iscsi_capacity_ok {
         run_command( $cmd,
             outfunc => sub { my $l = shift; $sz = int($1) if $l =~ /^(\d+)$/; },
             errfunc => sub { cmd_log_output( $ctx, 'error', $cmd, shift ); },
+            timeout => ISCSI_CAPACITY_PROBE_TIMEOUT,
             noerr   => 1 );
     };
 
-    return 0 if !defined($sz) || $sz == 0;          # zero never verifies
-    return 1 if !$expected;                          # non-zero suffices
-    return int($sz) == int($expected) ? 1 : 0;
+    if ( !defined($sz) || $sz == 0 ) {
+        # Capacity unreadable or zero — the broken-export tell
+        # (finding #23): never verifies.
+        return 0;
+    }
+
+    if ( !$expected ) {
+        # No expected size supplied (undef / 0) — the activation contract
+        # since F-04: any non-zero capacity verifies.
+        return 1;
+    }
+
+    if ( int($sz) == int($expected) ) {
+        # Expected size supplied and the device matches it exactly.
+        return 1;
+    }
+
+    return 0;
 }
 
 sub volume_stage_multipath {
@@ -4096,11 +4119,19 @@ sub _volume_activate_attempt {
       . safe_var_print( 'snapshot', $snapname ) . "\n"
         if !defined $state->{scsiid};
 
-    # The authoritative (control-plane) size, fetched BEFORE staging so the
-    # iSCSI exit contract can verify the exported LUN against it (option A,
-    # finding #23). REST volsize is independent of the iSCSI data-plane
-    # export, so comparing the two is the backend-export health cross-check.
-    my $size = volume_get_size( $ctx, $volname );
+    # No exact-size gate on activation (review finding F-04, decided
+    # 2026-07-05): the broken-export tell of finding #23 is a ZERO/absent
+    # READ CAPACITY, so the exit contract below only requires the staged
+    # block device to report a non-zero size (undef => _iscsi_capacity_ok
+    # checks non-zero only). Exact-match was wrong for snapshots anyway —
+    # the exported entity is a clone frozen at snapshot-time volsize, while
+    # the parent's current size diverges after any post-snapshot resize —
+    # and dropping the volume_get_size fetch also removes one
+    # cluster-locked jdssc round-trip from every activation (review F-20).
+    # The lenient resize path (lun_record_update_device) keeps its exact
+    # semantics; the LUN record stores size as JSON null here — truthful:
+    # no exact size is enforced by activation.
+    my $size = undef;
 
     # Stage 2 - iSCSI login + capacity verification; exits only with the
     # device present, udev done, AND reporting the correct non-zero size

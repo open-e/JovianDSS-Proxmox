@@ -596,10 +596,19 @@ portals the remaining paths may still be pending udev processing, which
 multipathd absorbs asynchronously, helped by the round body's add-path and
 trigger escalations.)
 
-**Option A (finding #23): the exit contract also verifies capacity.** With
-option A, `volume_stage_iscsi` takes an expected size (`volume_get_size`,
-fetched before staging) and its final wait returns only once the by-id
-device is present **and** reports the correct non-zero capacity — a forced
+**Option A (finding #23): the exit contract also verifies capacity.**
+*(Amended 2026-07-05 — review F-04: activation no longer supplies an expected
+size at all. The broken-export tell of finding #23 is a zero/absent READ
+CAPACITY, so the exit contract requires a **non-zero** staged capacity only;
+exact-match was wrong for snapshots — the exported entity is a clone frozen
+at snapshot-time volsize while the parent's current size diverges after any
+post-snapshot resize — and dropping the `volume_get_size` fetch also removes
+one cluster-locked jdssc round-trip from every activation. The exact-match
+rows below remain the contract for any caller that does supply an expected
+size; today none does — the lenient resize path has its own check.)* With
+option A, `volume_stage_iscsi` takes an optional expected size and its final
+wait returns only once the by-id device is present **and** reports a
+conforming non-zero capacity — a forced
 rescan → `blockdev --getsize64` → compare, using the rescans the wait loop
 already performs (rescan-then-read: the rescan is the wire READ CAPACITY,
 `getsize64` reads the refreshed cache). This is the **backend-export health
@@ -1314,10 +1323,10 @@ sub _volume_activate_attempt {
       . safe_var_print( 'snapshot', $snapname ) . "\n"
         if !defined $state->{scsiid};
 
-    # The authoritative control-plane size, fetched BEFORE staging so the
-    # iSCSI exit contract can verify the exported LUN against it (option A,
-    # finding #23).
-    my $size = volume_get_size( $ctx, $volname );
+    # No exact-size gate on activation (F-04 amendment, 2026-07-05): the
+    # exit contract requires a non-zero staged capacity only — undef =>
+    # _iscsi_capacity_ok checks non-zero, which is the finding-#23 tell.
+    my $size = undef;
 
     # Stage 2 — iSCSI login + capacity verification; exits only with the
     # device present, udev done, AND reporting the correct non-zero size
@@ -1705,11 +1714,12 @@ treated as *no expected size supplied* — zero can never verify a device
 | size = expected | verified | update LUN record, return |
 | no expected size supplied | nothing to compare against | device present with **non-zero** size suffices; zero still fails |
 
-The expected size is the storage-side `volume_get_size` value the activation
-attempt already fetches (under option A it is passed to `volume_stage_iscsi`,
-where the capacity check now lives; the recovery semantics below are
-unchanged — the die just originates in Stage 2 instead of a Stage-4 verify
-loop). A verification die is an ordinary attempt failure: the cycle's
+Since the F-04 amendment (2026-07-05) the activation attempt supplies **no
+expected size** — the "no expected size supplied" row is the activation
+norm, and the exact-match rows apply only to a caller that passes one
+(today none does; the lenient resize path keeps its own exact check in
+`lun_record_update_device`). The recovery semantics are unchanged — the
+die originates in Stage 2. A verification die is an ordinary attempt failure: the cycle's
 teardown and re-login repair the stale-capacity case, and the pre-final-cycle
 teardown — with its target detach and re-attach — is precisely the reset that
 repairs the wedged-attachment case.
@@ -2048,6 +2058,7 @@ already shipped with the
 | `VOLUME_ACTIVATE_CYCLE_MIN_BUDGET` | minimum remaining method-lock hold budget (`lock_deadline_remaining`) required to start another cycle; with less, the cycle rethrows the last error instead of launching an attempt doomed to die mid-way at the hold cap (review follow-up #11.3). |
 | `VOLUME_ACTIVATE_VERIFY_ATTEMPTS` | verification rounds in `lun_record_update_device` before it dies (was 10 silent rounds). |
 | `VOLUME_ACTIVATE_VERIFY_SLEEP` | sleep between verification rounds. |
+| `ISCSI_CAPACITY_PROBE_TIMEOUT` | bound on the `blockdev --getsize64` capacity probe in `_iscsi_capacity_ok` (added 2026-07-05): a wedged/broken export can hang the open or the size ioctl — the very failure the probe detects — and every command under a held lock must carry an explicit timeout. Expiry fails toward retry (round treats it as not-verified). |
 | `TARGET_SESSIONS_QUERY_TIMEOUT` | per-run execution timeout of the detach gate's session query (`target_get_sessions` → jdssc `sessions list`) — deliberately short per try: a healthy appliance answers in seconds, so each try fails fast; persistence across transient stalls comes from `TARGET_SESSIONS_QUERY_RETRIES`, not from a long single wait. Replaces the pre-gate `118` literal at `Common.pm:1652`. |
 | `TARGET_SESSIONS_QUERY_RETRIES` | timeout-retries for that query (`joviandss_cmd` retries only on a **process timeout**; error exits die immediately, so a broken appliance still fails fast) — sized to ride out a transient appliance stall rather than forfeit the recovery detach. Worst case ≈ (retries + 1) × (`TARGET_SESSIONS_QUERY_TIMEOUT` + 1) plus 3–8 s inter-retry sleeps, paid only against a hung appliance and only in the pre-final-cycle pass (arithmetic: value notes; contained by the raised hold deadline below). Replaces the pre-gate `5` literal riding the 117 s clamp (~12 minutes worst). |
 | `LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT` | **(changed existing)** the `multipath` class's wait-to-acquire; raised so a waiter outlasts **one** full worst-case command hold with real headroom (`≥ MULTIPATH_CMD_TIMEOUT_MAX + MULTIPATH_CMD_KILL_GRACE + MULTIPATH_CMD_BACKSTOP_MARGIN`; a deeper queue can still time a waiter out — that is the cycle's **contention** class, retried without teardown — finding #20). The lock design's Table 9b row updates at implementation time. |
@@ -2081,6 +2092,7 @@ already shipped with the
 | `VOLUME_ACTIVATE_CYCLE_MIN_BUDGET` | 120 | seconds | `OpenEJovianDSS::Common` |
 | `VOLUME_ACTIVATE_VERIFY_ATTEMPTS` | 10 | rounds | `OpenEJovianDSS::Common` |
 | `VOLUME_ACTIVATE_VERIFY_SLEEP` | 1 | seconds | `OpenEJovianDSS::Common` |
+| `ISCSI_CAPACITY_PROBE_TIMEOUT` | 10 | seconds | `OpenEJovianDSS::Common` |
 | `TARGET_SESSIONS_QUERY_TIMEOUT` | 30 | seconds | `OpenEJovianDSS::Common` |
 | `TARGET_SESSIONS_QUERY_RETRIES` | 7 | retries | `OpenEJovianDSS::Common` |
 | `LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT` | 60 (was 10) | seconds | `OpenEJovianDSS::Lock` |
