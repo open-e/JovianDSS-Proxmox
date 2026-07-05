@@ -429,3 +429,47 @@ class TestCreateTargetVolumeLun:
 
         with pytest.raises(jexc.JDSSException):
             driver._create_target_volume_lun(TARGET0, VOL, 0, None)
+
+
+class TestRenameVolume:
+    """rename_volume exit contract (review F-03): every path must end in an
+    explicit success or a raise - a probe failure must never fall off the
+    retry loop as an implicit (exit-0) success."""
+
+    def _quiet_sleep(self, monkeypatch):
+        monkeypatch.setattr("jdssc.jovian_common.driver.time.sleep",
+                            lambda s: None)
+
+    def test_probe_failure_raises_instead_of_silent_success(
+            self, driver, monkeypatch):
+        self._quiet_sleep(monkeypatch)
+        driver.get_volume = MagicMock(
+            side_effect=jexc.JDSSException("REST blip"))
+
+        with pytest.raises(jexc.JDSSException):
+            driver.rename_volume("vm-100-disk-0", "base-100-disk-0")
+
+        driver.ra.modify_lun.assert_not_called()
+
+    def test_missing_source_raises_not_found(self, driver, monkeypatch):
+        self._quiet_sleep(monkeypatch)
+        driver.get_volume = MagicMock(
+            side_effect=jexc.JDSSResourceNotFoundException(
+                res="vm-100-disk-0"))
+
+        with pytest.raises(jexc.JDSSResourceNotFoundException):
+            driver.rename_volume("vm-100-disk-0", "base-100-disk-0")
+
+        driver.ra.modify_lun.assert_not_called()
+
+    def test_idempotent_match_short_circuits(self, driver, monkeypatch):
+        self._quiet_sleep(monkeypatch)
+        # hex-join of 'abc' is '616263' - the idempotent comparison value
+        driver.get_volume = MagicMock(return_value={"scsi_id": "abc"})
+
+        result = driver.rename_volume("vm-100-disk-0", "base-100-disk-0",
+                                      idempotent="616263")
+
+        assert result is None
+        driver.get_volume.assert_called_once()
+        driver.ra.modify_lun.assert_not_called()

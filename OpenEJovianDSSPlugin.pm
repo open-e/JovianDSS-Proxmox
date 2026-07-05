@@ -1687,7 +1687,18 @@ sub _volume_resize {
     debugmsg( $ctx, "debug",
         "Resize volume ${volname} to size ${size}" );
 
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    # Sanitize everything that enters the command line (house rule: argv
+    # values pass safe_word / a strict untaint at the trust boundary).
+    my $volname_clustered = OpenEJovianDSS::Common::safe_word(
+        volume_name_clustered( $ctx, $volname ), 'volume name' );
+
+    if ( $size =~ /^(\d+)$/ ) {
+        $size = $1;    # untainted, strictly numeric
+    }
+    else {
+        die "Volume resize size must be a positive integer, got '${size}'\n";
+    }
+
     eval {
         joviandss_cmd( $ctx,
             [ "pool", "${pool}", "volume", $volname_clustered, "resize", "${size}" ], 118, 3 );
@@ -1700,30 +1711,51 @@ sub _volume_resize {
 
     while ( $retry_count <= 10 ) {
 
-        if ( $rerr ) {
-            debugmsg( $ctx, "debug",
-                "Resize volume ${volname} have error ${rerr}" );
-            if ($rerr =~ /got timeout/ ) {
-                sleep( 10 );
-            }
-        } else {
-            $resizeok = 1;
-            last;
-        }
-        my $cursize = OpenEJovianDSS::Common::volume_get_size( $ctx, $volname_clustered );
-        $cursize = OpenEJovianDSS::Common::clean_word($cursize);
-
-        if (int($cursize) >= int($size)) {
+        if ( !$rerr ) {
+            # Previous attempt (pre-loop or in-loop) completed cleanly.
             $resizeok = 1;
             last;
         }
 
+        debugmsg( $ctx, "debug",
+            "Resize volume ${volname} attempt error: ${rerr}" );
+
+        if ( OpenEJovianDSS::Lock::lock_error_fatal($rerr) ) {
+            # Hold-cap death: the locks protecting this operation can no
+            # longer be trusted - never absorbed into a retry (the same
+            # rethrow every comparable wrapper performs first).
+            die $rerr;
+        }
+
+        if ( $rerr =~ /got timeout/ ) {
+            sleep( 10 );
+        }
+
+        # The whole recovery step runs inside one eval (review F-19): a
+        # transient failure of the size probe is recorded and retried like
+        # any resize failure, instead of aborting the recovery the loop
+        # exists to perform. $resizeok is set INSIDE the eval but the loop
+        # exit happens OUTSIDE it - 'last' from within an eval block is an
+        # "Exiting eval via last" trap.
         local $@;
         eval {
-            joviandss_cmd( $ctx,
-                [ "pool", "${pool}", "volume", "${volname_clustered}", "resize", "${size}" ], 118, 3);
+            my $cursize = OpenEJovianDSS::Common::volume_get_size( $ctx, $volname_clustered );
+            $cursize = OpenEJovianDSS::Common::clean_word($cursize);
+
+            if ( int($cursize) >= int($size) ) {
+                $resizeok = 1;
+            }
+            else {
+                joviandss_cmd( $ctx,
+                    [ "pool", "${pool}", "volume", "${volname_clustered}", "resize", "${size}" ], 118, 3);
+            }
+            1;
         };
         $rerr = $@;
+
+        if ( $resizeok ) {
+            last;
+        }
         $retry_count++;
     }
 

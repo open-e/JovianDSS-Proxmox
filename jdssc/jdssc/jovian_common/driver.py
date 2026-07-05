@@ -2335,6 +2335,7 @@ class JovianDSSDriver(object):
 
         new_volume_info = None
         old_volume_info = None
+        last_err = None
         for i in range(3):
             if idempotent is not None:
                 for i in range(3):
@@ -2342,9 +2343,18 @@ class JovianDSSDriver(object):
                         # new volume
                         vd = {'id': new_volume_name}
                         new_volume_info = self.get_volume(vd)
-                    except jexc.JDSSVolumeNotFoundException:
+                    except (jexc.JDSSVolumeNotFoundException,
+                            jexc.JDSSResourceNotFoundException):
+                        # New volume is not present: nothing to be
+                        # idempotent about - proceed to the plain rename
+                        # below. Both not-found flavors listed explicitly:
+                        # get_volume raises the parent
+                        # JDSSResourceNotFoundException (review F-03 - the
+                        # child alone never matched it).
                         break
-                    except jexc.JDSSException:
+                    except jexc.JDSSException as err:
+                        last_err = err
+                        time.sleep(1)
                         continue
 
                     if new_volume_info is not None:
@@ -2383,12 +2393,18 @@ class JovianDSSDriver(object):
                 # original volume
                 vd = {'id': volume_name}
                 old_volume_info = self.get_volume(vd)
-            except jexc.JDSSVolumeNotFoundException:
-                # That is strange, target volume is not present
-                # yet old volume is absent
+            except (jexc.JDSSVolumeNotFoundException,
+                    jexc.JDSSResourceNotFoundException) as err:
+                # Source volume is missing - possibly listing lag right
+                # after another operation, so retry briefly; if it stays
+                # missing, the not-found itself is the error the caller
+                # must see (review F-03: this must never end as exit 0).
+                last_err = err
                 time.sleep(1)
                 continue
-            except jexc.JDSSException:
+            except jexc.JDSSException as err:
+                last_err = err
+                time.sleep(1)
                 continue
 
             if idempotent is not None:
@@ -2465,7 +2481,18 @@ class JovianDSSDriver(object):
             else:
                 LOG.error("Unable to confirm sucessfull volume renaming %(vol)s",
                           {"vol": volume_name})
-                raise Exception(('Failed to list snapshots %s.') % volume_name)
+                raise Exception('Failed to confirm renaming of %s to %s' %
+                                (volume_name, new_volume_name))
+
+        # Every attempt failed at the probe stage: the rename was never
+        # issued. Never fall through to an implicit success (review F-03 -
+        # exit 0 here made Proxmox write configs pointing at nonexistent
+        # disks).
+        if last_err is not None:
+            raise last_err
+        raise Exception('Failed to rename volume %s to %s: '
+                        'source volume unavailable' %
+                        (volume_name, new_volume_name))
 
 
     def _list_all_snapshots(self, f=None):

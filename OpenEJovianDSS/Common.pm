@@ -293,7 +293,7 @@ sub get_pool {
 
     die "pool name required in storage.cfg \n"
       if !defined( $scfg->{'pool_name'} );
-    return safe_word($scfg->{'pool_name'});
+    return safe_word( $scfg->{'pool_name'}, 'pool name' );
 }
 
 sub get_create_base_path {
@@ -341,7 +341,7 @@ sub get_target_prefix {
     my $prefix = $scfg->{target_prefix} || DEFAULT_TARGET_PREFIX;
 
     $prefix =~ s/:$//;
-    return safe_word( clean_word($prefix) );
+    return safe_word( clean_word($prefix), 'target prefix' );
 }
 
 sub get_jdssc_timeout {
@@ -2474,6 +2474,11 @@ sub volume_stage_iscsi {
 # multipath lock (Table 1 "not locked").
 sub _iscsi_capacity_ok {
     my ( $ctx, $path, $expected ) = @_;
+
+    # Sanitize before the path reaches any command line or sysfs write
+    # (house rule); by-id and mapper paths fit the safe_word whitelist,
+    # anything else dies loudly here instead of reaching blockdev.
+    $path = safe_word( $path, 'block device path' );
 
     # Force READ CAPACITY on the underlying sd device (untaint the sd name
     # from the resolved symlink before using it in a /sys path).
