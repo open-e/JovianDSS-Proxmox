@@ -910,44 +910,44 @@ sub safe_var_print {
 # (get_lock_class_type / _dir / _acquire_timeout / _hold_timeout).
 sub lock_properties {
     return {
-        jdssc_cluster_lock_type => {
-            description => "Scope of the cluster-tier jdssc lock",
+        jdssc_general_lock_type => {
+            description => "Scope of the general-tier jdssc lock",
             type        => 'string',
             enum        => [ 'node', 'cluster' ],
         },
-        jdssc_cluster_lock_path => {
-            description => "Directory override for the cluster-tier jdssc lock"
+        jdssc_general_lock_path => {
+            description => "Directory override for the general-tier jdssc lock"
                          . " (must suit the chosen type's backend)",
             type        => 'string',
         },
-        jdssc_cluster_lock_acquire_timeout => {
-            description => "Seconds to wait to acquire the cluster-tier jdssc lock",
+        jdssc_general_lock_acquire_timeout => {
+            description => "Seconds to wait to acquire the general-tier jdssc lock",
             type        => 'integer',
             minimum     => 1,
         },
-        jdssc_cluster_lock_hold_timeout => {
-            description => "Hold cap in seconds for the cluster-tier jdssc lock"
+        jdssc_general_lock_hold_timeout => {
+            description => "Hold cap in seconds for the general-tier jdssc lock"
                          . " (0 disables the wall-clock deadline)",
             type        => 'integer',
             minimum     => 0,
         },
-        jdssc_node_lock_type => {
-            description => "Scope of the node-tier jdssc lock",
+        jdssc_info_lock_type => {
+            description => "Scope of the info-tier jdssc lock",
             type        => 'string',
             enum        => [ 'node', 'cluster' ],
         },
-        jdssc_node_lock_path => {
-            description => "Directory override for the node-tier jdssc lock"
+        jdssc_info_lock_path => {
+            description => "Directory override for the info-tier jdssc lock"
                          . " (must suit the chosen type's backend)",
             type        => 'string',
         },
-        jdssc_node_lock_acquire_timeout => {
-            description => "Seconds to wait to acquire the node-tier jdssc lock",
+        jdssc_info_lock_acquire_timeout => {
+            description => "Seconds to wait to acquire the info-tier jdssc lock",
             type        => 'integer',
             minimum     => 1,
         },
-        jdssc_node_lock_hold_timeout => {
-            description => "Hold cap in seconds for the node-tier jdssc lock"
+        jdssc_info_lock_hold_timeout => {
+            description => "Hold cap in seconds for the info-tier jdssc lock"
                          . " (0 disables the wall-clock deadline)",
             type        => 'integer',
             minimum     => 0,
@@ -978,14 +978,14 @@ sub lock_properties {
 
 # $lock_class — which jdssc component lock class to take around the run
 # (trailing optional arg). One of:
-#   'jdssc_cluster'  → cluster-wide serialization (state-changing commands)  [default]
-#   'jdssc_node'     → per-host serialization only (host-safe read commands)
+#   'jdssc_general'  → cluster-wide serialization (state-changing commands)  [default]
+#   'jdssc_info'     → per-host serialization only (host-safe read commands)
 sub joviandss_cmd {
     my ( $ctx, $cmd, $timeout, $retries, $force_debug_level, $lock_class ) = @_;
     my $scfg    = $ctx->{scfg};
     my $storeid = $ctx->{storeid};
 
-    $lock_class //= 'jdssc_cluster';
+    $lock_class //= 'jdssc_general';
 
     my $msg = '';
     my $err = undef;

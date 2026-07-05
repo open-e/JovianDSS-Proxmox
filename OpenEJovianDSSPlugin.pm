@@ -283,14 +283,14 @@ sub options {
         target_prefix      => { optional => 1 },
         luns_per_target    => { optional => 1 },
         jdssc_timeout                 => { optional => 1 },
-        jdssc_cluster_lock_type            => { optional => 1 },
-        jdssc_cluster_lock_path            => { optional => 1 },
-        jdssc_cluster_lock_acquire_timeout => { optional => 1 },
-        jdssc_cluster_lock_hold_timeout    => { optional => 1 },
-        jdssc_node_lock_type               => { optional => 1 },
-        jdssc_node_lock_path               => { optional => 1 },
-        jdssc_node_lock_acquire_timeout    => { optional => 1 },
-        jdssc_node_lock_hold_timeout       => { optional => 1 },
+        jdssc_general_lock_type            => { optional => 1 },
+        jdssc_general_lock_path            => { optional => 1 },
+        jdssc_general_lock_acquire_timeout => { optional => 1 },
+        jdssc_general_lock_hold_timeout    => { optional => 1 },
+        jdssc_info_lock_type               => { optional => 1 },
+        jdssc_info_lock_path               => { optional => 1 },
+        jdssc_info_lock_acquire_timeout    => { optional => 1 },
+        jdssc_info_lock_hold_timeout       => { optional => 1 },
         multipath_lock_type                => { optional => 1 },
         multipath_lock_path                => { optional => 1 },
         multipath_lock_acquire_timeout     => { optional => 1 },
@@ -1078,7 +1078,7 @@ sub list_images {
     if (defined($cluster_prefix)) {
         push @$list_cmd, '--cluster-prefix', $cluster_prefix;
     }
-    my $jdssc = joviandss_cmd( $ctx, $list_cmd, 118, 5, undef, 'jdssc_node' );
+    my $jdssc = joviandss_cmd( $ctx, $list_cmd, 118, 5, undef, 'jdssc_info' );
 
     my $res = [];
     foreach ( split( /\n/, $jdssc ) ) {
@@ -1361,7 +1361,7 @@ sub volume_size_info {
     my $volname_clustered = volume_name_clustered( $ctx, $volname );
     my $size = joviandss_cmd( $ctx,
         [ "pool", $pool, "volume", $volname_clustered, "get", "-s" ], 118, 3,
-        undef, 'jdssc_node' );
+        undef, 'jdssc_info' );
 
     return clean_word($size);
 }
@@ -1375,7 +1375,7 @@ sub status {
 
     for my $attempt (1 .. 3) {
         my $stats = eval {
-            joviandss_cmd( $ctx, [ "pool", $pool, "get" ], 118, 3, undef, 'jdssc_node' );
+            joviandss_cmd( $ctx, [ "pool", $pool, "get" ], 118, 3, undef, 'jdssc_info' );
         };
         if ($@) {
             debugmsg( $ctx, 'warn', "Storage status check failed (attempt ${attempt}): $@" );
@@ -1403,7 +1403,7 @@ sub get_identity {
 
     for my $attempt (1 .. 3) {
         my $stats = eval {
-            joviandss_cmd( $ctx, [ "pool", $pool, "get" ], 118, 3, undef, 'jdssc_node' );
+            joviandss_cmd( $ctx, [ "pool", $pool, "get" ], 118, 3, undef, 'jdssc_info' );
         };
         if ($@) {
             debugmsg( $ctx, 'warn', "Storage identity check failed (attempt ${attempt}): $@" );

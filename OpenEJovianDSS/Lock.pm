@@ -21,7 +21,7 @@ package OpenEJovianDSS::Lock;
 #
 # One public entry point, with_lock($ctx, $lock_class, $id, ...), serves every
 # lock: the per-VM / per-storage method locks and the per-jdssc-invocation
-# component locks (jdssc_cluster / jdssc_node, reserved multipath). A lock's
+# component locks (jdssc_general / jdssc_info, reserved multipath). A lock's
 # scope comes from its class's <class>_lock_type storage.cfg property (per-class
 # default otherwise); two backends implement it: pmxcfs mkdir (cluster reach,
 # CFS_LOCK_TIMEOUT idle expiry) and node-local flock (never expires, freed on
@@ -71,15 +71,15 @@ sub _cluster_lockdir {
 # is ever defined inside a map.
 
 # default scope per class
-use constant LOCK_CLASS_JDSSC_CLUSTER_DEFAULT_TYPE => 'cluster';
-use constant LOCK_CLASS_JDSSC_NODE_DEFAULT_TYPE    => 'node';
+use constant LOCK_CLASS_JDSSC_GENERAL_DEFAULT_TYPE => 'cluster';
+use constant LOCK_CLASS_JDSSC_INFO_DEFAULT_TYPE    => 'node';
 use constant LOCK_CLASS_MULTIPATH_DEFAULT_TYPE     => 'node';
 use constant LOCK_CLASS_VM_DEFAULT_TYPE            => 'vm';
 use constant LOCK_CLASS_STORAGE_DEFAULT_TYPE       => 'storage';
 
 # seconds to WAIT to acquire, per class
-use constant LOCK_CLASS_JDSSC_CLUSTER_ACQUIRE_TIMEOUT => 600;    # = PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX
-use constant LOCK_CLASS_JDSSC_NODE_ACQUIRE_TIMEOUT    => 10;
+use constant LOCK_CLASS_JDSSC_GENERAL_ACQUIRE_TIMEOUT => 600;    # = PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX
+use constant LOCK_CLASS_JDSSC_INFO_ACQUIRE_TIMEOUT    => 10;
 # Raised from 10 with the volume-activation design: a waiter must outlast one
 # full worst-case command hold (MULTIPATH_CMD_TIMEOUT_MAX + KILL_GRACE +
 # BACKSTOP_MARGIN = 40 s ladder) with real headroom; a deeper queue can still
@@ -92,8 +92,8 @@ use constant LOCK_CLASS_STORAGE_ACQUIRE_TIMEOUT       => 600;
 # hold cap: run_bounded alarm + refresh_locks deadline. The jdssc caps sit just
 # above run_command's kill (PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX + 1) so a
 # legitimate maximal run never trips enforcement, yet below CFS_LOCK_TIMEOUT.
-use constant LOCK_CLASS_JDSSC_CLUSTER_HOLD_TIMEOUT => 119;
-use constant LOCK_CLASS_JDSSC_NODE_HOLD_TIMEOUT    => 119;
+use constant LOCK_CLASS_JDSSC_GENERAL_HOLD_TIMEOUT => 119;
+use constant LOCK_CLASS_JDSSC_INFO_HOLD_TIMEOUT    => 119;
 use constant LOCK_CLASS_MULTIPATH_HOLD_TIMEOUT     => 60;
 # Raised from 600 with the volume-activation design: the whole reactivation
 # cycle (pessimistic four-cycle budget plus the pre-final-cycle session probe,
@@ -107,22 +107,22 @@ use constant LOCK_CLASS_STORAGE_HOLD_TIMEOUT       => 1320;
 # LOCK_DEFAULT_TYPE's key set doubles as the valid-class list (with_lock dies
 # on any other key).
 use constant LOCK_DEFAULT_TYPE => {
-    jdssc_cluster => LOCK_CLASS_JDSSC_CLUSTER_DEFAULT_TYPE,
-    jdssc_node    => LOCK_CLASS_JDSSC_NODE_DEFAULT_TYPE,
+    jdssc_general => LOCK_CLASS_JDSSC_GENERAL_DEFAULT_TYPE,
+    jdssc_info    => LOCK_CLASS_JDSSC_INFO_DEFAULT_TYPE,
     multipath     => LOCK_CLASS_MULTIPATH_DEFAULT_TYPE,
     vm            => LOCK_CLASS_VM_DEFAULT_TYPE,
     storage       => LOCK_CLASS_STORAGE_DEFAULT_TYPE,
 };
 use constant LOCK_CLASS_ACQUIRE_TIMEOUT => {
-    jdssc_cluster => LOCK_CLASS_JDSSC_CLUSTER_ACQUIRE_TIMEOUT,
-    jdssc_node    => LOCK_CLASS_JDSSC_NODE_ACQUIRE_TIMEOUT,
+    jdssc_general => LOCK_CLASS_JDSSC_GENERAL_ACQUIRE_TIMEOUT,
+    jdssc_info    => LOCK_CLASS_JDSSC_INFO_ACQUIRE_TIMEOUT,
     multipath     => LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT,
     vm            => LOCK_CLASS_VM_ACQUIRE_TIMEOUT,
     storage       => LOCK_CLASS_STORAGE_ACQUIRE_TIMEOUT,
 };
 use constant LOCK_CLASS_HOLD_TIMEOUT => {
-    jdssc_cluster => LOCK_CLASS_JDSSC_CLUSTER_HOLD_TIMEOUT,
-    jdssc_node    => LOCK_CLASS_JDSSC_NODE_HOLD_TIMEOUT,
+    jdssc_general => LOCK_CLASS_JDSSC_GENERAL_HOLD_TIMEOUT,
+    jdssc_info    => LOCK_CLASS_JDSSC_INFO_HOLD_TIMEOUT,
     multipath     => LOCK_CLASS_MULTIPATH_HOLD_TIMEOUT,
     vm            => LOCK_CLASS_VM_HOLD_TIMEOUT,
     storage       => LOCK_CLASS_STORAGE_HOLD_TIMEOUT,
@@ -133,10 +133,10 @@ use constant LOCK_CLASS_HOLD_TIMEOUT => {
 # so each name is greppable and adding a class is a deliberate row, not a key
 # conjured from string interpolation.
 use constant LOCK_CLASS_PROPERTY => {
-    jdssc_cluster => { type => 'jdssc_cluster_lock_type', dir => 'jdssc_cluster_lock_path',
-                       acquire => 'jdssc_cluster_lock_acquire_timeout', hold => 'jdssc_cluster_lock_hold_timeout' },
-    jdssc_node    => { type => 'jdssc_node_lock_type',    dir => 'jdssc_node_lock_path',
-                       acquire => 'jdssc_node_lock_acquire_timeout',    hold => 'jdssc_node_lock_hold_timeout' },
+    jdssc_general => { type => 'jdssc_general_lock_type', dir => 'jdssc_general_lock_path',
+                       acquire => 'jdssc_general_lock_acquire_timeout', hold => 'jdssc_general_lock_hold_timeout' },
+    jdssc_info    => { type => 'jdssc_info_lock_type',    dir => 'jdssc_info_lock_path',
+                       acquire => 'jdssc_info_lock_acquire_timeout',    hold => 'jdssc_info_lock_hold_timeout' },
     multipath     => { type => 'multipath_lock_type',     dir => 'multipath_lock_path',
                        acquire => 'multipath_lock_acquire_timeout',     hold => 'multipath_lock_hold_timeout' },
     vm            => { type => 'vm_lock_type',            dir => 'vm_lock_path',
@@ -629,7 +629,7 @@ sub _lock_exec {
 # ---------------------------------------------------------------------------
 
 # with_lock($ctx, $lock_class, $id, $timeout, $code, @param)
-#   $lock_class  the lock class: 'jdssc_cluster' | 'jdssc_node' | 'multipath' |
+#   $lock_class  the lock class: 'jdssc_general' | 'jdssc_info' | 'multipath' |
 #                'vm' | 'storage'
 #   $id          sub-key within the class (the vmid for 'vm'); undef for
 #                singleton classes ('storage' is keyed by $ctx->{storeid})

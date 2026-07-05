@@ -63,7 +63,7 @@ it again on the caption tag to jump back.
 
 1. `tbl_lock_backends` — **Lock backends**: pmxcfs `mkdir` vs node `flock` — mechanism, reach, waitability, expiry.
 2. `tbl_lock_scopes` — **Lock scopes**: what each of `vm`/`storage`/`node`/`cluster` serializes, its concurrency and backend.
-3. `tbl_lock_classes` — **Lock classes**: what each class (`jdssc_cluster`/`jdssc_node`/`multipath`/`vm`/`storage`) protects and where it is taken.
+3. `tbl_lock_classes` — **Lock classes**: what each class (`jdssc_general`/`jdssc_info`/`multipath`/`vm`/`storage`) protects and where it is taken.
 4. `tbl_scope_resolution` — **Scope-to-path resolution**: how `_lock_resolve` maps a scope to `(backend, lock path)`.
 5. `tbl_lock_properties` — **Per-class lock properties**: the four `<class>_lock_*` `storage.cfg` options.
 6. `tbl_lock_defaults` — **Per-class lock defaults**: default scope, backend and lock path per class, split by shared/non-shared where it matters (timeouts follow the `LOCK_CLASS_<CLASS>_*` pattern).
@@ -248,9 +248,9 @@ exactly the *default* behavior of Option C.
 **Option C — A configurable, scope-typed lock primitive (chosen).** One function,
 `with_lock($ctx, $lock_class, $id, …)`, takes only the lock **class** (plus a separate
 id for id-keyed classes), reads its scope from a **property** (`<class>_lock_type`),
-derives the backend + path, and runs a code block under an exclusive lock. Every lock is a caller: `with_lock($ctx, 'jdssc_cluster', …)` /
-`with_lock($ctx, 'jdssc_node', …)` (scope from `jdssc_cluster_lock_type` /
-`jdssc_node_lock_type`), `with_lock($ctx, 'vm', $vmid, …)` for the method locks, a future
+derives the backend + path, and runs a code block under an exclusive lock. Every lock is a caller: `with_lock($ctx, 'jdssc_general', …)` /
+`with_lock($ctx, 'jdssc_info', …)` (scope from `jdssc_general_lock_type` /
+`jdssc_info_lock_type`), `with_lock($ctx, 'vm', $vmid, …)` for the method locks, a future
 `with_lock($ctx, 'multipath', …)`. No scope is baked into a
 function name, and adding a component is configuration, not code. *Tradeoff:* more
 moving parts than Option B (a resolver, a re-entry guard, backend-agnostic refresh),
@@ -300,7 +300,7 @@ primitive names the scope directly. From most concurrent (narrowest) to least:
 | **cluster** | everything sharing this lock **anywhere in the cluster** | lowest — one at a time, cluster-wide | pmxcfs `mkdir` |
 
 A **class** is the other axis: the value passed as `$lock_class` to `with_lock` (`vm`,
-`storage`, `jdssc_cluster`, …), plus an optional `$id` sub-key for id-keyed classes
+`storage`, `jdssc_general`, …), plus an optional `$id` sub-key for id-keyed classes
 (`vm` + the vmid). It keys the `<class>_lock_*` properties and names *what* a lock protects
 — as opposed to a scope, which says how wide it reaches. `vm` and `storage` name both a
 class and its default scope.
@@ -309,25 +309,25 @@ class and its default scope.
 
 | Class | Protects / serializes | Where the lock is taken | Default scope | Status |
 |---|---|---|---|---|
-| `jdssc_cluster` | JovianDSS REST API — jdssc commands that must serialize **cluster-wide** | inside `joviandss_cmd`, for cluster-scoped commands | `cluster` | planned |
-| `jdssc_node` | JovianDSS REST API — jdssc commands safe to serialize **per host only** | inside `joviandss_cmd`, for node-scoped commands | `node` | planned |
+| `jdssc_general` | JovianDSS REST API — jdssc commands that must serialize **cluster-wide** | inside `joviandss_cmd`, for cluster-scoped commands | `cluster` | planned |
+| `jdssc_info` | JovianDSS REST API — jdssc commands safe to serialize **per host only** | inside `joviandss_cmd`, for node-scoped commands | `node` | planned |
 | `multipath` | the host `multipath` service (system-wide device map + semaphore) | inside `multipath_cmd`, around each single `multipath` / `multipathd` / `udevadm` / `dmsetup` invocation | `node` | **active** — wired by [`volume-activation-with-reactivation.md`](volume-activation-with-reactivation.md) (implemented 2026-07-03) |
 | `vm` | operations on one VM (per-vmid method lock) | method wrappers, `with_lock($ctx, 'vm', $vmid, …)` | `vm` | existing |
 | `storage` | operations on one storeid (per-storage method lock) | method wrappers, `with_lock($ctx, 'storage', undef, …)` | `storage` | existing |
 
-**`jdssc_cluster` vs `jdssc_node`.** Not every jdssc command needs cluster-wide exclusion.
+**`jdssc_general` vs `jdssc_info`.** Not every jdssc command needs cluster-wide exclusion.
 Rather than one `jdssc` lock whose scope is chosen per call, `joviandss_cmd` selects the lock
-**class** per command: host-safe commands take `jdssc_node` (cheap — node-local `flock`, no
-corosync), while commands that mutate shared backend state take `jdssc_cluster`. The two are
+**class** per command: host-safe commands take `jdssc_info` (cheap — node-local `flock`, no
+corosync), while commands that mutate shared backend state take `jdssc_general`. The two are
 different lock **names** — hence different paths — so they do **not** serialize against each
-other; every command needing cluster-wide exclusion must therefore use `jdssc_cluster`.
-`joviandss_cmd` takes a `$lock_class` argument (default `jdssc_cluster`) and passes it
+other; every command needing cluster-wide exclusion must therefore use `jdssc_general`.
+`joviandss_cmd` takes a `$lock_class` argument (default `jdssc_general`) and passes it
 straight to `with_lock` (see
 [Where and how it is acquired](#where-and-how-it-is-acquired)); each tier is tuned
-independently via `jdssc_cluster_lock_type` / `jdssc_node_lock_type`.
+independently via `jdssc_general_lock_type` / `jdssc_info_lock_type`.
 
-Each jdssc lock class's scope follows its own `<class>_lock_type` (`jdssc_cluster` →
-`cluster`, `jdssc_node` → `node` by default). The method locks — `with_lock($ctx, 'vm', $vmid, …)` /
+Each jdssc lock class's scope follows its own `<class>_lock_type` (`jdssc_general` →
+`cluster`, `jdssc_info` → `node` by default). The method locks — `with_lock($ctx, 'vm', $vmid, …)` /
 `with_lock($ctx, 'storage', undef, …)`, scope `vm` / `storage` — remain the **outer** locks;
 the jdssc lock is always the **inner** one, taken inside `joviandss_cmd`.
 Because everything funnels through `with_lock` → `_lock_exec`, *all* locks — method
@@ -337,7 +337,7 @@ Since the jdssc lock is always innermost and only ever taken from inside
 `joviandss_cmd` (a leaf), the ordering is fixed and cannot invert:
 
 ```
-method lock (vm / storage)  →  jdssc lock (jdssc_node / jdssc_cluster)
+method lock (vm / storage)  →  jdssc lock (jdssc_info / jdssc_general)
 ```
 
 ### The lock API
@@ -350,7 +350,7 @@ configuration, not code:
 
 ```perl
 # with_lock($ctx, $lock_class, $id, $timeout, $code, @param)
-#   $lock_class  the lock class: 'jdssc_cluster' | 'jdssc_node' | 'multipath' | 'vm' | 'storage'
+#   $lock_class  the lock class: 'jdssc_general' | 'jdssc_info' | 'multipath' | 'vm' | 'storage'
 #   $id          sub-key within the class (the vmid for 'vm'); undef for singleton classes
 #   $timeout     seconds, or undef → <lock_class>_lock_acquire_timeout → per-class default
 #   $code        coderef run while the lock is held (every held lock is auto-refreshed
@@ -385,25 +385,25 @@ loud at first use instead of silently running under a mis-tuned fallback:
 #   use constant LOCK_CLASS_<CLASS>_ACQUIRE_TIMEOUT => <seconds, per Table 9b>;
 #   use constant LOCK_CLASS_<CLASS>_HOLD_TIMEOUT    => <seconds, per Table 9b>;
 #
-# for <CLASS> ∈ JDSSC_CLUSTER, JDSSC_NODE, MULTIPATH, VM, STORAGE.
+# for <CLASS> ∈ JDSSC_GENERAL, JDSSC_INFO, MULTIPATH, VM, STORAGE.
 
 # class-key → constant wiring, used by the getters for runtime dispatch. The maps exist
 # because the class arrives as a runtime variable and needs a lookup — they define NO
 # values, only reference the flat constants. LOCK_DEFAULT_TYPE's key set doubles as the
 # valid-class list (with_lock dies on any other key):
 use constant LOCK_DEFAULT_TYPE => {
-    jdssc_cluster => LOCK_CLASS_JDSSC_CLUSTER_DEFAULT_TYPE,
-    jdssc_node    => LOCK_CLASS_JDSSC_NODE_DEFAULT_TYPE,
+    jdssc_general => LOCK_CLASS_JDSSC_GENERAL_DEFAULT_TYPE,
+    jdssc_info    => LOCK_CLASS_JDSSC_INFO_DEFAULT_TYPE,
     multipath     => LOCK_CLASS_MULTIPATH_DEFAULT_TYPE,
     vm            => LOCK_CLASS_VM_DEFAULT_TYPE,
     storage       => LOCK_CLASS_STORAGE_DEFAULT_TYPE,
 };
 use constant LOCK_CLASS_ACQUIRE_TIMEOUT => {
-    jdssc_cluster => LOCK_CLASS_JDSSC_CLUSTER_ACQUIRE_TIMEOUT,
+    jdssc_general => LOCK_CLASS_JDSSC_GENERAL_ACQUIRE_TIMEOUT,
     # ... one wiring row per class, same pattern ...
 };
 use constant LOCK_CLASS_HOLD_TIMEOUT => {
-    jdssc_cluster => LOCK_CLASS_JDSSC_CLUSTER_HOLD_TIMEOUT,
+    jdssc_general => LOCK_CLASS_JDSSC_GENERAL_HOLD_TIMEOUT,
     # ... one wiring row per class, same pattern ...
 };
 
@@ -411,10 +411,10 @@ use constant LOCK_CLASS_HOLD_TIMEOUT => {
 # storage.cfg property a class understands is spelled out here, so each name is greppable and
 # adding a class is a deliberate row, not a key conjured from string interpolation.
 use constant LOCK_CLASS_PROPERTY => {
-    jdssc_cluster => { type => 'jdssc_cluster_lock_type', dir => 'jdssc_cluster_lock_path',
-                       acquire => 'jdssc_cluster_lock_acquire_timeout', hold => 'jdssc_cluster_lock_hold_timeout' },
-    jdssc_node    => { type => 'jdssc_node_lock_type',    dir => 'jdssc_node_lock_path',
-                       acquire => 'jdssc_node_lock_acquire_timeout',    hold => 'jdssc_node_lock_hold_timeout' },
+    jdssc_general => { type => 'jdssc_general_lock_type', dir => 'jdssc_general_lock_path',
+                       acquire => 'jdssc_general_lock_acquire_timeout', hold => 'jdssc_general_lock_hold_timeout' },
+    jdssc_info    => { type => 'jdssc_info_lock_type',    dir => 'jdssc_info_lock_path',
+                       acquire => 'jdssc_info_lock_acquire_timeout',    hold => 'jdssc_info_lock_hold_timeout' },
     multipath     => { type => 'multipath_lock_type',     dir => 'multipath_lock_path',
                        acquire => 'multipath_lock_acquire_timeout',     hold => 'multipath_lock_hold_timeout' },
     vm            => { type => 'vm_lock_type',            dir => 'vm_lock_path',
@@ -481,7 +481,7 @@ sub get_lock_class_hold_timeout {
 namesake classes — it is the class's **id** (vmid / storeid) that keys the lock name, so
 a *component* class set to `storage` would still resolve to one class-named path, not a
 per-storeid lock. `get_lock_class_type` therefore validates the operator's value: the
-component classes (`jdssc_cluster` / `jdssc_node` / `multipath`) accept `node` /
+component classes (`jdssc_general` / `jdssc_info` / `multipath`) accept `node` /
 `cluster` only, and an invalid `<class>_lock_type` dies loudly.
 
 `_lock_resolve` is the one place that maps the resolved `(scope, class, id)` → `(backend,
@@ -492,7 +492,7 @@ sub _lock_resolve {
     my ($ctx, $type, $lock_class, $id) = @_;
 
     # id-keyed classes: 'vm' is keyed by the vmid (passed as $id); 'storage' by the storeid
-    # (intrinsic to $ctx). Singleton classes (jdssc_cluster/jdssc_node/multipath) have no id.
+    # (intrinsic to $ctx). Singleton classes (jdssc_general/jdssc_info/multipath) have no id.
     my $key  = $lock_class eq 'storage' ? $ctx->{storeid} : $id;
     # Sanitize the id before it becomes a filename component: trim + strip non-ascii,
     # then whitelist-validate (dies on forbidden symbols). Reuses the existing
@@ -694,14 +694,14 @@ class's `<class>_lock_type` property:
 ```perl
 with_lock($ctx, 'vm',            $vmid, $t, $code);   # method lock — scope from vm_lock_type (default 'vm')
 with_lock($ctx, 'storage',       undef, $t, $code);   # method lock — scope from storage_lock_type
-with_lock($ctx, 'jdssc_cluster', undef, $t, $code);   # REST/jdssc  — scope from jdssc_cluster_lock_type (cluster)
-with_lock($ctx, 'jdssc_node',    undef, $t, $code);   # REST/jdssc  — scope from jdssc_node_lock_type (node)
+with_lock($ctx, 'jdssc_general', undef, $t, $code);   # REST/jdssc  — scope from jdssc_general_lock_type (cluster)
+with_lock($ctx, 'jdssc_info',    undef, $t, $code);   # REST/jdssc  — scope from jdssc_info_lock_type (node)
 with_lock($ctx, 'multipath',     undef, $t, $code);   # multipath   — scope from multipath_lock_type (default node)
 ```
 
-For example, with `jdssc_cluster_lock_type` unset, `with_lock($ctx, 'jdssc_cluster', …)`
-resolves to a cluster `mkdir` lock at `/etc/pve/priv/lock/joviandss-lock-jdssc_cluster`,
-while `with_lock($ctx, 'jdssc_node', …)` resolves to `/run/lock/joviandss-lock-jdssc_node`
+For example, with `jdssc_general_lock_type` unset, `with_lock($ctx, 'jdssc_general', …)`
+resolves to a cluster `mkdir` lock at `/etc/pve/priv/lock/joviandss-lock-jdssc_general`,
+while `with_lock($ctx, 'jdssc_info', …)` resolves to `/run/lock/joviandss-lock-jdssc_info`
 — host-local, so it serializes only jdssc on that Proxmox node. A `<class>_lock_path`
 property overrides just the path (the backend still follows the type).
 
@@ -740,7 +740,7 @@ A lock's scope (and optional path / timeout) is operator-tunable through **per-c
 safe defaults below**, so an upgraded site behaves identically until an operator opts in.
 
 **Options.** Each lock *class* accepts the same four properties. This design only
-*declares* the `jdssc_cluster_lock_*` / `jdssc_node_lock_*` property sets (so they are settable
+*declares* the `jdssc_general_lock_*` / `jdssc_info_lock_*` property sets (so they are settable
 today). The generic getters resolve any class through the **explicit `LOCK_CLASS_PROPERTY`
 map** (class + attribute → literal property name — no `"${class}_lock_*"` string building),
 so a class becomes settable once (a) its four property names are listed in
@@ -751,12 +751,12 @@ are one-line additions per class — **no new resolution logic**.
 
 | Property pattern | Values | Purpose |
 |---|---|---|
-| `<class>_lock_type` | component classes (`jdssc_cluster` / `jdssc_node` / `multipath`): `node` \| `cluster` · method classes: additionally their structural `vm` / `storage` | scope/backend of the class's lock |
+| `<class>_lock_type` | component classes (`jdssc_general` / `jdssc_info` / `multipath`): `node` \| `cluster` · method classes: additionally their structural `vm` / `storage` | scope/backend of the class's lock |
 | `<class>_lock_path` | absolute **directory** | override the lock *directory* (**must match the chosen type's backend**); the filename `joviandss-lock-<class>[-<id>]` is still appended |
 | `<class>_lock_acquire_timeout` | seconds | hard **wait-to-acquire** timeout — dies on expiry (`undef` → per-class default) |
 | `<class>_lock_hold_timeout` | seconds | hard **hold** cap — enforced by `run_bounded`'s `SIGALRM` (pure-Perl hangs) and the `refresh_locks` wall-clock deadline (`undef` → per-class default; on the cluster backend the alarm is ceilinged at `PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX` — Finding #15) |
 
-Classes in play: `jdssc_cluster` / `jdssc_node` *(declared now)*, and the
+Classes in play: `jdssc_general` / `jdssc_info` *(declared now)*, and the
 generically-honored `vm`, `storage`, `multipath`.
 
 **Defaults** applied when a property is unset — scope, acquire wait and hold cap from the
@@ -769,8 +769,8 @@ follows in the note below:
 
 | Class | Default scope | Resolved backend | Default lock path |
 |---|---|---|---|
-| `jdssc_cluster` | `cluster` | pmxcfs `mkdir` | `/etc/pve/priv/lock/joviandss-lock-jdssc_cluster` |
-| `jdssc_node` | `node` | node-local `flock` | `/run/lock/joviandss-lock-jdssc_node` |
+| `jdssc_general` | `cluster` | pmxcfs `mkdir` | `/etc/pve/priv/lock/joviandss-lock-jdssc_general` |
+| `jdssc_info` | `node` | node-local `flock` | `/run/lock/joviandss-lock-jdssc_info` |
 | `multipath` | `node` | node-local `flock` | `/run/lock/joviandss-lock-multipath` |
 | `vm` (id = vmid), shared storage | `vm` | pmxcfs `mkdir` | `/etc/pve/priv/lock/joviandss-lock-vm-<vmid>` |
 | `vm` (id = vmid), non-shared | `vm` | node-local `flock` | `<path>/private/lock/joviandss-lock-vm-<vmid>` |
@@ -792,10 +792,10 @@ Timeout defaults follow one pattern for every class: acquire wait
 - **Backend timeout defaults:** the wait-to-acquire timeout comes from
   `get_lock_class_acquire_timeout($ctx, $lock_class)` for **every** class — the operator's
   `<class>_lock_acquire_timeout`, else the class's flat `LOCK_CLASS_<CLASS>_ACQUIRE_TIMEOUT`
-  constant. For `jdssc_cluster` that is `LOCK_CLASS_JDSSC_CLUSTER_ACQUIRE_TIMEOUT`
+  constant. For `jdssc_general` that is `LOCK_CLASS_JDSSC_GENERAL_ACQUIRE_TIMEOUT`
   (= `PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX`): the acquisition-timeout retry loop waits under
   contention, then **dies** with `got lock request timeout` — bounded, not infinite. The node
-  classes use `LOCK_CLASS_JDSSC_NODE_ACQUIRE_TIMEOUT` / `LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT`;
+  classes use `LOCK_CLASS_JDSSC_INFO_ACQUIRE_TIMEOUT` / `LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT`;
   the method classes `LOCK_CLASS_VM_ACQUIRE_TIMEOUT` / `LOCK_CLASS_STORAGE_ACQUIRE_TIMEOUT`.
 - A `<class>_lock_path` override changes only the path; the **backend still follows the
   type**, so the override must point at a location that backend can use (a pmxcfs path for
@@ -803,11 +803,11 @@ Timeout defaults follow one pattern for every class: acquire wait
 
 **Choosing a class / scope:**
 
-- **`jdssc_cluster` (default)** — one jdssc at a time cluster-wide, maximum stability;
+- **`jdssc_general` (default)** — one jdssc at a time cluster-wide, maximum stability;
   used by state-changing commands.
-- **`jdssc_node`** — cheapest (no cluster round-trips), serializes only on one host;
+- **`jdssc_info`** — cheapest (no cluster round-trips), serializes only on one host;
   used by host-safe read commands.
-- The jdssc classes accept **`node` / `cluster` only** — `jdssc_cluster` is **one lock
+- The jdssc classes accept **`node` / `cluster` only** — `jdssc_general` is **one lock
   for the entire cluster**; there is no per-storage jdssc scope (the lock name carries
   no storeid, so a `storage` type could not deliver per-storeid serialization anyway —
   see *Allowed types are per-class* above). Keep `cluster` for strict backend safety.
@@ -853,20 +853,20 @@ The design wraps `run_command` in the jdssc lock. `with_lock` refreshes whatever
 around the body automatically (it applies the exception-safe `run_refreshed` internally), so
 the call site is just the command closure plus a **lock class**. A new trailing `$lock_class`
 argument on `joviandss_cmd` names which jdssc lock class to take; **omitting it defaults to
-`jdssc_cluster`** (the safest), so existing callers are unchanged:
+`jdssc_general`** (the safest), so existing callers are unchanged:
 
 ```perl
 # $lock_class — which jdssc lock class to take (new trailing arg). One of:
-#   'jdssc_cluster'  → cluster-wide serialization (state-changing commands)  [default]
-#   'jdssc_node'     → per-host serialization only (host-safe read commands)
-$lock_class //= 'jdssc_cluster';
+#   'jdssc_general'  → cluster-wide serialization (state-changing commands)  [default]
+#   'jdssc_info'     → per-host serialization only (host-safe read commands)
+$lock_class //= 'jdssc_general';
 my $jrun = sub {
     my $jcmd = [ '/usr/local/bin/jdssc', @$connection_options, @$cmd ];
     $exitcode = run_command( $jcmd, ..., timeout => $timeout + 1, noerr => 1 );
 };
 eval {
     # Plain with_lock call: the class's scope comes from its <class>_lock_type
-    # property (default jdssc_cluster → cluster, jdssc_node → node). $id and $timeout
+    # property (default jdssc_general → cluster, jdssc_info → node). $id and $timeout
     # are both undef here (singleton class, default acquire timeout).
     OpenEJovianDSS::Lock::with_lock($ctx, $lock_class, undef, undef, $jrun);
 };
@@ -877,15 +877,15 @@ eval {
 
 **Every jdssc call is locked; only the class varies — there is no unlocked path.** A caller
 whose subcommand is cheap and safe to run widely concurrent passes `$lock_class =>
-'jdssc_node'`: the high-frequency read paths (`list_images` `OpenEJovianDSSPlugin.pm:1070`,
+'jdssc_info'`: the high-frequency read paths (`list_images` `OpenEJovianDSSPlugin.pm:1070`,
 `status`, `get_identity`, `volume_size_info`) — which take **no method lock** today — take the node-scope
-`jdssc_node` lock, so routine PVE stat polling serializes only against other jdssc on the
+`jdssc_info` lock, so routine PVE stat polling serializes only against other jdssc on the
 **same host** instead of paying a cluster-wide `mkdir`/corosync round-trip. State-changing
-paths omit `$lock_class` and get `jdssc_cluster`. **Caveat:** `jdssc_node` and `jdssc_cluster`
+paths omit `$lock_class` and get `jdssc_general`. **Caveat:** `jdssc_info` and `jdssc_general`
 are different lock **names** — hence different paths — so they do **not** serialize against
-each other; a `jdssc_node` read is not blocked by a concurrent `jdssc_cluster` write. That is
+each other; a `jdssc_info` read is not blocked by a concurrent `jdssc_general` write. That is
 acceptable for read-only list/size/status (a momentarily stale view self-corrects) and is why
-`jdssc_node` is chosen per command, only for subcommands known to tolerate it.
+`jdssc_info` is chosen per command, only for subcommands known to tolerate it.
 
 - Taken **per `jdssc` invocation**, not once per method — each hold is short.
 - Sits **inside** `joviandss_cmd`'s existing retry loop (`Common.pm:935`): the lock is
@@ -912,8 +912,8 @@ LIFO `pop` — see Finding #11) and have the form
 `deadline` is `undef` until `_lock_arm_deadline` sets it to `time() + max_hold` **at
 acquisition** (the top of the locked body) — never at `_lock_enter`, which precedes the
 acquisition wait; arming early would charge a contended acquisition (up to
-`LOCK_CLASS_JDSSC_CLUSTER_ACQUIRE_TIMEOUT` — several times the hold cap) against
-`LOCK_CLASS_JDSSC_CLUSTER_HOLD_TIMEOUT` and kill the operation on its first refresh.
+`LOCK_CLASS_JDSSC_GENERAL_ACQUIRE_TIMEOUT` — several times the hold cap) against
+`LOCK_CLASS_JDSSC_GENERAL_HOLD_TIMEOUT` and kill the operation on its first refresh.
 An uncapped class (`hold_timeout` 0) keeps `deadline` undef.
 
 ```perl
@@ -1086,7 +1086,7 @@ legitimately hold several `vm` locks at once (distinct vmids → distinct paths)
 the dual-VM `clone_image` / `rename_volume` locks. What dies is re-taking a path
 already held: a second `vm` lock for the **same** vmid, or a second lock of the same
 `storage` / `cluster` / `node` class. Locks of *different* classes — e.g. a `storage`
-method lock and the `jdssc_cluster` lock — are distinct paths and coexist (see
+method lock and the `jdssc_general` lock — are distinct paths and coexist (see
 rule 2).
 
 Ordering rules that still apply:
@@ -1098,7 +1098,7 @@ Ordering rules that still apply:
    false-positives between them.
 3. **Multiple-lock ordering.** A job holding more than one `with_lock` lock must
    acquire them in a fixed order — the dual-VM methods take the two vmids in
-   **ascending** order. **Component locks (`jdssc_cluster` / `jdssc_node` /
+   **ascending** order. **Component locks (`jdssc_general` / `jdssc_info` /
    `multipath`) are leaves:** a body running under one must not take another
    `with_lock` lock, so component locks never nest inside one another and the only
    chains are `method → one component lock`; a job needing both a jdssc lock and
@@ -1125,7 +1125,7 @@ backend.)
   the deadline check at the post-run refresh nor the alarm can fail a legitimate
   maximal-length run — and **< `CFS_LOCK_TIMEOUT`**, so the cap fires before a waiter
   could stale-reclaim. Hence the invariant (values: Table 9b):
-  `PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX + 1 < LOCK_CLASS_JDSSC_CLUSTER_HOLD_TIMEOUT <
+  `PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX + 1 < LOCK_CLASS_JDSSC_GENERAL_HOLD_TIMEOUT <
   CFS_LOCK_TIMEOUT`.
 - **Node acquisition alarm — verified.** `lock_file` waits inside
   `run_with_timeout($timeout, …)`, which sets a temporary `alarm`. Confirmed in the
@@ -1154,8 +1154,8 @@ backend.)
 [Timeout_and_retry](#timeout-and-retry)
 
 - **Cluster backend** (`_cluster_lock_path`): `with_lock` resolves the acquire wait via
-  `get_lock_class_acquire_timeout($ctx, $lock_class)` — for `jdssc_cluster` that is
-  **`LOCK_CLASS_JDSSC_CLUSTER_ACQUIRE_TIMEOUT`** (kept equal to
+  `get_lock_class_acquire_timeout($ctx, $lock_class)` — for `jdssc_general` that is
+  **`LOCK_CLASS_JDSSC_GENERAL_ACQUIRE_TIMEOUT`** (kept equal to
   `PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX`, the named cluster-acquire bound that
   replaces the old hardcoded `max_total = 1200` — Finding #13) — and passes it into the
   retry loop (retrying only on *acquisition* timeout); a busy cluster waits, then
@@ -1163,11 +1163,11 @@ backend.)
   an infinite one.
 - **Node backend** (`lock_file`): `with_lock` resolves the acquire wait **per class** via
   `get_lock_class_acquire_timeout($ctx, $lock_class)` —
-  `LOCK_CLASS_JDSSC_NODE_ACQUIRE_TIMEOUT` / `LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT`,
+  `LOCK_CLASS_JDSSC_INFO_ACQUIRE_TIMEOUT` / `LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT`,
   `LOCK_CLASS_VM_ACQUIRE_TIMEOUT` / `LOCK_CLASS_STORAGE_ACQUIRE_TIMEOUT`
   (preserving today's `_node_lock` default — Finding #9); `_lock_exec` keeps a
-  bare `$timeout ||= 10` only as a last-resort fallback. The short-lived `jdssc_node`
-  locks are local and brief — a wait beyond `LOCK_CLASS_JDSSC_NODE_ACQUIRE_TIMEOUT`
+  bare `$timeout ||= 10` only as a last-resort fallback. The short-lived `jdssc_info`
+  locks are local and brief — a wait beyond `LOCK_CLASS_JDSSC_INFO_ACQUIRE_TIMEOUT`
   usually signals a stuck holder — while method locks (`vm`/`storage`) legitimately wait
   up to their much larger acquire bound. Tunable per class via
   `<class>_lock_acquire_timeout`.
@@ -1306,7 +1306,7 @@ the conclusion shifts:
 
 1. **Lock nesting correctness — resolved.**
    (a) **Component locks are leaves.** A body running under a component lock
-   (`jdssc_cluster` / `jdssc_node` / `multipath`) must not take another `with_lock`
+   (`jdssc_general` / `jdssc_info` / `multipath`) must not take another `with_lock`
    lock. The jdssc classes already satisfy this structurally (taken only around
    `run_command` inside `joviandss_cmd`); the same rule binds the future `multipath`
    caller — wrap only the bare `multipath` invocation, never a code path that calls
@@ -1322,7 +1322,7 @@ the conclusion shifts:
    inner node lock does not count against the outer hold-cap alarm. That is acceptable:
    what actually protects the outer *pmxcfs* lock is refresh (`run_refreshed` brackets
    plus the poll-loop refresh), and the inner node wait is itself bounded
-   (by `LOCK_CLASS_JDSSC_NODE_ACQUIRE_TIMEOUT` — far under `CFS_LOCK_TIMEOUT`).
+   (by `LOCK_CLASS_JDSSC_INFO_ACQUIRE_TIMEOUT` — far under `CFS_LOCK_TIMEOUT`).
 
 2. **`run_bounded` hold cap vs nested alarm suspension — resolved: (a) + (b), folded
    into the design above.** The problem: every nested alarm user **suspends** the
@@ -1374,18 +1374,28 @@ keeps the hold below the pmxcfs `CFS_LOCK_TIMEOUT` expiry, and on any backend it
 REST-level lock inside `jdssc` is removed entirely**, so this design *replaces* it and the
 `--iscsi-target-lock-path` / `--iscsi-change-lock-timeout` plumbing (already removed from
 `joviandss_cmd`) is retired; the **property names and per-scope default paths** are
-confirmed (`jdssc_cluster_lock_*` / `jdssc_node_lock_*` property sets, see
+confirmed (`jdssc_general_lock_*` / `jdssc_info_lock_*` property sets, see
 [Locking configuration](#locking-configuration)); lock **granularity** is per command —
-`joviandss_cmd` picks `jdssc_cluster` (default) or `jdssc_node`, each operator-tunable;
+`joviandss_cmd` picks `jdssc_general` (default) or `jdssc_info`, each operator-tunable;
 **NFS parity** is **implemented** (the
 fresh-`$ctx` wrapper is gone and the `NFSCommon` helper layer is fully `$ctx`-threaded
 — see [Password Resolution Through `$ctx`](password-resolution-through-ctx.md)); and
 the **single property-driven entry** is settled — one `with_lock($ctx, $lock_class, $id, …)`
 whose scope is the `<class>_lock_type` property, with `lock_vm` / `lock_storage` removed
 (no `lock_jdssc` introduced) and the method-lock call sites migrated. The `with_lock` /
-`_lock_exec` / `get_lock_class_type` names are **signed off** (2026-07-02). Per-class
+`_lock_exec` / `get_lock_class_type` names are **signed off** (2026-07-02).
+**Rename (2026-07-05):** both jdssc tiers, originally named after their default
+scopes, were renamed — the strong tier to **`jdssc_general`** and the host-safe
+read tier to **`jdssc_info`** (constants `LOCK_CLASS_JDSSC_GENERAL_*` /
+`LOCK_CLASS_JDSSC_INFO_*`, properties `jdssc_general_lock_*` / `jdssc_info_lock_*`,
+lock names `joviandss-lock-jdssc_general` / `joviandss-lock-jdssc_info`) — a class
+names the **command tier** it serializes, never its scope: the old names baked the
+default scopes into the classes and read as promises that the `<class>_lock_type`
+knob could silently break. The scope *values* `node` / `cluster` and both classes'
+default scopes are unchanged. Renamed before any release shipped the old property
+names, so no storage.cfg migration exists. Per-class
 default values are defined as **flat, individually named constants**
-(`LOCK_CLASS_<CLASS>_<ATTR>`, e.g. `LOCK_CLASS_JDSSC_CLUSTER_ACQUIRE_TIMEOUT`), and the
+(`LOCK_CLASS_<CLASS>_<ATTR>`, e.g. `LOCK_CLASS_JDSSC_GENERAL_ACQUIRE_TIMEOUT`), and the
 `LOCK_*` hash maps only **wire** those constants to their class keys (decided
 2026-07-02): the class arrives as a runtime variable, so a map is required for the
 lookup, but no value is ever defined inside a map (`LOCK_CLASS_PROPERTY` excepted — its
@@ -1394,7 +1404,7 @@ itself comes from `with_lock`'s **up-front unknown-class die** — the maps carr
 global fallbacks and are key-complete by invariant. Finally, the **timeout ladder
 stands as specified** (decided 2026-07-02):
 `PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX + 1` (`run_command`'s kill) `<
-LOCK_CLASS_JDSSC_CLUSTER_HOLD_TIMEOUT < CFS_LOCK_TIMEOUT` — the hold cap deliberately
+LOCK_CLASS_JDSSC_GENERAL_HOLD_TIMEOUT < CFS_LOCK_TIMEOUT` — the hold cap deliberately
 sits **above** the kill (at or below it, the post-run deadline check would fail
 legitimate maximal-length runs), and the narrow margin to `CFS_LOCK_TIMEOUT` is
 acceptable because a live holder's refresh brackets keep the pmxcfs mtime fresh
@@ -1410,7 +1420,7 @@ The single public lock entry is `with_lock($ctx, $lock_class, $id, $timeout, $co
 never a composite name; the scope comes from the class's `<class>_lock_type` property.
 `joviandss_cmd` gains **one** new trailing optional argument, `$lock_class`
 (`joviandss_cmd($ctx, $cmd, $timeout, $retries, $force_debug_level, $lock_class)`): which
-jdssc lock **class** to take — `'jdssc_cluster'` (default) or `'jdssc_node'` — passed
+jdssc lock **class** to take — `'jdssc_general'` (default) or `'jdssc_info'` — passed
 straight to `with_lock`, so each class's scope follows its own
 `<class>_lock_type` property. The only signatures that go away are the method-lock entry
 points (`lock_vm` / `lock_storage`); their removal and the call-site migration are covered
@@ -1434,7 +1444,7 @@ elsewhere show mechanism and reference constants **by name**: the flat-constant 
 and the poll-loop comment lists names only. Prose likewise refers to constants by name,
 and relations between them are argued **symbolically** — e.g.
 `PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX + 1` (`run_command`'s kill) `<
-LOCK_CLASS_JDSSC_CLUSTER_HOLD_TIMEOUT < CFS_LOCK_TIMEOUT` — never with bare numerals.
+LOCK_CLASS_JDSSC_GENERAL_HOLD_TIMEOUT < CFS_LOCK_TIMEOUT` — never with bare numerals.
 Numeric literals outside this section appear only when quoting **current code** or an
 **external system's** behavior (call-site literals, `Lock.pm` hardcodes, pmxcfs facts —
 including the findings section, which reviews current code). Map-lookup syntax
@@ -1451,12 +1461,12 @@ including the findings section, which reviews current code). Map-lookup syntax
 | `PROXMOX_CLUSTER_POLL_BACKOFF_STEP` | added to the poll base each iteration (linear backoff). |
 | `PROXMOX_CLUSTER_POLL_JITTER_MAX` | uniform jitter upper bound (`rand`). |
 | `PROXMOX_CLUSTER_POLL_SLEEP_CAP` | max poll base sleep (caps the ramp). |
-| `LOCK_CLASS_JDSSC_CLUSTER_DEFAULT_TYPE` | default scope of the `jdssc_cluster` class. |
-| `LOCK_CLASS_JDSSC_CLUSTER_ACQUIRE_TIMEOUT` | `jdssc_cluster` wait-to-acquire bound; kept equal to `PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX`. |
-| `LOCK_CLASS_JDSSC_CLUSTER_HOLD_TIMEOUT` | `jdssc_cluster` hold cap (bracket note below the tables). |
-| `LOCK_CLASS_JDSSC_NODE_DEFAULT_TYPE` | default scope of the `jdssc_node` class. |
-| `LOCK_CLASS_JDSSC_NODE_ACQUIRE_TIMEOUT` | `jdssc_node` wait-to-acquire — local and brief; a longer wait usually signals a stuck holder. |
-| `LOCK_CLASS_JDSSC_NODE_HOLD_TIMEOUT` | `jdssc_node` hold cap (bracket note below the tables). |
+| `LOCK_CLASS_JDSSC_GENERAL_DEFAULT_TYPE` | default scope of the `jdssc_general` class. |
+| `LOCK_CLASS_JDSSC_GENERAL_ACQUIRE_TIMEOUT` | `jdssc_general` wait-to-acquire bound; kept equal to `PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX`. |
+| `LOCK_CLASS_JDSSC_GENERAL_HOLD_TIMEOUT` | `jdssc_general` hold cap (bracket note below the tables). |
+| `LOCK_CLASS_JDSSC_INFO_DEFAULT_TYPE` | default scope of the `jdssc_info` class. |
+| `LOCK_CLASS_JDSSC_INFO_ACQUIRE_TIMEOUT` | `jdssc_info` wait-to-acquire — local and brief; a longer wait usually signals a stuck holder. |
+| `LOCK_CLASS_JDSSC_INFO_HOLD_TIMEOUT` | `jdssc_info` hold cap (bracket note below the tables). |
 | `LOCK_CLASS_MULTIPATH_DEFAULT_TYPE` | default scope of the `multipath` class (active since the volume-activation design). |
 | `LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT` | `multipath` wait-to-acquire — raised by the volume-activation design to outlast one full worst-case hold of `multipath_cmd`'s TERM-first termination ladder with headroom; a deeper queue times out into that design's contention class (retried without teardown). |
 | `LOCK_CLASS_MULTIPATH_HOLD_TIMEOUT` | `multipath` hold cap. |
@@ -1482,12 +1492,12 @@ including the findings section, which reviews current code). Map-lookup syntax
 | `PROXMOX_CLUSTER_POLL_BACKOFF_STEP` | 0.1 | seconds | `OpenEJovianDSS::Common` |
 | `PROXMOX_CLUSTER_POLL_JITTER_MAX` | 5 | seconds | `OpenEJovianDSS::Common` |
 | `PROXMOX_CLUSTER_POLL_SLEEP_CAP` | 10 | seconds | `OpenEJovianDSS::Common` |
-| `LOCK_CLASS_JDSSC_CLUSTER_DEFAULT_TYPE` | `cluster` | scope | `OpenEJovianDSS::Lock` |
-| `LOCK_CLASS_JDSSC_CLUSTER_ACQUIRE_TIMEOUT` | 600 (= `PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX`) | seconds | `OpenEJovianDSS::Lock` |
-| `LOCK_CLASS_JDSSC_CLUSTER_HOLD_TIMEOUT` | 119 | seconds | `OpenEJovianDSS::Lock` |
-| `LOCK_CLASS_JDSSC_NODE_DEFAULT_TYPE` | `node` | scope | `OpenEJovianDSS::Lock` |
-| `LOCK_CLASS_JDSSC_NODE_ACQUIRE_TIMEOUT` | 10 | seconds | `OpenEJovianDSS::Lock` |
-| `LOCK_CLASS_JDSSC_NODE_HOLD_TIMEOUT` | 119 | seconds | `OpenEJovianDSS::Lock` |
+| `LOCK_CLASS_JDSSC_GENERAL_DEFAULT_TYPE` | `cluster` | scope | `OpenEJovianDSS::Lock` |
+| `LOCK_CLASS_JDSSC_GENERAL_ACQUIRE_TIMEOUT` | 600 (= `PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX`) | seconds | `OpenEJovianDSS::Lock` |
+| `LOCK_CLASS_JDSSC_GENERAL_HOLD_TIMEOUT` | 119 | seconds | `OpenEJovianDSS::Lock` |
+| `LOCK_CLASS_JDSSC_INFO_DEFAULT_TYPE` | `node` | scope | `OpenEJovianDSS::Lock` |
+| `LOCK_CLASS_JDSSC_INFO_ACQUIRE_TIMEOUT` | 10 | seconds | `OpenEJovianDSS::Lock` |
+| `LOCK_CLASS_JDSSC_INFO_HOLD_TIMEOUT` | 119 | seconds | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_MULTIPATH_DEFAULT_TYPE` | `node` | scope | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT` | 60 (was 10; raised by `volume-activation-with-reactivation.md`) | seconds | `OpenEJovianDSS::Lock` |
 | `LOCK_CLASS_MULTIPATH_HOLD_TIMEOUT` | 60 | seconds | `OpenEJovianDSS::Lock` |
@@ -1629,7 +1639,7 @@ In `OpenEJovianDSS/Lock.pm`:
   introduced. (The `Lock.pm` *layer* over them **is** reworked — new entry point,
   removed method-lock functions, retired/reworked helpers — so this is a real change to
   the locking code, not a drop-in; Risks #1, #2, #6 cover what that rework introduces.)
-- **Default preserves maximum safety.** `joviandss_cmd` defaults to the `jdssc_cluster`
+- **Default preserves maximum safety.** `joviandss_cmd` defaults to the `jdssc_general`
   class (scope `cluster`), so an un-configured storage gets the strongest serialization,
   not a weaker one.
 
@@ -1665,7 +1675,7 @@ In `OpenEJovianDSS/Lock.pm`:
    `new_ctx` under a lock.
 3. **Performance regression from the `cluster` default.** Cluster-wide serialization of
    all `jdssc` can bottleneck busy multi-pool deployments. Mitigation is built in:
-   step down to `node` (or route host-safe commands through `jdssc_node`).
+   step down to `node` (or route host-safe commands through `jdssc_info`).
 4. **pmxcfs poll cost under contention.** Cluster-scope acquisition polls via FUSE +
    corosync; a poorly-tuned loop is expensive cluster-wide. Mitigated by the poll-loop
    rules (≥100–200 ms, jitter); `node` scope avoids polling entirely.
@@ -1716,7 +1726,7 @@ or during implementation.
    is selected: under a cluster lock the clamp keeps a single jdssc run, and thus the
    hold, under `CFS_LOCK_TIMEOUT`; for the node classes it keeps `run_command`'s kill
    (`$timeout + 1`) strictly **below their hold caps** (an unclamped call-site literal of
-   118 would otherwise produce a kill equal to `LOCK_CLASS_JDSSC_NODE_HOLD_TIMEOUT`, and
+   118 would otherwise produce a kill equal to `LOCK_CLASS_JDSSC_INFO_HOLD_TIMEOUT`, and
    a maximal run would trip the post-run deadline check). **Caveat that the guard depends
    on:** today `run_command`'s kill timeout is *not* `$timeout` but
    `max($timeout, get_jdssc_timeout + 5) + 1` (`Common.pm:928–931, 952`, with
@@ -1735,7 +1745,7 @@ or during implementation.
    method lock would fail after 10 s instead of ~600 s → spurious `can't lock file` errors under
    ordinary contention. **Resolved:** the node acquire wait is **per-class** via
    `LOCK_CLASS_ACQUIRE_TIMEOUT` / `get_lock_class_acquire_timeout($ctx, $lock_class)` — `vm`/`storage`
-   keep ~600 s, `jdssc_node`/`multipath` use ~10 s; there is no single global node default.
+   keep ~600 s, `jdssc_info`/`multipath` use ~10 s; there is no single global node default.
 10. **Poll-loop backoff breaks the per-attempt timeout accounting. _(medium — resolution
     agreed)_** `_cluster_lock_attempt` deducts a hardcoded 1 s per sleep — `$timeout =
     alarm(0) - 1` with `sleep(1)` (`Lock.pm:101,109`, comment "sleep costs 1s"). The
@@ -1842,8 +1852,8 @@ or during implementation.
 | File | Change |
 |---|---|
 | `OpenEJovianDSS/Lock.pm` | add public `with_lock($ctx, $lock_class, $id, …)` (class + id, no composite name; scope from the `<class>_lock_type` property) + `get_lock_class_type` / `get_lock_class_dir` / `get_lock_class_acquire_timeout` + `LOCK_DEFAULT_TYPE` + the explicit `LOCK_CLASS_PROPERTY` property-name map read via `_lock_class_scfg` (no runtime `"${class}_lock_*"` key building), private `_lock_resolve` (composes the lockid from class + id, sanitizing it via `Common::clean_word`/`safe_word`) and `_lock_exec` (cluster → `_cluster_lock_path` = `_cluster_lock_attempt` + retry; node → `PVE::Tools::lock_file`); **remove** `lock_vm` / `lock_storage`; **retire** the name-building `_cluster_lock` / `_node_lock`; add the re-entry guard `_lock_enter` / `_lock_leave` over `$ctx->{_held_locks}`; rework `touch_cluster_lock` / `_active_locks` into `refresh_locks` + `run_refreshed`; add the per-class node acquire wait `LOCK_CLASS_ACQUIRE_TIMEOUT` + `get_lock_class_acquire_timeout` (all `LOCK_*` maps wiring the flat `LOCK_CLASS_<CLASS>_*` value constants); add the two-part hold cap — `run_bounded` (pure-Perl backstop, cluster-backend alarm ceiling `PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX` per Finding #15) + the wall-clock deadline (`_lock_arm_deadline`, checked in `refresh_locks`) + `LOCK_CLASS_HOLD_TIMEOUT` + `get_lock_class_hold_timeout` |
-| `OpenEJovianDSS/Common.pm` | wrap `run_command` in `joviandss_cmd` with `with_lock($ctx, $lock_class, …)` and add the trailing `$lock_class` arg (`jdssc_cluster` default, `jdssc_node` for host-safe reads); rename the `new_ctx` registry field `_active_locks => []` to `_held_locks => []` (the list the new keep-alive/guard share); add the `PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX` constant + `get_proxmox_cluster_lock_timeout_max` getter (**done**) and the `PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX` cluster-acquire bound; **clamp `$timeout` to `PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX` centrally in `joviandss_cmd`** so no single jdssc run exceeds the safe bound under a cluster lock (over-cap literals like `list_images`' 118 are bounded automatically — no per-call-site edits, and the `+5` `process_timeout` floor is dropped per Finding #8); add the cluster poll-loop tuning constants `PROXMOX_CLUSTER_POLL_BASE_SLEEP` / `PROXMOX_CLUSTER_POLL_BACKOFF_STEP` / `PROXMOX_CLUSTER_POLL_JITTER_MAX` / `PROXMOX_CLUSTER_POLL_SLEEP_CAP` (used by the `_cluster_lock_attempt` poll loop); add a shared `lock_properties()` schema helper so the lock-property schema (the `jdssc_cluster_lock_*` / `jdssc_node_lock_*` property sets) is defined once and spliced into both plugins (rather than copy-pasted into each); **delete the retired iSCSI-lock remnants** — constants `DEFAULT_ISCSI_CHANGE_LOCK_TIMEOUT` / `JOVIANDSS_ISCSI_CHANGE_LOCK_TIMEOUT_MAX` / `JOVIANDSS_ISCSI_LOCK_PATH`, their getters `get_default_iscsi_change_lock_timeout` / `get_max_iscsi_change_lock_timeout` / `get_default_iscsi_target_global_lock_path`, and the `:57,59` exports (Finding #14) |
-| `OpenEJovianDSSPlugin.pm` | splice the shared lock-property schema (`lock_properties()`) into `properties` (143) and `options` (285) — exposing the `jdssc_cluster_lock_*` / `jdssc_node_lock_*` property sets without copy-pasting the schema; **migrate the method-lock call sites** (`lock_vm` / `lock_storage` → `with_lock($ctx, 'vm', $vmid, …` / `'storage', undef, …)`); pass `$lock_class => 'jdssc_node'` from the known-safe read call sites (`list_images`/`status`/`get_identity`/`volume_size_info`) so routine polling uses the cheap host-scope jdssc lock (the central clamp already bounds their timeouts); **remove the retired iSCSI-lock properties** `iscsi_change_lock_timeout` (`:180`, `options` `:297`) / `iscsi_target_global_lock_path` (`:195`, `options` `:299`) (Finding #14) |
+| `OpenEJovianDSS/Common.pm` | wrap `run_command` in `joviandss_cmd` with `with_lock($ctx, $lock_class, …)` and add the trailing `$lock_class` arg (`jdssc_general` default, `jdssc_info` for host-safe reads); rename the `new_ctx` registry field `_active_locks => []` to `_held_locks => []` (the list the new keep-alive/guard share); add the `PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX` constant + `get_proxmox_cluster_lock_timeout_max` getter (**done**) and the `PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX` cluster-acquire bound; **clamp `$timeout` to `PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX` centrally in `joviandss_cmd`** so no single jdssc run exceeds the safe bound under a cluster lock (over-cap literals like `list_images`' 118 are bounded automatically — no per-call-site edits, and the `+5` `process_timeout` floor is dropped per Finding #8); add the cluster poll-loop tuning constants `PROXMOX_CLUSTER_POLL_BASE_SLEEP` / `PROXMOX_CLUSTER_POLL_BACKOFF_STEP` / `PROXMOX_CLUSTER_POLL_JITTER_MAX` / `PROXMOX_CLUSTER_POLL_SLEEP_CAP` (used by the `_cluster_lock_attempt` poll loop); add a shared `lock_properties()` schema helper so the lock-property schema (the `jdssc_general_lock_*` / `jdssc_info_lock_*` property sets) is defined once and spliced into both plugins (rather than copy-pasted into each); **delete the retired iSCSI-lock remnants** — constants `DEFAULT_ISCSI_CHANGE_LOCK_TIMEOUT` / `JOVIANDSS_ISCSI_CHANGE_LOCK_TIMEOUT_MAX` / `JOVIANDSS_ISCSI_LOCK_PATH`, their getters `get_default_iscsi_change_lock_timeout` / `get_max_iscsi_change_lock_timeout` / `get_default_iscsi_target_global_lock_path`, and the `:57,59` exports (Finding #14) |
+| `OpenEJovianDSSPlugin.pm` | splice the shared lock-property schema (`lock_properties()`) into `properties` (143) and `options` (285) — exposing the `jdssc_general_lock_*` / `jdssc_info_lock_*` property sets without copy-pasting the schema; **migrate the method-lock call sites** (`lock_vm` / `lock_storage` → `with_lock($ctx, 'vm', $vmid, …` / `'storage', undef, …)`); pass `$lock_class => 'jdssc_info'` from the known-safe read call sites (`list_images`/`status`/`get_identity`/`volume_size_info`) so routine polling uses the cheap host-scope jdssc lock (the central clamp already bounds their timeouts); **remove the retired iSCSI-lock properties** `iscsi_change_lock_timeout` (`:180`, `options` `:297`) / `iscsi_target_global_lock_path` (`:195`, `options` `:299`) (Finding #14) |
 | `OpenEJovianDSSNFSPlugin.pm` | list the lock property names in its `options()` **only** — its `properties()` stays `{}` (property names are registered globally by the iSCSI plugin; re-declaring is a duplicate-property error, see [Locking configuration](#locking-configuration)) — and the same method-lock migration. NFS jdssc calls already run on the threaded `$ctx` — the prerequisite [Password Resolution Through `$ctx`](password-resolution-through-ctx.md) work is **implemented**. (It never declared the retired iSCSI-lock properties, so no removal is needed here.) |
 | `docs/design/multi-layer-lock-design.md` | this document |
 
@@ -1867,13 +1877,13 @@ All user-approved; where they touch the spec, the spec sections were updated in 
 
 - **The Finding #8 clamp is unconditional** — every `joviandss_cmd` call is clamped to
   `PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX`, not only cluster-class ones: an unclamped
-  call-site literal of 118 under `jdssc_node` would have produced a `run_command` kill
-  equal to `LOCK_CLASS_JDSSC_NODE_HOLD_TIMEOUT`, tripping the post-run deadline check on
+  call-site literal of 118 under `jdssc_info` would have produced a `run_command` kill
+  equal to `LOCK_CLASS_JDSSC_INFO_HOLD_TIMEOUT`, tripping the post-run deadline check on
   a legitimate maximal run (Finding #8 records the reasoning).
-- **`get_identity` joined the `jdssc_node` read set** — it issues the identical
-  `pool get` command as `status`. The full `jdssc_node` set is: `list_images`, `status`,
+- **`get_identity` joined the `jdssc_info` read set** — it issues the identical
+  `pool get` command as `status`. The full `jdssc_info` set is: `list_images`, `status`,
   `get_identity`, and `volume_size_info`'s size read.
-- **`volume_get_size` stays on the `jdssc_cluster` default** — its callers
+- **`volume_get_size` stays on the `jdssc_general` default** — its callers
   (`_volume_resize`, `_activate_volume`, `volume_activate`) are all state-changing
   flows; resize serializes cluster-wide.
 - **jdssc's internal `--timeout` flag is no longer passed** (Table 10,
