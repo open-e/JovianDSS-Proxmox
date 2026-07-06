@@ -682,43 +682,17 @@ sub clone_image {
 sub _clone_image_lock {
     my ( $class, $ctx, $volname, $vmid, $snap ) = @_;
 
-    my ( undef, undef, $src_vmid ) = eval { $class->parse_volname($volname) };
-
     my $code = sub {
         _clone_image( $class, $ctx, $volname, $vmid, $snap )
     };
 
-    my $res;
-    if ( !defined($src_vmid) || $src_vmid == $vmid ) {
-        # Source vmid unknown or same as destination: single lock is sufficient.
-        $res = OpenEJovianDSS::Lock::with_lock(
-            $ctx, 'vm', $vmid, undef, $code,
-        );
-    } elsif ( $src_vmid < $vmid ) {
-        # Acquire lower vmid first to prevent deadlock.
-        $res = OpenEJovianDSS::Lock::with_lock(
-            $ctx, 'vm', $src_vmid, undef,
-            sub {
-                my $r = OpenEJovianDSS::Lock::with_lock(
-                    $ctx, 'vm', $vmid, undef, $code,
-                );
-                die $@ if $@;
-                return $r;
-            },
-        );
-    } else {
-        # Acquire lower vmid first (vmid is lower here).
-        $res = OpenEJovianDSS::Lock::with_lock(
-            $ctx, 'vm', $vmid, undef,
-            sub {
-                my $r = OpenEJovianDSS::Lock::with_lock(
-                    $ctx, 'vm', $src_vmid, undef, $code,
-                );
-                die $@ if $@;
-                return $r;
-            },
-        );
-    }
+    # Maintainer ruling (review F-22): cloning never modifies the source
+    # volume — it only takes an array-side snapshot of it, and snapshot
+    # creation is atomic — so the clone's own vmid is the only resource
+    # that needs serialising. No source lock, hence no two-lock ordering.
+    my $res = OpenEJovianDSS::Lock::with_lock(
+        $ctx, 'vm', $vmid, undef, $code,
+    );
     die $@ if $@;
     return $res;
 }
@@ -866,6 +840,18 @@ sub _alloc_image {
     my ( $class, $ctx, $vmid, $fmt, $name, $size ) = @_;
     my $scfg    = $ctx->{scfg};
     my $storeid = $ctx->{storeid};
+
+    # An empty caller-supplied name (`pvesm alloc ... ""`) is a request for
+    # auto-naming, exactly like passing no name: normalise it to undef up
+    # front so every downstream defined()-gate — the initial
+    # _find_free_diskname pick, the stale-list re-query, and the
+    # already-exists retry (which checks $name, not $volume_name) — treats
+    # it as auto-selected. Previously "" was translated into the bare
+    # cluster prefix and minted an invisible orphan zvol (campaign finding
+    # C2-01).
+    if ( defined($name) && $name !~ /\S/ ) {
+        $name = undef;
+    }
 
     my $volume_name = $name;
     my $volume_name_clustered;
@@ -1601,7 +1587,11 @@ sub _activate_volume {
           volume_get_size( $ctx, $volname_clustered );
         if ( @$til == 1 ) {
             my ( $targetname, $lunid, $lunrecpath, $lr ) = @{ $til->[0] };
-            if ( $current_size > $lr->{size} ) {
+            # Records created by activation store size as null since the
+            # F-04 change (no exact size is enforced there) — treat an
+            # unknown recorded size as "needs update" instead of warning on
+            # undef (review N-16).
+            if ( !defined( $lr->{size} ) || $current_size > $lr->{size} ) {
                 volume_update_size( $ctx,
                     $vmid, $volname_clustered, $current_size );
             }

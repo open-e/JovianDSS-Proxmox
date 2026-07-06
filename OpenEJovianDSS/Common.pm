@@ -230,6 +230,11 @@ use constant {
     VOLUME_ACTIVATE_CYCLE_MIN_BUDGET       => 120,
     VOLUME_ACTIVATE_VERIFY_ATTEMPTS        => 10,
     VOLUME_ACTIVATE_VERIFY_SLEEP           => 1,
+    # Bound on one rescan-scsi-bus.sh helper run (_scsi_bus_rescan_try). On
+    # expiry run_command dies regardless of noerr (review F-06); the sub
+    # absorbs that death into its return-0 "rescan failed" verdict. Value is
+    # the pre-existing hardcoded bound.
+    SCSI_BUS_RESCAN_TIMEOUT                => 55,
     # Bound on the blockdev --getsize64 capacity probe (_iscsi_capacity_ok):
     # a wedged/broken export can hang the open or the size ioctl — exactly
     # the failure the probe exists to detect — and every run_command under a
@@ -2085,14 +2090,29 @@ sub _scsi_bus_rescan_try {
         "--luns=${lunid}", '-a',
     ];
 
-    my $errcode = run_command(
-        $cmd,
-        outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-        errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-        timeout => 55,
-        noerr   => 1,
-    );
-    if ($errcode == 0 ) {
+    # The eval is load-bearing (review F-06): run_command DIES on timeout
+    # BEFORE consulting noerr (PVE::Tools kills the helper at
+    # SCSI_BUS_RESCAN_TIMEOUT and raises "got timeout"), and under
+    # concurrent load a rescan legitimately exceeds that. Without the eval
+    # one slow rescan tick aborted the whole activation attempt instead of
+    # honoring this sub's return-0-on-error contract.
+    my $errcode;
+    eval {
+        $errcode = run_command(
+            $cmd,
+            outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+            errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+            timeout => SCSI_BUS_RESCAN_TIMEOUT,
+            noerr   => 1,
+        );
+    };
+    if ($@) {
+        debugmsg($ctx, 'debug',
+            "rescan-scsi-bus.sh for lun ${lunid} failed: $@");
+        return 0;
+    }
+
+    if ( defined($errcode) && $errcode == 0 ) {
         return 1;
     }
     return 0;
@@ -2166,6 +2186,14 @@ sub _rescan_target_hosts {
             my $session_device_path = Cwd::realpath($session_device_link);
             if ( defined( $session_device_path ) ) {
                 my ( $session_host_name ) = ( $session_device_path =~ m{/(host\d+)/} );
+
+                # A session torn down mid-scan can resolve to a path with no
+                # /hostN/ component (review F-21): skip it cleanly instead of
+                # interpolating undef into the sysfs path and falling through
+                # to the expensive full-bus rescan.
+                if ( !defined($session_host_name) ) {
+                    next;
+                }
 
                 my $session_scan_path = "/sys/class/scsi_host/$session_host_name/scan";
                 if ( open( my $session_scan_desc, '>', $session_scan_path ) ) {
@@ -3939,7 +3967,15 @@ sub volume_deactivate_by_lun_record {
             };
             my $cerr = $@;
             if ($cerr) {
-                warn "volume_unstage_multipath failed: $@" if $@;
+                # A lock-fatal die means the locks protecting this operation
+                # can no longer be trusted: it must never be absorbed into a
+                # retry, and the marker must reach the caller intact for
+                # classification (review F-13).
+                if ( OpenEJovianDSS::Lock::lock_error_fatal($cerr) ) {
+                    die $cerr;
+                }
+
+                warn "volume_unstage_multipath failed: $cerr";
             } else {
                 $unstage_multipath_done = 1;
                 last;
