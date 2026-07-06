@@ -1950,6 +1950,7 @@ sub on_add_hook {
             OpenEJovianDSS::Common::password_file_set_password($ctx, $sensitive{user_password});
         }
     }
+    OpenEJovianDSS::Common::password_file_require_user_password($ctx, $storeid);
     if (exists($sensitive{chap_user_password})) {
         if (defined($sensitive{chap_user_password})) {
             OpenEJovianDSS::Common::password_file_set_chap_password($ctx, $sensitive{chap_user_password});

@@ -116,7 +116,7 @@ sub options {
         'create-subdirs'        => { optional => 1 },
         bwlimit                 => { optional => 1 },
         preallocation           => { optional => 1 },
-        user_name               => { optional => 1 },
+        user_name               => { },
         user_password           => { optional => 1 },
         control_addresses       => { optional => 1 },
         control_port            => { optional => 1 },
@@ -147,7 +147,12 @@ sub path {
     # Thin entry point for PVE core: create the per-operation ctx once and
     # delegate. Internal callers must use _path() with the ctx of the volume's
     # own storage so the ctx is built exactly once and threaded down.
-    return _path( $class, new_ctx( $scfg, $storeid ), $volname, $snapname );
+    my $path = _path( $class, new_ctx( $scfg, $storeid ), $volname, $snapname );
+    # PVE core calls path() in list context and gates deletion on the owner
+    # vmid (campaign finding C3-01): without the triple, qm destroy/unlink
+    # silently leak disk files. Same contract mapping as the iSCSI plugin.
+    my ( $vtype, undef, $vmid ) = $class->parse_volname($volname);
+    return wantarray ? ( $path, $vmid, $vtype ) : $path;
 }
 
 sub _path {
@@ -1037,6 +1042,8 @@ sub on_add_hook {
                 $ctx, $sensitive{user_password});
         }
     }
+    OpenEJovianDSS::Common::password_file_require_user_password(
+        $ctx, $storeid);
 }
 
 sub on_delete_hook {

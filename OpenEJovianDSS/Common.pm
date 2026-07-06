@@ -597,6 +597,22 @@ sub password_file_delete_user_password {
     die "user_password cannot be cleared; provide a new value or remove the storage\n";
 }
 
+sub password_file_require_user_password {
+    my ($ctx, $storeid) = @_;
+    # The creation-time half of the rule above: a storage must not come into
+    # existence without a stored user_password, or every later REST operation
+    # dies far from the add that caused it (campaign finding C3-02). Schema
+    # `required` cannot do this job for a sensitive property: it is extracted
+    # before create validation and never written to storage.cfg, so requiring
+    # it in options() rejects every add and un-parses every existing section
+    # (proven live 2026-07-06).
+    my $user_password = get_user_password($ctx);
+    if ( !defined($user_password) ) {
+        die "storage '${storeid}': JovianDSS REST user password is not"
+          . " stored; supply --user_password\n";
+    }
+}
+
 sub password_file_delete_chap_password {
     my ($ctx) = @_;
     _password_file_delete_key($ctx, 'chap_user_password');
