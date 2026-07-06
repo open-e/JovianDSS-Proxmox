@@ -619,14 +619,34 @@ class JovianDSSDriver(object):
                 LOG.debug(("Got Volume Exists exception, but do nothing as"
                            "%s is a snapshot"), cvname)
             else:
+                # Remove the snapshot backing the failed clone, but ONLY the
+                # intermediate one this call created (volume-named,
+                # jcom.is_volume). A real snapshot name here means the
+                # exists-already warn path above proceeded over a
+                # pre-existing user snapshot — deleting that would destroy
+                # actual snapshot data (review F-15 + maintainer amendment).
+                if create_snapshot and jcom.is_volume(sname):
+                    try:
+                        self.ra.delete_snapshot(ovname,
+                                                sname,
+                                                recursively_children=True,
+                                                force_umount=False)
+                    except jexc.JDSSException as jerrd:
+                        LOG.warning("Because of %s snapshot %s of volume "
+                                    "%s has to be removed manually",
+                                    jerrd, sname, ovname)
                 raise jerr
         except jexc.JDSSException as jerr:
             # This is a garbage collecting section responsible for cleaning
             # all the mess of request failed
-            if create_snapshot:
+            # Same intermediate-only rule as above: never delete a
+            # pre-existing user snapshot. sname is what the create call at
+            # the top of this method actually made (equal to cvname for the
+            # current create_snapshot caller).
+            if create_snapshot and jcom.is_volume(sname):
                 try:
                     self.ra.delete_snapshot(ovname,
-                                            cvname,
+                                            sname,
                                             recursively_children=True,
                                             force_umount=False)
                 except jexc.JDSSException as jerrd:
@@ -1370,7 +1390,12 @@ class JovianDSSDriver(object):
         # Volume is not attached — find a free lun slot in an existing
         # related target, scanning in sorted order.
         tlist = self.list_targets()
-        target_re = re.compile(fr'^{tname}-(?P<id>\d+)$')
+        # re.escape is load-bearing (review S-04): IQN prefixes are
+        # dot-heavy, and an unescaped '.' matches any character — a
+        # foreign/legacy target differing only at dot positions would be
+        # classified as one of ours and could receive the new LUN. The
+        # sibling matchers already escape.
+        target_re = re.compile(fr'^{re.escape(tname)}-(?P<id>\d+)$')
 
         related_targets = []
         related_targets_indexes = []

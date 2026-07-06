@@ -265,30 +265,21 @@ class Targets():
 
     def delete(self):
 
-        LOG.error("Targets delete request for volume %(vol)s %(snap)s",
+        # Routine unpublish - debug severity (review S-05: this logged at
+        # ERROR on every normal deactivation, drowning real errors for any
+        # severity-based monitoring).
+        LOG.debug("Targets delete request for volume %(vol)s %(snap)s",
                   {'vol': self.args['volume_name'],
                    'snap': self.args['snapshot_name']})
         self.jdss.set_target_prefix(self.args['target_prefix'])
 
         try:
-
-            LOG.debug("Targets delete request for volume %(vol)s %(snap)s try",
-                      {'vol': self.args['volume_name'],
-                       'snap': self.args['snapshot_name']})
             if self.args['snapshot_name']:
-
-                LOG.debug("Targets delete request for volume %(vol)s %(snap)s snapshot present",
-                          {'vol': self.args['volume_name'],
-                           'snap': self.args['snapshot_name']})
                 self.jdss.remove_export_snapshot(
                     self.args['target_prefix'],
                     self.args['target_group_name'],
                     self.args['snapshot_name'],
                     self.args['volume_name'])
-
-                LOG.debug("Targets delete request for volume %(vol)s %(snap)s remove export called",
-                          {'vol': self.args['volume_name'],
-                           'snap': self.args['snapshot_name']})
             else:
                 self.jdss.remove_export(
                     self.args['target_prefix'],

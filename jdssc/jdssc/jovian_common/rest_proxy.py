@@ -158,8 +158,29 @@ class JovianDSSRESTProxy(object):
                 LOG.debug("Geting %(data)s from %(t)s to %(addr)s",
                           {'data': out, 't': request_method, 'addr': addr})
 
-                if request_method == 'GET' and out is None:
-                    continue
+                # JovianDSS under heavy load can answer a GET with a
+                # success code but no payload at all (upstream bug): treat
+                # a dataless successful GET as transient — advance to the
+                # next host like every other retry branch and try again
+                # (review F-16 amendment).
+                if request_method == 'GET':
+                    # Defensive: _send returns a dict today, but this loop
+                    # is the resilience layer and must never crash on a
+                    # bare miss.
+                    if out is None:
+                        LOG.debug("GET %(addr)s returned nothing, retrying",
+                                  {'addr': addr})
+                        self._next_host()
+                        continue
+                    else:
+                        if (out['code'] == 200
+                                and out['error'] is None
+                                and out['data'] is None):
+                            LOG.debug("GET %(addr)s returned no data, "
+                                      "retrying", {'addr': addr})
+                            self._next_host()
+                            continue
+
                 return out
 
             # Adding 3 sec sleep delay
