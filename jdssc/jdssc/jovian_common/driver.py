@@ -2673,7 +2673,7 @@ class JovianDSSDriver(object):
             spage=resource_getter(i)
 
             if len(spage) > 0:
-                LOG.debug("Page: %s", str(spage))
+                #LOG.debug("Page: %s", str(spage))
 
                 if f is not None:
                     resp.extend(filter(f, spage))

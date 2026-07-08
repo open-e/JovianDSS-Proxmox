@@ -158,14 +158,19 @@ use constant {
     PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX     => 117,
     # Max total time a cluster-scope lock acquisition retries before dying with
     # "got lock request timeout" (design Finding #13; replaces a hardcoded 1200).
-    PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX => 900,
+    PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX => 1000,
     # Cluster (pmxcfs) lock poll-loop tuning — each mkdir/utime can involve corosync
     # round-trips, so the inter-poll sleep backs off linearly and is jittered to keep
-    # contending nodes out of lockstep.
+    # contending nodes out of lockstep. This applies while there is time to spare;
+    # inside the final window before the acquire deadline the loop instead HALVES the
+    # interval each iteration down to a floor, converging on aggressive polling to
+    # grab the lock the instant it frees. Every case carries jitter.
     PROXMOX_CLUSTER_POLL_BASE_SLEEP      => 0.3,   # initial inter-poll sleep (s)
     PROXMOX_CLUSTER_POLL_BACKOFF_STEP    => 0.1,   # added to the base each iteration (s)
-    PROXMOX_CLUSTER_POLL_JITTER_MAX      => 5,     # uniform jitter upper bound (s)
+    PROXMOX_CLUSTER_POLL_JITTER_MAX      => 5,     # jitter upper bound in the backoff phase (s)
     PROXMOX_CLUSTER_POLL_SLEEP_CAP       => 10,    # max base sleep (s)
+    PROXMOX_CLUSTER_POLL_FINAL_WINDOW    => 160,    # seconds before the acquire deadline to start halving the interval
+    PROXMOX_CLUSTER_POLL_FINAL_SLEEP     => 0.1,   # floor the halved interval never drops below (s)
     # Bounds of the target-session query (target_get_sessions → jdssc
     # `sessions list`, docs/design/jdssc-target-sessions.md): the per-try
     # timeout is short — a healthy appliance answers in seconds — and

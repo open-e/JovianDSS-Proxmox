@@ -79,7 +79,7 @@ use constant LOCK_CLASS_VM_DEFAULT_TYPE            => 'vm';
 use constant LOCK_CLASS_STORAGE_DEFAULT_TYPE       => 'storage';
 
 # seconds to WAIT to acquire, per class
-use constant LOCK_CLASS_JDSSC_GENERAL_ACQUIRE_TIMEOUT => 600;    # = PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX
+use constant LOCK_CLASS_JDSSC_GENERAL_ACQUIRE_TIMEOUT => 1200;    # = PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX
 use constant LOCK_CLASS_JDSSC_INFO_ACQUIRE_TIMEOUT    => 40;
 # Raised from 10 with the volume-activation design: a waiter must outlast one
 # full worst-case command hold (MULTIPATH_CMD_TIMEOUT_MAX + KILL_GRACE +
@@ -87,8 +87,13 @@ use constant LOCK_CLASS_JDSSC_INFO_ACQUIRE_TIMEOUT    => 40;
 # time a waiter out — that is the reactivation cycle's contention class
 # (lock_error_acquire), retried without teardown.
 use constant LOCK_CLASS_MULTIPATH_ACQUIRE_TIMEOUT     => 60;
-use constant LOCK_CLASS_VM_ACQUIRE_TIMEOUT            => 600;
-use constant LOCK_CLASS_STORAGE_ACQUIRE_TIMEOUT       => 600;
+# Raised from 600: on shared storage these resolve to the cluster backend and
+# can face long cluster-wide contention, so a waiter needs headroom to outlast
+# a lengthy hold (up to the 1320 s hold cap) instead of timing out into the
+# reactivation cycle's contention class. Matches the jdssc_general wait. The
+# same value applies harmlessly on the node backend (non-shared storage).
+use constant LOCK_CLASS_VM_ACQUIRE_TIMEOUT            => 1200;
+use constant LOCK_CLASS_STORAGE_ACQUIRE_TIMEOUT       => 1200;
 
 # hold cap: run_bounded alarm + refresh_locks deadline. The jdssc caps sit just
 # above run_command's kill (PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX + 1) so a
@@ -616,11 +621,28 @@ sub _lock_acquire_cluster {
             utime(0, 0, $lockpath);          # signal pmxcfs to release a stale lock
             refresh_locks($ctx, $lockpath);  # keep our held outer locks alive
 
-            Time::HiRes::sleep(
-                $base + rand(OpenEJovianDSS::Common::PROXMOX_CLUSTER_POLL_JITTER_MAX()) );
-            $base += OpenEJovianDSS::Common::PROXMOX_CLUSTER_POLL_BACKOFF_STEP();
-            $base  = OpenEJovianDSS::Common::PROXMOX_CLUSTER_POLL_SLEEP_CAP()
-                if $base > OpenEJovianDSS::Common::PROXMOX_CLUSTER_POLL_SLEEP_CAP();
+            # Deadline-aware pacing, jittered in EVERY case so contending
+            # nodes never poll in lockstep. Far from the deadline: linear
+            # backoff with a fixed jitter bound (desynchronises a long wait).
+            # Inside the final window: HALVE the interval each iteration down
+            # to the floor, with a jitter proportional to the (shrinking)
+            # interval, converging on aggressive polling that grabs the lock
+            # the instant it frees.
+            if ( $remaining
+                <= OpenEJovianDSS::Common::PROXMOX_CLUSTER_POLL_FINAL_WINDOW() )
+            {
+                Time::HiRes::sleep( $base );
+                $base = $base / 2;
+                $base = OpenEJovianDSS::Common::PROXMOX_CLUSTER_POLL_FINAL_SLEEP()
+                    if $base < OpenEJovianDSS::Common::PROXMOX_CLUSTER_POLL_FINAL_SLEEP();
+            }
+            else {
+                Time::HiRes::sleep(
+                    $base + rand(OpenEJovianDSS::Common::PROXMOX_CLUSTER_POLL_JITTER_MAX()) );
+                $base += OpenEJovianDSS::Common::PROXMOX_CLUSTER_POLL_BACKOFF_STEP();
+                $base  = OpenEJovianDSS::Common::PROXMOX_CLUSTER_POLL_SLEEP_CAP()
+                    if $base > OpenEJovianDSS::Common::PROXMOX_CLUSTER_POLL_SLEEP_CAP();
+            }
         }
 
         PVE::Cluster::cfs_update();          # fresh cluster view for the body

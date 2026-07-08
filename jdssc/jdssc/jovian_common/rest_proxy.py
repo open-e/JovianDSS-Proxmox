@@ -118,10 +118,10 @@ class JovianDSSRESTProxy(object):
                     addr = "%(base)s%(req)s" % {
                         'base': self._get_base_url(apiv),
                         'req': req}
-                    LOG.debug("Sending %(t)s to %(addr)s data %(data)s",
-                              {'t': request_method,
-                               'addr': addr,
-                               'data': json_data})
+                    # LOG.debug("Sending %(t)s to %(addr)s data %(data)s",
+                    #          {'t': request_method,
+                    #           'addr': addr,
+                    #           'data': json_data})
                     r = None
                     if json_data is not None:
                         r = requests.Request(request_method,
@@ -155,8 +155,8 @@ class JovianDSSRESTProxy(object):
                     self._next_host()
                     continue
 
-                LOG.debug("Geting %(data)s from %(t)s to %(addr)s",
-                          {'data': out, 't': request_method, 'addr': addr})
+                # LOG.debug("Geting %(data)s from %(t)s to %(addr)s",
+                #          {'data': out, 't': request_method, 'addr': addr})
 
                 # JovianDSS under heavy load can answer a GET with a
                 # success code but no payload at all (upstream bug): treat
