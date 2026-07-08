@@ -246,6 +246,40 @@ class Targets():
                       " support VIP white listing for targets. Please update "
                       "JovianDSS to the newest version.")
             exit(1)
+        except jexc.JDSSTargetInUseException as inuse_err:
+            # Activating this volume here would require detaching an iSCSI
+            # target that other initiator(s) are actively connected to,
+            # dropping their device. Refuse. The message is prefixed with a
+            # marker the Perl plugin recognises to fail the activation
+            # immediately without retrying (LOG.error is routed to stderr,
+            # which the plugin captures). Naming the target and the
+            # initiator IP(s) tells the operator exactly what is holding it.
+            addr = ', '.join(inuse_err.addresses) or 'unknown address'
+            LOG.error(
+                "joviandss-target-in-use: cannot activate volume %(vol)s "
+                "because iSCSI target %(target)s is in use by initiator(s) "
+                "at %(addr)s. Refusing to detach it and disrupt the live "
+                "session; make sure the volume is deactivated everywhere "
+                "first, or give this storage its own target_prefix." % {
+                    'vol': self.args['volume_name'],
+                    'target': inuse_err.target,
+                    'addr': addr})
+            exit(1)
+        except jexc.JDSSTargetPoolConflictException as pool_err:
+            # The target name we need is owned by another pool. This is a
+            # permanent misconfiguration retrying cannot fix, so the message
+            # carries the same kind of marker the Perl plugin recognises to
+            # fail the activation immediately (routed to stderr via LOG.error).
+            LOG.error(
+                "joviandss-target-pool-conflict: cannot activate volume "
+                "%(vol)s because iSCSI target %(target)s also exists in pool "
+                "%(pool)s. Two pools must not share a target name; give this "
+                "storage its own target_prefix and delete the duplicate "
+                "target." % {
+                    'vol': self.args['volume_name'],
+                    'target': pool_err.target,
+                    'pool': pool_err.other_pool})
+            exit(1)
         except jexc.JDSSException as jgerr:
             LOG.error(jgerr.message)
             exit(1)

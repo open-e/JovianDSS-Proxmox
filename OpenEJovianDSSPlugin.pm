@@ -764,7 +764,25 @@ sub _clone_image {
             # or rethrown from this warm-up path.
             eval {
                 my $tgname = get_vm_target_group_name($ctx, $vmid);
-                OpenEJovianDSS::Common::volume_publish($ctx, $tgname, $clone_name_clustered, undef, undef);
+                my $tinfo = OpenEJovianDSS::Common::volume_publish($ctx, $tgname, $clone_name_clustered, undef, undef);
+                # Undo the warm-up if it landed on a target another storage
+                # already uses (campaign finding C2-02): same guard as the
+                # alloc warm-up, on the REAL target name the array returned.
+                # Alloc/clone still succeed; activation refuses the collision.
+                if ( defined($tinfo) && defined($tinfo->{target}) ) {
+                    my $other_storeid =
+                      OpenEJovianDSS::Common::lun_record_local_search_by_target(
+                        $ctx, $tinfo->{target} );
+                    if ( defined($other_storeid) ) {
+                        debugmsg( $ctx, 'warn',
+                            "Undoing pre-activation publish of "
+                          . "${clone_name_clustered}: target $tinfo->{target} "
+                          . "is already used by storage ${other_storeid} "
+                          . "(different storages must use different "
+                          . "target_prefix)\n" );
+                        OpenEJovianDSS::Common::volume_unpublish($ctx, $vmid, $clone_name_clustered, undef, undef);
+                    }
+                }
             };
             last;
         }
@@ -929,7 +947,28 @@ sub _alloc_image {
                 # examined or rethrown from this warm-up path.
                 eval {
                     my $tgname = get_vm_target_group_name($ctx, $vmid);
-                    OpenEJovianDSS::Common::volume_publish($ctx, $tgname, $volume_name_clustered, undef, undef);
+                    my $tinfo = OpenEJovianDSS::Common::volume_publish($ctx, $tgname, $volume_name_clustered, undef, undef);
+                    # If this warm-up landed on a target another storage
+                    # already uses (campaign finding C2-02), undo it: leaving
+                    # our LUN on the shared target is the same contamination
+                    # the activation guard prevents. Uses the REAL target name
+                    # the array just returned, not a reconstructed one. Alloc
+                    # itself still succeeds; activation later refuses the
+                    # collision with the actionable message.
+                    if ( defined($tinfo) && defined($tinfo->{target}) ) {
+                        my $other_storeid =
+                          OpenEJovianDSS::Common::lun_record_local_search_by_target(
+                            $ctx, $tinfo->{target} );
+                        if ( defined($other_storeid) ) {
+                            debugmsg( $ctx, 'warn',
+                                "Undoing pre-activation publish of "
+                              . "${volume_name_clustered}: target "
+                              . "$tinfo->{target} is already used by storage "
+                              . "${other_storeid} (different storages must "
+                              . "use different target_prefix)\n" );
+                            OpenEJovianDSS::Common::volume_unpublish($ctx, $vmid, $volume_name_clustered, undef, undef);
+                        }
+                    }
                 };
                 last;
             }

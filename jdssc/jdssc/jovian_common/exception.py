@@ -178,6 +178,48 @@ class JDSSResourceIsBusyException(JDSSException):
         super().__init__(self.message)
 
 
+class JDSSTargetInUseException(JDSSException):
+    """Target has active iSCSI sessions and must not be reconfigured.
+
+    Raised when an operation would detach a volume from (or delete) an iSCSI
+    target that initiators are actively connected to: doing so drops the
+    device out from under a live session. Carries the target IQN and the
+    initiator addresses so the caller can tell the user exactly what is
+    holding the target.
+    """
+
+    def __init__(self, target, addresses=None):
+        self.target = target
+        self.addresses = list(addresses) if addresses else []
+        if self.addresses:
+            addr = ', '.join(self.addresses)
+        else:
+            addr = 'unknown address'
+        self.message = (
+            "JDSS target %(target)s is in use by active iSCSI session(s) "
+            "from %(addr)s" % {'target': target, 'addr': addr})
+        super().__init__(self.message)
+
+
+class JDSSTargetPoolConflictException(JDSSException):
+    """A target with the same name already exists in a different pool.
+
+    Two pools sharing a target name means the same IQN would be managed
+    from both — the driver must never detach or reconfigure a target it
+    does not own. The operator has to separate them.
+    """
+
+    def __init__(self, target, other_pool):
+        self.target = target
+        self.other_pool = other_pool
+        self.message = (
+            "JDSS iSCSI target %(target)s already exists in a different "
+            "pool (%(pool)s). Two pools must not share a target name: give "
+            "this storage its own target_prefix and delete the duplicate "
+            "target." % {'target': target, 'pool': other_pool})
+        super().__init__(self.message)
+
+
 class JDSSCfgParserException(JDSSException):
     """Resource have dependents"""
 

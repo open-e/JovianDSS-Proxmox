@@ -158,7 +158,7 @@ use constant {
     PROXMOX_CLUSTER_LOCK_TIMEOUT_MAX     => 117,
     # Max total time a cluster-scope lock acquisition retries before dying with
     # "got lock request timeout" (design Finding #13; replaces a hardcoded 1200).
-    PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX => 600,
+    PROXMOX_CLUSTER_LOCK_ACQUIRE_TIMEOUT_MAX => 900,
     # Cluster (pmxcfs) lock poll-loop tuning — each mkdir/utime can involve corosync
     # round-trips, so the inter-poll sleep backs off linearly and is jittered to keep
     # contending nodes out of lockstep.
@@ -3863,6 +3863,141 @@ sub log_dir_content {
 
 }
 
+# _lun_record_other_storeids($ctx)
+#
+# The storeids under the local state root other than this storage's own —
+# the storages whose target usage must be consulted before this storage
+# attaches to, or logs out of, a shared iSCSI target (campaign finding
+# C2-02). Each returned name is a well-formed PVE storage id: a state-root
+# entry that is not is not plugin state and cannot hold lun records. That
+# is the only untrusted component; the paths the callers build from these
+# names are used only for read-only -d/opendir (no shell, no command, no
+# mutation), so they need no further charset filtering.
+sub _lun_record_other_storeids {
+    my ($ctx) = @_;
+    my $storeid = $ctx->{storeid};
+
+    my $sdh;
+    unless ( opendir( $sdh, PLUGIN_LOCAL_STATE_DIR ) ) {
+        # No state root at all means no records anywhere.
+        return ();
+    }
+    my @entries = grep { $_ ne '.' && $_ ne '..' } readdir $sdh;
+    closedir $sdh;
+
+    my @others;
+    foreach my $other_storeid (@entries) {
+        if ( $other_storeid eq $storeid ) {
+            next;
+        }
+        if ( $other_storeid !~ /^[A-Za-z][A-Za-z0-9_.-]*$/ ) {
+            next;
+        }
+        push @others, $other_storeid;
+    }
+    return @others;
+}
+
+# _lun_record_target_dir_in_use($dir)
+#
+# True when $dir is an existing target record directory that still holds at
+# least one lun entry. An empty target dir is a storage's own "no luns left"
+# state and must not count as in use.
+sub _lun_record_target_dir_in_use {
+    my ($dir) = @_;
+
+    if ( !-d $dir ) {
+        return 0;
+    }
+    my $tdh;
+    unless ( opendir( $tdh, $dir ) ) {
+        return 0;
+    }
+    my @entries = grep { $_ ne '.' && $_ ne '..' } readdir $tdh;
+    closedir $tdh;
+
+    return @entries ? 1 : 0;
+}
+
+# lun_record_local_search_by_target($ctx, $targetname)
+#
+# Returns the storeid of another storage whose local lun records still
+# reference the EXACT target $targetname, or undef when no other storage
+# uses it.
+#
+# This is the reactive guard for the residual iSCSI logout, which must
+# consult ALL storages' records, not only this storage's subtree: storages
+# sharing a pool (with or without cluster_prefix), and even storages of
+# different arrays configured with the same target_prefix, produce
+# byte-identical target names, and `iscsiadm --mode node --targetname
+# <name> --logout` kills every session of that name on this host (campaign
+# finding C2-02, live device lost). The comparison is the exact string the
+# logout would kill by — the target directory name — so no pattern matching
+# is involved, and a target in the same group but with a different index
+# (an independent session) is correctly NOT matched.
+sub lun_record_local_search_by_target {
+    my ( $ctx, $targetname ) = @_;
+
+    foreach my $other_storeid ( _lun_record_other_storeids($ctx) ) {
+        my $other_target_dir = File::Spec->catdir( PLUGIN_LOCAL_STATE_DIR,
+                                                   $other_storeid,
+                                                   $targetname );
+        if ( _lun_record_target_dir_in_use($other_target_dir) ) {
+            return $other_storeid;
+        }
+    }
+    return undef;
+}
+
+# Marker prefixing the die raised when an activation attempt finds another
+# storage already on the array-assigned iSCSI target (campaign finding
+# C2-02). error_is_target_collision detects it so volume_activate can fail
+# fast — a shared-target collision is a static target_prefix
+# misconfiguration that cycling cannot fix — the way lock_error_fatal marks
+# an unrecoverable lock die.
+use constant TARGET_COLLISION_ERROR_MARKER => 'joviandss-target-collision:';
+
+sub error_is_target_collision {
+    my ($err) = @_;
+    if ( !defined $err ) {
+        return 0;
+    }
+    return index( $err, TARGET_COLLISION_ERROR_MARKER ) >= 0 ? 1 : 0;
+}
+
+# Marker emitted by jdssc (targets create) when publishing would have to
+# detach an iSCSI target that has live sessions from other initiators — the
+# array-session variant of the shared-target guard: JovianDSS sees sessions
+# cluster-wide, so this catches a device in use on ANOTHER node that the
+# host-local lun records cannot. jdssc routes the message to stderr, which
+# joviandss_cmd captures and dies with; volume_activate detects the marker
+# and fails fast (retrying cannot free a device another host is using).
+use constant TARGET_IN_USE_ERROR_MARKER => 'joviandss-target-in-use:';
+
+sub error_is_target_in_use {
+    my ($err) = @_;
+    if ( !defined $err ) {
+        return 0;
+    }
+    return index( $err, TARGET_IN_USE_ERROR_MARKER ) >= 0 ? 1 : 0;
+}
+
+# Marker emitted by jdssc (targets create) when the target name this storage
+# needs is already owned by a DIFFERENT pool. A permanent misconfiguration
+# (two pools sharing a target name); retrying cannot resolve it, so
+# volume_activate detects the marker and fails fast with the operator-facing
+# message (change target_prefix, remove the duplicate target).
+use constant TARGET_POOL_CONFLICT_ERROR_MARKER =>
+    'joviandss-target-pool-conflict:';
+
+sub error_is_target_pool_conflict {
+    my ($err) = @_;
+    if ( !defined $err ) {
+        return 0;
+    }
+    return index( $err, TARGET_POOL_CONFLICT_ERROR_MARKER ) >= 0 ? 1 : 0;
+}
+
 sub lun_record_local_delete {
     my ( $ctx, $targetname, $lunid, $volname, $snapname ) = @_;
     my $storeid = $ctx->{storeid};
@@ -3883,6 +4018,18 @@ sub lun_record_local_delete {
         die "Invalid character in target dir path: ${ltdir}\n";
     }
     unless ( -d $ltdir ) {
+        my $other_storeid =
+          lun_record_local_search_by_target( $ctx, $targetname );
+        if ( defined($other_storeid) ) {
+            my $skipmsg =
+                "Skipping iSCSI logout of target ${targetname}: storage "
+              . "'${other_storeid}' still has volumes on it. This iSCSI "
+              . "target is shared between storages; give each storage its "
+              . "own target_prefix to avoid sharing targets.";
+            debugmsg( $ctx, 'warn', "${skipmsg}\n" );
+            warn "${skipmsg}\n";
+            return undef;
+        }
         eval {
             volume_unstage_iscsi(
                 $ctx,
@@ -3932,7 +4079,21 @@ sub lun_record_local_delete {
 
             unless ( @entries ) {
 
-                volume_unstage_iscsi( $ctx, $targetname );
+                my $other_storeid =
+                  lun_record_local_search_by_target( $ctx,
+                                                           $targetname );
+                if ( defined($other_storeid) ) {
+                    my $skipmsg =
+                        "Skipping iSCSI logout of target ${targetname}: "
+                      . "storage '${other_storeid}' still has volumes on it. "
+                      . "This iSCSI target is shared between storages; give "
+                      . "each storage its own target_prefix to avoid sharing "
+                      . "targets.";
+                    debugmsg( $ctx, 'warn', "${skipmsg}\n" );
+                    warn "${skipmsg}\n";
+                } else {
+                    volume_unstage_iscsi( $ctx, $targetname );
+                }
 
                 unless ( rmdir( $ltdir ) ) {
                     if ( -d $ltdir) {
@@ -4083,6 +4244,39 @@ sub volume_activate {
         die $last_err
             if OpenEJovianDSS::Lock::lock_error_fatal($last_err);
 
+        # (1b) CONFIG COLLISION: the attempt found another storage already on
+        # the array-assigned target and refused (shared-target guard, C2-02).
+        # It already detached its own LUN; retrying cannot change a static
+        # target_prefix misconfiguration. Fail fast with the actionable
+        # message rather than cycling — stripped of the internal marker so
+        # the user sees a clean error.
+        if ( error_is_target_collision($last_err) ) {
+            my $collision_msg = $last_err;
+            $collision_msg =~ s/^\Q${\ TARGET_COLLISION_ERROR_MARKER}\E\s*//;
+            die $collision_msg;
+        }
+
+        # (1c) TARGET IN USE: jdssc refused to publish because it would have
+        # to detach an iSCSI target that has live sessions from another
+        # initiator (array-session guard). Retrying cannot free a device
+        # another host is actively using — fail fast with the actionable
+        # message (target + initiator IPs), marker stripped for the user.
+        if ( error_is_target_in_use($last_err) ) {
+            my $in_use_msg = $last_err;
+            $in_use_msg =~ s/\Q${\ TARGET_IN_USE_ERROR_MARKER}\E\s*//;
+            die $in_use_msg;
+        }
+
+        # (1d) POOL CONFLICT: jdssc refused because the target name this
+        # storage needs is owned by a different pool. A static
+        # misconfiguration retrying cannot fix — fail fast with the message
+        # (change target_prefix, remove the duplicate), marker stripped.
+        if ( error_is_target_pool_conflict($last_err) ) {
+            my $conflict_msg = $last_err;
+            $conflict_msg =~ s/\Q${\ TARGET_POOL_CONFLICT_ERROR_MARKER}\E\s*//;
+            die $conflict_msg;
+        }
+
         # (2) CONTENTION: an acquire timeout reports a lock that was NEVER
         # OBTAINED - nothing was modified under it, every held lock is
         # still valid, and nothing says the device stack is broken.
@@ -4198,6 +4392,37 @@ sub _volume_activate_attempt {
     die "Unable to identify scsi id for ${volname}"
       . safe_var_print( 'snapshot', $snapname ) . "\n"
         if !defined $state->{scsiid};
+
+    # Shared-target collision guard (campaign finding C2-02), checked on the
+    # REAL array-assigned target name returned by publish above - not a name
+    # reconstructed on this side. If another storage already holds lun
+    # records on this exact target, its deactivation would log out the
+    # session and drop our device (and vice versa). Detach the LUN we just
+    # attached - the cycle teardown's detach is gated (final cycle + no
+    # foreign session) and would not run here, so do it explicitly to leave
+    # nothing on the shared target - then die with the marker so
+    # volume_activate fails fast over a static target_prefix
+    # misconfiguration instead of cycling. Checked BEFORE the login so no
+    # session is ever established on the shared target.
+    my $collision_storeid =
+      lun_record_local_search_by_target( $ctx, $state->{targetname} );
+    if ( defined($collision_storeid) ) {
+        eval {
+            volume_unpublish( $ctx, $vmid, $volname, $snapname,
+                              $content_volume_flag );
+        };
+        if ($@) {
+            debugmsg( $ctx, 'warn',
+                "Detach after shared-target collision on "
+              . "$state->{targetname} failed: $@" );
+        }
+        die TARGET_COLLISION_ERROR_MARKER
+          . " storage '$ctx->{storeid}' refuses to attach volume ${volname} "
+          . "to iSCSI target $state->{targetname}: storage "
+          . "'${collision_storeid}' already uses this target on this node. "
+          . "Different storages MUST use different target_prefix values "
+          . "(see docs/Cluster-Prefix.md).\n";
+    }
 
     # No exact-size gate on activation (review finding F-04, decided
     # 2026-07-05): the broken-export tell of finding #23 is a ZERO/absent

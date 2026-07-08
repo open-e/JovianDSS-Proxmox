@@ -137,6 +137,59 @@ class TestAcquireTargetVolumeLun:
             driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
 
     # ------------------------------------------------------------------
+    # Fast path: attached target does not comply with the target_prefix
+    # ------------------------------------------------------------------
+
+    STALE = "iqn.2020-01.com.open-e:pool-0-target-0"   # a different prefix
+
+    def test_stale_prefix_idle_detaches_and_rehomes(self, driver):
+        # Attached on a target that does NOT match the requested prefix and
+        # has no sessions -> detach and fall through to the create path.
+        driver.ra.get_target_by_lun_name.return_value = [
+            _global_lun_entry(self.STALE, 3),
+        ]
+        driver.ra.get_target_sessions.return_value = []          # idle
+        driver._detach_target_volume = MagicMock()
+        driver.list_targets = MagicMock(return_value=[])         # no new target
+        driver.ra.get_target.side_effect = \
+            jexc.JDSSResourceNotFoundException(res=TBASE + "-0")
+
+        result = driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+        driver._detach_target_volume.assert_called_once_with(self.STALE, VOL)
+        assert result[2] is False      # volume_attached: detached
+        assert result[3] is True       # new_target: re-publish under new prefix
+
+    def test_stale_prefix_in_use_keeps_current(self, driver):
+        # Same stale target but WITH sessions -> leave it, return it as-is.
+        driver.ra.get_target_by_lun_name.return_value = [
+            _global_lun_entry(self.STALE, 3),
+        ]
+        driver.ra.get_target_sessions.return_value = [
+            {"ip": "10.0.0.5", "initiator_name": "iqn.x"}]
+        driver._detach_target_volume = MagicMock()
+
+        result = driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL)
+
+        assert result == (self.STALE, 3, True, False, SCSI)
+        driver._detach_target_volume.assert_not_called()
+
+    def test_stale_prefix_current_query_does_not_mutate(self, driver):
+        # current=True is a read-only lookup: report the stale target, never
+        # check sessions or detach.
+        driver.ra.get_target_by_lun_name.return_value = [
+            _global_lun_entry(self.STALE, 3),
+        ]
+        driver._detach_target_volume = MagicMock()
+
+        result = driver._acquire_taget_volume_lun(PREFIX, GROUP, VOL,
+                                                  current=True)
+
+        assert result == (self.STALE, 3, True, False, SCSI)
+        driver._detach_target_volume.assert_not_called()
+        driver.ra.get_target_sessions.assert_not_called()
+
+    # ------------------------------------------------------------------
     # Slow path: volume not attached, free slot in existing target
     # ------------------------------------------------------------------
 
@@ -366,20 +419,6 @@ class TestEnsureTargetVolumeLun:
         with pytest.raises(jexc.JDSSException):
             driver._ensure_target_volume_lun(TARGET0, VOL, 0, None)
 
-    def test_busy_lun_confirmed_by_recheck_returns_scsi_id(self, driver):
-        _setup_ensure(driver)
-        driver.ra.get_target_lun.side_effect = [
-            jexc.JDSSResourceNotFoundException(res=VOL),
-            LUN_INFO,
-        ]
-        driver._attach_target_volume_lun = MagicMock(
-            side_effect=jexc.JDSSResourceIsBusyException(res=VOL)
-        )
-
-        result = driver._ensure_target_volume_lun(TARGET0, VOL, 0, None)
-
-        assert result['scsi_id'] == SCSI
-
     def test_busy_lun_still_absent_reraises(self, driver):
         _setup_ensure(driver)
         driver.ra.get_target_lun.side_effect = [
@@ -473,3 +512,205 @@ class TestRenameVolume:
         assert result is None
         driver.get_volume.assert_called_once()
         driver.ra.modify_lun.assert_not_called()
+
+
+class TestDetachTargetVolumeInUse:
+    """_detach_target_volume(check_in_use=True) session guard (C2-02)."""
+
+    TGT = TBASE + "-0"
+
+    def _session(self, ip):
+        return {"target_name": self.TGT, "cid": "1", "ip": ip,
+                "sid": "42", "initiator_name": "iqn.init:node"}
+
+    def test_active_sessions_raise_in_use_and_skip_detach(self, driver):
+        driver.ra.get_target_sessions.return_value = [
+            self._session("10.0.0.7"), self._session("10.0.0.8")]
+
+        with pytest.raises(jexc.JDSSTargetInUseException) as ei:
+            driver._detach_target_volume(self.TGT, VOL, check_in_use=True)
+
+        # Never touched the target when it is in use.
+        driver.ra.detach_target_vol.assert_not_called()
+        driver.ra.delete_target.assert_not_called()
+        # Exception carries the target and the initiator addresses (sorted).
+        assert ei.value.target == self.TGT
+        assert ei.value.addresses == ["10.0.0.7", "10.0.0.8"]
+        assert self.TGT in ei.value.message
+        assert "10.0.0.7" in ei.value.message
+
+    def test_no_sessions_detaches_normally(self, driver):
+        driver.ra.get_target_sessions.return_value = []
+        driver.ra.get_target_luns.return_value = []
+
+        driver._detach_target_volume(self.TGT, VOL, check_in_use=True)
+
+        driver.ra.detach_target_vol.assert_called_once_with(self.TGT, VOL)
+        # Last lun gone -> target removed.
+        driver.ra.delete_target.assert_called_once_with(self.TGT)
+
+    def test_missing_target_is_not_in_use(self, driver):
+        # A target that does not exist has no sessions holding it.
+        driver.ra.get_target_sessions.side_effect = \
+            jexc.JDSSResourceNotFoundException(res=self.TGT)
+        driver.ra.get_target_luns.return_value = []
+
+        driver._detach_target_volume(self.TGT, VOL, check_in_use=True)
+
+        driver.ra.detach_target_vol.assert_called_once_with(self.TGT, VOL)
+
+    def test_default_skips_session_check(self, driver):
+        # Without the flag the guard must not query sessions at all.
+        driver.ra.get_target_luns.return_value = [_target_lun(VOL, 0)]
+
+        driver._detach_target_volume(self.TGT, VOL)
+
+        driver.ra.get_target_sessions.assert_not_called()
+        driver.ra.detach_target_vol.assert_called_once_with(self.TGT, VOL)
+
+    def test_detach_only_keeps_target_even_when_empty(self, driver):
+        # detach_only must never delete the target (the caller re-attaches).
+        driver.ra.get_target_luns.return_value = []
+
+        driver._detach_target_volume(self.TGT, VOL, detach_only=True)
+
+        driver.ra.detach_target_vol.assert_called_once_with(self.TGT, VOL)
+        driver.ra.get_target_luns.assert_not_called()
+        driver.ra.delete_target.assert_not_called()
+
+
+class TestAttachTargetVolumeLunBusy:
+    """_attach_target_volume_lun resolves a busy ('volume already used')
+    attach at the single attach chokepoint (C2-02)."""
+
+    OTHER = TBASE + "-1"
+
+    @pytest.fixture(autouse=True)
+    def _quiet_sleep(self, monkeypatch):
+        monkeypatch.setattr("time.sleep", lambda *_a, **_k: None)
+
+    def _entry(self, target, pool=POOL):
+        return {"iscsi_target": {"name": target},
+                "lun": {"lun": 0, "scsi_id": SCSI}, "pool": pool}
+
+    def test_case2_already_on_target_returns_existing_no_detach(self, driver):
+        # busy, then found already on the SAME target -> return its lun,
+        # never move it.
+        driver.ra.attach_target_vol.side_effect = \
+            jexc.JDSSResourceIsBusyException(res=VOL)
+        driver.ra.get_target_by_lun_name.return_value = [self._entry(TARGET0)]
+        driver.ra.get_target_lun.return_value = {"scsi_id": SCSI, "lun": 0}
+        driver._detach_target_volume = MagicMock()
+
+        result = driver._attach_target_volume_lun(TARGET0, VOL, 0)
+
+        assert result["scsi_id"] == SCSI
+        driver._detach_target_volume.assert_not_called()
+
+    def test_case2_right_target_wrong_lun_relocates(self, driver):
+        # On the desired target but at a DIFFERENT lun than requested ->
+        # detach where it is and re-attach at the requested lun.
+        driver.ra.attach_target_vol.side_effect = [
+            jexc.JDSSResourceIsBusyException(res=VOL),
+            {"scsi_id": SCSI},
+        ]
+        # _entry() reports the volume on TARGET0 at lun 0; we ask for lun 3.
+        driver.ra.get_target_by_lun_name.return_value = [self._entry(TARGET0)]
+        driver.ra.get_target_sessions.return_value = []
+        driver.ra.get_target_luns.return_value = []
+
+        result = driver._attach_target_volume_lun(TARGET0, VOL, 3)
+
+        assert result["scsi_id"] == SCSI
+        driver.ra.detach_target_vol.assert_called_once_with(TARGET0, VOL)
+        # Same-target lun move must NOT delete the target (detach_only).
+        driver.ra.delete_target.assert_not_called()
+
+    def test_incomplete_attachment_record_retries(self, driver):
+        # The array reports an attachment missing iscsi_target/lun -> do not
+        # act on it, retry on the next attempt (then attach succeeds).
+        driver.ra.attach_target_vol.side_effect = [
+            jexc.JDSSResourceIsBusyException(res=VOL),
+            {"scsi_id": SCSI},
+        ]
+        driver.ra.get_target_by_lun_name.return_value = [
+            {"pool": POOL, "lun": {"lun": 0}}]        # no iscsi_target
+        driver._detach_target_volume = MagicMock()
+
+        result = driver._attach_target_volume_lun(TARGET0, VOL, 0)
+
+        assert result["scsi_id"] == SCSI
+        driver._detach_target_volume.assert_not_called()
+
+    def test_case1_other_target_same_pool_detaches_then_reattaches(self, driver):
+        # busy, volume on ANOTHER target in our pool, no sessions -> detach
+        # there and retry attach.
+        driver.ra.attach_target_vol.side_effect = [
+            jexc.JDSSResourceIsBusyException(res=VOL),
+            {"scsi_id": SCSI},
+        ]
+        driver.ra.get_target_by_lun_name.return_value = [self._entry(self.OTHER)]
+        driver.ra.get_target_sessions.return_value = []       # not in use
+        driver.ra.get_target_luns.return_value = []
+
+        result = driver._attach_target_volume_lun(TARGET0, VOL, 0)
+
+        assert result["scsi_id"] == SCSI
+        driver.ra.detach_target_vol.assert_called_once_with(self.OTHER, VOL)
+
+    def test_case1_other_target_in_use_raises_no_detach(self, driver):
+        # volume on another target WITH live sessions -> refuse.
+        driver.ra.attach_target_vol.side_effect = \
+            jexc.JDSSResourceIsBusyException(res=VOL)
+        driver.ra.get_target_by_lun_name.return_value = [self._entry(self.OTHER)]
+        driver.ra.get_target_sessions.return_value = [
+            {"ip": "10.0.0.9", "initiator_name": "iqn.x"}]
+
+        with pytest.raises(jexc.JDSSTargetInUseException):
+            driver._attach_target_volume_lun(TARGET0, VOL, 0)
+        driver.ra.detach_target_vol.assert_not_called()
+
+    def test_cross_pool_same_target_name_raises_no_detach(self, driver):
+        # a same-named target owned by a DIFFERENT pool -> never cross pools.
+        driver.ra.attach_target_vol.side_effect = \
+            jexc.JDSSResourceIsBusyException(res=VOL)
+        driver.ra.get_target_by_lun_name.return_value = [
+            self._entry(TARGET0, pool="Other-Pool")]
+
+        with pytest.raises(jexc.JDSSTargetPoolConflictException):
+            driver._attach_target_volume_lun(TARGET0, VOL, 0)
+        driver.ra.detach_target_vol.assert_not_called()
+
+    def test_transient_busy_not_attached_retries_then_succeeds(self, driver):
+        # busy but not attached anywhere -> pace and retry, then succeed.
+        driver.ra.attach_target_vol.side_effect = [
+            jexc.JDSSResourceIsBusyException(res=VOL),
+            {"scsi_id": SCSI},
+        ]
+        driver.ra.get_target_by_lun_name.return_value = []    # not attached
+
+        result = driver._attach_target_volume_lun(TARGET0, VOL, 0)
+
+        assert result["scsi_id"] == SCSI
+
+    def test_multiple_attachments_same_pool_raises(self, driver):
+        # Volume reported on two targets in our pool -> corrupted state,
+        # refuse rather than pick one.
+        driver.ra.attach_target_vol.side_effect = \
+            jexc.JDSSResourceIsBusyException(res=VOL)
+        driver.ra.get_target_by_lun_name.return_value = [
+            self._entry(TARGET0), self._entry(self.OTHER)]
+
+        with pytest.raises(jexc.JDSSException) as ei:
+            driver._attach_target_volume_lun(TARGET0, VOL, 0)
+        assert "single target" in str(ei.value)
+        driver.ra.detach_target_vol.assert_not_called()
+
+    def test_persistent_busy_exhausts_and_raises(self, driver):
+        # always busy, never resolvable -> raise busy after max attempts.
+        driver.ra.attach_target_vol.side_effect = \
+            jexc.JDSSResourceIsBusyException(res=VOL)
+        driver.ra.get_target_by_lun_name.return_value = []
+
+        with pytest.raises(jexc.JDSSResourceIsBusyException):
+            driver._attach_target_volume_lun(TARGET0, VOL, 0)

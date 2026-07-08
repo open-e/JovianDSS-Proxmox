@@ -1158,7 +1158,8 @@ class JovianDSSDriver(object):
                 LOG.warning("Could not delete zombie target %s: %s",
                             target, jerr)
 
-    def _detach_target_volume(self, tname, vname):
+    def _detach_target_volume(self, tname, vname, check_in_use=False,
+                              detach_only=False):
         """detach_target_volume
 
         Will go through all target, find one that volume is attached to
@@ -1167,13 +1168,38 @@ class JovianDSSDriver(object):
         it will remove target
 
         :param str vname: physical volume id
+        :param bool check_in_use: when True, refuse to touch the target if it
+              has active iSCSI sessions. Detaching a volume (and deleting the
+              target once its last lun is gone) drops the device from under a
+              live initiator, on this or any other node — get_target_sessions
+              reports sessions cluster-wide, so this catches remote users the
+              host-local lun records cannot see. Raises JDSSTargetInUseException
+              (carrying the target and the initiator addresses) instead.
+        :param bool detach_only: when True, only detach the volume and never
+              delete the target, even if it is now empty. Used when the caller
+              is about to re-attach the volume to this same target at a
+              different lun — deleting it would make that re-attach fail.
         """
         LOG.debug("detach target %s volume %s", tname, vname)
+
+        if check_in_use:
+            try:
+                sessions = self.ra.get_target_sessions(tname)
+            except jexc.JDSSResourceNotFoundException:
+                # No such target means nothing is connected to it.
+                sessions = []
+            if sessions:
+                addresses = sorted({s['ip'] for s in sessions
+                                    if s.get('ip')})
+                raise jexc.JDSSTargetInUseException(tname, addresses)
 
         try:
             self.ra.detach_target_vol(tname, vname)
         except jexc.JDSSResourceNotFoundException:
             pass
+
+        if detach_only:
+            return
 
         luns = self.ra.get_target_luns(tname)
 
@@ -1229,22 +1255,13 @@ class JovianDSSDriver(object):
             clean_and_recrete = True
 
         if clean_and_recrete:
-            try:
-                # TODO: update this
-                return self._create_target_volume_lun(tname,
-                                                      vname,
-                                                      lid,
-                                                      provider_auth)
-            except jexc.JDSSResourceIsBusyException:
-                LOG.debug("looks like volume %s belogns to other target",
-                          vname)
-                # this only happens if volume is attached somewhere and it
-                # not related to target spoecified in the reques
-                # there fore we detach and try to reattach
-                self._detach_target_volume(tname, vname)
-
+            # A volume that is busy (attached elsewhere) is now resolved
+            # inside _attach_target_volume_lun (the single attach chokepoint):
+            # it relocates from another target in this pool, reuses an
+            # existing attachment on this target, or raises on a live session
+            # / cross-pool clash. No detach-and-reattach dance is needed here.
             return self._create_target_volume_lun(tname,
-                                                  tname,
+                                                  vname,
                                                   lid,
                                                   provider_auth)
 
@@ -1268,27 +1285,19 @@ class JovianDSSDriver(object):
                 lun_info = self.ra.get_target_lun(tname, vname)
                 scsi_id = lun_info['scsi_id']
             except jexc.JDSSResourceNotFoundException:
-                try:
-                    lun_data = self._attach_target_volume_lun(tname, vname, lid)
-                    if lun_data:
-                        scsi_id = lun_data['scsi_id']
-                    if not scsi_id:
-                        try:
-                            lun_info = self.ra.get_target_lun(tname, vname)
-                            scsi_id = lun_info['scsi_id']
-                        except jexc.JDSSException:
-                            LOG.warning("Unable to retrieve scsi_id for %s "
-                                        "on target %s", vname, tname)
-                except jexc.JDSSResourceIsBusyException as busy_err:
-                    # The attach POST may have been processed by a previous
-                    # timed-out request.  Re-check before giving up.
+                # Busy (volume attached elsewhere, or a prior request that
+                # already attached it here) is resolved inside
+                # _attach_target_volume_lun, so it no longer surfaces here.
+                lun_data = self._attach_target_volume_lun(tname, vname, lid)
+                if lun_data:
+                    scsi_id = lun_data['scsi_id']
+                if not scsi_id:
                     try:
                         lun_info = self.ra.get_target_lun(tname, vname)
                         scsi_id = lun_info['scsi_id']
-                        LOG.info("Volume %s attached to target %s "
-                                 "by prior request", vname, tname)
-                    except jexc.JDSSResourceNotFoundException:
-                        raise busy_err
+                    except jexc.JDSSException:
+                        LOG.warning("Unable to retrieve scsi_id for %s "
+                                    "on target %s", vname, tname)
 
         if not scsi_id:
             raise jexc.JDSSException(
@@ -1379,6 +1388,35 @@ class JovianDSSDriver(object):
                 lun_info = self.ra.get_target_lun(target, vname)
                 lun_id = lun_info['lun'] if lun_info else None
                 scsi_id = lun_info.get('scsi_id') if lun_info else None
+
+            # The volume is attached. If it sits on a target that does NOT
+            # comply with the requested target_prefix (tname is built from it
+            # above) - e.g. the prefix was changed in the storage config -
+            # re-home it under the new prefix, but only when it is safe:
+            #   * a read-only lookup (current=True) never mutates: report it;
+            #   * a target with live iSCSI sessions is left in place and
+            #     returned as-is (re-homing would drop the device from under
+            #     an active initiator - the same busy check the detach guard
+            #     uses);
+            #   * otherwise detach it here so the not-attached path below
+            #     re-publishes it under the new prefix.
+            expected_target_re = re.compile(
+                fr'^{re.escape(tname)}-(?P<id>\d+)$')
+            if (not current) and (not expected_target_re.match(target)):
+                try:
+                    sessions = self.ra.get_target_sessions(target)
+                except jexc.JDSSResourceNotFoundException:
+                    sessions = []
+                if sessions:
+                    LOG.info("Volume %s is on target %s which does not match "
+                             "the configured target_prefix, but it has active "
+                             "sessions - keeping it in place", vname, target)
+                    return (target, lun_id, True, False, scsi_id)
+                LOG.info("Volume %s is on target %s which does not match the "
+                         "configured target_prefix and is idle - detaching to "
+                         "re-home it under the new prefix", vname, target)
+                self._detach_target_volume(target, vname)
+                break
 
             LOG.debug("Volume %s already attached: target %s lun %s",
                       vname, target, lun_id)
@@ -1730,37 +1768,126 @@ class JovianDSSDriver(object):
         return luns
 
     def _attach_target_volume_lun(self, target_name, vname, lun):
-        """Attach target to volume and handles exceptions
+        """Attach volume to target at the given lun, resolving conflicts.
 
-        Attempts to set attach volume to specific target.
-        Under concurrent load the volume may be temporarily busy
-        (REST API processing another operation), so retry with backoff.
+        A busy attach ("volume already used") is the single point where the
+        volume being attached somewhere else surfaces. It is resolved at the
+        top of the NEXT loop pass — never inside the except handler, which
+        only flags the condition — honouring three cases:
+          - the volume is already on target_name (perhaps a different lun):
+            it is published here already, so its existing lun is returned and
+            nothing is moved;
+          - it is on a different target in THIS pool: that target is detached
+            (guarded — never a target with live iSCSI sessions, which raises
+            JDSSTargetInUseException) and the attach is retried;
+          - a target of the SAME NAME lives in a DIFFERENT pool: the driver
+            must not touch another pool, so JDSSTargetPoolConflictException is
+            raised for the operator to resolve.
+        A transient busy (REST processing another op, volume not actually
+        attached) is paced and retried.
+
         :param target_name: name of target
         :param vname: volume physical id
         :param lun: lun number that given vname will be attached to target_name
         """
         max_attempts = 4
+        resolve_busy = False
         for attempt in range(max_attempts):
+
+            # Resolve the previous pass's busy here, OUTSIDE the except
+            # handler (the except only sets the flag).
+            if resolve_busy:
+                resolve_busy = False
+
+                # Find where the volume is attached IN OUR POOL. The first
+                # our-pool match is kept as target_data; a SECOND one means
+                # the volume is on several targets at once - a corrupted state
+                # we refuse to guess at, so the loop never breaks early.
+                target_data = None
+                for entry in self.ra.get_target_by_lun_name(vname):
+                    entry_pool = entry.get('pool')
+                    entry_target = entry.get('iscsi_target', {}).get('name')
+                    if entry_pool != self._pool:
+                        # Different pool, same target name: a naming clash we
+                        # must never detach across.
+                        if entry_target == target_name:
+                            raise jexc.JDSSTargetPoolConflictException(
+                                target_name, entry_pool)
+                        continue
+                    if target_data is not None:
+                        raise jexc.JDSSException(
+                            "Volume %(vol)s is attached to more than one "
+                            "target in pool %(pool)s (%(t1)s and %(t2)s); a "
+                            "volume must live on a single target - refusing "
+                            "to relocate it in this corrupted state" % {
+                                'vol': vname,
+                                'pool': self._pool,
+                                't1': target_data.get(
+                                    'iscsi_target', {}).get('name'),
+                                't2': entry_target})
+                    target_data = entry
+
+                if target_data is not None:
+                    current_target = \
+                        target_data.get('iscsi_target', {}).get('name')
+                    current_lun = target_data.get('lun', {}).get('lun')
+
+                    if current_target is None or current_lun is None:
+                        # The array reported an attachment but without the
+                        # fields we need to act on it. Do not guess - go on to
+                        # the next attempt.
+                        LOG.warning("Volume %s has an incomplete attachment "
+                                    "record %s, retrying", vname, target_data)
+                        time.sleep(1 + attempt * 2)
+                        continue
+
+                    if current_target == target_name:
+                        # Already on the target we want.
+                        if (lun is None) or (current_lun == lun):
+                            # And at the lun we want (or no lun was asked
+                            # for): use the existing attachment as it is.
+                            LOG.info("Volume %s already attached to target %s "
+                                     "lun %s, using existing attachment",
+                                     vname, target_name, current_lun)
+                            return self.ra.get_target_lun(target_name, vname)
+                        # Right target but wrong lun: relocate to the
+                        # requested lun, keeping the target for the re-attach.
+                        LOG.info("Volume %s on target %s at lun %s, moving it "
+                                 "to lun %s",
+                                 vname, target_name, current_lun, lun)
+                        detach_only = True
+                    else:
+                        # On a different target: relocate to the one we want,
+                        # removing that target if it becomes empty.
+                        LOG.info("Volume %s attached to target %s, relocating "
+                                 "to %s", vname, current_target, target_name)
+                        detach_only = False
+
+                    # Detach where the volume actually is (refuses if that
+                    # target has live sessions), then let the attach below
+                    # place it on target_name at the wanted lun.
+                    self._detach_target_volume(current_target, vname,
+                                               check_in_use=True,
+                                               detach_only=detach_only)
+                else:
+                    # Not attached after all (transient busy / freed): pace
+                    # the retry; the attach below runs again.
+                    time.sleep(1 + attempt * 2)
+
             try:
-                lun_data = self.ra.attach_target_vol(target_name, vname, lun_id=lun)
-                return lun_data
+                return self.ra.attach_target_vol(target_name, vname,
+                                                 lun_id=lun)
             except jexc.JDSSResourceIsBusyException:
-                if attempt >= max_attempts - 1:
-                    LOG.warning("Volume %s still busy after %d attempts "
-                                "to attach to target %s",
-                                vname, max_attempts, target_name)
-                    raise
-                delay = 3 + attempt * 2
-                LOG.info("Volume %s is busy, retrying attachment in %ds "
-                         "(%d/%d)", vname, delay, attempt + 1,
-                         max_attempts - 1)
-                time.sleep(delay)
+                resolve_busy = True
+                continue
             except jexc.JDSSException as jerr:
-                msg=(f"Unable to attach volume {vname} to "
-                       f"target {target_name} lun {lun} "
-                       f"because of {jerr}.")
-                LOG.warning(msg)
+                LOG.warning("Unable to attach volume %s to target %s lun %s "
+                            "because of %s.", vname, target_name, lun, jerr)
                 raise jerr
+
+        LOG.warning("Volume %s still busy after %d attempts to attach to "
+                    "target %s", vname, max_attempts, target_name)
+        raise jexc.JDSSResourceIsBusyException(vname)
 
     def _set_target_credentials(self, target_name, cred):
         """Set CHAP configuration for target and handle exceptions

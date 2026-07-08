@@ -57,6 +57,21 @@ producing intermittent attach failures.
 **Therefore, when multiple clusters share one pool, you must give each cluster
 both a unique `cluster_prefix` *and* a unique `target_prefix`.**
 
+The rule is really per **storage**, not just per cluster: the iSCSI initiator
+on a node tracks targets by IQN alone, so *any* two joviandss storages that
+build the same target name — two storages of the same pool inside one cluster
+(for example a plain and a `cluster_prefix` storage during a transition, with
+a VM keeping disks on both), or even storages of two different arrays
+configured with the same `target_prefix` — would end up sharing one target on
+the node. The plugin enforces this rule: a storage **refuses to attach a
+volume to a target that another storage already uses on the node**, with an
+error naming both storages ("Different storages MUST use different
+target_prefix values"). For records that already exist (created before the
+enforcement), teardown stays safe — a storage never logs out a target while
+another storage still has volumes on it, and the last storage to release the
+target cleans up all sessions. **Give every joviandss storage its own
+`target_prefix`.**
+
 | Setting | Isolates | Required for shared pool? |
 |---|---|---|
 | `cluster_prefix` | Volume names (what each cluster can see) | **Yes** |
