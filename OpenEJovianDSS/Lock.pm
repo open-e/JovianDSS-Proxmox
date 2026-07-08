@@ -106,8 +106,8 @@ use constant LOCK_CLASS_MULTIPATH_HOLD_TIMEOUT     => 60;
 # ~13–17 min worst) must fit inside the method-lock deadline with headroom
 # instead of dying mid-recovery; the deadline stays the loud backstop beyond
 # that (its die carries LOCK_FATAL_ERROR_MARKER and is never absorbed).
-use constant LOCK_CLASS_VM_HOLD_TIMEOUT            => 1320;
-use constant LOCK_CLASS_STORAGE_HOLD_TIMEOUT       => 1320;
+use constant LOCK_CLASS_VM_HOLD_TIMEOUT            => 1620;
+use constant LOCK_CLASS_STORAGE_HOLD_TIMEOUT       => 1620;
 
 # class-key → constant wiring, used by the getters for runtime dispatch.
 # LOCK_DEFAULT_TYPE's key set doubles as the valid-class list (with_lock dies
