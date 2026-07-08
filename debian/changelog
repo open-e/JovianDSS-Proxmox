@@ -1,3 +1,100 @@
+open-e-joviandss-proxmox-plugin (0.11.6-0) stable; urgency=medium
+
+    * New: Scope-typed locking layer (OpenEJovianDSS/Lock.pm) replacing the
+      jdssc-internal REST-level lock — per-VM and per-storage method locks,
+      per-jdssc-invocation component locks (jdssc_general / jdssc_info) and a
+      reserved multipath class; backed by pmxcfs (cluster) or flock (node)
+      with a hold-cap / keep-alive / re-entry registry threaded through $ctx.
+      Makes concurrent access to a shared Pool from many nodes and clusters
+      safe (builds on cluster_prefix + per-storage target isolation)
+    * New: jdssc `pool <pool> targets sessions` subcommand (sessions.py)
+      listing a target's active iSCSI sessions — evidence source for the
+      session-gated recovery detach
+    * New: volume_activate rebuilt as a bounded reactivation cycle with
+      three-way error classification, a stale-cookie sweep and a
+      session-gated last-resort target detach
+    * New: Automatic target_prefix re-homing — activating an idle volume
+      whose target does not match the configured prefix detaches and
+      republishes it under the new prefix; a volume with live sessions is
+      left in place until it is next activated while idle
+    * New: Shared-target protection — a storage refuses to attach a volume
+      onto, or log out of, an iSCSI target another storage is using, refuses
+      to tear down a target that has live connections, and rejects a target
+      name owned by a different Pool (JDSSTargetInUseException /
+      JDSSTargetPoolConflictException, surfaced as fail-fast operator
+      messages)
+    * New: NFS storage type now requires user_name and user_password; storage
+      add fails immediately if no REST password ends up stored, matching the
+      block storage type
+    * Change: Lock layer reworked into explicit phases (commission → acquire →
+      refresh-bracketed execution → release → decommission); the hold alarm is
+      re-armed at every refresh point and derived from the lock registry,
+      fixing spurious fatal lock errors when a long activation wait under a
+      shared VM lock outlived the cluster filesystem's idle-reclaim window
+    * Change: Cluster-lock acquisition polls aggressively in the final minute
+      before its deadline (interval halved down to a 0.1 s floor) with
+      proportional jitter in every phase; per-VM / per-storage acquire timeouts
+      raised to 1200 s and hold timeouts to 1620 s for shared storage
+    * Change: Each iSCSI portal login during activation is now bounded
+      end-to-end and refreshes the held cluster lock, shrinking the unrefreshed
+      window to roughly one login regardless of portal count
+    * Change: Cloning now takes only the destination guest's lock — a clone
+      never modifies its source, so the previous two-lock ordering scheme
+      guarded nothing
+    * Change: Allocating a disk with an empty name is treated as a request for
+      automatic naming instead of creating an unusable volume named after the
+      bare cluster prefix
+    * Change: Rename jdssc lock classes jdssc_cluster → jdssc_general,
+      jdssc_node → jdssc_info; info-tier acquire timeout raised 10 s → 40 s
+    * Fix: NFS path() returned no owner or format in list context, so
+      Proxmox's ownership check always answered "not owned" — qm destroy,
+      unlink and detach silently left files on the share; path() now reports
+      vmid and format
+    * Fix: _rename_volume could report success without renaming — a probe
+      failure fell out of the retry loop as a clean exit and the not-found
+      handlers named a subclass that is never raised, so Proxmox wrote configs
+      pointing at disks that were never created; the exit contract is now
+      pinned by tests
+    * Fix: Activating a snapshot of a resized parent failed permanently — the
+      staged device was compared against the parent's current size, which a
+      frozen snapshot export can never match; activation now only requires a
+      non-zero staged capacity (which still catches a broken, non-functional
+      export), while the resize path keeps its exact verification
+    * Fix: Resize recovery no longer aborts on a transient hiccup of its own
+      size check, which could abandon an operation that had already succeeded
+    * Fix: vm_tag_force_rollback_is_set no longer answers "absent" on a
+      tag-read failure — a false "no tag" silently downgraded a forced rollback
+      to a blocked one; it now dies loudly, with a bounded retry for transient
+      reads
+    * Fix: A clone name collision now removes the intermediate snapshot the
+      operation created before reporting the error, instead of stranding it on
+      the source volume; real user snapshots are never touched on any failure
+      path
+    * Fix: LUN placement matches the configured target name literally, so a
+      foreign target with a similar name can no longer be mistaken for ours and
+      receive a volume
+    * Fix: REST layer retries a heavily-loaded appliance's dataless GET (200
+      with an empty payload) against the next address, instead of returning it
+      broken to the caller or retrying the same host forever
+    * Fix: on_add_hook returns undef so the PVE 9.x POST /storage result
+      'config' object type check passes (Perl was returning its last evaluated
+      expression, failing result verification only after the 8.x → 9.x upgrade)
+    * Fix: Targeted rescan skips iSCSI sessions being torn down mid-scan
+      instead of warning and escalating to a full-bus scan; a device-rescan
+      timeout is treated as one failed rescan and no longer aborts the whole
+      activation attempt
+    * Fix: Activating a volume whose local record carries no recorded size no
+      longer emits an uninitialized-value warning; the unknown size is simply
+      refreshed from the array
+    * Fix: Routine volume_unpublish is no longer logged at error severity,
+      where it drowned real failures for anyone monitoring by severity
+    * Fix: list_snapshots guid processing
+    * Remove: OpenEJovianDSS/Semaphore.pm and the max_parallel_volume_ops
+      property — cross-node concurrency is now bounded by the scope-typed lock
+      instead of a host-level semaphore
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>, Claude Code (Anthropic AI)  Wed, 08 Jul 2026 00:00:00 +0200
+
 open-e-joviandss-proxmox-plugin (0.11.5-0) stable; urgency=medium
 
     * Revert: Remove pmxcfs mkdir-based iSCSI target lock (jdssc/lock.py),
