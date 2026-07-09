@@ -46,6 +46,13 @@ open-e-joviandss-proxmox-plugin (0.11.6-0) stable; urgency=medium
       bare cluster prefix
     * Change: Rename jdssc lock classes jdssc_cluster → jdssc_general,
       jdssc_node → jdssc_info; info-tier acquire timeout raised 10 s → 40 s
+    * Change: The force-rollback VM/CT tag is spelled force-rollback, not
+      force_rollback (shipped as force_rollback since 0.11.4). Guests still
+      tagged force_rollback are treated as untagged: a rollback that the tag
+      would have forced now stops with the usual "Rollback blocked" message,
+      which names the new spelling. No data is at risk — the failure is to
+      block, never to destroy — but re-tag any guest that relies on it:
+      qm set <vmid> --tags force-rollback  (pct set for containers)
     * Fix: NFS path() returned no owner or format in list context, so
       Proxmox's ownership check always answered "not owned" — qm destroy,
       unlink and detach silently left files on the share; path() now reports

@@ -1,6 +1,6 @@
 # Snapshot Rollback and High Availability
 
-This guide explains how the JovianDSS Proxmox plugin handles snapshot rollback operations, particularly when VMs or containers are managed by Proxmox High Availability (HA), and how to use the `force_rollback` feature for advanced rollback scenarios.
+This guide explains how the JovianDSS Proxmox plugin handles snapshot rollback operations, particularly when VMs or containers are managed by Proxmox High Availability (HA), and how to use the `force-rollback` feature for advanced rollback scenarios.
 
 ## Overview
 
@@ -108,18 +108,18 @@ ha-manager set vm:100 --state started
 
 In Open-E JovianDSS, rollback is a destructive operation — all snapshots newer than the rollback target must be deleted. When these newer snapshots were created outside of Proxmox (by JovianDSS scheduled tasks, replication, or manual REST API calls), Proxmox has no record of them and cannot warn you about their removal.
 
-To prevent accidental data loss, the plugin requires explicit confirmation before proceeding. This confirmation is given by adding the `force_rollback` tag to your VM or container.
+To prevent accidental data loss, the plugin requires explicit confirmation before proceeding. This confirmation is given by adding the `force-rollback` tag to your VM or container.
 
-### Adding the force_rollback Tag
+### Adding the force-rollback Tag
 
 **Web UI:**
 1. Select the VM or container → `Options` → `Tags` → `Edit`
-2. Add `force_rollback` and click `OK`
+2. Add `force-rollback` and click `OK`
 
 **CLI:**
 ```bash
-qm set 100 --tags "force_rollback"    # VM
-pct set 100 --tags "force_rollback"   # Container
+qm set 100 --tags "force-rollback"    # VM
+pct set 100 --tags "force-rollback"   # Container
 ```
 
 Once the tag is set, stop the VM/container and perform rollback normally. The plugin will delete blocking unmanaged snapshots and proceed.
@@ -128,7 +128,7 @@ Once the tag is set, stop the VM/container and perform rollback normally. The pl
 
 ### Limitations
 
-The `force_rollback` tag only bypasses unmanaged snapshots. It will **not** bypass:
+The `force-rollback` tag only bypasses unmanaged snapshots. It will **not** bypass:
 - Proxmox-managed snapshots (delete through Proxmox first)
 - Dependent clones (remove clone volumes first)
 - HA management (set HA state to `ignored` first)
@@ -159,7 +159,7 @@ Rollback Request
        │No (only unmanaged snapshots)
        ▼
 ┌──────────────────┐
-│ Is force_rollback│──No──▶ BLOCKED
+│ Is force-rollback│──No──▶ BLOCKED
 │    tag set?      │        (add tag to proceed)
 └──────────────────┘
        │Yes
@@ -186,7 +186,7 @@ Rollback Request
 2. **Document the process** — Record original HA state before changes
 3. **Test in non-production first** — Verify procedure on test VMs
 
-### For force_rollback
+### For force-rollback
 
 1. **Use sparingly** — Only when automatic JovianDSS snapshots block operations
 2. **Remove tag immediately after** — Prevents unintended forced rollbacks
@@ -202,7 +202,7 @@ This typically indicates an HA issue. Check:
 ha-manager status
 ```
 
-### force_rollback tag set but still blocked
+### force-rollback tag set but still blocked
 
 The blockers include managed resources. Check the full error message for:
 - Proxmox-managed snapshot names

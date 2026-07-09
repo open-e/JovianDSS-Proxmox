@@ -1555,12 +1555,12 @@ sub format_rollback_block_reason {
         $printed = 1;
     };
 
-    # force_rollback is set but clones or unknown blockers prevent it.
+    # force-rollback is set but clones or unknown blockers prevent it.
     # Managed and storage-side snapshots are handled automatically;
     # only the resources listed below require manual removal.
     if ($force_rollback) {
         $msg .= "Unable to rollback.\n";
-        $msg .= "'force_rollback' handles managed and storage-side"
+        $msg .= "'force-rollback' handles managed and storage-side"
               . " snapshots automatically,\n";
         $msg .= "but the following resources must be removed"
               . " manually first:\n\n";
@@ -1579,9 +1579,9 @@ sub format_rollback_block_reason {
         return $msg;
     }
 
-    # No force_rollback set.
+    # No force-rollback set.
     # When only snapshots block (no clones, no unknown),
-    # adding the 'force_rollback' tag will handle them automatically.
+    # adding the 'force-rollback' tag will handle them automatically.
     if (!$has_clones && !$has_unknown) {
         $msg .= "Rollback blocked by newer snapshots:\n\n";
 
@@ -1595,7 +1595,7 @@ sub format_rollback_block_reason {
             $unmanaged_snaps
         ) if $has_unmanaged;
 
-        $msg .= "Hint: add 'force_rollback' tag to VM/Container"
+        $msg .= "Hint: add 'force-rollback' tag to VM/Container"
               . " to roll back automatically.\n";
         $msg .= "!! DANGER !! All listed snapshots will be destroyed.\n";
 
@@ -4978,7 +4978,7 @@ sub vm_tag_force_rollback_is_set {
 
         $last_err = $@;
         debugmsg( $ctx, 'warn',
-            "force_rollback tag read for vmid ${vmid} failed "
+            "force-rollback tag read for vmid ${vmid} failed "
           . "(attempt ${attempt}/${attempts}): ${last_err}" );
         sleep(2) if $attempt < $attempts;
     }
@@ -4992,7 +4992,7 @@ sub _vm_tag_force_rollback_read {
 
     if ( ! defined($virt_type) ) {
         die "Unable to identify virtualisation type of VM/CT ${vmid} "
-          . "while checking force_rollback tag\n";
+          . "while checking force-rollback tag\n";
     }
     my $nodename = PVE::INotify::nodename();
 
@@ -5014,7 +5014,7 @@ sub _vm_tag_force_rollback_read {
 
     if ( $exitcode != 0 ) {
         die "Unable to read VM/CT ${vmid} config "
-          . "while checking force_rollback tag: ${err_out}\n";
+          . "while checking force-rollback tag: ${err_out}\n";
     }
 
     my $conf;
@@ -5024,12 +5024,12 @@ sub _vm_tag_force_rollback_read {
 
     if ( $@ || ref($conf) ne 'HASH' ) {
         die "Unable to parse VM/CT ${vmid} config "
-          . "while checking force_rollback tag: $@\n";
+          . "while checking force-rollback tag: $@\n";
     }
 
     if ( !defined $conf->{tags} ) {
         debugmsg( $ctx, "debug",
-            "force_rollback tag for vmid ${vmid}: absent (no tags)" );
+            "force-rollback tag for vmid ${vmid}: absent (no tags)" );
         return 0;
     }
 
@@ -5037,16 +5037,16 @@ sub _vm_tag_force_rollback_read {
 
     foreach my $tag (@tags) {
         $tag =~ s/^\s+|\s+$//g;
-        if ($tag eq 'force_rollback') {
+        if ($tag eq 'force-rollback') {
             debugmsg( $ctx, "debug",
-                "force_rollback tag for vmid ${vmid}: present "
+                "force-rollback tag for vmid ${vmid}: present "
               . "(tags='$conf->{tags}')" );
             return 1;
         }
     }
 
     debugmsg( $ctx, "debug",
-        "force_rollback tag for vmid ${vmid}: absent "
+        "force-rollback tag for vmid ${vmid}: absent "
       . "(tags='$conf->{tags}')" );
     return 0;
 }

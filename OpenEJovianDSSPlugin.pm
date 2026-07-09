@@ -47,7 +47,7 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.11.6';
+my $PLUGIN_VERSION = '0.11.6-pre.2';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -1239,9 +1239,9 @@ sub _volume_snapshot_rollback {
         -f "/etc/pve/lxc/${vmid}.conf"         ? 'lxc'  : undef;
 
     # Always use --force-snapshots: volume_rollback_is_possible already
-    # verified this rollback is safe.  For VMs without the force_rollback tag,
+    # verified this rollback is safe.  For VMs without the force-rollback tag,
     # no blockers exist at this point so --force-snapshots is a no-op.
-    # For force_rollback VMs the JovianDSS REST API atomically deletes all
+    # For force-rollback VMs the JovianDSS REST API atomically deletes all
     # newer snapshot blockers before restoring the volume.
     # Deleted blocker names are returned as "snap:<name>" tokens; we call
     # remove_vm_snapshot_config for each — it is idempotent, so calling it for
@@ -1309,7 +1309,7 @@ sub volume_rollback_is_possible {
         }
     }
 
-    # Compute force_rollback once here so volume_rollback_check does not need
+    # Compute force-rollback once here so volume_rollback_check does not need
     # to spawn its own pvesh subprocess for the same information.
     my $force_rollback = vm_tag_force_rollback_is_set(
         $ctx, $vmid);
