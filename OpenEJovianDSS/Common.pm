@@ -1984,6 +1984,13 @@ sub volume_publish {
     my $out = joviandss_cmd( $ctx, $create_target_cmd, 118, 15 );
     my ( $targetname, $lunid, $ips, $scsiid ) = split( ' ', $out );
 
+    unless ( defined($scsiid) && length($scsiid) > 1 ) {
+        die "Failed to publish volume ${volname}"
+          . safe_var_print( " snapshot", $snapname )
+          . ": backend returned no valid scsi id (got "
+          . ( defined($scsiid) ? "'${scsiid}'" : 'undef' ) . ")\n";
+    }
+
     my @iplist = split /\s*,\s*/, clean_word($ips);
 
     my %tinfo = (
@@ -2253,7 +2260,7 @@ sub volume_stage_iscsi {
     debugmsg( $ctx, "debug", "Stage target ${targetname} lun ${lunid} over addresses @$hosts\n" );
 
     # Fast path: block device already present AND reporting the right size.
-    my $serial_path = block_device_path_from_serial( $scsiid, 0 );
+    my $serial_path = block_device_path_from_serial( $ctx, $scsiid, 0 );
     if ( -b $serial_path && _iscsi_capacity_ok( $ctx, $serial_path, $expected_size ) ) {
         return [$serial_path];
     }
@@ -2603,7 +2610,7 @@ sub volume_stage_multipath {
     $scsiid    = safe_word( clean_word($scsiid), 'multipath scsi id' );
     $attempts //= MULTIPATH_STAGE_ATTEMPTS;
 
-    my $mpath = clean_word( block_device_path_from_serial( $scsiid, 1 ) );
+    my $mpath = clean_word( block_device_path_from_serial( $ctx, $scsiid, 1 ) );
 
     # Fast path - the map already exists (typical for the direct callers
     # re-resolving an active volume): return before any command, no lock
@@ -2639,7 +2646,7 @@ sub volume_stage_multipath {
     # succeeds with zero sleeps. The wait only ever waits for the direct
     # callers that stage multipath without a fresh iSCSI stage
     # (block_device_path_from_lun_rec, lun_record_update_device).
-    my $scsi_by_id = block_device_path_from_serial( $scsiid, 0 );
+    my $scsi_by_id = block_device_path_from_serial( $ctx, $scsiid, 0 );
     for my $tick ( 1 .. MULTIPATH_VPD_WAIT_ATTEMPTS ) {
         last if -e $scsi_by_id;
         debugmsg( $ctx, 'debug',
@@ -2721,7 +2728,7 @@ sub volume_stage_multipath {
 sub _volume_stage_multipath {
     my ( $ctx, $scsiid, $sd_devnames, $attempt, $last ) = @_;
 
-    my $mpath = clean_word( block_device_path_from_serial( $scsiid, 1 ) );
+    my $mpath = clean_word( block_device_path_from_serial( $ctx, $scsiid, 1 ) );
 
     # Register the resolved sd paths with multipathd FIRST - under load
     # udev events lag and map creation fails unless the daemon is told its
@@ -2816,7 +2823,7 @@ sub _multipath_map_has_active_path {
     # device-mapper directly. A multipath status line carries one A
     # (active) or F (failed) flag per path after each major:minor:
     # "0 8192 multipath 2 0 0 0 1 1 A 0 2 0 8:208 A 0 65:0 A 0".
-    if ( $lines == 0 && -b block_device_path_from_serial( $scsiid, 1 ) ) {
+    if ( $lines == 0 && -b block_device_path_from_serial( $ctx, $scsiid, 1 ) ) {
         my $dmactive = 0;
         my $dcmd = [ $DMSETUP, 'status', $scsiid ];
         my $dres = multipath_cmd( $ctx, $dcmd, MULTIPATH_CMD_TIMEOUT, sub {
@@ -2839,7 +2846,14 @@ sub _multipath_map_has_active_path {
 # This function provides expecte path of block device
 # on the side of proxmox server
 sub block_device_path_from_serial {
-    my ($id_serial, $multipath) = @_;
+    my ($ctx, $id_serial, $multipath) = @_;
+
+    unless ( defined($id_serial) && $id_serial =~ /^([\:\-\@\w.\/]+)$/ ) {
+        debugmsg_trace( $ctx, 'error',
+            "Incorrect symbols in scsi id " . ( $id_serial // 'undef' ) );
+        die "Incorrect symbols in scsi id " . ( $id_serial // 'undef' ) . "\n";
+    }
+    $id_serial = $1;
 
     if ( $multipath ) {
         return "/dev/mapper/${id_serial}";
@@ -2853,6 +2867,7 @@ sub block_device_path_from_rest {
     my $id_serial = id_serial_from_rest( $ctx, $volname, $snapname );
 
     return block_device_path_from_serial(
+                $ctx,
                 $id_serial,
                 get_multipath($ctx) );
 }
@@ -2878,7 +2893,7 @@ sub block_device_path_from_lun_rec {
         if ( $lunrec->{scsiid} =~ /^([\:\-\@\w.\/]+)$/ ) {
             my $id = $1;
             my $is_multipath = 1;
-            $block_device_path = block_device_path_from_serial( $id, $is_multipath );
+            $block_device_path = block_device_path_from_serial( $ctx, $id, $is_multipath );
             return $block_device_path;
         } else {
             die "Incorrect symbols in scsi id $lunrec->{scsiid}\n";
@@ -2890,7 +2905,7 @@ sub block_device_path_from_lun_rec {
         my $id = $1;
         my $is_not_multipath = 0;
 
-        $block_device_path = block_device_path_from_serial( $id, $is_not_multipath );
+        $block_device_path = block_device_path_from_serial( $ctx, $id, $is_not_multipath );
     } else {
         die "Incorrect symbols in scsi id $lunrec->{scsiid}\n";
     }
@@ -3141,6 +3156,13 @@ sub id_serial_from_rest {
 
     if ( $jscsiid =~ /^([\:\-\@\w.\/]+)$/ ) {
         my $id = $1;
+
+        unless ( length($id) > 1 ) {
+            die "Invalid scsi id for volume ${volname}"
+              . safe_var_print( " snapshot", $snapname )
+              . ": too short (got '${id}')\n";
+        }
+
         my $uei64_bytes = substr( $id, 0, 16 );
 
         debugmsg( $ctx,"debug",
@@ -4394,9 +4416,11 @@ sub _volume_activate_attempt {
 
     # Checked BEFORE the login (previously it was checked after - a
     # missing scsi id wasted a full iSCSI stage before failing).
-    die "Unable to identify scsi id for ${volname}"
-      . safe_var_print( 'snapshot', $snapname ) . "\n"
-        if !defined $state->{scsiid};
+    my $scsiid = $state->{scsiid};
+    if ( !defined($scsiid) || $scsiid eq '' ) {
+        die "Unable to identify scsi id for ${volname}"
+          . safe_var_print( 'snapshot', $snapname ) . "\n";
+    }
 
     # Shared-target collision guard (campaign finding C2-02), checked on the
     # REAL array-assigned target name returned by publish above - not a name
@@ -4777,7 +4801,7 @@ sub lun_record_update_device {
                                          $lunrec );
             }
 
-            my $mpath = clean_word( block_device_path_from_serial( $scsiid, 1 ) );
+            my $mpath = clean_word( block_device_path_from_serial( $ctx, $scsiid, 1 ) );
             if ( -b $mpath ) {
                 $block_device_path = $mpath;
             } else {
@@ -4815,7 +4839,7 @@ sub lun_record_update_device {
         # "map has no active path" / "size 0" failure shows exactly which
         # rounds saw what (the trailing state is only the LAST round's).
         my $mnode = ( $storage_multipath && defined($scsiid) )
-                  ? ( -b block_device_path_from_serial( $scsiid, 1 ) ? 1 : 0 )
+                  ? ( -b block_device_path_from_serial( $ctx, $scsiid, 1 ) ? 1 : 0 )
                   : 'n/a';
         debugmsg( $ctx, 'debug',
             "Verify round ${round}/" . VOLUME_ACTIVATE_VERIFY_ATTEMPTS
