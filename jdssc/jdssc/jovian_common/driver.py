@@ -40,7 +40,7 @@ class JovianDSSDriver(object):
 
     def __init__(self, config):
 
-        self.VERSION = "0.11.6"
+        self.VERSION = "1.0.0"
 
         self.configuration = config
         self._pool = self.configuration.get('jovian_pool', 'Pool-0')
