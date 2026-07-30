@@ -47,6 +47,8 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
+use constant BLOCKDEV => '/usr/sbin/blockdev';
+
 my $PLUGIN_VERSION = '1.0.0';
 
 #    Open-E JovianDSS Proxmox plugin
@@ -199,6 +201,14 @@ sub properties {
             type    => 'int',
             default => 600,
         },
+        data_copy_bs => {
+            description =>
+              "dd block size for offline volume export/import streams "
+              . "(default 64K). On import this is also the zero-detection "
+              . "granularity for sparse writes.",
+            type    => 'string',
+            default => '64K',
+        },
         control_addresses => {
             description =>
 "Coma separated list of ip addresses, that will be used to send control REST requests to JovianDSS storage",
@@ -297,6 +307,7 @@ sub options {
         multipath_lock_hold_timeout        => { optional => 1 },
         ssl_cert_verify    => { optional => 1 },
         delete_timeout     => { optional => 1 },
+        data_copy_bs       => { optional => 1 },
         user_name          => { },
         user_password      => { optional => 1 },
         control_addresses  => { optional => 1 },
@@ -474,6 +485,180 @@ sub _path {
           $class->filesystem_path( $scfg, $volname, $snapname );
         return [ $fs_path, $fs_vmid, $fs_vtype ];
     }
+}
+
+# Offline storage migration support (PVE storage_migrate and the
+# cross-cluster 'disk-import' tunnel command): plain raw+size streams only.
+#
+# A single point-in-time state — the live volume or one named snapshot — can
+# be exported.  A volume together with its snapshot history (with_snapshots)
+# or an incremental stream (base_snapshot) cannot be represented in a raw
+# stream and is refused by returning an empty format list, which PVE reports
+# as "no matching import/export format".
+
+sub volume_export_formats {
+    my ( $class, $scfg, $storeid, $volname, $snapshot, $base_snapshot, $with_snapshots ) = @_;
+
+    if ( $with_snapshots || defined($base_snapshot) ) {
+        return ();
+    }
+    return ('raw+size');
+}
+
+# Lock strategy (see docs/design/multi-layer-lock-design.md): no overarching
+# lock is taken for the whole export/import.  Each step that needs
+# serialization is invoked through its own _*_lock entry point from this top
+# level; everything else — validation, stream header handling and the bulk
+# copy — runs without holding any lock.  This also makes concurrent
+# export|import of the SAME vmid on one cluster safe (the steps interleave
+# instead of deadlocking on the whole-method vm lock — Issue 5).
+
+sub volume_export {
+    my ( $class, $scfg, $storeid, $fh, $volname, $format, $snapshot, $base_snapshot, $with_snapshots ) = @_;
+
+    # Cheap refusals happen before any ctx or lock exists.
+    if ( $format ne 'raw+size' ) {
+        die "volume export format '${format}' not available for $class\n";
+    }
+    if ( $with_snapshots || defined($base_snapshot) ) {
+        die "cannot export volume snapshot history as raw+size stream\n";
+    }
+
+    my $ctx = new_ctx( $scfg, $storeid );
+
+    debugmsg( $ctx, "debug",
+            "Export volume ${volname} "
+          . safe_var_print( "snapshot", $snapshot )
+          . " start" );
+
+    # For a snapshot export activation publishes a clone of the snapshot and
+    # _path() resolves to the clone's block device, so the very same copy
+    # path serves both the live volume and any point-in-time state.
+    _activate_volume_lock( $class, $ctx, $volname, $snapshot, {} );
+    eval {
+        my ($path) = @{ _path( $class, $ctx, $volname, $snapshot ) };
+
+        # The device itself is the authoritative size source: for a snapshot
+        # export it is the snapshot clone, so a volume resized after the
+        # snapshot still exports with the size the stream actually carries.
+        my $size = undef;
+        run_command(
+            [ BLOCKDEV, '--getsize64', $path ],
+            outfunc => sub { $size = shift; },
+        );
+        chomp $size if defined($size);
+
+        $size = OpenEJovianDSS::Common::clean_word($size);
+        $size = OpenEJovianDSS::Common::safe_word($size);
+        if ( !defined($size) || $size !~ /^\d+$/ ) {
+
+            my $volname_clustered = volume_name_clustered( $ctx, $volname );
+            my $pool = get_pool($ctx);
+            $size = joviandss_cmd( $ctx,
+                                      [ "pool",
+                                        $pool,
+                                        "volume",
+                                        $volname_clustered,
+                                        "get",
+                                        "-s" ],
+                                      118,
+                                      3,
+                                      undef,
+                                      'jdssc_info' );
+
+            $size = OpenEJovianDSS::Common::clean_word($size);
+            $size = OpenEJovianDSS::Common::safe_word($size);
+            if ( !defined($size) || $size !~ /^\d+$/ ) {
+                die "unable to determine size of volume ${volname}\n";
+            }
+        }
+        PVE::Storage::Plugin::write_common_header( $fh, $size );
+        data_copy( $ctx, $path, $fh );
+    };
+    my $err = $@;
+
+    _deactivate_volume_lock( $class, $ctx, $volname, $snapshot, {} );
+
+    if ($err) {
+        die $err;
+    }
+
+    debugmsg( $ctx, "debug",
+            "Export volume ${volname} "
+          . safe_var_print( "snapshot", $snapshot )
+          . " done" );
+    return;
+}
+
+sub volume_import_formats {
+    my ( $class, $scfg, $storeid, $volname, $snapshot, $base_snapshot, $with_snapshots ) = @_;
+
+    if ( $with_snapshots || defined($base_snapshot) ) {
+        return ();
+    }
+    return ('raw+size');
+}
+
+sub volume_import {
+    my ( $class, $scfg, $storeid, $fh, $volname, $format, $snapshot, $base_snapshot, $with_snapshots, $allow_rename ) = @_;
+
+    if ( $format ne 'raw+size' ) {
+        die "volume import format '${format}' not available for $class\n";
+    }
+    if ( $with_snapshots || defined($base_snapshot) ) {
+        die "cannot import volumes together with their snapshots in $class\n";
+    }
+
+    my $ctx = new_ctx( $scfg, $storeid );
+
+    # parse_volname normalizes the PVE-composed "$vmid/$name.raw" convention,
+    # so $name below is the plain JovianDSS volume name whichever form the
+    # caller passed.
+    my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+
+    if ( $vtype ne 'images' ) {
+        die "cannot import volume type '${vtype}'\n";
+    }
+
+    my $size = PVE::Storage::Plugin::read_common_header($fh);
+    my $size_kib = int( ( $size + 1023 ) / 1024 );
+
+    debugmsg( $ctx, "debug",
+        "Import volume ${name} size ${size} allow rename "
+      . ( $allow_rename ? 1 : 0 ) );
+
+    my $newname = $name;
+    eval { _alloc_image_lock( $class, $ctx, $vmid, 'raw', $name, $size_kib ) };
+    if ( my $alloc_err = $@ ) {
+        if ( !$allow_rename || $alloc_err !~ /already exists/i ) {
+            die $alloc_err;
+        }
+        # Requested name is taken: let alloc_image auto-select a free one
+        # (this also applies the storage's cluster_prefix).
+        warn "volume '${name}' already exists - importing with a different name\n";
+        $newname = _alloc_image_lock( $class, $ctx, $vmid, 'raw', undef, $size_kib );
+    }
+
+    eval { _activate_volume_lock( $class, $ctx, $newname, undef, {} ) };
+    if ( my $err = $@ ) {
+        _free_image_lock( $class, $ctx, $newname, 0, 'raw' );
+        die $err;
+    }
+
+    eval {
+        my ($path) = @{ _path( $class, $ctx, $newname, undef ) };
+        OpenEJovianDSS::Common::data_copy( $ctx, $fh, $path );
+    };
+    my $err = $@;
+
+    _deactivate_volume_lock( $class, $ctx, $newname, undef, {} );
+
+    if ($err) {
+        die $err;
+    }
+
+    debugmsg( $ctx, "debug", "Import volume ${newname} done" );
+    return "$ctx->{storeid}:${newname}";
 }
 
 sub rename_volume {
@@ -1404,7 +1589,7 @@ sub volume_size_info {
 
     my $pool = get_pool($ctx);
 
-    my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+    my ( $vtype, $name, $vmid, $parent ) = $class->parse_volname($volname);
 
 
     if ( 'images' cmp "$vtype" ) {
@@ -1416,8 +1601,20 @@ sub volume_size_info {
     my $size = joviandss_cmd( $ctx,
         [ "pool", $pool, "volume", $volname_clustered, "get", "-s" ], 118, 3,
         undef, 'jdssc_info' );
+    $size = clean_word($size);
 
-    return clean_word($size);
+    # The list contract is ($size, $format, $used, $parent); JovianDSS
+    # volumes are always raw, and the parent of a linked clone is the base
+    # component of its compound volname (parse_volname's 4th field), the
+    # same convention ZFSPoolPlugin follows.
+    # TODO: investigate parent reporting here alongside parse_volname:
+    # _clone_image returns plain names, so the compound base-.../vm-...
+    # form parse_volname accepts is never generated by this plugin and
+    # $parent is always undef in practice. Decide whether clones should
+    # get compound volnames (then _rename_volume must re-attach the base
+    # prefix like ZFSPoolPlugin does) or whether parent should come from
+    # the appliance-side ZFS origin instead.
+    return wantarray ? ( $size, 'raw', $size, $parent ) : $size;
 }
 
 sub status {
@@ -1831,6 +2028,21 @@ sub _volume_resize {
 
 sub parse_volname {
     my ( $class, $volname ) = @_;
+
+    # PVE composes volnames for storages with a `path` property in directory
+    # style, "$vmid/$name.$format" (Storage.pm, $volname_for_storage) — e.g.
+    # the import target of an offline migration.  JovianDSS volume names are
+    # flat and cannot contain a directory component, so drop the "<vmid>/"
+    # prefix here, at the plugin's single name-interpretation point.  The
+    # file name itself is preserved exactly as requested, format suffix
+    # included: a volume named "vm-100-disk-0.raw" is a legitimate name and
+    # is never aliased onto its suffixless twin.
+    if ( $volname =~ m!^(\d+)/(.+)$! ) {
+        my $dir_vmid  = $1;    # "<vmid>/" directory component added by PVE
+        my $file_name = $2;    # the volume name, kept verbatim
+
+        $volname = $file_name;
+    }
 
     my $iso_re;
 

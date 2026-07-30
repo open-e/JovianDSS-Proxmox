@@ -50,6 +50,10 @@ our @EXPORT_OK = qw(
   clean_word
   cmd_log_output
 
+  data_copy
+
+  get_data_copy_bs
+
   get_default_control_port
   get_default_content_size
   get_default_data_port
@@ -144,6 +148,7 @@ our @EXPORT_OK = qw(
 );
 
 our %EXPORT_TAGS = ( all => [@EXPORT_OK], );
+
 
 use constant {
     PLUGIN_LOCAL_STATE_DIR               => '/etc/joviandss/state',
@@ -388,6 +393,17 @@ sub get_delete_timeout {
     my $scfg = $ctx->{scfg};
 
     return $scfg->{delete_timeout} || 118;
+}
+
+sub get_data_copy_bs {
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
+
+    my $bs = $scfg->{data_copy_bs} || '64K';
+    if ( $bs !~ /^\d+[kKmMgG]?$/ ) {
+        die "invalid data_copy_bs '${bs}' (expected dd block size like 64K or 1M)\n";
+    }
+    return $bs;
 }
 
 sub get_control_addresses {
@@ -867,6 +883,57 @@ sub new_ctx {
         reqid       => _new_reqid(),
         _held_locks => [],
     };
+}
+
+# Single-run dd copy between a block device path and a sequential stream
+# filehandle, mirroring PVE::Storage::Plugin's own export/import dd usage.
+# Runs with NO lock held (the export/import methods take per-step locks
+# only), so the transfer duration is unbounded.  The stream is read/written
+# to EOF — like the upstream implementation, there is no byte bound: the
+# raw+size header communicates the size, the sender closing the stream ends
+# the copy.
+#
+# Exactly one of $src/$dst is a filehandle (the stream) and the other a path
+# (the device):
+#   device -> stream:  data_copy($ctx, $path, $fh)   [status=progress lines
+#                      are reprinted to STDERR, upstream style]
+#   stream -> device:  data_copy($ctx, $fh, $path)
+# The dd block size comes from the data_copy_bs property (default 64K); on
+# import it is also the zero-detection granularity for conv=sparse, which is
+# correct only because the target volume is freshly allocated (unwritten
+# zvol blocks read as zeros) and is what keeps thin volumes thin across a
+# migration.  conv=fsync makes the data durable before success is reported.
+sub data_copy {
+    my ( $ctx, $src, $dst ) = @_;
+
+    my $bs = get_data_copy_bs($ctx);
+
+    my ( $direction, $cmd, %redirect );
+    if ( ref($dst) ) {    # device -> stream
+        $direction = "device ${src} to stream";
+        $cmd       = [ 'dd', "if=${src}", "bs=${bs}", 'status=progress' ];
+        %redirect  = (
+            output => '>&' . fileno($dst),
+            # split dd's carriage-return driven progress output into
+            # individual log lines
+            errfunc => sub { print STDERR "$_[0]\n" },
+        );
+    }
+    else {                # stream -> device
+        $direction = "stream to device ${dst}";
+        $cmd       = [ 'dd', "of=${dst}", "bs=${bs}", 'conv=sparse,notrunc,fsync' ];
+        %redirect  = ( input => '<&' . fileno($src) );
+    }
+
+    debugmsg( $ctx, "debug",
+            "Data copy ${direction} "
+          . "cmd '" . join( ' ', @{$cmd} ) . "' "
+          . "start" );
+
+    run_command( $cmd, %redirect );
+
+    debugmsg( $ctx, "debug", "Data copy ${direction} done" );
+    return;
 }
 
 sub debugmsg_trace {
