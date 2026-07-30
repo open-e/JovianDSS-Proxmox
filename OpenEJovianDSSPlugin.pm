@@ -546,10 +546,13 @@ sub volume_export {
             [ BLOCKDEV, '--getsize64', $path ],
             outfunc => sub { $size = shift; },
         );
-        chomp $size if defined($size);
+        if ( defined($size) ) {
+            $size = OpenEJovianDSS::Common::clean_word($size);
+        }
 
-        $size = OpenEJovianDSS::Common::clean_word($size);
-        $size = OpenEJovianDSS::Common::safe_word($size);
+        # No safe_word on the device answer: a result that is not a clean
+        # number — empty, error text, anything — must route to the jdssc
+        # fallback below rather than die here.
         if ( !defined($size) || $size !~ /^\d+$/ ) {
 
             my $volname_clustered = volume_name_clustered( $ctx, $volname );
