@@ -1912,25 +1912,31 @@ sub _deactivate_volume {
 }
 
 sub volume_resize {
-    my ( $class, $scfg, $storeid, $volname, $size, $running ) = @_;
+    my ( $class, $scfg, $storeid, $volname, $size, $running, $snapname ) = @_;
+
+    if ( defined( $snapname ) ) {
+        die "resizing a snapshot is not supported for joviandss plugin\n";
+    };
+
     my $ctx = new_ctx($scfg, $storeid);
-    return _volume_resize_lock( $class, $ctx, $volname, $size, $running );
+    _volume_resize_lock( $class, $ctx, $volname, $size, $running, $snapname );
+    return;
 }
 
 sub _volume_resize_lock {
-    my ( $class, $ctx, $volname, $size, $running ) = @_;
+    my ( $class, $ctx, $volname, $size, $running, $snapname ) = @_;
 
     my ( undef, undef, $vmid ) = eval { $class->parse_volname($volname) };
     my $res;
     if ( defined $vmid ) {
         $res = OpenEJovianDSS::Lock::with_lock(
             $ctx, 'vm', $vmid, undef,
-            sub { _volume_resize( $class, $ctx, $volname, $size, $running ) },
+            sub { _volume_resize( $class, $ctx, $volname, $size, $running, $snapname ) },
         );
     } else {
         $res = OpenEJovianDSS::Lock::with_lock(
             $ctx, 'storage', undef, undef,
-            sub { _volume_resize( $class, $ctx, $volname, $size, $running ) },
+            sub { _volume_resize( $class, $ctx, $volname, $size, $running, $snapname ) },
         );
     }
     die $@ if $@;
@@ -1938,7 +1944,7 @@ sub _volume_resize_lock {
 }
 
 sub _volume_resize {
-    my ( $class, $ctx, $volname, $size, $running ) = @_;
+    my ( $class, $ctx, $volname, $size, $running, $snapname ) = @_;
 
     my $pool = get_pool($ctx);
     my $resizeok = 0;
@@ -2024,7 +2030,7 @@ sub _volume_resize {
             lun_record_update_device( $ctx,
                 $targetname, $lunid, $lunrecpath, $lunrecord, $size );
         }
-        return 1;
+        return ;
     }
     die $rerr;
 }
