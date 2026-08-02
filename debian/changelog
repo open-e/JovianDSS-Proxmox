@@ -1,3 +1,11 @@
+open-e-joviandss-proxmox-plugin (1.0.0-0) stable; urgency=medium
+
+    * First stable release. Content identical to v0.11.6: graduates the
+      0.11.x line (scope-typed locking, hardened activation, clustered
+      naming) to stable under semantic versioning.
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>, Claude Code (Anthropic AI)  Fri, 17 Jul 2026 00:00:00 +0200
+
 open-e-joviandss-proxmox-plugin (0.11.6-0) stable; urgency=medium
 
     * New: Scope-typed locking layer (OpenEJovianDSS/Lock.pm) replacing the

@@ -62,12 +62,19 @@ class Snapshots():
                           dest='creation',
                           action='store_true',
                           default=False,
-                          help='Add creation time to output')
+                          help='Add creation time (seconds since epoch) '
+                               'to output')
         list.add_argument('--guid',
                           dest='guid',
                           action='store_true',
                           default=False,
                           help='Add guid to output')
+        list.add_argument('--volsize',
+                          dest='volsize',
+                          action='store_true',
+                          default=False,
+                          help='Add volume size at snapshot creation time '
+                               'to output, - if not provided by appliance')
         kargs, ukargs = parser.parse_known_args(args)
 
         if kargs.snapshots_action is None:
@@ -94,12 +101,20 @@ class Snapshots():
 
         volume = self.args['volume_name']
 
-        data = self.jdss.list_snapshots(volume)
+        try:
+            data = self.jdss.list_snapshots(volume,
+                                            volsize=self.args['volsize'])
+        except jexc.JDSSException as err:
+            LOG.error(err)
+            exit(1)
         for s in data:
             line = "{}".format(s['name'])
             if self.args['guid']:
                 line += " {}".format(s['guid'])
             if self.args['creation']:
-                line += " {}".format(s['creation'])
+                line += " {}".format(s.get('creation'))
+            if self.args['volsize']:
+                volsize = s.get('volsize')
+                line += " {}".format(volsize if volsize else '-')
             line += "\n"
             sys.stdout.write(line)

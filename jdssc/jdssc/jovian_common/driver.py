@@ -19,8 +19,6 @@ from oslo_utils import units as o_units
 import math
 import random
 import re
-import string
-import hashlib
 import time
 
 from jdssc.jovian_common import exception as jexc
@@ -40,7 +38,7 @@ class JovianDSSDriver(object):
 
     def __init__(self, config):
 
-        self.VERSION = "0.11.6-pre.2"
+        self.VERSION = "1.0.0"
 
         self.configuration = config
         self._pool = self.configuration.get('jovian_pool', 'Pool-0')
@@ -2435,19 +2433,22 @@ class JovianDSSDriver(object):
                      export=False, direct_mode=False):
         """Get volume information.
 
+        :param direct_mode: volume_name and snapshot_name are the raw
+                            appliance names and are used verbatim
         :return: volume id, san id, size
         """
 
         if direct_mode:
             vname = volume_name
             sname = snapshot_name
+            data = self.ra.get_snapshot(vname, sname)
         else:
             if export:
                 sname = jcom.sname(snapshot_name, volume_name)
                 data = self.ra.get_lun(sname)
             else:
                 vname = jcom.vname(volume_name)
-                sname = jcom.sname(snapshot_name)
+                sname = jcom.sname(snapshot_name, None)
                 data = self.ra.get_snapshot(vname, sname)
 
         ret = dict()
@@ -2456,6 +2457,8 @@ class JovianDSSDriver(object):
             ret['san_scsi_id'] = data['san:volume_id']
         if 'default_scsi_id' in data:
             ret['scsi_id'] = data['default_scsi_id']
+        if 'volsize' in data:
+            ret['volsize'] = data['volsize']
         return ret
 
     def _set_provisioning_thin(self, vname, thinp):
@@ -2735,6 +2738,11 @@ class JovianDSSDriver(object):
                 else:
                     break
 
+        except jexc.JDSSResourceNotFoundException:
+            # The volume itself is absent: callers distinguish this from
+            # "volume has no snapshots", so it must not degrade to an
+            # empty listing.
+            raise
         except jexc.JDSSException as ex:
             LOG.error("List snapshots error. Because %(err)s",
                       {"err": ex})
@@ -2828,9 +2836,13 @@ class JovianDSSDriver(object):
 
         return out
 
-    def list_snapshots(self, volume_name):
+    def list_snapshots(self, volume_name, volsize=False):
         """List snapshots related to this volume.
 
+        :param volsize: also report the volume size each snapshot was
+                        taken with; the paged snapshot listing carries a
+                        fixed minimal property set, so it is fetched per
+                        snapshot when the listing does not provide it
         :return: list of volumes
         """
 
@@ -2840,6 +2852,8 @@ class JovianDSSDriver(object):
             data = self._list_volume_snapshots(volume_name, vname)
             # data = self.ra.get_snapshots(vname)
 
+        except jexc.JDSSResourceNotFoundException:
+            raise
         except jexc.JDSSException as ex:
             LOG.error("List snapshots error. Because %(err)s",
                       {"err": ex})
@@ -2854,10 +2868,35 @@ class JovianDSSDriver(object):
 
                 vid = jcom.vid_from_sname(r['name'])
                 if vid == volume_name or vid is None:
-                    props = r.get('properties', {})
-                    ret.append({'name': jcom.sid_from_sname(r['name']),
-                                'guid': props.get('guid'),
-                                'creation': props.get('creation')})
+                    # Identify the entry format first: newer appliance
+                    # versions nest the snapshot attributes (guid,
+                    # creation, volsize) under 'properties', older ones
+                    # keep them at the top level of the entry.
+                    if isinstance(r.get('properties'), dict):
+                        properties = r['properties']
+                    else:
+                        properties = r
+
+                    entry = {'name': jcom.sid_from_sname(r['name']),
+                             'guid': properties.get('guid'),
+                             'creation': jcom.time_to_epoch(
+                                 properties.get('creation'))}
+                    if 'volsize' in properties:
+                        entry['volsize'] = properties['volsize']
+
+                    if volsize and 'volsize' not in entry:
+                        try:
+
+                            sdata = self.ra.get_snapshot(vname, r['name'])
+                            if 'volsize' in sdata:
+                                entry['volsize'] = sdata['volsize']
+                        except jexc.JDSSResourceNotFoundException:
+                            # The snapshot vanished between listing and
+                            # detail fetch, or carries a non
+                            # plain-snapshot name; volsize stays unknown.
+                            pass
+
+                    ret.append(entry)
 
             except Exception:
                 continue

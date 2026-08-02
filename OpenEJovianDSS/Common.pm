@@ -50,6 +50,10 @@ our @EXPORT_OK = qw(
   clean_word
   cmd_log_output
 
+  data_copy
+
+  get_data_copy_bs
+
   get_default_control_port
   get_default_content_size
   get_default_data_port
@@ -144,6 +148,7 @@ our @EXPORT_OK = qw(
 );
 
 our %EXPORT_TAGS = ( all => [@EXPORT_OK], );
+
 
 use constant {
     PLUGIN_LOCAL_STATE_DIR               => '/etc/joviandss/state',
@@ -388,6 +393,17 @@ sub get_delete_timeout {
     my $scfg = $ctx->{scfg};
 
     return $scfg->{delete_timeout} || 118;
+}
+
+sub get_data_copy_bs {
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
+
+    my $bs = $scfg->{data_copy_bs} || '64K';
+    if ( $bs !~ /^\d+[kKmMgG]?$/ ) {
+        die "invalid data_copy_bs '${bs}' (expected dd block size like 64K or 1M)\n";
+    }
+    return $bs;
 }
 
 sub get_control_addresses {
@@ -869,6 +885,57 @@ sub new_ctx {
     };
 }
 
+# Single-run dd copy between a block device path and a sequential stream
+# filehandle, mirroring PVE::Storage::Plugin's own export/import dd usage.
+# Runs with NO lock held (the export/import methods take per-step locks
+# only), so the transfer duration is unbounded.  The stream is read/written
+# to EOF — like the upstream implementation, there is no byte bound: the
+# raw+size header communicates the size, the sender closing the stream ends
+# the copy.
+#
+# Exactly one of $src/$dst is a filehandle (the stream) and the other a path
+# (the device):
+#   device -> stream:  data_copy($ctx, $path, $fh)   [status=progress lines
+#                      are reprinted to STDERR, upstream style]
+#   stream -> device:  data_copy($ctx, $fh, $path)
+# The dd block size comes from the data_copy_bs property (default 64K); on
+# import it is also the zero-detection granularity for conv=sparse, which is
+# correct only because the target volume is freshly allocated (unwritten
+# zvol blocks read as zeros) and is what keeps thin volumes thin across a
+# migration.  conv=fsync makes the data durable before success is reported.
+sub data_copy {
+    my ( $ctx, $src, $dst ) = @_;
+
+    my $bs = get_data_copy_bs($ctx);
+
+    my ( $direction, $cmd, %redirect );
+    if ( ref($dst) ) {    # device -> stream
+        $direction = "device ${src} to stream";
+        $cmd       = [ 'dd', "if=${src}", "bs=${bs}", 'status=progress' ];
+        %redirect  = (
+            output => '>&' . fileno($dst),
+            # split dd's carriage-return driven progress output into
+            # individual log lines
+            errfunc => sub { print STDERR "$_[0]\n" },
+        );
+    }
+    else {                # stream -> device
+        $direction = "stream to device ${dst}";
+        $cmd       = [ 'dd', "of=${dst}", "bs=${bs}", 'conv=sparse,notrunc,fsync' ];
+        %redirect  = ( input => '<&' . fileno($src) );
+    }
+
+    debugmsg( $ctx, "debug",
+            "Data copy ${direction} "
+          . "cmd '" . join( ' ', @{$cmd} ) . "' "
+          . "start" );
+
+    run_command( $cmd, %redirect );
+
+    debugmsg( $ctx, "debug", "Data copy ${direction} done" );
+    return;
+}
+
 sub debugmsg_trace {
     my ( $ctx, $dlevel, $msg ) = @_;
     my $stack = longmess($msg || "Stack trace:");
@@ -1021,6 +1088,11 @@ sub lock_properties {
 # (trailing optional arg). One of:
 #   'jdssc_general'  → cluster-wide serialization (state-changing commands)  [default]
 #   'jdssc_info'     → per-host serialization only (host-safe read commands)
+#
+#   TODO: implement capability to exit quickly, without retry
+#   if specific error was met
+#   for instance if it is neccessary to list snapshots of given volume
+#   but volume do not exists
 sub joviandss_cmd {
     my ( $ctx, $cmd, $timeout, $retries, $force_debug_level, $lock_class ) = @_;
     my $scfg    = $ctx->{scfg};
@@ -1290,36 +1362,60 @@ sub _multipath_cookie_sweep {
 }
 
 # Returns a hash with the snapshot names as keys and the following data:
-# id        - Unique id to distinguish different snapshots even if the have the same name.
-# timestamp - Creation time of the snapshot (seconds since epoch).
+# id           - Unique id to distinguish different snapshots even if the have the same name.
+# timestamp    - Creation time of the snapshot (seconds since epoch).
+# virtual-size - Volume size at the time the snapshot was taken, in bytes.
+#                Best effort: only present when the appliance reports it.
 # Returns an empty hash if the volume does not exist.
 sub volume_snapshots_info {
     my ( $ctx, $volname ) = @_;
 
     my $pool = get_pool($ctx);
 
-    my $output = joviandss_cmd(
-        $ctx,
-        [
-            'pool',      $pool,  'volume', $volname,
-            'snapshots', 'list', '--guid', '--creation'
-        ],
-        118,
-        5
-    );
+    my $output = eval {
+        joviandss_cmd(
+            $ctx,
+            [
+                'pool',      $pool,  'volume',     $volname,
+                'snapshots', 'list', '--guid',     '--creation',
+                '--volsize'
+            ],
+            118,
+            5
+        );
+    };
+    if ( my $err = $@ ) {
+        my $clean_error = $err;
+        $clean_error =~ s/\s+$//;
+        if ( $clean_error =~ /^JDSS resource .+ does not exist\.$/ ) {
+            debugmsg( $ctx, "debug",
+                "Volume ${volname} does not exist, no snapshots to list\n" );
+            return {};
+        }
+        die $err;
+    }
 
     my $snapshots = {};
     my @lines     = split( /\n/, $output );
     for my $line (@lines) {
-        my ( $name, $guid, $creation ) = split( /\s+/, $line );
-        #my ($sname) = split;
+        my ( $name, $guid, $creation, $volsize ) = split( /\s+/, $line );
+        $name = safe_word($name, 'snapshot name');
+        $guid = safe_word($guid, 'snapshot guid');
+        $creation = safe_word($creation, 'snapshot creation time');
+        $volsize = safe_word($volsize, 'snapshot virtual-size');
         debugmsg( $ctx, "debug",
-"Volume ${volname} has snapshot ${name} with id ${guid} made at ${creation}\n"
+            "Volume ${volname} has snapshot ${name} " .
+            "with id ${guid} " .
+            safe_var_print( "virtual-size", $volsize ) .
+            " made at ${creation}\n"
         );
         $snapshots->{$name} = {
             id        => $guid,
             timestamp => $creation,
         };
+        if ( defined($volsize) && $volsize =~ /^\d+$/ ) {
+            $snapshots->{$name}{'virtual-size'} = $volsize;
+        }
     }
 
     return $snapshots;

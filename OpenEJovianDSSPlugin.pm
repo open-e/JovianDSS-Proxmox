@@ -47,7 +47,9 @@ use base                   qw(PVE::Storage::Plugin);
 
 use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
-my $PLUGIN_VERSION = '0.11.6-pre.2';
+use constant BLOCKDEV => '/usr/sbin/blockdev';
+
+my $PLUGIN_VERSION = '1.0.0';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -108,7 +110,7 @@ my $PLUGIN_VERSION = '0.11.6-pre.2';
 
 sub api {
     my $supported_apiver_min = 9;
-    my $supported_apiver_max = 14;
+    my $supported_apiver_max = 15;
 
     my $api_ver = PVE::Storage::APIVER;
 
@@ -198,6 +200,14 @@ sub properties {
               . "volume deletion takes longer than the default.",
             type    => 'int',
             default => 600,
+        },
+        data_copy_bs => {
+            description =>
+              "dd block size for offline volume export/import streams "
+              . "(default 64K). On import this is also the zero-detection "
+              . "granularity for sparse writes.",
+            type    => 'string',
+            default => '64K',
         },
         control_addresses => {
             description =>
@@ -297,6 +307,7 @@ sub options {
         multipath_lock_hold_timeout        => { optional => 1 },
         ssl_cert_verify    => { optional => 1 },
         delete_timeout     => { optional => 1 },
+        data_copy_bs       => { optional => 1 },
         user_name          => { },
         user_password      => { optional => 1 },
         control_addresses  => { optional => 1 },
@@ -347,7 +358,7 @@ sub _path {
     my $pool = get_pool($ctx);
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
 
     my $path = undef;
 
@@ -476,6 +487,183 @@ sub _path {
     }
 }
 
+# Offline storage migration support (PVE storage_migrate and the
+# cross-cluster 'disk-import' tunnel command): plain raw+size streams only.
+#
+# A single point-in-time state — the live volume or one named snapshot — can
+# be exported.  A volume together with its snapshot history (with_snapshots)
+# or an incremental stream (base_snapshot) cannot be represented in a raw
+# stream and is refused by returning an empty format list, which PVE reports
+# as "no matching import/export format".
+
+sub volume_export_formats {
+    my ( $class, $scfg, $storeid, $volname, $snapshot, $base_snapshot, $with_snapshots ) = @_;
+
+    if ( $with_snapshots || defined($base_snapshot) ) {
+        return ();
+    }
+    return ('raw+size');
+}
+
+# Lock strategy (see docs/design/multi-layer-lock-design.md): no overarching
+# lock is taken for the whole export/import.  Each step that needs
+# serialization is invoked through its own _*_lock entry point from this top
+# level; everything else — validation, stream header handling and the bulk
+# copy — runs without holding any lock.  This also makes concurrent
+# export|import of the SAME vmid on one cluster safe (the steps interleave
+# instead of deadlocking on the whole-method vm lock — Issue 5).
+
+sub volume_export {
+    my ( $class, $scfg, $storeid, $fh, $volname, $format, $snapshot, $base_snapshot, $with_snapshots ) = @_;
+
+    # Cheap refusals happen before any ctx or lock exists.
+    if ( $format ne 'raw+size' ) {
+        die "volume export format '${format}' not available for $class\n";
+    }
+    if ( $with_snapshots || defined($base_snapshot) ) {
+        die "cannot export volume snapshot history as raw+size stream\n";
+    }
+
+    my $ctx = new_ctx( $scfg, $storeid );
+
+    debugmsg( $ctx, "debug",
+            "Export volume ${volname} "
+          . safe_var_print( "snapshot", $snapshot )
+          . " start" );
+
+    # For a snapshot export activation publishes a clone of the snapshot and
+    # _path() resolves to the clone's block device, so the very same copy
+    # path serves both the live volume and any point-in-time state.
+    _activate_volume_lock( $class, $ctx, $volname, $snapshot, {} );
+    eval {
+        my ($path) = @{ _path( $class, $ctx, $volname, $snapshot ) };
+
+        # The device itself is the authoritative size source: for a snapshot
+        # export it is the snapshot clone, so a volume resized after the
+        # snapshot still exports with the size the stream actually carries.
+        my $size = undef;
+        run_command(
+            [ BLOCKDEV, '--getsize64', $path ],
+            outfunc => sub { $size = shift; },
+        );
+        if ( defined($size) ) {
+            $size = OpenEJovianDSS::Common::clean_word($size);
+        }
+
+        # No safe_word on the device answer: a result that is not a clean
+        # number — empty, error text, anything — must route to the jdssc
+        # fallback below rather than die here.
+        if ( !defined($size) || $size !~ /^\d+$/ ) {
+
+            my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
+            my $pool = get_pool($ctx);
+            $size = joviandss_cmd( $ctx,
+                                      [ "pool",
+                                        $pool,
+                                        "volume",
+                                        $volname_clustered,
+                                        "get",
+                                        "-s" ],
+                                      118,
+                                      3,
+                                      undef,
+                                      'jdssc_info' );
+
+            $size = OpenEJovianDSS::Common::clean_word($size);
+            $size = OpenEJovianDSS::Common::safe_word($size);
+            if ( !defined($size) || $size !~ /^\d+$/ ) {
+                die "unable to determine size of volume ${volname}\n";
+            }
+        }
+        PVE::Storage::Plugin::write_common_header( $fh, $size );
+        data_copy( $ctx, $path, $fh );
+    };
+    my $err = $@;
+
+    _deactivate_volume_lock( $class, $ctx, $volname, $snapshot, {} );
+
+    if ($err) {
+        die $err;
+    }
+
+    debugmsg( $ctx, "debug",
+            "Export volume ${volname} "
+          . safe_var_print( "snapshot", $snapshot )
+          . " done" );
+    return;
+}
+
+sub volume_import_formats {
+    my ( $class, $scfg, $storeid, $volname, $snapshot, $base_snapshot, $with_snapshots ) = @_;
+
+    if ( $with_snapshots || defined($base_snapshot) ) {
+        return ();
+    }
+    return ('raw+size');
+}
+
+sub volume_import {
+    my ( $class, $scfg, $storeid, $fh, $volname, $format, $snapshot, $base_snapshot, $with_snapshots, $allow_rename ) = @_;
+
+    if ( $format ne 'raw+size' ) {
+        die "volume import format '${format}' not available for $class\n";
+    }
+    if ( $with_snapshots || defined($base_snapshot) ) {
+        die "cannot import volumes together with their snapshots in $class\n";
+    }
+
+    my $ctx = new_ctx( $scfg, $storeid );
+
+    # parse_volname normalizes the PVE-composed "$vmid/$name.raw" convention,
+    # so $name below is the plain JovianDSS volume name whichever form the
+    # caller passed.
+    my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+
+    if ( $vtype ne 'images' ) {
+        die "cannot import volume type '${vtype}'\n";
+    }
+
+    my $size = PVE::Storage::Plugin::read_common_header($fh);
+    my $size_kib = int( ( $size + 1023 ) / 1024 );
+
+    debugmsg( $ctx, "debug",
+        "Import volume ${name} size ${size} allow rename "
+      . ( $allow_rename ? 1 : 0 ) );
+
+    my $newname = $name;
+    eval { _alloc_image_lock( $class, $ctx, $vmid, 'raw', $name, $size_kib ) };
+    if ( my $alloc_err = $@ ) {
+        if ( !$allow_rename || $alloc_err !~ /already exists/i ) {
+            die $alloc_err;
+        }
+        # Requested name is taken: let alloc_image auto-select a free one
+        # (this also applies the storage's cluster_prefix).
+        warn "volume '${name}' already exists - importing with a different name\n";
+        $newname = _alloc_image_lock( $class, $ctx, $vmid, 'raw', undef, $size_kib );
+    }
+
+    eval { _activate_volume_lock( $class, $ctx, $newname, undef, {} ) };
+    if ( my $err = $@ ) {
+        _free_image_lock( $class, $ctx, $newname, 0, 'raw' );
+        die $err;
+    }
+
+    eval {
+        my ($path) = @{ _path( $class, $ctx, $newname, undef ) };
+        OpenEJovianDSS::Common::data_copy( $ctx, $fh, $path );
+    };
+    my $err = $@;
+
+    _deactivate_volume_lock( $class, $ctx, $newname, undef, {} );
+
+    if ($err) {
+        die $err;
+    }
+
+    debugmsg( $ctx, "debug", "Import volume ${newname} done" );
+    return "$ctx->{storeid}:${newname}";
+}
+
 sub rename_volume {
     my ( $class, $scfg, $storeid, $original_volname, $new_vmid, $new_volname ) = @_;
     my $ctx = new_ctx($scfg, $storeid);
@@ -550,14 +738,14 @@ sub _rename_volume {
     my $new_volname_clustered;
 
     if ( defined($new_volname) ) {
-        $new_volname_clustered = volume_name_clustered( $ctx, $new_volname );
+        $new_volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $new_volname );
     } else {
         my $cluster_prefix = OpenEJovianDSS::Common::get_cluster_prefix($ctx);
         $new_volname_clustered = _find_free_diskname( $class, $ctx, $new_vmid, $original_format,
                                                       undef, $cluster_prefix );
     }
 
-    my $original_volname_clustered = volume_name_clustered( $ctx, $original_volname );
+    my $original_volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $original_volname );
 
     volume_deactivate( $ctx,
         $original_vmid, $original_volname_clustered, undef, undef );
@@ -711,7 +899,7 @@ sub _clone_image {
     my $clone_name_clustered = _find_free_diskname( $class, $ctx, $vmid, $fmt, undef, $cluster_prefix );
 
 
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
     my $size = joviandss_cmd( $ctx,
         [ "pool", $pool, "volume", $volname_clustered, "get", "-s" ], 118, 3 );
 
@@ -877,7 +1065,7 @@ sub _alloc_image {
     my $cluster_prefix = OpenEJovianDSS::Common::get_cluster_prefix($ctx);
 
     if ( defined($volume_name) ) {
-        $volume_name_clustered = volume_name_clustered( $ctx, $volume_name );
+        $volume_name_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volume_name );
     } else {
         $volume_name_clustered =
             _find_free_diskname( $class, $ctx, $vmid, $fmt, undef, $cluster_prefix );
@@ -915,7 +1103,8 @@ sub _alloc_image {
             }
 
             debugmsg( $ctx, "debug",
-"Creating volume ${volume_name_clustered} format ${fmt} requested size ${size_assigned}"
+                      "Creating volume ${volume_name_clustered} " .
+                      " format ${fmt} requested size ${size_assigned}"
             );
 
             #my $volume_name_clustered = volume_name_clustered( $ctx, $volume_name );
@@ -1052,7 +1241,7 @@ sub _free_image {
     my $tgname =
       get_vm_target_group_name( $ctx, $vmid );
     my $prefix = get_target_prefix($ctx);
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
 
     # Volume deletion will result in deletetion of all its snapshots
     # Therefore we have to detach all volume snapshots that is expected to be
@@ -1170,21 +1359,23 @@ sub volume_snapshot {
 
     # TODO: make snapshot creation idempotent
     # This will require adding --idempotent flag for jdss cmd
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
     joviandss_cmd( $ctx,
         [ "pool", $pool, "volume", $volname_clustered, "snapshots", "create", $snap ], 118 );
 }
 
 # Returns a hash with the snapshot names as keys and the following data:
-# id        - Unique id to distinguish different snapshots even if the have the same name.
-# timestamp - Creation time of the snapshot (seconds since epoch).
+# id           - Unique id to distinguish different snapshots even if the have the same name.
+# timestamp    - Creation time of the snapshot (seconds since epoch).
+# virtual-size - Volume size at the time the snapshot was taken, in bytes.
+#                Best effort: only present when the appliance reports it.
 # Returns an empty hash if the volume does not exist.
 sub volume_snapshot_info {
     my ( $class, $scfg, $storeid, $volname ) = @_;
     my $ctx = new_ctx($scfg, $storeid);
 
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
-    return volume_snapshots_info( $ctx, $volname_clustered );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
+    return OpenEJovianDSS::Common::volume_snapshots_info( $ctx, $volname_clustered );
 }
 
 sub volume_snapshot_needs_fsfreeze {
@@ -1253,7 +1444,7 @@ sub _volume_snapshot_rollback {
     # blocker snapshots removed — so the timeout retries below are safe.
     # (This supersedes the pre-4e6281d "never retry rollback" comment; do
     # not restore retries=0 on the strength of that historical note.)
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
     my $deleted_raw = joviandss_cmd(
         $ctx,
         [
@@ -1314,7 +1505,7 @@ sub volume_rollback_is_possible {
     my $force_rollback = vm_tag_force_rollback_is_set(
         $ctx, $vmid);
 
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
     my $ok = volume_rollback_check(
         $ctx, $vmid, $volname_clustered, $snap, $blockers,
         $force_rollback);
@@ -1359,7 +1550,7 @@ sub _volume_snapshot_delete {
     my $tgname =
       get_vm_target_group_name( $ctx, $vmid );
 
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
 
     volume_deactivate( $ctx, $vmid,
         $volname_clustered, $snap, undef );
@@ -1385,7 +1576,7 @@ sub volume_snapshot_list {
 
     my $pool = get_pool($ctx);
 
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
     my $jdssc = joviandss_cmd( $ctx,
         [ "pool", $pool, "volume", $volname_clustered, "snapshots", "list" ], 118, 5 );
 
@@ -1404,7 +1595,7 @@ sub volume_size_info {
 
     my $pool = get_pool($ctx);
 
-    my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
+    my ( $vtype, $name, $vmid, $parent ) = $class->parse_volname($volname);
 
 
     if ( 'images' cmp "$vtype" ) {
@@ -1412,12 +1603,24 @@ sub volume_size_info {
             $timeout );
     }
 
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
     my $size = joviandss_cmd( $ctx,
         [ "pool", $pool, "volume", $volname_clustered, "get", "-s" ], 118, 3,
         undef, 'jdssc_info' );
+    $size = clean_word($size);
 
-    return clean_word($size);
+    # The list contract is ($size, $format, $used, $parent); JovianDSS
+    # volumes are always raw, and the parent of a linked clone is the base
+    # component of its compound volname (parse_volname's 4th field), the
+    # same convention ZFSPoolPlugin follows.
+    # TODO: investigate parent reporting here alongside parse_volname:
+    # _clone_image returns plain names, so the compound base-.../vm-...
+    # form parse_volname accepts is never generated by this plugin and
+    # $parent is always undef in practice. Decide whether clones should
+    # get compound volnames (then _rename_volume must re-attach the base
+    # prefix like ZFSPoolPlugin does) or whether parent should come from
+    # the appliance-side ZFS origin instead.
+    return wantarray ? ( $size, 'raw', $size, $parent ) : $size;
 }
 
 sub status {
@@ -1586,7 +1789,7 @@ sub _activate_volume {
           . " start" );
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
 
     return 0 if ( 'images' ne "$vtype" );
 
@@ -1683,7 +1886,7 @@ sub _deactivate_volume {
     my $prefix = get_target_prefix($ctx);
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
 
     my $tgname =
       get_vm_target_group_name( $ctx, $vmid );
@@ -1712,25 +1915,31 @@ sub _deactivate_volume {
 }
 
 sub volume_resize {
-    my ( $class, $scfg, $storeid, $volname, $size, $running ) = @_;
+    my ( $class, $scfg, $storeid, $volname, $size, $running, $snapname ) = @_;
+
+    if ( defined( $snapname ) ) {
+        die "resizing a snapshot is not supported for joviandss plugin\n";
+    };
+
     my $ctx = new_ctx($scfg, $storeid);
-    return _volume_resize_lock( $class, $ctx, $volname, $size, $running );
+    _volume_resize_lock( $class, $ctx, $volname, $size, $running, $snapname );
+    return;
 }
 
 sub _volume_resize_lock {
-    my ( $class, $ctx, $volname, $size, $running ) = @_;
+    my ( $class, $ctx, $volname, $size, $running, $snapname ) = @_;
 
     my ( undef, undef, $vmid ) = eval { $class->parse_volname($volname) };
     my $res;
     if ( defined $vmid ) {
         $res = OpenEJovianDSS::Lock::with_lock(
             $ctx, 'vm', $vmid, undef,
-            sub { _volume_resize( $class, $ctx, $volname, $size, $running ) },
+            sub { _volume_resize( $class, $ctx, $volname, $size, $running, $snapname ) },
         );
     } else {
         $res = OpenEJovianDSS::Lock::with_lock(
             $ctx, 'storage', undef, undef,
-            sub { _volume_resize( $class, $ctx, $volname, $size, $running ) },
+            sub { _volume_resize( $class, $ctx, $volname, $size, $running, $snapname ) },
         );
     }
     die $@ if $@;
@@ -1738,7 +1947,7 @@ sub _volume_resize_lock {
 }
 
 sub _volume_resize {
-    my ( $class, $ctx, $volname, $size, $running ) = @_;
+    my ( $class, $ctx, $volname, $size, $running, $snapname ) = @_;
 
     my $pool = get_pool($ctx);
     my $resizeok = 0;
@@ -1748,7 +1957,7 @@ sub _volume_resize {
     # Sanitize everything that enters the command line (house rule: argv
     # values pass safe_word / a strict untaint at the trust boundary).
     my $volname_clustered = OpenEJovianDSS::Common::safe_word(
-        volume_name_clustered( $ctx, $volname ), 'volume name' );
+        OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname ), 'volume name' );
 
     if ( $size =~ /^(\d+)$/ ) {
         $size = $1;    # untainted, strictly numeric
@@ -1824,13 +2033,28 @@ sub _volume_resize {
             lun_record_update_device( $ctx,
                 $targetname, $lunid, $lunrecpath, $lunrecord, $size );
         }
-        return 1;
+        return ;
     }
     die $rerr;
 }
 
 sub parse_volname {
     my ( $class, $volname ) = @_;
+
+    # PVE composes volnames for storages with a `path` property in directory
+    # style, "$vmid/$name.$format" (Storage.pm, $volname_for_storage) — e.g.
+    # the import target of an offline migration.  JovianDSS volume names are
+    # flat and cannot contain a directory component, so drop the "<vmid>/"
+    # prefix here, at the plugin's single name-interpretation point.  The
+    # file name itself is preserved exactly as requested, format suffix
+    # included: a volume named "vm-100-disk-0.raw" is a legitimate name and
+    # is never aliased onto its suffixless twin.
+    if ( $volname =~ m!^(\d+)/(.+)$! ) {
+        my $dir_vmid  = $1;    # "<vmid>/" directory component added by PVE
+        my $file_name = $2;    # the volume name, kept verbatim
+
+        $volname = $file_name;
+    }
 
     my $iso_re;
 
