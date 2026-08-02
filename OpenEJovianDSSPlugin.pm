@@ -110,7 +110,7 @@ my $PLUGIN_VERSION = '1.0.0';
 
 sub api {
     my $supported_apiver_min = 9;
-    my $supported_apiver_max = 14;
+    my $supported_apiver_max = 15;
 
     my $api_ver = PVE::Storage::APIVER;
 
@@ -358,7 +358,7 @@ sub _path {
     my $pool = get_pool($ctx);
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
 
     my $path = undef;
 
@@ -555,7 +555,7 @@ sub volume_export {
         # fallback below rather than die here.
         if ( !defined($size) || $size !~ /^\d+$/ ) {
 
-            my $volname_clustered = volume_name_clustered( $ctx, $volname );
+            my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
             my $pool = get_pool($ctx);
             $size = joviandss_cmd( $ctx,
                                       [ "pool",
@@ -738,14 +738,14 @@ sub _rename_volume {
     my $new_volname_clustered;
 
     if ( defined($new_volname) ) {
-        $new_volname_clustered = volume_name_clustered( $ctx, $new_volname );
+        $new_volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $new_volname );
     } else {
         my $cluster_prefix = OpenEJovianDSS::Common::get_cluster_prefix($ctx);
         $new_volname_clustered = _find_free_diskname( $class, $ctx, $new_vmid, $original_format,
                                                       undef, $cluster_prefix );
     }
 
-    my $original_volname_clustered = volume_name_clustered( $ctx, $original_volname );
+    my $original_volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $original_volname );
 
     volume_deactivate( $ctx,
         $original_vmid, $original_volname_clustered, undef, undef );
@@ -899,7 +899,7 @@ sub _clone_image {
     my $clone_name_clustered = _find_free_diskname( $class, $ctx, $vmid, $fmt, undef, $cluster_prefix );
 
 
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
     my $size = joviandss_cmd( $ctx,
         [ "pool", $pool, "volume", $volname_clustered, "get", "-s" ], 118, 3 );
 
@@ -1065,7 +1065,7 @@ sub _alloc_image {
     my $cluster_prefix = OpenEJovianDSS::Common::get_cluster_prefix($ctx);
 
     if ( defined($volume_name) ) {
-        $volume_name_clustered = volume_name_clustered( $ctx, $volume_name );
+        $volume_name_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volume_name );
     } else {
         $volume_name_clustered =
             _find_free_diskname( $class, $ctx, $vmid, $fmt, undef, $cluster_prefix );
@@ -1103,7 +1103,8 @@ sub _alloc_image {
             }
 
             debugmsg( $ctx, "debug",
-"Creating volume ${volume_name_clustered} format ${fmt} requested size ${size_assigned}"
+                      "Creating volume ${volume_name_clustered} " .
+                      " format ${fmt} requested size ${size_assigned}"
             );
 
             #my $volume_name_clustered = volume_name_clustered( $ctx, $volume_name );
@@ -1240,7 +1241,7 @@ sub _free_image {
     my $tgname =
       get_vm_target_group_name( $ctx, $vmid );
     my $prefix = get_target_prefix($ctx);
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
 
     # Volume deletion will result in deletetion of all its snapshots
     # Therefore we have to detach all volume snapshots that is expected to be
@@ -1358,21 +1359,23 @@ sub volume_snapshot {
 
     # TODO: make snapshot creation idempotent
     # This will require adding --idempotent flag for jdss cmd
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
     joviandss_cmd( $ctx,
         [ "pool", $pool, "volume", $volname_clustered, "snapshots", "create", $snap ], 118 );
 }
 
 # Returns a hash with the snapshot names as keys and the following data:
-# id        - Unique id to distinguish different snapshots even if the have the same name.
-# timestamp - Creation time of the snapshot (seconds since epoch).
+# id           - Unique id to distinguish different snapshots even if the have the same name.
+# timestamp    - Creation time of the snapshot (seconds since epoch).
+# virtual-size - Volume size at the time the snapshot was taken, in bytes.
+#                Best effort: only present when the appliance reports it.
 # Returns an empty hash if the volume does not exist.
 sub volume_snapshot_info {
     my ( $class, $scfg, $storeid, $volname ) = @_;
     my $ctx = new_ctx($scfg, $storeid);
 
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
-    return volume_snapshots_info( $ctx, $volname_clustered );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
+    return OpenEJovianDSS::Common::volume_snapshots_info( $ctx, $volname_clustered );
 }
 
 sub volume_snapshot_needs_fsfreeze {
@@ -1441,7 +1444,7 @@ sub _volume_snapshot_rollback {
     # blocker snapshots removed — so the timeout retries below are safe.
     # (This supersedes the pre-4e6281d "never retry rollback" comment; do
     # not restore retries=0 on the strength of that historical note.)
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
     my $deleted_raw = joviandss_cmd(
         $ctx,
         [
@@ -1502,7 +1505,7 @@ sub volume_rollback_is_possible {
     my $force_rollback = vm_tag_force_rollback_is_set(
         $ctx, $vmid);
 
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
     my $ok = volume_rollback_check(
         $ctx, $vmid, $volname_clustered, $snap, $blockers,
         $force_rollback);
@@ -1547,7 +1550,7 @@ sub _volume_snapshot_delete {
     my $tgname =
       get_vm_target_group_name( $ctx, $vmid );
 
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
 
     volume_deactivate( $ctx, $vmid,
         $volname_clustered, $snap, undef );
@@ -1573,7 +1576,7 @@ sub volume_snapshot_list {
 
     my $pool = get_pool($ctx);
 
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
     my $jdssc = joviandss_cmd( $ctx,
         [ "pool", $pool, "volume", $volname_clustered, "snapshots", "list" ], 118, 5 );
 
@@ -1600,7 +1603,7 @@ sub volume_size_info {
             $timeout );
     }
 
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
     my $size = joviandss_cmd( $ctx,
         [ "pool", $pool, "volume", $volname_clustered, "get", "-s" ], 118, 3,
         undef, 'jdssc_info' );
@@ -1786,7 +1789,7 @@ sub _activate_volume {
           . " start" );
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
 
     return 0 if ( 'images' ne "$vtype" );
 
@@ -1883,7 +1886,7 @@ sub _deactivate_volume {
     my $prefix = get_target_prefix($ctx);
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
-    my $volname_clustered = volume_name_clustered( $ctx, $volname );
+    my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
 
     my $tgname =
       get_vm_target_group_name( $ctx, $vmid );
@@ -1954,7 +1957,7 @@ sub _volume_resize {
     # Sanitize everything that enters the command line (house rule: argv
     # values pass safe_word / a strict untaint at the trust boundary).
     my $volname_clustered = OpenEJovianDSS::Common::safe_word(
-        volume_name_clustered( $ctx, $volname ), 'volume name' );
+        OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname ), 'volume name' );
 
     if ( $size =~ /^(\d+)$/ ) {
         $size = $1;    # untainted, strictly numeric

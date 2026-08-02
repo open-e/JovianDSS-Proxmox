@@ -17,6 +17,7 @@ from datetime import datetime
 import base64
 import logging
 import re
+import time
 
 from jdssc.jovian_common import cexception as exception
 
@@ -32,6 +33,31 @@ def JBase32ToStr(bname):
 
 def JBase32FromStr(name):
     return base64.b32encode(name.encode()).decode().replace("=", "-")
+
+
+def time_to_epoch(t):
+    """Normalize a time to seconds since epoch.
+
+    Identify the format the appliance used first: an integer (or all-digit
+    string) is already an epoch value, otherwise it is a
+    '%Y-%m-%d %H:%M:%S' date string in appliance-local time (fields may
+    lack zero padding, e.g. '2015-5-27 16:8:35').  Returns 0 when the
+    value is missing or in none of the known formats.
+    """
+    if t is None:
+        return 0
+
+    if isinstance(t, int):
+        return t
+
+    text = str(t)
+    if text.isdigit():
+        return int(text)
+
+    try:
+        return int(time.mktime(time.strptime(text, "%Y-%m-%d %H:%M:%S")))
+    except ValueError:
+        return 0
 
 
 def is_volume(name):

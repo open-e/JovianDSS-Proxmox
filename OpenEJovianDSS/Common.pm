@@ -1088,6 +1088,11 @@ sub lock_properties {
 # (trailing optional arg). One of:
 #   'jdssc_general'  → cluster-wide serialization (state-changing commands)  [default]
 #   'jdssc_info'     → per-host serialization only (host-safe read commands)
+#
+#   TODO: implement capability to exit quickly, without retry
+#   if specific error was met
+#   for instance if it is neccessary to list snapshots of given volume
+#   but volume do not exists
 sub joviandss_cmd {
     my ( $ctx, $cmd, $timeout, $retries, $force_debug_level, $lock_class ) = @_;
     my $scfg    = $ctx->{scfg};
@@ -1357,36 +1362,60 @@ sub _multipath_cookie_sweep {
 }
 
 # Returns a hash with the snapshot names as keys and the following data:
-# id        - Unique id to distinguish different snapshots even if the have the same name.
-# timestamp - Creation time of the snapshot (seconds since epoch).
+# id           - Unique id to distinguish different snapshots even if the have the same name.
+# timestamp    - Creation time of the snapshot (seconds since epoch).
+# virtual-size - Volume size at the time the snapshot was taken, in bytes.
+#                Best effort: only present when the appliance reports it.
 # Returns an empty hash if the volume does not exist.
 sub volume_snapshots_info {
     my ( $ctx, $volname ) = @_;
 
     my $pool = get_pool($ctx);
 
-    my $output = joviandss_cmd(
-        $ctx,
-        [
-            'pool',      $pool,  'volume', $volname,
-            'snapshots', 'list', '--guid', '--creation'
-        ],
-        118,
-        5
-    );
+    my $output = eval {
+        joviandss_cmd(
+            $ctx,
+            [
+                'pool',      $pool,  'volume',     $volname,
+                'snapshots', 'list', '--guid',     '--creation',
+                '--volsize'
+            ],
+            118,
+            5
+        );
+    };
+    if ( my $err = $@ ) {
+        my $clean_error = $err;
+        $clean_error =~ s/\s+$//;
+        if ( $clean_error =~ /^JDSS resource .+ does not exist\.$/ ) {
+            debugmsg( $ctx, "debug",
+                "Volume ${volname} does not exist, no snapshots to list\n" );
+            return {};
+        }
+        die $err;
+    }
 
     my $snapshots = {};
     my @lines     = split( /\n/, $output );
     for my $line (@lines) {
-        my ( $name, $guid, $creation ) = split( /\s+/, $line );
-        #my ($sname) = split;
+        my ( $name, $guid, $creation, $volsize ) = split( /\s+/, $line );
+        $name = safe_word($name, 'snapshot name');
+        $guid = safe_word($guid, 'snapshot guid');
+        $creation = safe_word($creation, 'snapshot creation time');
+        $volsize = safe_word($volsize, 'snapshot virtual-size');
         debugmsg( $ctx, "debug",
-"Volume ${volname} has snapshot ${name} with id ${guid} made at ${creation}\n"
+            "Volume ${volname} has snapshot ${name} " .
+            "with id ${guid} " .
+            safe_var_print( "virtual-size", $volsize ) .
+            " made at ${creation}\n"
         );
         $snapshots->{$name} = {
             id        => $guid,
             timestamp => $creation,
         };
+        if ( defined($volsize) && $volsize =~ /^\d+$/ ) {
+            $snapshots->{$name}{'virtual-size'} = $volsize;
+        }
     }
 
     return $snapshots;
