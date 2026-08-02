@@ -410,3 +410,86 @@ old size, and pct prints:
     pct create <id> <tmpl> --rootfs jdss-X:2 --mp0 jdss-X:1,mp=/mnt/testdata --net0 ...
     pct start <id>
     pct resize <id> mp0 2G       # zvol grows, fs does not, internal error printed
+
+## Issue 7: Property Deletion Bypasses on_update_hook Validation
+
+**Status:** Open — found 2026-08-02 on pve-92-1 (pve-manager 9.2.5, plugin
+build of 2026-08-02) while reviewing storage API v13 compatibility.
+
+### Symptom
+
+With a chap-enabled storage, deleting the chap user name is accepted:
+
+    pvesm set <storeid> --delete chap_user_name     # exits 0
+
+leaving `chap_enabled 1` without a `chap_user_name` in storage.cfg — the
+exact invalid state the plugin's own on_update_hook validation
+("chap_user_name is required when chap_enabled is set") exists to refuse.
+Verified live: the deletion succeeded and the section kept `chap_enabled 1`
+with no chap user name.
+
+### Root cause
+
+`on_update_hook` receives only the UPDATED properties; property DELETIONS
+are processed by PVE separately and never reach the hook, and the `$scfg`
+passed in still carries the pre-deletion values — so the chap
+cross-validation sees a consistent (stale) picture. This is the exact
+limitation storage API v13 addresses with `on_update_hook_full()`, which
+additionally receives the current configuration and the list of properties
+to be deleted (Proxmox bug #6669 was the upstream motivation). The plugin
+does not implement `on_update_hook_full` yet.
+
+### Impact
+
+An administrator can `--delete chap_user_name` (or conceivably other
+cross-validated properties) and only discover the broken chap setup when
+iSCSI logins start failing.
+
+### Direction
+
+Implement `on_update_hook_full()` (v13) and move the chap cross-validation
+there, evaluating the post-update effective configuration including
+deletions; keep `on_update_hook` delegating for older PVE versions. The
+desired contract is captured by testcase
+`iscsi-api-v13-update-delete-validation-001`
+(pve-testing/testcases/iscsi-plugin/api-compatibility/v13), which FAILS on
+current builds by design until the hook is implemented. The pinned absence
+in tests/api_compat_test.pl must be flipped alongside.
+
+## Issue 8: alloc_image Accepts Unsupported qcow2 Format
+
+**Status: Fixed** — found 2026-08-02 on pve-92-1 by testcase
+`iscsi-api-v12-get-formats-001`
+(pve-testing/testcases/iscsi-plugin/api-compatibility/v12), fixed the
+same day.
+
+### Symptom
+
+    pvesm alloc jdss-Pool-2 990032 vm-990032-disk-0.qcow2 131072 --format qcow2
+
+succeeds (exit 0) although the plugin's format declaration is raw-only.
+A raw zvol is created under a name ending in .qcow2; any consumer trusting
+the requested format (e.g. a VM config referencing the volume as qcow2)
+would misinterpret the raw device.
+
+### Root cause
+
+The plugin's alloc path does not validate the requested format. Upstream
+block plugins refuse explicitly (ZFSPoolPlugin::alloc_image:
+`die "unsupported format '$fmt'" if $fmt ne 'raw';`); the JovianDSS
+plugin has no equivalent guard, and PVE core does not enforce the
+storage's format list at allocation time.
+
+### Resolution
+
+**Resolved 2026-08-02**: `alloc_image` refuses any format other than raw
+before taking a lock or touching the appliance, mirroring
+ZFSPoolPlugin::alloc_image:
+
+    unsupported format 'qcow2' - storage 'jdss-Pool-2' only supports raw
+
+Verified live on pve-92-1: the qcow2 allocation is now rejected and
+leaves no volume behind, while default and explicit raw allocations still
+succeed — testcase `iscsi-api-v12-get-formats-001` passes 8/8. Unit
+coverage in tests/api_compat_test.pl pins the guard (refusal, no storage
+call on refusal, raw and unspecified formats pass).

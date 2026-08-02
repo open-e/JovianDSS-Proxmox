@@ -1027,6 +1027,17 @@ sub _find_free_diskname {
 
 sub alloc_image {
     my ( $class, $storeid, $scfg, $vmid, $fmt, $name, $size ) = @_;
+
+    # JovianDSS volumes are zvols: raw is the only format the storage can
+    # serve (see plugindata). PVE does not enforce the storage's format
+    # list at allocation time, so an unsupported format must be refused
+    # here — otherwise a raw zvol is created under a name promising a
+    # different format and every later consumer misreads it (Issue 8).
+    if ( defined($fmt) && $fmt ne 'raw' ) {
+        die "unsupported format '${fmt}' - "
+          . "storage '${storeid}' only supports raw\n";
+    }
+
     my $ctx = new_ctx($scfg, $storeid);
     return _alloc_image_lock( $class, $ctx, $vmid, $fmt, $name, $size );
 }
