@@ -75,6 +75,11 @@ class NASSnapshots():
                           action='store_true',
                           default=False,
                           help='Add creation time (seconds since epoch) to output')
+        list.add_argument('--guid',
+                          dest='guid',
+                          action='store_true',
+                          default=False,
+                          help='Add guid to output')
 
         kargs, ukargs = parser.parse_known_args(args)
 
@@ -139,7 +144,11 @@ class NASSnapshots():
             for s in data:
                 LOG.debug(s)
                 line = "{}".format(s['snapshot_name'])
-                if self.args.get('creation') and s.get('creation'):
-                    line += " {}".format(s['creation'])
+                if self.args.get('guid'):
+                    guid = s.get('guid')
+                    line += " {}".format(guid if guid else '-')
+                if self.args.get('creation'):
+                    creation = s.get('creation')
+                    line += " {}".format(creation if creation else '-')
                 line += "\n"
                 sys.stdout.write(line)

@@ -40,7 +40,7 @@ our @EXPORT_OK = qw(
     dataset_name_get
     pool_name_get
 
-    snapshot_info
+    snapshots_info
 
     path_is_nfs
 
@@ -113,7 +113,7 @@ sub _vmid_from_volname {
     return $1;
 }
 
-sub snapshot_info {
+sub snapshots_info {
     my ( $ctx, $dataset, $volname ) = @_;
 
     my $scfg = $ctx->{scfg};
@@ -125,7 +125,7 @@ sub snapshot_info {
         $ctx,
         [
             'pool', $pool, 'nas_volume', '-d', $dataset,
-            'snapshots', 'list', '--creation'
+            'snapshots', 'list', '--guid', '--creation'
         ]
     );
 
@@ -134,7 +134,7 @@ sub snapshot_info {
     for my $line (@lines) {
         $line =~ s/^\s+|\s+$//g;
         next unless length($line) > 0;
-        my ( $sname_field, $creation ) = split( /\s+/, $line, 2 );
+        my ( $sname_field, $guid, $creation ) = split( /\s+/, $line );
         # Only include {vmid}_{snapname} entries belonging to this volume
         if ( defined($vmid) ) {
             my $snap_vmid = nas_vmid_from_sname($sname_field);
@@ -142,12 +142,23 @@ sub snapshot_info {
         }
         my $snap_name = nas_snapid_from_sname($sname_field);
         next unless defined($snap_name);
-        OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
-            "NAS volume ${dataset} volume ${volname} has snapshot ${snap_name}\n" );
+
         my $entry = { name => $snap_name };
-        $entry->{timestamp} = int($creation)
-            if defined($creation) && $creation =~ /^\d+$/;
+
+        if (defined($guid) && $guid =~ /^\d+$/) {
+            $entry->{id} = "${volname}-$guid"
+        }
+
+        if ( defined($creation) && $creation =~ /^\d+$/) {
+            $entry->{timestamp} = int($creation)
+        }
         $snapshots->{$snap_name} = $entry;
+
+        OpenEJovianDSS::Common::debugmsg( $ctx, "debug",
+            "NAS volume ${dataset} volume ${volname} has snapshot ${snap_name} ".
+            "with ". OpenEJovianDSS::Common::safe_var_print( "id", $entry->{id} ) .
+            " at ". OpenEJovianDSS::Common::safe_var_print( "time", $entry->{timestamp} ) .
+            "\n" );
     }
 
     return $snapshots;

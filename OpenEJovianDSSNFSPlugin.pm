@@ -54,7 +54,7 @@ my $PLUGIN_VERSION = '0.7.0';
 
 sub api {
     my $supported_apiver_min = 9;
-    my $supported_apiver_max = 14;
+    my $supported_apiver_max = 15;
 
     my $api_ver = PVE::Storage::APIVER;
 
@@ -419,7 +419,7 @@ sub volume_snapshot_info {
 
     my ( $vtype, $name, $vmid ) = $class->parse_volname($volname);
 
-    return OpenEJovianDSS::NFSCommon::snapshot_info(
+    return OpenEJovianDSS::NFSCommon::snapshots_info(
         $ctx, $datname, $name );
 }
 
@@ -718,7 +718,7 @@ sub volume_rollback_is_possible {
     # TODO: have to be rewrittent to better handle many snapshots
     my $found = 0;
     eval {
-        my $snapshots = OpenEJovianDSS::NFSCommon::snapshot_info(
+        my $snapshots = OpenEJovianDSS::NFSCommon::snapshots_info(
             $ctx, $datname, $name );
 
         if ( exists $snapshots->{$snap} ) {
@@ -1039,7 +1039,7 @@ sub on_add_hook {
     if (exists($sensitive{user_password})) {
         if (defined($sensitive{user_password})) {
             OpenEJovianDSS::Common::password_file_set_password(
-                $ctx, $sensitive{user_password});
+                $class->type(), $storeid, $sensitive{user_password});
         }
     }
     OpenEJovianDSS::Common::password_file_require_user_password(
@@ -1048,8 +1048,7 @@ sub on_add_hook {
 
 sub on_delete_hook {
     my ($class, $storeid, $scfg) = @_;
-    my $ctx = new_ctx($scfg, $storeid);
-    OpenEJovianDSS::Common::password_file_delete($ctx);
+    OpenEJovianDSS::Common::password_file_delete( $class->type(), $storeid );
 }
 
 sub on_update_hook {
@@ -1059,7 +1058,7 @@ sub on_update_hook {
     if (exists($param{user_password})) {
         if (defined($param{user_password})) {
             OpenEJovianDSS::Common::password_file_set_password(
-                $ctx, $param{user_password});
+                $class->type(), $storeid, $param{user_password});
         } else {
             OpenEJovianDSS::Common::password_file_delete_user_password($ctx);
         }
@@ -1070,6 +1069,16 @@ sub on_update_hook {
 sub volume_qemu_snapshot_method {
     my ($class, $storeid, $scfg, $volname) = @_;
     return 'storage';
+}
+
+sub volume_resize {
+    my ( $class, $scfg, $storeid, $volname, $size, $running, $snapname ) = @_;
+
+    if ( defined( $snapname ) ) {
+        die "resizing a snapshot is not supported for joviandss-nfs plugin\n";
+    };
+
+    return $class->SUPER::volume_resize( $scfg, $storeid, $volname, $size, $running );
 }
 
 sub alloc_image {

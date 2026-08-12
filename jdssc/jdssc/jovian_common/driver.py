@@ -2126,9 +2126,19 @@ class JovianDSSDriver(object):
 
         out = []
         for d in data:
+            # Identify the entry format first: some appliance versions
+            # nest the snapshot attributes (guid, creation) under
+            # 'properties', others keep them at the top level of the
+            # entry - same variance as the SAN volume listing.
+            if isinstance(d.get('properties'), dict):
+                properties = d['properties']
+            else:
+                properties = d
             r = {'snapshot_name': jcom.idname(d['name']),
                  'volume_name': jcom.idname(d['volume_name']),
-                 'creation': d.get('properties', {}).get('creation')}
+                 'guid': properties.get('guid'),
+                 'creation': jcom.time_to_epoch(
+                     properties.get('creation')) or None}
             if proxmox_volume:
                 if proxmox_volume == jcom.proxid_from_sname(d['name']):
                     out.append(r)
