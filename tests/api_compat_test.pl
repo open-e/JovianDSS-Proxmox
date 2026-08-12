@@ -14,9 +14,10 @@
 #         pass-through), volume_qemu_snapshot_method ('storage'), the
 #         raw-only format declaration behind get_formats, and the
 #         deliberate absence of rename_snapshot.
-#   v13 — activation and deactivation tolerate the hints parameter; the
-#         absence of on_update_hook_full is pinned (its deletion
-#         blind spot is Issue 7 in docs/issues/ISSUES.md).
+#   v13 — activation ignores the hints parameter (deactivation has none
+#         in the API); on_update_hook_full validates the configuration
+#         an update produces, deletions included (Issue 7 in
+#         docs/issues/ISSUES.md).
 #   v14 — get_identity: pool-name-plus-pool-id identity, retry on
 #         transient failures, clear error when the appliance answer stays
 #         unusable.
@@ -399,8 +400,10 @@ my $SCFG    = {
 }
 
 # ---------------------------------------------------------------------------
-# v13: activation and deactivation tolerate the hints parameter — the
-# plugin ignores hints, which the contract explicitly allows.
+# v13: activation tolerates the hints parameter — the plugin ignores
+# hints, which the contract explicitly allows. Deactivation has no hints
+# in the API (v13 added them to activate/map only): a stray extra
+# argument is dropped, never forwarded.
 # ---------------------------------------------------------------------------
 {
     no strict 'refs';
@@ -423,17 +426,17 @@ my $SCFG    = {
 
     my @deact;
     local *{"${PLUGIN}::_deactivate_volume_lock"} = sub {
-        my ( $class, $ctx, $volname, $snapname, $cache, $h ) = @_;
-        push @deact, { hints => $h };
+        my ( $class, $ctx, $volname, $snapname, $cache, @extra ) = @_;
+        push @deact, { extra => scalar(@extra) };
         return 1;
     };
     eval {
         $PLUGIN->deactivate_volume( $STOREID, $SCFG, 'vm-100-disk-0',
             undef, {}, $hints );
     };
-    is( $@, '', 'v13: deactivate_volume accepts a hints hashref' );
-    is( $deact[0]{hints}, $hints,
-        'v13: deactivation threads the hints reference through' );
+    is( $@, '', 'v13: deactivate_volume tolerates a stray extra argument' );
+    is( $deact[0]{extra}, 0,
+        'v13: deactivation does not forward a hints parameter (the API passes none)' );
 }
 
 # ---------------------------------------------------------------------------

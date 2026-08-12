@@ -1861,25 +1861,25 @@ sub _activate_volume {
 }
 
 sub deactivate_volume {
-    my ( $class, $storeid, $scfg, $volname, $snapname, $cache, $hints ) = @_;
+    my ( $class, $storeid, $scfg, $volname, $snapname, $cache ) = @_;
     my $ctx = new_ctx($scfg, $storeid);
-    return _deactivate_volume_lock( $class, $ctx, $volname, $snapname, $cache, $hints );
+    return _deactivate_volume_lock( $class, $ctx, $volname, $snapname, $cache );
 }
 
 sub _deactivate_volume_lock {
-    my ( $class, $ctx, $volname, $snapname, $cache, $hints ) = @_;
+    my ( $class, $ctx, $volname, $snapname, $cache ) = @_;
 
     my ( undef, undef, $vmid ) = eval { $class->parse_volname($volname) };
     my $res;
     if ( defined $vmid ) {
         $res = OpenEJovianDSS::Lock::with_lock(
             $ctx, 'vm', $vmid, undef,
-            sub { _deactivate_volume( $class, $ctx, $volname, $snapname, $cache, $hints ) },
+            sub { _deactivate_volume( $class, $ctx, $volname, $snapname, $cache ) },
         );
     } else {
         $res = OpenEJovianDSS::Lock::with_lock(
             $ctx, 'storage', undef, undef,
-            sub { _deactivate_volume( $class, $ctx, $volname, $snapname, $cache, $hints ) },
+            sub { _deactivate_volume( $class, $ctx, $volname, $snapname, $cache ) },
         );
     }
     die $@ if $@;
@@ -1887,7 +1887,7 @@ sub _deactivate_volume_lock {
 }
 
 sub _deactivate_volume {
-    my ( $class, $ctx, $volname, $snapname, $cache, $hints ) = @_;
+    my ( $class, $ctx, $volname, $snapname, $cache ) = @_;
 
     debugmsg( $ctx, "debug",
             "Deactivate volume ${volname} "
