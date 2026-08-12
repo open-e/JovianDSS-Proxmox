@@ -45,10 +45,6 @@ For a full list of topics, visit the [JovianDSS Proxmox Wiki](https://github.com
 
 ## Roadmap
 
-- Additional volume configuration options
-
-- CHAP authentication for iSCSI targets
-
 - Optional backup-plugin extension
 
 
