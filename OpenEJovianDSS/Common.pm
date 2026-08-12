@@ -491,19 +491,30 @@ sub get_plugin_type {
     die "JovianDSS: unexpected storage type '$type'\n";
 }
 
+# The password machinery is keyed by (storage_type, storeid) rather than
+# by ctx: the pre-v13 on_update_hook never receives enough configuration
+# to build a ctx, yet must write credentials. The mutation functions take
+# the pair directly (their callers are the config hooks, which have it);
+# the get_* functions accept a ctx, since their callers sit in ctx-rich
+# code. The ref() guards turn a leftover ctx caller into a loud error
+# instead of a silent "HASH(0x...)" path component.
 sub get_plugin_password_dir {
-    my ($ctx) = @_;
-    return PLUGIN_PASSWORD_DIR_BASE . '/' . get_plugin_type($ctx);
+    my ($storage_type) = @_;
+    die "get_plugin_password_dir expects a storage type string\n"
+      if ref($storage_type);
+    return PLUGIN_PASSWORD_DIR_BASE . '/' . $storage_type;
 }
 
 sub get_password_file_path {
-    my ($ctx) = @_;
-    return get_plugin_password_dir($ctx) . "/$ctx->{storeid}.pw";
+    my ($storage_type, $storeid) = @_;
+    die "get_password_file_path expects a storage type string\n"
+      if ref($storage_type);
+    return get_plugin_password_dir($storage_type) . "/${storeid}.pw";
 }
 
 sub _password_file_get_key {
-    my ($ctx, $key) = @_;
-    my $pwfile_path = get_password_file_path($ctx);
+    my ($storage_type, $storeid, $key) = @_;
+    my $pwfile_path = get_password_file_path($storage_type, $storeid);
 
     return undef if ! -f $pwfile_path;
 
@@ -519,10 +530,10 @@ sub _password_file_get_key {
 }
 
 sub _password_file_set_key {
-    my ($ctx, $key, $value) = @_;
+    my ($storage_type, $storeid, $key, $value) = @_;
 
-    my $dir = get_plugin_password_dir($ctx);
-    my $pwfile_path = get_password_file_path($ctx);
+    my $dir = get_plugin_password_dir($storage_type);
+    my $pwfile_path = get_password_file_path($storage_type, $storeid);
 
     File::Path::make_path($dir, { mode => 0700 }) if ! -d $dir;
 
@@ -546,9 +557,9 @@ sub _password_file_set_key {
 }
 
 sub _password_file_delete_key {
-    my ($ctx, $key) = @_;
+    my ($storage_type, $storeid, $key) = @_;
 
-    my $pwfile_path = get_password_file_path($ctx);
+    my $pwfile_path = get_password_file_path($storage_type, $storeid);
     die "password file '$pwfile_path' does not exist\n" unless -f $pwfile_path;
 
     my %config;
@@ -570,13 +581,33 @@ sub _password_file_delete_key {
         PVE::Tools::file_set_contents($pwfile_path, $password_file_data, 0600, 1);
     } else {
         # No keys left (no user password, no chap password) — drop the whole file.
-        password_file_delete($ctx);
+        password_file_delete($storage_type, $storeid);
     }
 }
 
 sub get_user_password {
     my ($ctx) = @_;
-    return _password_file_get_key($ctx, 'user_password');
+    # The password file is authoritative. Entries created by plugin
+    # versions before v0.10.10, or on hosts older than storage API v11
+    # (PVE 8.4), keep credentials inline in storage.cfg — fall back to
+    # them so such entries stay operational without migration.
+    my $user_password =
+      _password_file_get_key( get_plugin_type($ctx), $ctx->{storeid},
+        'user_password' );
+    if ( defined($user_password) ) {
+        return $user_password;
+    }
+
+    if ( exists( $ctx->{scfg}{user_password} ) ) {
+        my $inline_user_password = $ctx->{scfg}{user_password};
+        if ( defined($inline_user_password)
+            && length($inline_user_password) > 0 )
+        {
+            return $inline_user_password;
+        }
+    }
+
+    return undef;
 }
 
 sub get_chap_enabled {
@@ -591,23 +622,40 @@ sub get_chap_user_name {
 
 sub get_chap_user_password {
     my ($ctx) = @_;
-    return _password_file_get_key($ctx, 'chap_user_password');
+    my $chap_user_password =
+      _password_file_get_key( get_plugin_type($ctx), $ctx->{storeid},
+        'chap_user_password' );
+    if ( defined($chap_user_password) ) {
+        return $chap_user_password;
+    }
+
+    if ( exists( $ctx->{scfg}{chap_user_password} ) ) {
+        my $inline_chap_user_password = $ctx->{scfg}{chap_user_password};
+        if ( defined($inline_chap_user_password)
+            && length($inline_chap_user_password) > 0 )
+        {
+            return $inline_chap_user_password;
+        }
+    }
+
+    return undef;
 }
 
 sub password_file_set_password {
-    my ($ctx, $password) = @_;
-    _password_file_set_key($ctx, 'user_password', $password);
+    my ($storage_type, $storeid, $password) = @_;
+    _password_file_set_key( $storage_type, $storeid, 'user_password',
+        $password );
 }
 
 sub password_file_set_chap_password {
-    my ($ctx, $password) = @_;
-    _password_file_set_key($ctx, 'chap_user_password', $password);
+    my ($storage_type, $storeid, $password) = @_;
+    _password_file_set_key( $storage_type, $storeid, 'chap_user_password',
+        $password );
 }
 
 sub password_file_delete {
-    my ($ctx) = @_;
-    my $pwfile_path = get_password_file_path($ctx);
-    unlink $pwfile_path;
+    my ($storage_type, $storeid) = @_;
+    unlink get_password_file_path( $storage_type, $storeid );
 }
 
 sub password_file_delete_user_password {
@@ -635,8 +683,9 @@ sub password_file_require_user_password {
 }
 
 sub password_file_delete_chap_password {
-    my ($ctx) = @_;
-    _password_file_delete_key($ctx, 'chap_user_password');
+    my ($storage_type, $storeid) = @_;
+    _password_file_delete_key( $storage_type, $storeid,
+        'chap_user_password' );
 }
 
 sub get_block_size {

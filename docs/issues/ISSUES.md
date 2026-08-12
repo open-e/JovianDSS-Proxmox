@@ -413,8 +413,8 @@ old size, and pct prints:
 
 ## Issue 7: Property Deletion Bypasses on_update_hook Validation
 
-**Status:** Open — found 2026-08-02 on pve-92-1 (pve-manager 9.2.5, plugin
-build of 2026-08-02) while reviewing storage API v13 compatibility.
+**Status: Fixed** — found 2026-08-02 on pve-92-1 (pve-manager 9.2.5) while
+reviewing storage API v13 compatibility; resolved 2026-08-11.
 
 ### Symptom
 
@@ -436,25 +436,68 @@ passed in still carries the pre-deletion values — so the chap
 cross-validation sees a consistent (stale) picture. This is the exact
 limitation storage API v13 addresses with `on_update_hook_full()`, which
 additionally receives the current configuration and the list of properties
-to be deleted (Proxmox bug #6669 was the upstream motivation). The plugin
-does not implement `on_update_hook_full` yet.
+to be deleted (Proxmox bug #6669 was the upstream motivation). Releases up
+to v1.0.0-9 did not implement `on_update_hook_full`.
 
 ### Impact
 
 An administrator can `--delete chap_user_name` (or conceivably other
-cross-validated properties) and only discover the broken chap setup when
-iSCSI logins start failing.
+cross-validated properties) and only discover the broken chap setup at
+the first operation that needs the target: volume_publish and
+volume_stage_iscsi (Common.pm) validate chap before creating or logging
+into a target and die with "chap_user_name is required when chap_enabled
+is set" — a clean message, but far from the pvesm set that caused it.
 
-### Direction
+### Resolution
 
-Implement `on_update_hook_full()` (v13) and move the chap cross-validation
-there, evaluating the post-update effective configuration including
-deletions; keep `on_update_hook` delegating for older PVE versions. The
-desired contract is captured by testcase
-`iscsi-api-v13-update-delete-validation-001`
-(pve-testing/testcases/iscsi-plugin/api-compatibility/v13), which FAILS on
-current builds by design until the hook is implemented. The pinned absence
-in tests/api_compat_test.pl must be flipped alongside.
+**Resolved 2026-08-11** by implementing `on_update_hook_full()` (storage
+API v13, PVE 9.1+). The hook normalizes the delete list
+(`$opts_delete //= []` — real PVE passes undef when no `--delete` is
+given), builds the effective configuration (current values, overridden by
+the update, minus deletions) and enforces:
+
+- a conflict pre-check: the same property both updated and deleted in one
+  request is refused — deliberately stricter than PVE itself, which for
+  sensitive properties silently resolves the combination to a set
+  (`PVE::Tools::extract_sensitive_params` lets a supplied value override
+  the deletion);
+- enabling chap (`chap_enabled` truthy in the effective configuration,
+  checked when the update sets it) requires the chap user name in the
+  effective configuration and a chap password the update leaves behind —
+  stored, inline, or arriving in the same update, and not simultaneously
+  deleted;
+- removing chap credentials while the effective configuration keeps chap
+  enabled is refused:
+
+      # pvesm set <storeid> --delete chap_user_name
+      update storage failed: CHAP credentials should not be removed with enabled CHAP
+
+- removing REST credentials is always refused (`user_password` can be
+  changed but never cleared);
+- with chap disabled in the effective configuration, deleting
+  `chap_user_password` also removes the stored secret from the password
+  file, so retiring chap leaves no leftover credential behind.
+
+Deliberately NOT validated at configuration time (decided 2026-08-11):
+changes that do not set `chap_enabled` — a `chap_user_name` edit on an
+already inconsistent storage passes, and no warning is emitted for
+pre-existing inconsistencies. Consistency of the running system is
+enforced at use time by volume_publish and volume_stage_iscsi with full
+visibility of the stored configuration (see Impact above), so the
+configuration-time checks exist to catch mistakes early, not to be the
+last line of defense. For the same reason the pre-v13 `on_update_hook`
+remains deliberately storage-only — it never sees deletions, a limitation
+documented by the pve-testing testcase
+`iscsi-config-change-pre-v13-chap-limitation-001`.
+
+Pinned by tests/api_compat_test.pl (suite green, 57/57; the v13 block
+covers refusals, legitimate combinations, the undef delete list, and the
+legacy inline-credential fallback) and by the e2e testcases
+`iscsi-api-v13-update-delete-validation-001` and
+`iscsi-config-change-chap-validation-scope-001`, whose
+`plugin_version_fails` entries record that releases up to v1.0.0-9 accept
+the deletions. A live run of the updated testcases on a v13+ node is
+still pending.
 
 ## Issue 8: alloc_image Accepts Unsupported qcow2 Format
 
@@ -493,3 +536,61 @@ leaves no volume behind, while default and explicit raw allocations still
 succeed — testcase `iscsi-api-v12-get-formats-001` passes 8/8. Unit
 coverage in tests/api_compat_test.pl pins the guard (refusal, no storage
 call on refusal, raw and unspecified formats pass).
+
+## Issue 9: pvesm add Accepts a Non-Existent Pool
+
+**Status:** Open — found 2026-08-11 on pve-91-1 (pve-manager 9.2.6,
+working-tree build with on_update_hook_full deployed) by testcase
+`required-pool-name-validation-001` after its parameter fixes.
+
+### Symptom
+
+Adding a storage whose pool does not exist on the appliance is accepted:
+
+    pvesm add joviandss test-invalid-pool --path /mnt/pve/... \
+      --pool_name NonExistentPool --content images \
+      --control_addresses ... --data_addresses ... \
+      --ssl_cert_verify 0 --user_name admin --user_password ...   # exits 0
+
+The section lands in storage.cfg and stays there. PVE's create endpoint
+activates the new storage precisely to surface such problems early
+(API2/Storage/Config.pm: activate_storage inside an eval, rollback via
+on_delete_hook plus die on error) — but the plugin's activation
+succeeds.
+
+### Root cause
+
+For images/rootdir content, activate_storage
+(OpenEJovianDSSPlugin.pm:1722) performs only local work: store_setup
+creates a local state directory, the content types are checked against
+the supported set, and the optional base path is created. No jdssc/REST
+call is made, so the configured pool name is first exercised by the
+first volume operation. Nothing at configuration time verifies the pool
+exists.
+
+### Impact
+
+A typo in --pool_name is accepted silently; the storage looks configured
+and the operator discovers the problem at the first allocation or other
+pool-touching operation, with a pool error far from the pvesm add that
+caused it.
+
+### Direction
+
+Decision pending; two consistent options:
+
+- verify the pool during activate_storage (a single jdssc pool get) —
+  the create-time activation then refuses the add and rolls the storage
+  back, and testcase `required-pool-name-validation-001` passes as
+  written; or
+- declare accept-at-add the contract, consistent with the use-time
+  enforcement philosophy adopted for chap (Issue 7 resolution), flip the
+  testcase's `add_invalid_pool_001` expectation, and document that pool
+  validation happens at first use.
+
+Live evidence: 2026-08-11 run on pve-91-1 — `add_invalid_pool_001`
+exited 0 on the deployed build while every other step of the
+parameter-fixed testcase passed. The testcase itself needed three
+property fixes (`data_addresses`, `path`, `ssl_cert_verify` — all
+required for a working add) before this finding became visible; those
+fixes are applied to the testcase.

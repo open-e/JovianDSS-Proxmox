@@ -6,7 +6,10 @@
 #         on_add/on_update/on_delete hooks routing user_password and
 #         chap_user_password into the restricted password file (key-value
 #         format, 0600 file in a 0700 directory), the change-but-never-
-#         clear rule for user_password and the chap cross-validation.
+#         clear rule for user_password. Chap cross-validation is
+#         deliberately absent from the pre-v13 hook: it is enforced at
+#         use time (volume_publish, volume_stage_iscsi) and, at
+#         configuration time, by on_update_hook_full on v13+ hosts.
 #   v12 — qemu_blockdev_options (host_device + activated path, snapshot
 #         pass-through), volume_qemu_snapshot_method ('storage'), the
 #         raw-only format declaration behind get_formats, and the
@@ -152,7 +155,7 @@ sub is {
 
 sub like {
     my ( $got, $re, $desc ) = @_;
-    if ( !ok( ( $got // '' ) =~ $re, $desc ) ) {
+    if ( !ok( scalar( ( $got // '' ) =~ $re ), $desc ) ) {
         print "    got:   '" . ( $got // '(undef)' ) . "'\n";
         print "    match: $re\n";
     }
@@ -182,10 +185,15 @@ my $PWDIR  = "$TMPDIR/joviandss";
 my $STOREID = 'apitest';
 my $PWFILE  = "$PWDIR/$STOREID.pw";
 my $SCFG    = {
+    # every parsed section carries its type
+    type               => 'joviandss',
     pool_name          => 'Pool-0',
     user_name          => 'admin',
     control_addresses  => '127.0.0.1',
     'create-base-path' => 0,
+    # The hooks log; keep the real logging path exercised but inside the
+    # temp tree, so the suite needs no privileged directory.
+    log_file => "$TMPDIR/plugin.log",
 };
 
 # ---------------------------------------------------------------------------
@@ -230,14 +238,23 @@ my $SCFG    = {
     like( $@, qr/user password is not\s+stored/,
         'add: refused when no password is supplied or stored' );
 
-    # restore the working state for the following sections
-    $PLUGIN->on_add_hook( $STOREID, $SCFG, user_password => 's3cr3t1' );
+    # Pre-v11 add: no sensitive extraction exists there, the credential
+    # arrives inline in the configuration — the add must succeed through
+    # the scfg fallback.
+    my $inline_scfg = { %$SCFG, user_password => 'inlineadd' };
+    eval { $PLUGIN->on_add_hook( 'otherstore', $inline_scfg ) };
+    is( $@, '', 'add: pre-v11 inline user_password satisfies the requirement' );
 }
 
 # ---------------------------------------------------------------------------
 # v11: on_update_hook replaces but never clears user_password
 # ---------------------------------------------------------------------------
 {
+    # Self-contained: the block builds its own starting state instead of
+    # inheriting whatever the previous block left behind.
+    unlink $PWFILE;
+    $PLUGIN->on_add_hook( $STOREID, $SCFG, user_password => 's3cr3t1' );
+
     $PLUGIN->on_update_hook( $STOREID, $SCFG, user_password => 'n3wpass' );
     is( slurp($PWFILE), "user_password n3wpass\n",
         'update: new password replaces the stored value' );
@@ -263,19 +280,26 @@ my $SCFG    = {
 }
 
 # ---------------------------------------------------------------------------
-# v11: chap_enabled cross-validation
+# v11: the pre-v13 hook is deliberately storage-only
 # ---------------------------------------------------------------------------
 {
+    # Chap consistency is enforced at use time with full visibility of
+    # the stored config (volume_publish, volume_stage_iscsi); a config-
+    # time check here would be blind (no scfg) and redundant.
     my $chap_scfg = { %$SCFG, chap_enabled => 1 };
     eval { $PLUGIN->on_update_hook( $STOREID, $chap_scfg ) };
-    like( $@, qr/chap_user_name is required/,
-        'chap: enabling chap without a chap user name is refused' );
+    is( $@, '',
+        'chap: the pre-v13 hook is storage-only and performs no chap validation' );
 }
 
 # ---------------------------------------------------------------------------
 # v11: on_delete_hook removes the whole file
 # ---------------------------------------------------------------------------
 {
+    # Self-contained: create the storage state this block deletes.
+    unlink $PWFILE;
+    $PLUGIN->on_add_hook( $STOREID, $SCFG, user_password => 's3cr3t1' );
+
     $PLUGIN->on_delete_hook( $STOREID, $SCFG );
     ok( !-f $PWFILE, 'delete: password file removed with the storage' );
 }
@@ -413,14 +437,128 @@ my $SCFG    = {
 }
 
 # ---------------------------------------------------------------------------
-# v13: on_update_hook_full is not implemented — pinned deliberately. Its
-# absence means property DELETIONS stay invisible to the update hook (a
-# deleted chap_user_name bypasses the chap validation, Issue 7); when the
-# hook gets implemented this pin must flip.
+# v13: on_update_hook_full validates the configuration the update actually
+# produces, deletions included (Issue 7).
 # ---------------------------------------------------------------------------
 {
-    ok( !$PLUGIN->can('on_update_hook_full'),
-        'v13: on_update_hook_full not implemented (deletion gap: Issue 7)' );
+    ok( $PLUGIN->can('on_update_hook_full'),
+        'v13: on_update_hook_full is implemented' );
+
+    my $chap_scfg = {
+        %$SCFG,
+        chap_enabled   => 1,
+        chap_user_name => 'chapuser',
+    };
+
+    # Baseline: a stored chap password plus a chap user name is valid, so
+    # an unrelated update passes. Self-contained: the block builds its own
+    # password file from scratch.
+    unlink $PWFILE;
+    $PLUGIN->on_add_hook( $STOREID, $SCFG, user_password => 's3cr3t1' );
+    $PLUGIN->on_update_hook_full( $STOREID, $chap_scfg, {}, [],
+        { chap_user_password => 'chappw' } );
+    my $ctx = OpenEJovianDSS::Common::new_ctx( $chap_scfg, $STOREID );
+    is( OpenEJovianDSS::Common::get_chap_user_password($ctx),
+        'chappw', 'v13: full hook stores sensitive values like the old hook' );
+
+    # Real PVE passes undef as the delete list when pvesm set has no
+    # --delete (Config.pm: extract_param + conditional split_list).
+    eval {
+        $PLUGIN->on_update_hook_full( $STOREID, $chap_scfg, {}, undef,
+            { chap_user_password => 'chappw' } );
+    };
+    is( $@, '', 'v13: an undef delete list (no --delete given) is tolerated' );
+
+    eval {
+        $PLUGIN->on_update_hook_full( $STOREID, $chap_scfg, {}, [], {} );
+    };
+    is( $@, '', 'v13: an unrelated update of a valid chap storage passes' );
+
+    # The Issue 7 case: deleting the chap user name must be refused, even
+    # though the update itself carries nothing.
+    eval {
+        $PLUGIN->on_update_hook_full( $STOREID, $chap_scfg, {},
+            ['chap_user_name'], {} );
+    };
+    like( $@, qr/CHAP credentials should not be removed/,
+        'v13: deleting chap_user_name of a chap-enabled storage is refused' );
+
+    # Clearing the chap password is equally fatal while chap stays
+    # enabled. Real PVE represents the deletion in both channels at once:
+    # sensitive undef AND the delete list (extract_sensitive_params).
+    eval {
+        $PLUGIN->on_update_hook_full( $STOREID, $chap_scfg, {},
+            ['chap_user_password'], { chap_user_password => undef } );
+    };
+    like( $@, qr/CHAP credentials should not be removed/,
+        'v13: clearing the chap password of a chap-enabled storage is refused' );
+    # Meaningful only together with the refusal above: if the clearing is
+    # not refused, this check passes vacuously (nothing was attempted).
+    is( OpenEJovianDSS::Common::get_chap_user_password($ctx),
+        'chappw',
+        'v13: the refused update never reached the password file' );
+
+    # Disabling chap in the same update makes the deletion legitimate.
+    eval {
+        $PLUGIN->on_update_hook_full( $STOREID, $chap_scfg,
+            { chap_enabled => 0 }, ['chap_user_name'], {} );
+    };
+    is( $@, '',
+        'v13: deleting chap_user_name while disabling chap is allowed' );
+
+    # Deleting chap_enabled itself also removes the requirement.
+    eval {
+        $PLUGIN->on_update_hook_full( $STOREID, $chap_scfg, {},
+            [ 'chap_enabled', 'chap_user_name' ], {} );
+    };
+    is( $@, '', 'v13: deleting chap_enabled drops the chap requirement' );
+
+    # Retiring chap in a single command must not leave the stored chap
+    # secret behind in the password file.
+    OpenEJovianDSS::Common::password_file_set_chap_password( 'joviandss',
+        $STOREID, 'chappw' );
+    eval {
+        $PLUGIN->on_update_hook_full( $STOREID, $chap_scfg, {},
+            [ 'chap_enabled', 'chap_user_name', 'chap_user_password' ], {} );
+    };
+    is( $@, '', 'v13: single-command chap retirement is accepted' );
+    is( OpenEJovianDSS::Common::get_chap_user_password($ctx),
+        undef,
+        'v13: chap retirement leaves no chap secret in the password file' );
+
+    # A storage that is ALREADY inconsistent (chap enabled, no chap
+    # password stored) must stay editable: updates that do not touch chap
+    # are not punished for a fault they did not introduce, or the operator
+    # cannot repair the storage.
+    OpenEJovianDSS::Common::password_file_delete_chap_password( 'joviandss',
+        $STOREID );
+    eval {
+        $PLUGIN->on_update_hook_full( $STOREID, $chap_scfg, {}, [],
+            { user_password => 'n3wpass' } );
+    };
+    is( $@, '',
+        'v13: an unrelated update of an inconsistent chap storage is allowed' );
+    is( OpenEJovianDSS::Common::get_user_password($ctx),
+        'n3wpass', 'v13: the unrelated update took effect' );
+
+    # A chap_user_name change is accepted regardless of the stored chap
+    # password: config-time validation runs only when chap_enabled itself
+    # is set; use-time guards enforce consistency at first use.
+    eval {
+        $PLUGIN->on_update_hook_full( $STOREID, $chap_scfg,
+            { chap_user_name => 'other' }, [], {} );
+    };
+    is( $@, '',
+        'v13: a chap_user_name change does not require the stored chap password' );
+
+    # Supplying the missing password repairs it.
+    eval {
+        $PLUGIN->on_update_hook_full( $STOREID, $chap_scfg, {}, [],
+            { chap_user_password => 'chappw' } );
+    };
+    is( $@, '', 'v13: supplying the missing chap password repairs the storage' );
+
+    $PLUGIN->on_delete_hook( $STOREID, $SCFG );
 }
 
 # ---------------------------------------------------------------------------
@@ -462,6 +600,81 @@ my $SCFG    = {
     eval { $PLUGIN->get_identity( $SCFG, $STOREID ) };
     like( $@, qr/Unable to get storage identity/,
         'v14: persistently unusable answers end in a clear error' );
+}
+
+# ---------------------------------------------------------------------------
+# Legacy credential storage. Pre-v11 plugin versions kept credentials
+# inside storage.cfg, and pre-v11 PVE delivers them inside the update
+# (no sensitive-property extraction). Each update hook recognizes the
+# locations its callers can produce.
+# ---------------------------------------------------------------------------
+{
+    # Self-contained: the block builds its own password file from scratch.
+    unlink $PWFILE;
+
+    # Pre-v13 hook: credentials arrive inside the update itself.
+    my $legacy_update = {
+        %$SCFG,
+        type               => 'joviandss',
+        chap_enabled       => 1,
+        chap_user_name     => 'chapuser',
+        chap_user_password => 'oldpvechap',
+        user_password      => 'oldpverest',
+    };
+    eval { $PLUGIN->on_update_hook( $STOREID, $legacy_update ); };
+    is( $@, '',
+        'legacy: pre-v13 update carrying credentials passes validation' );
+    my $ctx = OpenEJovianDSS::Common::new_ctx( $SCFG, $STOREID );
+    is( OpenEJovianDSS::Common::get_chap_user_password($ctx),
+        'oldpvechap',
+        'legacy: update-delivered chap password lands in the password file' );
+    is( OpenEJovianDSS::Common::get_user_password($ctx),
+        'oldpverest',
+        'legacy: update-delivered user password lands in the password file' );
+    $PLUGIN->on_delete_hook( $STOREID, $SCFG );
+
+    # Full hook: credentials sit inline in the stored configuration of a
+    # pre-v11 entry; the read fallback must see them, so the entry stays
+    # operational and its chap validation passes without migration.
+    my $legacy_scfg = {
+        %$SCFG,
+        chap_enabled       => 1,
+        chap_user_name     => 'chapuser',
+        chap_user_password => 'inlinechap',
+        user_password      => 'inlinerest',
+    };
+    eval {
+        $PLUGIN->on_update_hook_full( $STOREID, $legacy_scfg,
+            { chap_user_name => 'newname' }, [], {} );
+    };
+    is( $@, '',
+        'legacy: chap-touching change on an inline-credential entry passes' );
+
+    # Contract assertion: the same property updated and deleted at once
+    # is a caller error (PVE refuses it before the hook) and must fail
+    # loudly rather than let the deletion silently win.
+    eval {
+        $PLUGIN->on_update_hook_full( $STOREID, $legacy_scfg,
+            { chap_user_name => 'x' }, ['chap_user_name'], {} );
+    };
+    like( $@, qr/both updated and deleted/,
+        'contract: simultaneous update and deletion of a property dies' );
+    my $legacy_ctx = OpenEJovianDSS::Common::new_ctx( $legacy_scfg, $STOREID );
+    is( OpenEJovianDSS::Common::get_chap_user_password($legacy_ctx),
+        'inlinechap',
+        'legacy: inline chap password is readable through the scfg fallback' );
+    is( OpenEJovianDSS::Common::get_user_password($legacy_ctx),
+        'inlinerest',
+        'legacy: inline user password is readable through the scfg fallback' );
+
+    # File-first precedence: a stored value shadows the inline one, so a
+    # mixed-version cluster always reads the freshest credential.
+    OpenEJovianDSS::Common::password_file_set_password( 'joviandss',
+        $STOREID, 'filefresh' );
+    is( OpenEJovianDSS::Common::get_user_password($legacy_ctx),
+        'filefresh',
+        'legacy: the password file shadows the inline value' );
+    $PLUGIN->on_delete_hook( $STOREID, $SCFG );
 }
 
 print "1..$tests\n";

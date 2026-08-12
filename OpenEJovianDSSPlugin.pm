@@ -2221,20 +2221,27 @@ sub on_add_hook {
     }
     if (exists($sensitive{user_password})) {
         if (defined($sensitive{user_password})) {
-            OpenEJovianDSS::Common::password_file_set_password($ctx, $sensitive{user_password});
+            OpenEJovianDSS::Common::password_file_set_password(
+                $class->type(), $storeid, $sensitive{user_password});
         }
     }
     OpenEJovianDSS::Common::password_file_require_user_password($ctx, $storeid);
     if (exists($sensitive{chap_user_password})) {
         if (defined($sensitive{chap_user_password})) {
-            OpenEJovianDSS::Common::password_file_set_chap_password($ctx, $sensitive{chap_user_password});
+            OpenEJovianDSS::Common::password_file_set_chap_password(
+                $class->type(), $storeid, $sensitive{chap_user_password});
         }
     }
     if (OpenEJovianDSS::Common::get_chap_enabled($ctx)) {
-        die "chap_user_name is required when chap_enabled is set\n"
-            unless defined $scfg->{chap_user_name} && length($scfg->{chap_user_name});
-        die "chap_user_password is required when chap_enabled is set\n"
-            unless defined OpenEJovianDSS::Common::get_chap_user_password($ctx);
+        my $chap_user_name = $scfg->{chap_user_name};
+        if ( !defined($chap_user_name) || length($chap_user_name) == 0 ) {
+            die "chap_user_name is required when chap_enabled is set\n";
+        }
+        my $chap_user_password =
+          OpenEJovianDSS::Common::get_chap_user_password($ctx);
+        if ( !defined($chap_user_password) ) {
+            die "chap_user_password is required when chap_enabled is set\n";
+        }
     }
     # undef is the correct return value here (same as PVE's base Plugin.pm default).
     # Config.pm only sets $res->{config} = $returned_config if $returned_config,
@@ -2247,33 +2254,247 @@ sub on_add_hook {
 sub on_delete_hook {
     my ($class, $storeid, $scfg) = @_;
     my $ctx = new_ctx($scfg, $storeid);
-    OpenEJovianDSS::Common::password_file_delete($ctx);
+
+    debugmsg( $ctx, "debug",
+        "Delete storage ${storeid} start, removing password file "
+      . OpenEJovianDSS::Common::get_password_file_path( $class->type(),
+            $storeid ) );
+    OpenEJovianDSS::Common::password_file_delete( $class->type(), $storeid );
+    debugmsg( $ctx, "debug", "Delete storage ${storeid} done" );
 }
 
 sub on_update_hook {
-    my ($class, $storeid, $scfg, %param) = @_;
+    my ($class, $storeid, $opts_update, %opts_sensitive) = @_;
 
-    my $ctx = new_ctx($scfg, $storeid);
-    if ( exists($param{user_password}) ) {
-        if (defined($param{user_password})) {
-            OpenEJovianDSS::Common::password_file_set_password($ctx, $param{user_password});
-        } else {
-            OpenEJovianDSS::Common::password_file_delete_user_password($ctx);
+    my $storage_type = $class->type();
+
+    # Check update
+    foreach my $opt ( keys %{ $opts_update } ) {
+        if ($opt eq 'chap_user_password') {
+            if ( defined( $opts_update->{'chap_user_password'} ) ) {
+                # CHAP user password update
+                OpenEJovianDSS::Common::password_file_set_chap_password(
+                    $storage_type, $storeid,
+                    $opts_update->{'chap_user_password'} );
+            }
+        }
+
+        if ($opt eq 'user_password') {
+            if ( defined( $opts_update->{'user_password'}) ) {
+                OpenEJovianDSS::Common::password_file_set_password(
+                    $storage_type, $storeid,
+                    $opts_update->{'user_password'} );
+            }
         }
     }
-    if (exists($param{chap_user_password})) {
-        if (defined($param{chap_user_password})) {
-            OpenEJovianDSS::Common::password_file_set_chap_password($ctx, $param{chap_user_password});
-        } else {
-            OpenEJovianDSS::Common::password_file_delete_chap_password($ctx);
+    # Check sensitive
+    foreach my $opt ( keys %opts_sensitive ) {
+        if ($opt eq 'chap_user_password') {
+            if ( defined( $opts_sensitive{'chap_user_password'} ) ) {
+                # CHAP user password update
+                OpenEJovianDSS::Common::password_file_set_chap_password(
+                    $storage_type, $storeid,
+                    $opts_sensitive{'chap_user_password'} );
+            } else {
+                OpenEJovianDSS::Common::password_file_delete_chap_password(
+                    $storage_type, $storeid );
+            }
+        }
+
+        if ($opt eq 'user_password') {
+                if ( defined( $opts_sensitive{'user_password'}) ) {
+                    OpenEJovianDSS::Common::password_file_set_password(
+                        $storage_type, $storeid,
+                        $opts_sensitive{'user_password'} );
+                } else {
+                    # dies: user_password can be changed but never cleared
+                    OpenEJovianDSS::Common::password_file_delete_user_password();
+                }
         }
     }
-    if (OpenEJovianDSS::Common::get_chap_enabled($ctx)) {
-        die "chap_user_name is required when chap_enabled is set\n"
-            unless defined $scfg->{chap_user_name} && length($scfg->{chap_user_name});
-        die "chap_user_password is required when chap_enabled is set\n"
-            unless defined OpenEJovianDSS::Common::get_chap_user_password($ctx);
+
+    return undef;
+}
+
+sub _storage_property_update_check {
+    my($class, $ctx, $prop_update, $prop_delete, $prop_sensitive) = @_;
+
+    foreach my $opt ( keys %{ $prop_update } ) {
+
+        # CHAP
+        if ($opt =~ /^chap_(\w+)/) {
+
+            if ( $opt eq 'chap_enabled' ) {
+                my $chap_enabled = OpenEJovianDSS::Common::get_chap_enabled($ctx);
+                if ( $chap_enabled == 1 ) {
+                    # We have to ensure that both chap user password and user name is present
+                    # before enabling chap
+                    my $chap_user_name_current = OpenEJovianDSS::Common::get_chap_user_name($ctx);
+                    if (!defined($chap_user_name_current) || !length($chap_user_name_current)) {
+                        die "Both chap_user_name and chap_user_password is required " .
+                                "to enable CHAP\n";
+                    }
+
+                    my $chap_user_password_was_set = defined(OpenEJovianDSS::Common::get_chap_user_password($ctx));
+
+                    my $chap_user_password_is_set = (exists(  $prop_sensitive->{'chap_user_password'} ) &&
+                                                     defined( $prop_sensitive->{'chap_user_password'} ));
+                    my $chap_user_password_delete = (
+                        grep( { $_ eq 'chap_user_password' } @{ $prop_delete } ) ||
+                        ( exists(  $prop_sensitive->{'chap_user_password'} ) &&
+                          !defined($prop_sensitive->{'chap_user_password'}) )
+                    );
+
+                    my $chap_user_password_check = (
+                        $chap_user_password_delete ||
+                        !( $chap_user_password_was_set || $chap_user_password_is_set)
+                    );
+                    if ($chap_user_password_check) {
+                        die "Both chap_user_name and chap_user_password is required " .
+                                "to enable CHAP\n";
+                    }
+                 }
+            }
+        }
     }
+}
+
+sub _storage_property_update_apply {
+    my($class, $ctx, $prop_update, $prop_delete, $prop_sensitive) = @_;
+    return;
+}
+
+sub _storage_property_sensitive_check {
+    my($class, $ctx, $prop_update, $prop_delete, $prop_sensitive) = @_;
+
+    foreach my $opt ( keys %{ $prop_sensitive } ) {
+        if ($opt eq 'chap_user_password') {
+            if (! defined( $prop_sensitive->{'chap_user_password'} ) ) {
+                if (OpenEJovianDSS::Common::get_chap_enabled($ctx)) {
+                    die "CHAP credentials should not be removed " .
+                        "with enabled CHAP\n";
+                }
+            }
+        }
+
+        if ($opt eq 'user_password') {
+            if ( ! defined( $prop_sensitive->{'user_password'}) ) {
+                die "user_password is required and should not be removed\n";
+            }
+        }
+    }
+}
+
+sub _storage_property_sensitive_apply {
+    my($class, $ctx, $prop_update, $prop_delete, $prop_sensitive) = @_;
+
+    foreach my $opt ( keys %{ $prop_sensitive } ) {
+        if ($opt eq 'chap_user_password') {
+            if ( defined( $prop_sensitive->{'chap_user_password'} ) ) {
+                # CHAP user password update
+                OpenEJovianDSS::Common::password_file_set_chap_password(
+                    $class->type(), $ctx->{storeid},
+                    $prop_sensitive->{'chap_user_password'} );
+            }
+        }
+
+        if ($opt eq 'user_password') {
+            if ( defined( $prop_sensitive->{'user_password'}) ) {
+                OpenEJovianDSS::Common::password_file_set_password(
+                    $class->type(), $ctx->{storeid},
+                    $prop_sensitive->{'user_password'} );
+            } else {
+                die "user_password is required and should not be removed\n";
+            }
+        }
+    }
+}
+
+sub _storage_property_delete_check {
+    my($class, $ctx, $prop_update, $prop_delete, $prop_sensitive) = @_;
+
+    foreach my $opt (@{ $prop_delete} ) {
+        # CHAP check
+        if ($opt =~ /^chap_user_(\w+)/) {
+            # The refusal and the cleanup are both decided by the chap
+            # state of the configuration this update produces: removing
+            # credentials is refused while chap stays enabled, and the
+            # stored chap secret is removed whenever it is not — also
+            # when chap_enabled itself is deleted in the same request,
+            # so retiring chap never leaves a leftover secret behind.
+            if ( OpenEJovianDSS::Common::get_chap_enabled($ctx) == 1 ) {
+                die "CHAP credentials should not be removed " .
+                    "with enabled CHAP\n";
+            }
+        }
+
+        # REST API credentials check
+        if ($opt =~ /^user_(\w+)/) {
+            die "Both user_name and user_password is required and should not be removed\n";
+        }
+    }
+}
+
+sub _storage_property_delete_apply {
+    my($class, $ctx, $prop_update, $prop_delete, $prop_sensitive) = @_;
+
+    foreach my $opt (@{ $prop_delete} ) {
+        if ($opt eq 'chap_user_password') {
+            OpenEJovianDSS::Common::password_file_delete_chap_password(
+                $class->type(), $ctx->{storeid} );
+            next;
+        }
+    }
+}
+
+
+sub on_update_hook_full {
+    my ($class, $storeid, $scfg, $opts_update, $opts_delete, $opts_sensitive) = @_;
+
+    $opts_delete //= [];
+    # Check that same property is not updated/added and removed
+    # in one request
+    foreach my $opt ( @{ $opts_delete } ) {
+        if ( exists( $opts_update->{$opt} ) ) {
+            die "property '${opt}' is both updated and deleted\n";
+        }
+
+        if ( exists( $opts_sensitive->{$opt} ) ) {
+            # If sensitive property to be deleted it will be present in sensitive
+            # as undefined
+            if ( defined($opts_sensitive->{$opt} ) ) {
+                die "property '${opt}' is both updated and deleted\n";
+            }
+        }
+    }
+
+    my $scfg_updated = { %{$scfg} };
+
+    # Update config state
+    foreach my $opt ( keys %{ $opts_update } ) {
+        $scfg_updated->{$opt} = $opts_update->{$opt};
+    }
+    foreach my $opt (@{ $opts_delete }) {
+        delete $scfg_updated->{$opt};
+    }
+
+    my $ctx = new_ctx( $scfg_updated, $storeid );
+
+    $class->_storage_property_sensitive_check($ctx,
+        $opts_update, $opts_delete, $opts_sensitive);
+    $class->_storage_property_update_check( $ctx,
+        $opts_update, $opts_delete, $opts_sensitive);
+    $class->_storage_property_delete_check( $ctx,
+        $opts_update, $opts_delete, $opts_sensitive);
+
+    $class->_storage_property_sensitive_apply( $ctx,
+        $opts_update, $opts_delete, $opts_sensitive);
+    $class->_storage_property_update_apply( $ctx,
+        $opts_update, $opts_delete, $opts_sensitive);
+    $class->_storage_property_delete_apply( $ctx,
+        $opts_update, $opts_delete, $opts_sensitive);
+
+    debugmsg( $ctx, "debug", "Update storage ${storeid} done" );
     return undef;
 }
 

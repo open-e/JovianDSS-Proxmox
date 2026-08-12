@@ -88,7 +88,7 @@ sub is {
 
 sub like {
     my ( $got, $re, $desc ) = @_;
-    if ( !ok( ( $got // '' ) =~ $re, $desc ) ) {
+    if ( !ok( scalar( ( $got // '' ) =~ $re ), $desc ) ) {
         print "    got:   '" . ( $got // '(undef)' ) . "'\n";
         print "    match: $re\n";
     }
