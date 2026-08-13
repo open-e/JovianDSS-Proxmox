@@ -18,7 +18,7 @@ It's actively maintained and continuously improved to work smoothly with the lat
 
 ## Documentation
 
-* Start using the plugin by going through the [Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start).
+* Start using the plugin by going through the [iSCSI plugin Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start), [NFS plugin Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start-NFS)
 
 * Plugin Configuration: [Plugin-configuration](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
 
