@@ -243,7 +243,7 @@ sub get_identity {
 
     my $ctx = new_ctx($scfg, $storeid);
 
-    my $pool = get_pool($ctx);
+    my $pool = OpenEJovianDSS::NFSCommon::pool_name_get( $scfg );
 
     for my $attempt (1 .. 3) {
         my $stats = eval {
