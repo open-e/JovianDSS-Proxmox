@@ -6,7 +6,8 @@ The JovianDSS Proxmox plugin leverages this by aggregating multiple iSCSI sessio
 
 The plugin itself adds and removes SCSI IDs from the kernel’s multipath subsystem and returns the resulting `/dev/mapper/…` path to Proxmox VE. 
 
-It does not install or configure `multipathd`; that daemon must be provisioned and tuned externally.
+The plugin declares `multipath-tools` (the package that provides `multipathd`) as a dependency and installs it if it is not already present. However, the daemon must be enabled by the administrator.
+
 
 Because multipathd is critical to cluster stability and to any services already relying on its configuration, its installation and configuration fall under the administrator’s purview.
 

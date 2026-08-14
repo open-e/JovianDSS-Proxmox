@@ -13,7 +13,7 @@ It provides:
 
 ## Documentation
 
-* Start using the plugin by going through the [Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start).
+* Start using the plugin by going through the Quick Start guides for [iSCSI](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start-iSCSI) or [NFS](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start-NFS) plugins.
 
 * Plugin Configuration: [Plugin-configuration](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
 

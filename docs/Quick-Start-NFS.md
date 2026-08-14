@@ -48,6 +48,8 @@ Possible source of issues: routing problems. If you encounter connectivity issue
 
 ### Installation
 
+The NFS plugin is distributed in the same package as the iSCSI plugin. If the iSCSI plugin is already installed, no additional installation steps are required, and you can proceed directly to the [Configuration](#Configuration) section.
+
 Install latest plugin on all nodes in a cluster by running following command on any Proxmox VE server:
 
 ```bash
@@ -59,7 +61,7 @@ To check latest `pre-release` run:
 curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/nfs-plugin/install.pl | perl - --pre --all-nodes
 ```
 
-Restart the pvedaemon service to load the newly installed plugin:
+Restart the Proxmox VE services to load the newly installed plugin:
 
 ```bash
 systemctl restart pvedaemon
@@ -67,17 +69,20 @@ systemctl restart pve-ha-lrm.service
 systemctl restart pve-ha-crm.service
 ```
 
+Alternatively, user can call installation script over SSH with [--restart](https://github.com/open-e/JovianDSS-Proxmox/wiki/Installation-script#restart) flag to tell install script to restart some Proxmox VE services.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes --restart
+```
+
+It is IMPORTANT to remember that the install.pl script with `--restart` should NOT be called from the Proxmox Web UI as `--restart` will restart the shell interfaces provided by the Proxmox Web UI.
+
 To check the current version of the installed plugin, run the following script:
 ```bash
 dpkg-query -W -f='${Version}\n' open-e-joviandss-proxmox-plugin
 ```
 
-To update to a newest version, the user must re-run the installation script.
-
-The script will automatically install the latest release, or a pre-release version if specified.
-
-To downgrade, the current plugin must be removed first.
-For more information, please refer to the [Installation script](https://github.com/open-e/JovianDSS-Proxmox/wiki/Installation-script).
+For downgrade and plugin removal instructions, or for additional information, please refer to the [Installation script](https://github.com/open-e/JovianDSS-Proxmox/wiki/Installation-script).
 
 ## Configuration
 

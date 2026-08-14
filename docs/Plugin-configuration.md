@@ -120,6 +120,22 @@ Minimum length is 12 characters; maximum is 16 characters (iSCSI RFC 3720 limit)
 - To rotate the password: run `pvesm set <storeid> --chap_user_password <new-password>`. Active iSCSI sessions are unaffected; the new password takes effect on the next VM start.
 
 
+### cluster_prefix
+
+> **Experimental** — behaviour may change in future releases. See [Cluster-Prefix](https://github.com/open-e/JovianDSS-Proxmox/wiki/Cluster-Prefix) for full setup instructions.
+
+**Default**: None
+
+**Type**: *string*
+
+**Required**: `False`
+
+A short alphanumeric prefix embedded in every volume name that this storage instance creates on JovianDSS (e.g. `pveA_vm-100-disk-0`). When set, only volumes whose names begin with this prefix are visible to the storage instance — volumes belonging to other clusters are ignored.
+
+This allows multiple independent Proxmox clusters to share the same JovianDSS pool without seeing each other's volumes. A distinct `target_prefix` per cluster is also required for full iSCSI isolation; see [Cluster-Prefix.md](Cluster-Prefix.md).
+
+**Constraints**: must start with a letter, followed by letters and digits only — no underscores or hyphens (e.g. `pveA`, `cluster01`). Cannot be changed after the storage instance is created (`fixed` property).
+
 ### content
 
 **Default**: None
@@ -213,6 +229,16 @@ For more information, see the [Networking](https://github.com/open-e/JovianDSS-P
 Specifies the TCP port for iSCSI data connections to all entries in [data_addresses](#data_addresses).
 If not set, the default port 3260 is used.
 
+### delete_timeout
+
+**Default**: `600`
+
+**Type**: *int*
+
+**Required**: `False`
+
+Timeout in seconds for volume delete operations. Increase this if the JovianDSS pool has many dependent snapshots and deletion consistently exceeds the default.
+
 ### debug
 
 **Default**: `0`
@@ -268,6 +294,7 @@ Targets are named using the format `<target_prefix>:vm-<vmID>-<index>`:
 
 When a VM or container requires more volumes than `luns_per_target` allows, additional targets are created with the same <vmID> and an incremented <index>.
 
+
 ### multipath
 
 **Default**: 0
@@ -285,7 +312,6 @@ Changes to multipath or additions to [data_addresses](#data_addresses) take effe
 
 The plugin interacts with multipath devices but does not configure the host’s multipath services.
 Ensure the `multipathd` service is enabled on every node in a cluster and its configuration [complies with the JovianDSS Proxmox plugin requirements](https://github.com/open-e/JovianDSS-Proxmox/wiki/Multipathing).
-
 
 ### path
 
@@ -314,6 +340,7 @@ If the specified `pool` does not exist, the plugin fails.
 This property is foundational: all resources managed by the plugin (volumes, snapshots, iSCSI targets) are provisioned within the named `pool`.
 
 Never create multiple storage `pool` records with the same `pool_name`, as doing so may cause race conditions and unpredictable behavior.
+
 
 ### shared
 

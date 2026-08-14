@@ -28,13 +28,17 @@ CHAP is configured with three properties: `chap_enabled`, `chap_user_name`, and
 
 ```bash
 pvesm add joviandss jdss-Pool-0 \
+    --ssl_cert_verify 0 \
+    --path /mnt/pve/jdss-Pool-0 \
+    --create-base-path 1 \
+    --shared 1
     --pool_name Pool-0 \
     --user_name admin \
     --user_password <rest-api-password> \
     --control_addresses 192.168.28.100 \
     --data_addresses 192.168.29.100 \
     --chap_enabled 1 \
-    --chap_user_name chapuser \
+    --chap_user_name <chap-user-name> \
     --chap_user_password <chap-password>
 ```
 
@@ -43,7 +47,7 @@ pvesm add joviandss jdss-Pool-0 \
 ```bash
 pvesm set jdss-Pool-0 \
     --chap_enabled 1 \
-    --chap_user_name chapuser \
+    --chap_user_name <chap-user-name> \
     --chap_user_password <chap-password>
 ```
 
