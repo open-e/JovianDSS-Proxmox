@@ -2219,6 +2219,20 @@ sub on_add_hook {
             chmod 0755, $path;
         }
     }
+
+    # CHAP check
+    if ( defined( $scfg->{chap_user_name} ) ) {
+        OpenEJovianDSS::Common::chap_user_name_validate(
+            $scfg->{chap_user_name} );
+    }
+
+    if ( exists( $sensitive{chap_user_password} )
+        && defined( $sensitive{chap_user_password} ) ) {
+        OpenEJovianDSS::Common::chap_user_password_validate(
+            $sensitive{chap_user_password} );
+    }
+
+
     if (exists($sensitive{user_password})) {
         if (defined($sensitive{user_password})) {
             OpenEJovianDSS::Common::password_file_set_password(
@@ -2232,17 +2246,19 @@ sub on_add_hook {
                 $class->type(), $storeid, $sensitive{chap_user_password});
         }
     }
+
     if (OpenEJovianDSS::Common::get_chap_enabled($ctx)) {
         my $chap_user_name = $scfg->{chap_user_name};
         if ( !defined($chap_user_name) || length($chap_user_name) == 0 ) {
             die "chap_user_name is required when chap_enabled is set\n";
         }
-        my $chap_user_password =
-          OpenEJovianDSS::Common::get_chap_user_password($ctx);
-        if ( !defined($chap_user_password) ) {
+        if ( !defined($sensitive{chap_user_password}) && !defined($scfg->{chap_user_password}) ) {
             die "chap_user_password is required when chap_enabled is set\n";
         }
     }
+    # CHAP check end
+    # --------------
+
     # undef is the correct return value here (same as PVE's base Plugin.pm default).
     # Config.pm only sets $res->{config} = $returned_config if $returned_config,
     # so undef means the 'config' key is simply omitted from the API response —
@@ -2270,9 +2286,18 @@ sub on_update_hook {
 
     # Check update
     foreach my $opt ( keys %{ $opts_update } ) {
+        if ($opt eq 'chap_user_name') {
+            if ( defined( $opts_update->{'chap_user_name'} ) ) {
+                OpenEJovianDSS::Common::chap_user_name_validate(
+                    $opts_update->{'chap_user_name'} );
+            }
+        }
+
         if ($opt eq 'chap_user_password') {
             if ( defined( $opts_update->{'chap_user_password'} ) ) {
                 # CHAP user password update
+                OpenEJovianDSS::Common::chap_user_password_validate(
+                    $opts_update->{'chap_user_password'} );
                 OpenEJovianDSS::Common::password_file_set_chap_password(
                     $storage_type, $storeid,
                     $opts_update->{'chap_user_password'} );
@@ -2292,6 +2317,8 @@ sub on_update_hook {
         if ($opt eq 'chap_user_password') {
             if ( defined( $opts_sensitive{'chap_user_password'} ) ) {
                 # CHAP user password update
+                OpenEJovianDSS::Common::chap_user_password_validate(
+                    $opts_sensitive{'chap_user_password'} );
                 OpenEJovianDSS::Common::password_file_set_chap_password(
                     $storage_type, $storeid,
                     $opts_sensitive{'chap_user_password'} );
@@ -2323,6 +2350,13 @@ sub _storage_property_update_check {
 
         # CHAP
         if ($opt =~ /^chap_(\w+)/) {
+
+            if ( $opt eq 'chap_user_name' ) {
+                if ( defined( $prop_update->{'chap_user_name'} ) ) {
+                    OpenEJovianDSS::Common::chap_user_name_validate(
+                        $prop_update->{'chap_user_name'} );
+                }
+            }
 
             if ( $opt eq 'chap_enabled' ) {
                 my $chap_enabled = OpenEJovianDSS::Common::get_chap_enabled($ctx);
@@ -2374,6 +2408,9 @@ sub _storage_property_sensitive_check {
                     die "CHAP credentials should not be removed " .
                         "with enabled CHAP\n";
                 }
+            } else {
+                OpenEJovianDSS::Common::chap_user_password_validate(
+                    $prop_sensitive->{'chap_user_password'} );
             }
         }
 

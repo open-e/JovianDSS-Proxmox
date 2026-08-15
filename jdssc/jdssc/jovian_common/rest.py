@@ -30,6 +30,17 @@ from jdssc.jovian_common import jdss_common as jcom
 LOG = logging.getLogger(__name__)
 
 
+# CHAP credential format rules of the JovianDSS appliance (REST API spec;
+# the password length was also confirmed live - HTTP 400 ValidationError
+# "Password is allowed to contain from 12 to 255 characters").
+# re.ASCII pins \w to ASCII - the appliance rule is ASCII.
+chapUserNamePattern = re.compile(r'^\w([a-zA-Z0-9-_]*\w)?$', re.ASCII)
+chapPasswordPattern = re.compile(r'^[a-zA-Z0-9-_!@%()+?.:;]+$', re.ASCII)
+
+CHAP_PASSWORD_MIN_LEN = 12
+CHAP_PASSWORD_MAX_LEN = 255
+
+
 class JovianRESTAPI(object):
     """Jovian REST API"""
 
@@ -607,6 +618,45 @@ class JovianRESTAPI(object):
 
         self._general_error(req, resp)
 
+    @staticmethod
+    def _chap_user_name_check(name):
+        """Check a CHAP user name against the JovianDSS appliance rule.
+
+        Names must match '^\\w([a-zA-Z0-9-_]*\\w)?$'.
+        Raises JDSSException on violation.
+        """
+        if not isinstance(name, str):
+            raise jexc.JDSSException("CHAP user name is missing")
+
+        if chapUserNamePattern.match(name) is None:
+            raise jexc.JDSSException(
+                "CHAP user name '%s' is invalid: only letters, digits, "
+                "'-' and '_' are allowed, and it must start and end with "
+                "a letter, digit or '_'" % name)
+
+    @staticmethod
+    def _chap_user_password_check(password):
+        """Check a CHAP password against the JovianDSS appliance rule.
+
+        Passwords must be 12 to 255 characters from
+        '^[a-zA-Z0-9-_!@%()+?.:;]+$' (no whitespace).
+        Raises JDSSException on violation; the password value is never
+        included in the error message.
+        """
+        if (not isinstance(password, str)):
+            raise jexc.JDSSException("CHAP password is missing")
+
+        if ((len(password) < CHAP_PASSWORD_MIN_LEN) or
+                (len(password) > CHAP_PASSWORD_MAX_LEN)):
+            raise jexc.JDSSException(
+                "CHAP password must be %d to %d characters long"
+                % (CHAP_PASSWORD_MIN_LEN, CHAP_PASSWORD_MAX_LEN))
+
+        if chapPasswordPattern.match(password) is None:
+            raise jexc.JDSSException(
+                "CHAP password contains unsupported characters; allowed "
+                "are letters, digits and -_!@%()+?.:;")
+
     def create_target_user(self, target_name, chap_cred):
         """Set CHAP credentials for accees specific target.
 
@@ -621,6 +671,12 @@ class JovianRESTAPI(object):
         }
         :return:
         """
+        # Refuse malformed credentials before any appliance call: every
+        # CHAP-setting path funnels through here, and the appliance would
+        # answer with a deterministic 400 ValidationError anyway.
+        self._chap_user_name_check(chap_cred.get('name'))
+        self._chap_user_password_check(chap_cred.get('password'))
+
         req = "/san/iscsi/targets/%s/incoming-users" % target_name
 
         LOG.debug("add credentails to target %s", target_name)

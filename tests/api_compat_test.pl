@@ -271,8 +271,8 @@ my $SCFG    = {
 # v11: chap_user_password shares the file and can be individually removed
 # ---------------------------------------------------------------------------
 {
-    $PLUGIN->on_update_hook( $STOREID, $SCFG, chap_user_password => 'chappw' );
-    is( slurp($PWFILE), "chap_user_password chappw\nuser_password n3wpass\n",
+    $PLUGIN->on_update_hook( $STOREID, $SCFG, chap_user_password => 'chappw123456' );
+    is( slurp($PWFILE), "chap_user_password chappw123456\nuser_password n3wpass\n",
         'chap: both properties stored in one sorted key-value file' );
 
     $PLUGIN->on_update_hook( $STOREID, $SCFG, chap_user_password => undef );
@@ -459,16 +459,16 @@ my $SCFG    = {
     unlink $PWFILE;
     $PLUGIN->on_add_hook( $STOREID, $SCFG, user_password => 's3cr3t1' );
     $PLUGIN->on_update_hook_full( $STOREID, $chap_scfg, {}, [],
-        { chap_user_password => 'chappw' } );
+        { chap_user_password => 'chappw123456' } );
     my $ctx = OpenEJovianDSS::Common::new_ctx( $chap_scfg, $STOREID );
     is( OpenEJovianDSS::Common::get_chap_user_password($ctx),
-        'chappw', 'v13: full hook stores sensitive values like the old hook' );
+        'chappw123456', 'v13: full hook stores sensitive values like the old hook' );
 
     # Real PVE passes undef as the delete list when pvesm set has no
     # --delete (Config.pm: extract_param + conditional split_list).
     eval {
         $PLUGIN->on_update_hook_full( $STOREID, $chap_scfg, {}, undef,
-            { chap_user_password => 'chappw' } );
+            { chap_user_password => 'chappw123456' } );
     };
     is( $@, '', 'v13: an undef delete list (no --delete given) is tolerated' );
 
@@ -498,7 +498,7 @@ my $SCFG    = {
     # Meaningful only together with the refusal above: if the clearing is
     # not refused, this check passes vacuously (nothing was attempted).
     is( OpenEJovianDSS::Common::get_chap_user_password($ctx),
-        'chappw',
+        'chappw123456',
         'v13: the refused update never reached the password file' );
 
     # Disabling chap in the same update makes the deletion legitimate.
@@ -519,7 +519,7 @@ my $SCFG    = {
     # Retiring chap in a single command must not leave the stored chap
     # secret behind in the password file.
     OpenEJovianDSS::Common::password_file_set_chap_password( 'joviandss',
-        $STOREID, 'chappw' );
+        $STOREID, 'chappw123456' );
     eval {
         $PLUGIN->on_update_hook_full( $STOREID, $chap_scfg, {},
             [ 'chap_enabled', 'chap_user_name', 'chap_user_password' ], {} );
@@ -557,7 +557,7 @@ my $SCFG    = {
     # Supplying the missing password repairs it.
     eval {
         $PLUGIN->on_update_hook_full( $STOREID, $chap_scfg, {}, [],
-            { chap_user_password => 'chappw' } );
+            { chap_user_password => 'chappw123456' } );
     };
     is( $@, '', 'v13: supplying the missing chap password repairs the storage' );
 
@@ -621,7 +621,7 @@ my $SCFG    = {
         type               => 'joviandss',
         chap_enabled       => 1,
         chap_user_name     => 'chapuser',
-        chap_user_password => 'oldpvechap',
+        chap_user_password => 'oldpvechap12',
         user_password      => 'oldpverest',
     };
     eval { $PLUGIN->on_update_hook( $STOREID, $legacy_update ); };
@@ -629,7 +629,7 @@ my $SCFG    = {
         'legacy: pre-v13 update carrying credentials passes validation' );
     my $ctx = OpenEJovianDSS::Common::new_ctx( $SCFG, $STOREID );
     is( OpenEJovianDSS::Common::get_chap_user_password($ctx),
-        'oldpvechap',
+        'oldpvechap12',
         'legacy: update-delivered chap password lands in the password file' );
     is( OpenEJovianDSS::Common::get_user_password($ctx),
         'oldpverest',
@@ -678,6 +678,86 @@ my $SCFG    = {
         'filefresh',
         'legacy: the password file shadows the inline value' );
     $PLUGIN->on_delete_hook( $STOREID, $SCFG );
+}
+
+# ---------------------------------------------------------------------------
+# CHAP credential format validation — the appliance rules (name
+# '^\w([a-zA-Z0-9-_]*\w)?$'; password 12-255 characters, no whitespace) are
+# enforced at configuration time on every channel that carries the values:
+# add, the classic update hook (both channels) and on_update_hook_full.
+# ---------------------------------------------------------------------------
+{
+    unlink $PWFILE;
+    eval {
+        $PLUGIN->on_add_hook( $STOREID, { %$SCFG, chap_user_name => 'bad-' },
+            user_password => 'restpw1', chap_user_password => 'chappw123456' );
+    };
+    like( $@, qr/chap_user_name 'bad-' is invalid/,
+        'chap format: add refuses an invalid chap user name' );
+    ok( !-f $PWFILE, 'chap format: the refused add writes nothing' );
+
+    eval {
+        $PLUGIN->on_add_hook( $STOREID,
+            { %$SCFG, chap_user_name => 'chapuser' },
+            user_password => 'restpw1', chap_user_password => 'short' );
+    };
+    like( $@, qr/chap_user_password must be 12 to 255 characters/,
+        'chap format: add refuses a short chap password' );
+    ok( !-f $PWFILE, 'chap format: the short-password add writes nothing' );
+
+    eval {
+        $PLUGIN->on_add_hook( $STOREID,
+            { %$SCFG, chap_enabled => 1, chap_user_name => 'chapuser' },
+            user_password => 'restpw1', chap_user_password => 'chappw123456' );
+    };
+    is( $@, '', 'chap format: a valid chap credential pair is accepted at add' );
+    unlink $PWFILE;
+}
+{
+    eval {
+        $PLUGIN->on_update_hook_full( $STOREID, $SCFG, {}, [],
+            { chap_user_password => 'tooshort' } );
+    };
+    like( $@, qr/chap_user_password must be 12 to 255 characters/,
+        'chap format: full hook refuses a short chap password' );
+
+    eval {
+        $PLUGIN->on_update_hook_full( $STOREID, $SCFG, {}, [],
+            { chap_user_password => 'with space123' } );
+    };
+    like( $@, qr/unsupported characters/,
+        'chap format: full hook refuses whitespace in the chap password' );
+
+    eval {
+        $PLUGIN->on_update_hook_full( $STOREID, $SCFG,
+            { chap_user_name => '-bad' }, [], {} );
+    };
+    like( $@, qr/chap_user_name '-bad' is invalid/,
+        'chap format: full hook refuses an invalid chap user name' );
+
+    eval {
+        $PLUGIN->on_update_hook_full( $STOREID, $SCFG,
+            { chap_user_name => 'chap_user9' }, [], {} );
+    };
+    is( $@, '', 'chap format: full hook accepts a valid chap user name' );
+}
+{
+    unlink $PWFILE;
+    eval {
+        $PLUGIN->on_update_hook( $STOREID, {},
+            chap_user_password => 'short' );
+    };
+    like( $@, qr/chap_user_password must be 12 to 255 characters/,
+        'chap format: classic hook refuses a short sensitive chap password' );
+    ok( !-f $PWFILE, 'chap format: the classic refusal writes nothing' );
+
+    eval {
+        $PLUGIN->on_update_hook( $STOREID,
+            { chap_user_password => 'short' } );
+    };
+    like( $@, qr/chap_user_password must be 12 to 255 characters/,
+        'chap format: classic hook refuses a short inline chap password' );
+    ok( !-f $PWFILE, 'chap format: the inline refusal writes nothing' );
 }
 
 print "1..$tests\n";

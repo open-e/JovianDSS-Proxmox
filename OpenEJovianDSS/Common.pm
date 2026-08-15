@@ -491,6 +491,39 @@ sub get_plugin_type {
     die "JovianDSS: unexpected storage type '$type'\n";
 }
 
+# CHAP credential format rules of the JovianDSS appliance (REST API spec;
+# the password length was also confirmed live — HTTP 400 ValidationError
+# "Password is allowed to contain from 12 to 255 characters", Issue 10).
+# Validated at configuration time so a bad credential is refused by the
+# pvesm command that carries it instead of failing target creation later.
+# The /a modifiers pin \w to ASCII — the appliance rule is ASCII.
+
+sub chap_user_name_validate {
+    my ($chap_user_name) = @_;
+
+    unless ( defined($chap_user_name)
+        && $chap_user_name =~ /^\w([a-zA-Z0-9\-_]*\w)?$/a ) {
+        die "chap_user_name '" . ( $chap_user_name // '' ) . "' is invalid: "
+          . "only letters, digits, '-' and '_' are allowed, and it must "
+          . "start and end with a letter, digit or '_'\n";
+    }
+    return;
+}
+
+sub chap_user_password_validate {
+    my ($chap_user_password) = @_;
+
+    my $len = defined($chap_user_password) ? length($chap_user_password) : 0;
+    if ( $len < 12 || $len > 255 ) {
+        die "chap_user_password must be 12 to 255 characters long\n";
+    }
+    unless ( $chap_user_password =~ /^[a-zA-Z0-9\-_!\@%()+?.:;]+$/a ) {
+        die "chap_user_password contains unsupported characters; "
+          . "allowed are letters, digits and -_!\@%()+?.:;\n";
+    }
+    return;
+}
+
 # The password machinery is keyed by (storage_type, storeid) rather than
 # by ctx: the pre-v13 on_update_hook never receives enough configuration
 # to build a ctx, yet must write credentials. The mutation functions take
