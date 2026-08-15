@@ -18,7 +18,7 @@ deb:
 	install -D -m 0755 ./debian/prerm $(debdir)/DEBIAN/prerm
 	install -D -m 0644 ./debian/changelog $(debdir)/usr/share/doc/open-e-joviandss-proxmox-plugin/changelog
 
-	dpkg-deb --build $(debdir)
+	dpkg-deb --root-owner-group --build $(debdir)
 	@mv $(debdir).deb ./open-e-joviandss-proxmox-plugin-$(IMAGE_VERSION).deb
 	@cp ./open-e-joviandss-proxmox-plugin-$(IMAGE_VERSION).deb ./open-e-joviandss-proxmox-plugin-latest.deb
 	rm -rf $(debdir)
