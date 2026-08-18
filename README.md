@@ -1,4 +1,4 @@
-# Open-E JovianDSS Proxmox
+# Open-E JovianDSS iSCSI & NFS Proxmox VE Plugin
 
 ## Overview
 
@@ -18,15 +18,21 @@ It's actively maintained and continuously improved to work smoothly with the lat
 
 ## Documentation
 
-* Start using the plugin by going through the [iSCSI plugin Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start-iSCSI), [NFS plugin Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start-NFS)
+* Start using the plugin by going through the
+    [iSCSI plugin Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start-iSCSI)
+    [NFS plugin Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start-NFS)
 
-* Plugin Configuration: [Plugin-configuration](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
+* Plugin Configuration:
+    [Plugin-configuration](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
 
-* Networking: [Plugin Networking](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking)
+* Networking:
+     [Plugin Networking](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking)
 
-* Multipathing: [Multipathing Guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Multipathing)
+* Multipathing:
+    [Multipathing Guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Multipathing)
 
-For a full list of topics, visit the [JovianDSS Proxmox Wiki](https://github.com/open-e/JovianDSS-Proxmox/wiki).
+For a full list of topics, visit the 
+    [JovianDSS Proxmox Wiki](https://github.com/open-e/JovianDSS-Proxmox/wiki)
 
 
 ## Plugin features
@@ -36,7 +42,7 @@ For a full list of topics, visit the [JovianDSS Proxmox Wiki](https://github.com
 | Storage of `images`(QEMU/KVM VM images), `rootdir`(container data)                   | :white_check_mark: To store iso, backup, and vztmpl content use the native Proxmox VE NFS plugin as described in [Open-E JovianDSS with NFS for Proxmox VE: Best Practices Guide](https://www.open-e.com/site_media/download/documents/howtoresource/Open-E_Jovian_DSS_with_NFS_for_Proxmox_VE_Best_Practices_Guide_1.00.pdf) |
 | `images`(QEMU/KVM VM images)/`rootdir`(container data) to JovianDSS volume relation  | :white_check_mark: Each VM/CT virtual disk is stored on its own dedicated volume |
 | Snapshots                                                                            | :white_check_mark: Each volume maintains its own set of snapshots. Snapshots are created individually for each volume. **Note**: Proxmox VE's built-in backup functionality does not back up JovianDSS plugin snapshots |
-| Rollback                                                                             | Rollback can be done to the latest snapshot only, user is recommended to use cloning from snapshot to restore to older state  |
+| Rollback                                                                             | :white_check_mark:                                                       |
 | Clonning                                                                             | :white_check_mark:                                                       |
 | Volume movement from one VM to another                                               | :white_check_mark:                                                       |
 | Volume resizing                                                                      | :white_check_mark:                                                       |
