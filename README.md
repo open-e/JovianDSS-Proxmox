@@ -18,18 +18,18 @@ It's actively maintained and continuously improved to work smoothly with the lat
 
 ## Documentation
 
-* Start using the plugin by going through the
-    [iSCSI plugin Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start-iSCSI)
-    [NFS plugin Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start-NFS)
+Start using the plugin by going through the
+  
+  [iSCSI plugin Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start-iSCSI)
+  
+  [NFS plugin Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start-NFS)
 
-* Plugin Configuration:
-    [Plugin-configuration](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
+For more detailed information:
+* [Plugin-configuration](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
 
-* Networking:
-     [Plugin Networking](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking)
+* [Plugin Networking](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking)
 
-* Multipathing:
-    [Multipathing Guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Multipathing)
+* [Multipathing](https://github.com/open-e/JovianDSS-Proxmox/wiki/Multipathing)
 
 For a full list of topics, visit the 
     [JovianDSS Proxmox Wiki](https://github.com/open-e/JovianDSS-Proxmox/wiki)
@@ -37,17 +37,17 @@ For a full list of topics, visit the
 
 ## Plugin features
 
-| Feature                                                                              | JovianDSS Plugin                                                         |
-|--------------------------------------------------------------------------------------|--------------------------------------------------------------------------|
-| Storage of `images`(QEMU/KVM VM images), `rootdir`(container data)                   | :white_check_mark: To store iso, backup, and vztmpl content use the native Proxmox VE NFS plugin as described in [Open-E JovianDSS with NFS for Proxmox VE: Best Practices Guide](https://www.open-e.com/site_media/download/documents/howtoresource/Open-E_Jovian_DSS_with_NFS_for_Proxmox_VE_Best_Practices_Guide_1.00.pdf) |
-| `images`(QEMU/KVM VM images)/`rootdir`(container data) to JovianDSS volume relation  | :white_check_mark: Each VM/CT virtual disk is stored on its own dedicated volume |
-| Snapshots                                                                            | :white_check_mark: Each volume maintains its own set of snapshots. Snapshots are created individually for each volume. **Note**: Proxmox VE's built-in backup functionality does not back up JovianDSS plugin snapshots |
-| Rollback                                                                             | :white_check_mark:                                                       |
-| Clonning                                                                             | :white_check_mark:                                                       |
-| Volume movement from one VM to another                                               | :white_check_mark:                                                       |
-| Volume resizing                                                                      | :white_check_mark:                                                       |
-| Supported format of storing VM/CT data                                               | `raw` (with **Snapshots supported**)                                     |
-| Thin provisioning                                                                    | :white_check_mark:                                                       |
+| Feature                                                                              | iSCSI Plugin                                                             | NFS Plugin |
+|--------------------------------------------------------------------------------------|--------------------------------------------------------------------------| -----------|
+| Proxmox VE Content                 | `images`, `rootdir`  | `images`, `rootdir`,  `vztmpl`, `iso`, `backup`, `snippets`  |
+| `images`(QEMU/KVM VM images)/`rootdir`(container data) to JovianDSS volume relation  | :white_check_mark: Each VM/CT virtual disk is stored on its own dedicated volume | :white_check_mark: A single ZFS dataset is used to store all Proxmox VE resources, including VM images, container volumes, and ISO files. |
+| Snapshots                                                                            | :white_check_mark: Each volume maintains its own set of snapshots. Snapshots are created individually for each volume. **Note**: Proxmox VE's built-in backup functionality does not back up JovianDSS plugin snapshots | :white_check_mark: JovianDSS `dataset` contains snapshots for all resources associated with it |
+| Rollback                                                                             | :white_check_mark:                                                       | :white_check_mark: |
+| Cloning                                                                              | :white_check_mark:                                                       | :white_check_mark: | 
+| Volume movement from one VM to another                                               | :white_check_mark:                                                       | :white_check_mark: |
+| Volume resizing                                                                      | :white_check_mark:                                                       | :white_check_mark: |
+| Supported format of storing VM/CT data                                               | `raw` (with **Snapshots supported**)                                     | `raw` (with **Snapshots supported**) To store `qcow2` and `vmdk` files, use the native Proxmox VE NFS plugin, as described in the [Open-E JovianDSS with NFS for Proxmox VE: Best Practices Guide](https://www.open-e.com/site_media/download/documents/howtoresource/Open-E_Jovian_DSS_with_NFS_for_Proxmox_VE_Best_Practices_Guide_1.00.pdf)   |
+| Thin provisioning                                                                    | :white_check_mark:                                                       | :white_check_mark: Sparse RAW thin allocation supported; physical storage is allocated as data is written. Automatic reclamation of guest-discarded blocks is not supported. Over time, as new blocks are written and deleted, the RAW image may consume storage approaching its full provisioned size. |
 
 ## Roadmap
 
