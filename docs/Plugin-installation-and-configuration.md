@@ -81,12 +81,20 @@ After installation, proceed to the [Configuration](#configuration) section to se
 apt install ./open-e-joviandss-proxmox-plugin_0.10.0.deb
 
 systemctl restart pvedaemon
+systemctl restart pvestatd.service
+systemctl restart pveproxy.service
+systemctl restart pve-ha-lrm.service
+systemctl restart pve-ha-crm.service
 ```
 
 After installation  restart the Proxmox `pvedaemon` service.
 
 ```bash
 systemctl restart pvedaemon
+systemctl restart pvestatd.service
+systemctl restart pveproxy.service
+systemctl restart pve-ha-lrm.service
+systemctl restart pve-ha-crm.service
 ```
 
 To remove the plugin call:

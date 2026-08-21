@@ -123,9 +123,12 @@ General:
   --version <tag>            Install a specific release tag (e.g. v0.9.9-3)
   --remove                   Remove/uninstall the plugin instead of installing
   --sudo                     Use sudo for commands (default: run without sudo)
-  --restart                  Restart pvedaemon after install/remove
+  --restart                  Restart the PVE services that load the plugin
+                             (pvedaemon, pvestatd, pveproxy, pve-ha-lrm,
+                             pve-ha-crm) after install/remove
   --dry-run                  Show what would be done without doing it
-  --reinstall                Use --reinstall apt flag (default: disabled)
+  --reinstall                Force reinstallation even when the same version
+                             is already installed (apt --reinstall flag)
   --allow-downgrades         Allow installing older package versions
   --assume-yes               Automatic yes to prompts (non-interactive mode)
   -v, --verbose              Show detailed output during installation/removal
@@ -618,6 +621,39 @@ sub restart_services {
         }
 
         if ($sudo) {
+            @restart_cmd = ($sudo, "systemctl", "restart", "pvestatd.service");
+        } else {
+            @restart_cmd = ("systemctl", "restart", "pvestatd.service");
+        }
+        $cmd_code = run_cmd(@restart_cmd, {
+            outfunc => get_output_handler($display_name),
+            errfunc => create_context_error_handler("Service pvestatd restart")
+        });
+
+        $restart_success = $restart_success && $cmd_code;
+        unless ($cmd_code) {
+            warn "[local] ✗ Failed to restart local pvestatd\n";
+        }
+
+        # pveproxy loads the storage plugin too (PVE::Service::pveproxy ->
+        # PVE::API2 -> PVE::Storage -> Custom/), so it keeps serving the old
+        # property schema until it is restarted.
+        if ($sudo) {
+            @restart_cmd = ($sudo, "systemctl", "restart", "pveproxy.service");
+        } else {
+            @restart_cmd = ("systemctl", "restart", "pveproxy.service");
+        }
+        $cmd_code = run_cmd(@restart_cmd, {
+            outfunc => get_output_handler($display_name),
+            errfunc => create_context_error_handler("Service pveproxy restart")
+        });
+
+        $restart_success = $restart_success && $cmd_code;
+        unless ($cmd_code) {
+            warn "[local] ✗ Failed to restart local pveproxy\n";
+        }
+
+        if ($sudo) {
             @restart_cmd = ($sudo, "systemctl", "restart", "pve-ha-lrm.service");
         } else {
             @restart_cmd = ("systemctl", "restart", "pve-ha-lrm.service");
@@ -657,6 +693,27 @@ sub restart_services {
         $restart_success = $restart_success && $cmd_code;
         unless ($cmd_code) {
             warn "[$ip] ✗ Failed to restart pvedaemon\n";
+        }
+
+        $cmd_code = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pvestatd.service", {
+            outfunc => get_output_handler($display_name),
+            errfunc => create_context_error_handler("Remote service pvestatd restart", $display_name)
+        });
+
+        $restart_success = $restart_success && $cmd_code;
+        unless ($cmd_code) {
+            warn "[$ip] ✗ Failed to restart pvestatd\n";
+        }
+
+        # pveproxy loads the storage plugin too - see the local branch above.
+        $cmd_code = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pveproxy.service", {
+            outfunc => get_output_handler($display_name),
+            errfunc => create_context_error_handler("Remote service pveproxy restart", $display_name)
+        });
+
+        $restart_success = $restart_success && $cmd_code;
+        unless ($cmd_code) {
+            warn "[$ip] ✗ Failed to restart pveproxy\n";
         }
 
         $cmd_code = run_cmd("ssh", split(/\s+/, $SSH_FLAGS), $ssh_tgt, "${r_sudo}systemctl restart pve-ha-lrm.service", {

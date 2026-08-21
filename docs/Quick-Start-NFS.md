@@ -53,18 +53,20 @@ The NFS plugin is distributed in the same package as the iSCSI plugin. If the iS
 Install latest plugin on all nodes in a cluster by running following command on any Proxmox VE server:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/nfs-plugin/install.pl | perl - --all-nodes
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes
 ```
 
 To check latest `pre-release` run:
 ```bash
-curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/nfs-plugin/install.pl | perl - --pre --all-nodes
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --pre --all-nodes
 ```
 
 Restart the Proxmox VE services to load the newly installed plugin:
 
 ```bash
 systemctl restart pvedaemon
+systemctl restart pvestatd.service
+systemctl restart pveproxy.service
 systemctl restart pve-ha-lrm.service
 systemctl restart pve-ha-crm.service
 ```

@@ -68,6 +68,8 @@ Restart Proxmox VE services to make them aware of the newly installed plugin:
 
 ```bash
 systemctl restart pvedaemon
+systemctl restart pvestatd.service
+systemctl restart pveproxy.service
 systemctl restart pve-ha-lrm.service
 systemctl restart pve-ha-crm.service
 ```

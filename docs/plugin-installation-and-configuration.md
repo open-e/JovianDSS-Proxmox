@@ -376,6 +376,10 @@ After installation and configuration restart proxmox service.
 
 ```bash
 systemctl restart pvedaemon
+systemctl restart pvestatd.service
+systemctl restart pveproxy.service
+systemctl restart pve-ha-lrm.service
+systemctl restart pve-ha-crm.service
 ```
 ### Clustering
 

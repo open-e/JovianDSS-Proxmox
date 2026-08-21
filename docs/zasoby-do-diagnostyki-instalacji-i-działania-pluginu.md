@@ -57,12 +57,17 @@ journalctl -u iscsid --since "1 hour ago"
 journalctl -u multipathd --since "1 hour ago"
 ```
 
-Po instalacji lub aktualizacji pluginu zrestartuj usługę API Proxmox na każdym
-węźle, na którym pakiet został zainstalowany:
+Po instalacji lub aktualizacji pluginu zrestartuj usługi Proxmox, które ładują
+plugin, na każdym węźle, na którym pakiet został zainstalowany. Do czasu
+restartu każda z nich nadal wykonuje kod poprzedniej wersji:
 
 ```bash
 systemctl restart pvedaemon
-systemctl status pvedaemon
+systemctl restart pvestatd.service
+systemctl restart pveproxy.service
+systemctl restart pve-ha-lrm.service
+systemctl restart pve-ha-crm.service
+systemctl status pvedaemon pvestatd pveproxy
 ```
 
 ## Ważne lokalizacje
@@ -617,6 +622,7 @@ read -r -s JDSS_PASSWORD
 pvesm set <storage_id> --user_password "$JDSS_PASSWORD"
 unset JDSS_PASSWORD
 systemctl restart pvedaemon
+systemctl restart pvestatd.service
 ```
 
 ### Zły adres REST lub brak routingu
@@ -685,8 +691,8 @@ ls -l /usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
 ls -l /usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSNFSPlugin.pm
 perl -c /usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSPlugin.pm
 perl -c /usr/share/perl5/PVE/Storage/Custom/OpenEJovianDSSNFSPlugin.pm
-systemctl restart pvedaemon
-journalctl -u pvedaemon --since "10 minutes ago"
+systemctl restart pvedaemon pvestatd.service pveproxy.service
+journalctl -u pvedaemon -u pvestatd -u pveproxy --since "10 minutes ago"
 ```
 
 Jeżeli `perl -c` zgłasza brak modułu, sprawdź zależności pakietu i instalację

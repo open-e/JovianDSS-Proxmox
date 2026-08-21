@@ -66,11 +66,13 @@ Restart Proxmox VE services to make them aware of the newly installed plugin:
 
 ```bash
 systemctl restart pvedaemon
+systemctl restart pvestatd.service
+systemctl restart pveproxy.service
 systemctl restart pve-ha-lrm.service
 systemctl restart pve-ha-crm.service
 ```
 
-Alternatively, user can call installation script *over SSH* with [`--restart`](https://github.com/open-e/JovianDSS-Proxmox/wiki/Installation-script#restart) flag to tell `install` script to restart `pvedaemon`, `pve-ha-lrm` and `pve-ha-crm` services.
+Alternatively, user can call installation script *over SSH* with [`--restart`](https://github.com/open-e/JovianDSS-Proxmox/wiki/Installation-script#restart) flag to tell `install` script to restart `pvedaemon`, `pvestatd`, `pveproxy`, `pve-ha-lrm` and `pve-ha-crm` services.
 
 It is IMPORTANT to remember that the install.pl script with `--restart` should NOT be called from the Proxmox Web UI as `--restart` will restart the shell interfaces provided by the Proxmox Web UI.
 
