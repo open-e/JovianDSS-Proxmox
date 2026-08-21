@@ -2219,31 +2219,23 @@ sub on_add_hook {
             chmod 0755, $path;
         }
     }
-
-    # CHAP check
+    # ---------------
+    # CHAP validation
     if ( defined( $scfg->{chap_user_name} ) ) {
         OpenEJovianDSS::Common::chap_user_name_validate(
             $scfg->{chap_user_name} );
     }
 
-    if ( exists( $sensitive{chap_user_password} )
-        && defined( $sensitive{chap_user_password} ) ) {
-        OpenEJovianDSS::Common::chap_user_password_validate(
-            $sensitive{chap_user_password} );
-    }
-
-
-    if (exists($sensitive{user_password})) {
-        if (defined($sensitive{user_password})) {
-            OpenEJovianDSS::Common::password_file_set_password(
-                $class->type(), $storeid, $sensitive{user_password});
-        }
-    }
-    OpenEJovianDSS::Common::password_file_require_user_password($ctx, $storeid);
     if (exists($sensitive{chap_user_password})) {
         if (defined($sensitive{chap_user_password})) {
-            OpenEJovianDSS::Common::password_file_set_chap_password(
-                $class->type(), $storeid, $sensitive{chap_user_password});
+            OpenEJovianDSS::Common::chap_user_password_validate(
+                $sensitive{chap_user_password} );
+        }
+    }
+    if (exists($scfg->{chap_user_password})) {
+        if (defined($scfg->{chap_user_password})) {
+            OpenEJovianDSS::Common::chap_user_password_validate(
+                $scfg->{chap_user_password} );
         }
     }
 
@@ -2256,8 +2248,40 @@ sub on_add_hook {
             die "chap_user_password is required when chap_enabled is set\n";
         }
     }
-    # CHAP check end
-    # --------------
+    # -----------------
+
+    # -----------------
+    # REST API password
+    if (exists($sensitive{user_password})) {
+        if (defined($sensitive{user_password})) {
+            OpenEJovianDSS::Common::password_file_set_password(
+                $class->type(), $storeid, $sensitive{user_password});
+        }
+    }
+    if (exists($scfg->{user_password})) {
+        if (defined($scfg->{user_password})) {
+            OpenEJovianDSS::Common::password_file_set_password(
+                $class->type(), $storeid, $scfg->{user_password});
+        }
+    }
+    OpenEJovianDSS::Common::password_file_require_user_password($ctx, $storeid);
+    # -----------------
+
+    # -----------------
+    # CHAP password
+    if (exists($sensitive{chap_user_password})) {
+        if (defined($sensitive{chap_user_password})) {
+            OpenEJovianDSS::Common::password_file_set_chap_password(
+                $class->type(), $storeid, $sensitive{chap_user_password});
+        }
+    }
+    if (exists($scfg->{chap_user_password})) {
+        if (defined($scfg->{chap_user_password})) {
+            OpenEJovianDSS::Common::password_file_set_chap_password(
+                $class->type(), $storeid, $scfg->{chap_user_password});
+        }
+    }
+    # -----------------
 
     # undef is the correct return value here (same as PVE's base Plugin.pm default).
     # Config.pm only sets $res->{config} = $returned_config if $returned_config,
@@ -2369,7 +2393,7 @@ sub _storage_property_update_check {
                                 "to enable CHAP\n";
                     }
 
-                    my $chap_user_password_was_set = defined(OpenEJovianDSS::Common::get_chap_user_password($ctx));
+                    my $chap_user_password_was_set = OpenEJovianDSS::Common::check_chap_user_password($ctx);
 
                     my $chap_user_password_is_set = (exists(  $prop_sensitive->{'chap_user_password'} ) &&
                                                      defined( $prop_sensitive->{'chap_user_password'} ));

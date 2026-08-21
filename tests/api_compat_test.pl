@@ -634,6 +634,13 @@ my $SCFG    = {
     is( OpenEJovianDSS::Common::get_user_password($ctx),
         'oldpverest',
         'legacy: update-delivered user password lands in the password file' );
+    # The hook stores the credentials but deliberately leaves $opts_update
+    # untouched: rewriting the caller's update options would have the plugin
+    # intervene in how the user configures the storage. On pre-v11 hosts PVE
+    # therefore also keeps the value inline in storage.cfg; the password file
+    # is authoritative on read either way.
+    is( $legacy_update->{user_password}, 'oldpverest',
+        'legacy: the update options are left as the caller passed them' );
     $PLUGIN->on_delete_hook( $STOREID, $SCFG );
 
     # Full hook: credentials sit inline in the stored configuration of a
@@ -663,9 +670,15 @@ my $SCFG    = {
     like( $@, qr/both updated and deleted/,
         'contract: simultaneous update and deletion of a property dies' );
     my $legacy_ctx = OpenEJovianDSS::Common::new_ctx( $legacy_scfg, $STOREID );
-    is( OpenEJovianDSS::Common::get_chap_user_password($legacy_ctx),
-        'inlinechap',
-        'legacy: inline chap password is readable through the scfg fallback' );
+
+    # The two credentials are treated differently on purpose. A CHAP password
+    # belongs in the password file only: an inline one is refused outright, so
+    # the operator re-adds it through a channel that stores it protected. The
+    # REST password keeps its read fallback (with a warning), so a legacy entry
+    # stays operational while it is migrated.
+    eval { OpenEJovianDSS::Common::get_chap_user_password($legacy_ctx) };
+    like( $@, qr/present unprotected in storage\.cfg/,
+        'legacy: an inline chap password is refused - chap lives in the pw file only' );
     is( OpenEJovianDSS::Common::get_user_password($legacy_ctx),
         'inlinerest',
         'legacy: inline user password is readable through the scfg fallback' );

@@ -21,11 +21,14 @@ import yaml
 import sys
 
 from jdssc.jovian_common import driver
+from jdssc.cli_common import cli_common as ccom
 
 import jdssc.pool as pool
 
 import logging
 from logging.handlers import RotatingFileHandler
+
+LOG = logging.getLogger('jdssc')
 
 
 def parse_args():
@@ -100,9 +103,17 @@ def parse_args():
 
     parser.add_argument('--user-password',
                         dest='user_password',
-                        required=True,
+                        required=False,
                         default=None,
                         help='User password')
+
+    parser.add_argument('--sensitive-file',
+                        dest='sensitive_file',
+                        required=False,
+                        default=None,
+                        help='''Path to a root-only key value file that
+                        provides sensitive values (user_password,
+                        chap_user_password) off the command line''')
 
     parser.add_argument('--data-addresses',
                         dest='data_addresses',
@@ -280,9 +291,15 @@ def unify_config_options(args, cfg):
     if args.user_name:
         cfg['san_login'] = args.user_name
 
+    # The explicit flag wins over the sensitive-file channel; the resolved
+    # value goes only into cfg, never back into args (docs/design/0008 -
+    # the args dict is dumped to the debug log).
     if args.user_password:
         cfg['san_password'] = args.user_password
-
+    elif args.sensitive_file:
+        sensitive = ccom.load_sensitive_file(args.sensitive_file)
+        if sensitive.get('user_password'):
+            cfg['san_password'] = sensitive['user_password']
     return cfg
 
 
@@ -343,7 +360,14 @@ def main():
         config = yaml.safe_load(open(args.config))
 
     config = unify_config_options(args, config)
+
     setup_logging(args, config)
+
+    if not config.get('san_password'):
+        msg = ("JovianDSS REST user password is not provided: "
+               "pass --user-password or --sensitive-file")
+        LOG.error(msg=msg)
+        sys.exit(1)
 
     # list available commands
     cmd = {'pool': pool.Pools,
@@ -359,6 +383,5 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as err:
-        LOG = logging.getLogger(__name__)
         LOG.error(err, exc_info=True)
         sys.exit(1)

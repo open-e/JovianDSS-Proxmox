@@ -15,63 +15,30 @@
 
 import argparse
 import logging
-import re
+
 import sys
 
 from jdssc.jovian_common import exception as jexc
+from jdssc.cli_common import cli_common as ccom
 
 """Targets related commands."""
 
 LOG = logging.getLogger(__name__)
 
-# CHAP credential format rules of the JovianDSS appliance (REST API spec;
-# duplicated from jovian_common/rest.py so the CLI can refuse malformed
-# values before any driver or appliance work).
-# re.ASCII pins \w to ASCII - the appliance rule is ASCII.
-chapUserNamePattern = re.compile(r'^\w([a-zA-Z0-9-_]*\w)?$', re.ASCII)
-chapPasswordPattern = re.compile(r'^[a-zA-Z0-9-_!@%()+?.:;]+$', re.ASCII)
 
-CHAP_PASSWORD_MIN_LEN = 12
-CHAP_PASSWORD_MAX_LEN = 255
+def _resolve_chap_password(args):
+    """Resolve the CHAP password into a local value.
 
-
-def _chap_user_name_check(name):
-    """Check a CHAP user name against the JovianDSS appliance rule.
-
-    Names must match '^\\w([a-zA-Z0-9-_]*\\w)?$'.
-    Raises JDSSException on violation.
+    An explicit --chap-password wins; with --chap-user present and no flag,
+    the value comes from the --sensitive-file channel. The result must stay
+    in a local and never be written back into args - the args dict is dumped
+    to the debug log (docs/design/0008).
     """
-    if not isinstance(name, str):
-        raise jexc.JDSSException("CHAP user name is missing")
-
-    if chapUserNamePattern.match(name) is None:
-        raise jexc.JDSSException(
-            "CHAP user name '%s' is invalid: only letters, digits, "
-            "'-' and '_' are allowed, and it must start and end with "
-            "a letter, digit or '_'" % name)
-
-
-def _chap_user_password_check(password):
-    """Check a CHAP password against the JovianDSS appliance rule.
-
-    Passwords must be 12 to 255 characters from
-    '^[a-zA-Z0-9-_!@%()+?.:;]+$' (no whitespace).
-    Raises JDSSException on violation; the password value is never
-    included in the error message.
-    """
-    if not isinstance(password, str):
-        raise jexc.JDSSException("CHAP password is missing")
-
-    if ((len(password) < CHAP_PASSWORD_MIN_LEN) or
-            (len(password) > CHAP_PASSWORD_MAX_LEN)):
-        raise jexc.JDSSException(
-            "CHAP password must be %d to %d characters long"
-            % (CHAP_PASSWORD_MIN_LEN, CHAP_PASSWORD_MAX_LEN))
-
-    if chapPasswordPattern.match(password) is None:
-        raise jexc.JDSSException(
-            "CHAP password contains unsupported characters; allowed "
-            "are letters, digits and -_!@%()+?.:;")
+    chap_pass = args.get('chap_password')
+    if chap_pass is None and args.get('chap_user'):
+        chap_pass = ccom.load_sensitive_file(
+            args.get('sensitive_file')).get('chap_user_password')
+    return chap_pass
 
 
 class Targets():
@@ -259,18 +226,20 @@ class Targets():
 
         target_group_name = self.args['target_group_name']
 
+        chap_user = self.args.get('chap_user')
+        chap_pass = _resolve_chap_password(self.args)
+
         provider_auth = None
-        if self.args.get('chap_user') and self.args.get('chap_password'):
+        if (chap_user and chap_pass):
             try:
-                _chap_user_name_check(self.args['chap_user'])
-                _chap_user_password_check(self.args['chap_password'])
+                ccom.chap_user_name_check(chap_user)
+                ccom.chap_user_password_check(chap_pass)
             except jexc.JDSSException as err:
                 LOG.error(err)
                 exit(1)
-            provider_auth = 'CHAP {} {}'.format(
-                self.args['chap_user'], self.args['chap_password'])
+            provider_auth = 'CHAP {} {}'.format(chap_user, chap_pass)
         else:
-            if self.args.get('chap_user') or self.args.get('chap_password'):
+            if chap_user or chap_pass:
                 LOG.error("Both chap user name and password have to be "
                           " provided to enable CHAP for target")
                 exit(1)

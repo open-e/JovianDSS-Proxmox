@@ -194,12 +194,17 @@ sub reset_state { @SET_CALLS = (); }
 # ---------------------------------------------------------------------------
 {
     reset_state();
-    $PLUGIN->on_update_hook( $STOREID, { user_password => 'inlinepw1' } );
+    my $inline_update = { user_password => 'inlinepw1' };
+    $PLUGIN->on_update_hook( $STOREID, $inline_update );
     is( scalar(@SET_CALLS), 1, 'classic: inline user_password is stored' );
     is( $SET_CALLS[0]{value}, 'inlinepw1',
         'classic: the inline value reaches the password file writer' );
     is( $SET_CALLS[0]{type}, $PLUGIN->type(),
         'classic: the writer is keyed by the plugin storage type' );
+    # The hook stores the credential but deliberately leaves $opts_update
+    # untouched - the plugin does not rewrite the caller's update options.
+    is( $inline_update->{user_password}, 'inlinepw1',
+        'classic: the update options are left as the caller passed them' );
 }
 
 # ---------------------------------------------------------------------------

@@ -102,6 +102,8 @@ our @EXPORT_OK = qw(
   get_jdssc_timeout
   get_log_level
 
+  check_chap_user_password
+
   password_file_set_password
   password_file_set_chap_password
 
@@ -636,6 +638,7 @@ sub get_user_password {
         if ( defined($inline_user_password)
             && length($inline_user_password) > 0 )
         {
+            warn "Password found in storage.cfg, please update it to be moved to password file.\n";
             return $inline_user_password;
         }
     }
@@ -663,15 +666,29 @@ sub get_chap_user_password {
     }
 
     if ( exists( $ctx->{scfg}{chap_user_password} ) ) {
-        my $inline_chap_user_password = $ctx->{scfg}{chap_user_password};
-        if ( defined($inline_chap_user_password)
-            && length($inline_chap_user_password) > 0 )
-        {
-            return $inline_chap_user_password;
-        }
+        die "CHAP user password is present unprotected in storage.cfg file. " .
+            "Please remove it and re-add so it lands in dedicated pw file.\n"
     }
 
     return undef;
+}
+
+sub check_chap_user_password {
+    my ($ctx) = @_;
+    my $chap_user_password =
+      _password_file_get_key( get_plugin_type($ctx), $ctx->{storeid},
+        'chap_user_password' );
+    if ( defined($chap_user_password) ) {
+        return 1;
+    }
+
+    if ( exists( $ctx->{scfg}{chap_user_password} ) ) {
+        if ( defined( $ctx->{scfg}{chap_user_password} ) ) {
+            return 1;
+        }
+    }
+
+    return 0;
 }
 
 sub password_file_set_password {
@@ -1233,12 +1250,26 @@ sub joviandss_cmd {
         die "JovianDSS REST user name is not provided.\n";
     }
 
+    # Secrets shoult not be provided as command arguments
+    # (docs/design/0008-sensitive-data-transfer-control)
+    # jdssc reads them from the
+    # per-storage password file passed as --sensitive-file below.
     my $user_password = get_user_password($ctx);
-    if ( defined($user_password) ) {
-        push @$connection_options, '--user-password', $user_password;
-    } else {
+    if ( !defined($user_password) ) {
         die "JovianDSS REST user password is not provided.\n";
     }
+
+    # A config from a plugin version before v0.10.10 may still hold the
+    # credentials inline in storage.cfg with no password file - migrate them
+    # into it once, so the file jdssc reads always exists. The password file
+    # is authoritative on read, so later calls just point at it.
+    my $storage_type = get_plugin_type($ctx);
+    my $pw_file = get_password_file_path( $storage_type, $storeid );
+    if ( !-f $pw_file ) {
+        die "Unable to identify password file, please update user password and " .
+         "CHAP password(if chap is used) to make it present\n";
+    }
+    push @$connection_options, '--sensitive-file', $pw_file;
 
     my $log_file = get_log_file($ctx);
     if ( defined($log_file) ) {
@@ -2151,12 +2182,9 @@ sub volume_publish {
             unless defined $chap_user && length($chap_user);
         die "chap_user_password is required when chap_enabled is set\n"
             unless defined $chap_pass;
-        # TODO: credentials are passed as argv and are visible in /proc/<pid>/cmdline
-        # for the duration of the jdssc process. Fix: add --chap-credentials-file <path>
-        # to jdssc targets create, write credentials to a 0600 tempfile (File::Temp,
-        # UNLINK=>1), pass the path instead of the values. Same change needed in
-        # target_update_chap below and in the jdssc targets.py / target.py parsers.
-        push @$create_target_cmd, '--chap-user', $chap_user, '--chap-password', $chap_pass;
+        # The CHAP password stays off argv (docs/design/0008-sensitive-data-transfer-control): jdssc resolves
+        # it from the --sensitive-file channel when --chap-user is present.
+        push @$create_target_cmd, '--chap-user', $chap_user;
     }
 
     my $out = joviandss_cmd( $ctx, $create_target_cmd, 118, 15 );
@@ -2202,9 +2230,9 @@ sub target_update_chap {
             unless defined $chap_user && length($chap_user);
         die "chap_user_password is required when chap_enabled is set\n"
             unless defined $chap_pass;
-        # TODO: same argv exposure as in volume_publish above — move to
-        # --chap-credentials-file once jdssc target update supports it.
-        push @$cmd, '--chap-user', $chap_user, '--chap-password', $chap_pass;
+        # The CHAP password stays off argv (docs/design/0008): jdssc resolves
+        # it from the --sensitive-file channel when --chap-user is present.
+        push @$cmd, '--chap-user', $chap_user;
     } else {
         push @$cmd, '--no-chap';
     }
@@ -2221,26 +2249,100 @@ sub target_update_chap {
     die $last_err if $last_err;
 }
 
+sub _iscsiadm_node_set {
+    my ($ctx, $host, $targetname, $param, $value) = @_;
+    my $cmd = [
+        $ISCSIADM, '--mode', 'node',
+        '-p', $host, '--targetname', $targetname,
+        '-o', 'update', '-n', $param, '-v', $value,
+    ];
+    run_command(
+        $cmd,
+        outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
+        errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
+        timeout => 10,
+    );
+}
+
+sub _uuid_generate {
+    # A fresh v4 UUID from the kernel - unique, fixed format, no regex
+    # metacharacters (docs/design/0008, sentinel-swap).
+    my $token =
+      PVE::Tools::file_read_firstline('/proc/sys/kernel/random/uuid');
+    die "failed to read a sentinel token from /proc\n"
+      if !defined($token) || !length($token);
+
+    # The token goes onto an iscsiadm argv, and pct runs under perl -T, where
+    # file input is tainted and exec() of tainted data dies. The capture both
+    # untaints and validates the kernel's UUID format.
+    if ( $token =~ /^([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/a )
+    {
+        return $1;
+    }
+    die "unexpected sentinel token format from /proc\n";
+}
+
+sub _iscsi_data_roots {
+    # open-iscsi >= 2.1.10 (Debian 13 / PVE 9) keeps the node DB under
+    # /var/lib/iscsi; older installations use /etc/iscsi. Search every root
+    # that exists.
+    my @roots = grep { -d $_ } ( '/var/lib/iscsi/nodes', '/etc/iscsi/nodes' );
+    die "no open-iscsi node DB directory found\n" if !@roots;
+    return @roots;
+}
+
+sub _iscsi_data_password_substitute {
+    my ($ctx, $uuid, $real) = @_;
+
+    # The token self-locates the node record file(s) - no <ip>,<port>,<tpgt>
+    # path construction and no open-iscsi on-disk format coupling.
+    my @roots = _iscsi_data_roots();
+    my @files;
+    run_command(
+        [ 'grep', '-rlF', '--', $uuid, @roots ],
+        outfunc => sub { my $l = shift; chomp $l; push @files, $l; },
+        noerr   => 1,    # grep exits 1 on no match
+        timeout => 10,
+    );
+    die "marker uuid not found under the open-iscsi node DB (@roots)\n"
+      if !@files;
+
+    # grep output is external input, so the paths are tainted; pct runs under
+    # perl -T, where a tainted filename may not reach a file-modifying
+    # operation. The capture untaints and confines the path to the node DB.
+    my $roots_re = join '|', map { quotemeta } @roots;
+
+    for my $file (@files) {
+        my ($safe) = $file =~ m{^((?:$roots_re)/[\w./:,+=\@-]+)$}a;
+        die "unexpected node DB path returned by grep\n" if !defined($safe);
+
+        # The swap happens in-process: the real password must never reach a
+        # child argv. The stat'd mode is re-applied explicitly on write to
+        # keep the record 0600.
+        my $mode    = ( stat $safe )[2] & 07777;
+        my $content = PVE::Tools::file_get_contents($safe);
+        $content =~ s/\Q$uuid\E/$real/g;
+        PVE::Tools::file_set_contents( $safe, $content, $mode );
+    }
+}
+
 sub _iscsiadm_set_chap {
     my ($ctx, $host, $targetname, $chap_user, $chap_pass) = @_;
-    for my $update (
-        [ 'node.session.auth.authmethod', 'CHAP'      ],
-        [ 'node.session.auth.username',   $chap_user  ],
-        [ 'node.session.auth.password',   $chap_pass  ],
-    ) {
-        my ($param, $value) = @$update;
-        my $cmd = [
-            $ISCSIADM, '--mode', 'node',
-            '-p', $host, '--targetname', $targetname,
-            '-o', 'update', '-n', $param, '-v', $value,
-        ];
-        run_command(
-            $cmd,
-            outfunc => sub { cmd_log_output($ctx, 'debug', $cmd, shift); },
-            errfunc => sub { cmd_log_output($ctx, 'error', $cmd, shift); },
-            timeout => 10,
-        );
-    }
+
+    # authmethod and username are not secret - set on argv as before.
+    _iscsiadm_node_set( $ctx, $host, $targetname,
+        'node.session.auth.authmethod', 'CHAP' );
+    _iscsiadm_node_set( $ctx, $host, $targetname,
+        'node.session.auth.username', $chap_user );
+
+    # The password IS secret (docs/design/0008, sentinel-swap): iscsiadm gets
+    # a throwaway token - only the token reaches argv and the log - and the
+    # real value is swapped into the record iscsiadm just wrote. No login
+    # happens between the set and the swap, so a scraped token is dead.
+    my $uuid = _uuid_generate();
+    _iscsiadm_node_set( $ctx, $host, $targetname,
+        'node.session.auth.password', $uuid );
+    _iscsi_data_password_substitute( $ctx, $uuid, $chap_pass );
 }
 
 sub _iscsiadm_clear_chap {
