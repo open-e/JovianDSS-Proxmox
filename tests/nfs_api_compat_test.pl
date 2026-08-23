@@ -336,6 +336,23 @@ sub reset_state { @SET_CALLS = (); }
     is( scalar(@SET_CALLS), 0, 'full: it writes nothing' );
 }
 
+# ---------------------------------------------------------------------------
+# alloc_image refuses every non-raw format before touching the filesystem.
+# PVE core does not enforce plugindata's format list at allocation time
+# (Issue 8), so this guard is the only thing standing between a
+# 'pvesm alloc --format qcow2' and a real qcow2 file on the share.
+# ---------------------------------------------------------------------------
+{
+    my $scfg = { type => 'joviandss-nfs', server => '127.0.0.1',
+                 export => '/Pools/Pool-0/data', path => '/mnt/pve/teststore',
+                 user_name => 'admin' };
+    for my $fmt (qw(qcow2 vmdk subvol)) {
+        eval { $PLUGIN->alloc_image( 'teststore', $scfg, 990001, $fmt, undef, 1048576 ) };
+        like( $@, qr/unsupported format '\Q$fmt\E'.*only supports raw/,
+            "alloc_image refuses format '$fmt' with the raw-only message" );
+    }
+}
+
 print "1..$tests\n";
 if ($failures) {
     print "FAILED $failures/$tests\n";

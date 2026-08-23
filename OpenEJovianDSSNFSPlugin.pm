@@ -82,7 +82,7 @@ sub plugindata {
             },
             { images => 1 },
         ],
-        format => [{ raw => 1, qcow2 => 1, vmdk => 1 }, 'raw'],
+        format => [{ raw => 1 }, 'raw'],
         'sensitive-properties' => {
             'user_password' => 1,
         },
@@ -1209,6 +1209,16 @@ sub volume_resize {
 
 sub alloc_image {
     my ( $class, $storeid, $scfg, $vmid, $fmt, $name, $size ) = @_;
+
+    # Same guard as the iSCSI plugin (Issue 8): PVE does not enforce the
+    # storage's format list at allocation time, so raw-only must be refused
+    # here - SUPER::alloc_image would otherwise create a real qcow2/vmdk
+    # file on the share.
+    if ( defined($fmt) && $fmt ne 'raw' ) {
+        die "unsupported format '${fmt}' - "
+          . "storage '${storeid}' only supports raw\n";
+    }
+
     my $ctx = new_ctx($scfg, $storeid);
     return _alloc_image_lock( $class, $ctx, $vmid, $fmt, $name, $size );
 }
