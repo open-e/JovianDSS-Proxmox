@@ -41,7 +41,7 @@ use OpenEJovianDSS::Lock;
 
 use base qw(PVE::Storage::Plugin);
 
-my $PLUGIN_VERSION = '0.7.0';
+my $PLUGIN_VERSION = '1.1.0~pre1-0';
 
 #    Open-E JovianDSS NFS Proxmox plugin
 #

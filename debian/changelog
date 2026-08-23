@@ -1,3 +1,63 @@
+open-e-joviandss-proxmox-plugin (1.1.0-0) stable; urgency=medium
+
+    * Change: qcow2 and vmdk removed from the NFS storage type — both plugins
+      are now raw-only.
+    * New: REST and CHAP passwords no longer travel through command lines.
+      jdssc receives --sensitive-file, the path of the 0600
+      per-storage password file under /etc/pve/priv, instead of
+      --user-password/--chap-password; iscsiadm receives a throwaway UUID
+      marker that is swapped for the real CHAP secret inside the node DB
+      record in-process — nothing secret reaches /proc/<pid>/cmdline, the
+      plugin log or the PVE task log, even on failure. A storage still
+      carrying inline CHAP credentials in storage.cfg is refused with
+      instructions to re-set them, not migrated silently
+    * New: storage API v13 config hooks (on_update_hook_full) for both
+      plugins, check-then-apply — every refusal is decided before the
+      password file is touched, deleting a required property is validated
+      against the effective configuration, set+delete of the same property
+      in one request is refused, and single-command CHAP retirement leaves
+      no leftover secret
+    * New: storage API v15 for both plugins — volume_resize accepts (and
+      refuses) the snapshot parameter, volume_snapshot_info returns the
+      documented replication shape with epoch timestamps (iSCSI adds
+      best-effort virtual-size; NFS composes per-volume ids from the
+      dataset snapshot guid)
+    * New: JovianDSS-to-JovianDSS offline migration — volume_export /
+      volume_import for the raw+size stream, and parse_volname accepts the
+      <vmid>/<name>.<fmt> volnames PVE composes for path-carrying storages
+    * New: five storage.cfg properties controlling jdssc's REST behaviour
+      (jdssc_rest_connect_timeout, jdssc_rest_read_timeout,
+      jdssc_rest_request_send_cycle_attempts, ..._cycle_delay,
+      jdssc_rest_send_retry_on_decode_error_attempts), all optional with
+      defaults preserving prior behaviour; documented on the new
+      Plugin-configuration-engineering wiki page
+    * New: CHAP credential formats validated at every entry layer (plugin
+      hooks, jdssc CLI, jdssc REST) — a malformed name or password is
+      rejected by the pvesm command that carries it instead of failing
+      volume activation later
+    * Fix: control_addresses failover against a dead (blackholed) address —
+      a dedicated 5 s connect timeout replaces the single 570 s request
+      timeout that the kernel's ~127 s connect ceiling made unreachable; a
+      downed controller is abandoned in seconds and the next address tried,
+      instead of the operation stalling ~10 minutes and failing
+    * Fix: NFS get_identity resolved its pool through the iSCSI-only
+      pool_name property and died for every joviandss-nfs storage; the pool
+      is now derived from the export path
+    * Fix: scsi ids from the backend are validated at every point that
+      produces or consumes one — a missing, empty or too-short id fails
+      with a clear error instead of flowing silently into device paths
+    * Fix: deb archive entries are recorded root-owned regardless of the
+      build user — plugin code executed by pvedaemon was previously owned
+      by uid 1000 on any host where that uid exists
+    * Fix: install.pl restarts pvestatd and pveproxy alongside pvedaemon
+      and the HA services — both load the plugin in-process and kept
+      running stale code across upgrades
+    * Change: deactivate_volume no longer declares a $hints parameter the
+      storage API never passes to it
+    * Packaging: python3-requests and open-iscsi declared as dependencies
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>, Claude Code (Anthropic AI)  Sun, 23 Aug 2026 00:00:00 +0200
+
 open-e-joviandss-proxmox-plugin (1.0.0-0) stable; urgency=medium
 
     * First stable release. Content identical to v0.11.6: graduates the
