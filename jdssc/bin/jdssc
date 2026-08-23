@@ -136,6 +136,48 @@ def parse_args():
                         default=None,
                         help='Unique request identifier to include in log output')
 
+    parser.add_argument('--rest-connect-timeout',
+                        dest='rest_connect_timeout',
+                        required=False,
+                        default=None,
+                        type=ccom.is_natural_number,
+                        help='''Seconds to wait for a TCP connection to a
+                        control address before giving up on it and moving to
+                        the next one''')
+
+    parser.add_argument('--rest-read-timeout',
+                        dest='rest_read_timeout',
+                        required=False,
+                        default=None,
+                        type=ccom.is_natural_number,
+                        help='''Seconds to wait between bytes of a REST
+                        response before giving up. An inactivity timeout, not
+                        a deadline for the whole response''')
+
+    parser.add_argument('--rest-request-send-cycle-attempts',
+                        dest='rest_request_send_cycle_attempts',
+                        required=False,
+                        default=None,
+                        type=ccom.is_natural_number,
+                        help='''How many times to cycle the control addresses
+                        before giving up on a REST request''')
+
+    parser.add_argument('--rest-request-send-cycle-delay',
+                        dest='rest_request_send_cycle_delay',
+                        required=False,
+                        default=None,
+                        type=ccom.is_whole_number,
+                        help='''Seconds to sleep between REST request retry
+                        rounds''')
+
+    parser.add_argument('--rest-send-retry-on-decode-error-attempts',
+                        dest='rest_send_retry_on_decode_error_attempts',
+                        required=False,
+                        default=None,
+                        type=ccom.is_natural_number,
+                        help='''How many times to re-send a single REST request
+                        when the appliance answers with undecodable JSON''')
+
     command = parser.add_subparsers(required=True, dest='command')
 
     command.add_parser('pool', add_help=True)
@@ -287,6 +329,24 @@ def unify_config_options(args, cfg):
 
     if args.data_port:
         cfg['target_port'] = args.data_port
+
+    # REST resilience knobs. 'is not None' rather than truthiness: 0 is a
+    # legal delay (retry without sleeping).
+    if args.rest_connect_timeout is not None:
+        cfg['jdssc_rest_connect_timeout'] = args.rest_connect_timeout
+
+    if args.rest_read_timeout is not None:
+        cfg['jdssc_rest_read_timeout'] = args.rest_read_timeout
+
+    if args.rest_request_send_cycle_attempts is not None:
+        cfg['jdssc_rest_request_send_cycle_attempts'] = args.rest_request_send_cycle_attempts
+
+    if args.rest_request_send_cycle_delay is not None:
+        cfg['jdssc_rest_request_send_cycle_delay'] = args.rest_request_send_cycle_delay
+
+    if args.rest_send_retry_on_decode_error_attempts is not None:
+        cfg['jdssc_rest_send_retry_on_decode_error_attempts'] = \
+            args.rest_send_retry_on_decode_error_attempts
 
     if args.user_name:
         cfg['san_login'] = args.user_name

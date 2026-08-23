@@ -25,8 +25,38 @@ import urllib3
 
 from jdssc.jovian_common import cexception as exception
 from jdssc.jovian_common.stub import _
-from retry import retry
+from retry.api import retry_call
 from jdssc.jovian_common import exception as jexc
+
+# Defaults for the REST resilience knobs. The Proxmox plugin always passes
+# them (its own getters supply the same values), so these apply to direct
+# jdssc invocations and keep the behaviour they had while hardcoded.
+#
+# The two timeouts bound different phases and are not interchangeable:
+# CONNECT bounds establishing the TCP connection, and is what decides how
+# fast an unreachable control address is abandoned for the next one. READ is
+# an inactivity timeout measured *between bytes* of a response already
+# arriving - it is not a deadline for the whole response, so a slow but
+# steady transfer never trips it. Nothing here bounds total run time; that
+# is the plugin's jdssc_timeout, which kills the process.
+DEFAULT_REST_CONNECT_TIMEOUT = 5
+DEFAULT_REST_READ_TIMEOUT = 570
+DEFAULT_REST_REQUEST_SEND_CYCLE_ATTEMPTS = 17
+DEFAULT_REST_REQUEST_SEND_CYCLE_DELAY = 3
+DEFAULT_REST_SEND_RETRY_ON_DECODE_ERROR_ATTEMPTS = 5
+
+
+def _int_option(config, key, default):
+    """Read an integer option, treating absent and empty alike as unset.
+
+    The '-c' YAML channel can carry an empty value for a key that is present
+    but unset, and int('') raises. Falling back to the default there matches
+    what the Perl getters do on the plugin side.
+    """
+    value = config.get(key)
+    if value is None or value == '':
+        return default
+    return int(value)
 
 
 LOG = logging.getLogger(__name__)
@@ -64,7 +94,22 @@ class JovianDSSRESTProxy(object):
         self.password = config.get('san_password', 'admin')
         self.verify = config.get('driver_ssl_cert_verify', True)
         self.cert = config.get('driver_ssl_cert_path', None)
-        self.request_timeout = config.get('jovian_request_timeout', 570)
+
+        self.connect_timeout = _int_option(
+            config, 'jdssc_rest_connect_timeout',
+            DEFAULT_REST_CONNECT_TIMEOUT)
+        self.read_timeout = _int_option(
+            config, 'jdssc_rest_read_timeout',
+            DEFAULT_REST_READ_TIMEOUT)
+        self.request_send_cycle_attempts = _int_option(
+            config, 'jdssc_rest_request_send_cycle_attempts',
+            DEFAULT_REST_REQUEST_SEND_CYCLE_ATTEMPTS)
+        self.request_send_cycle_delay = _int_option(
+            config, 'jdssc_rest_request_send_cycle_delay',
+            DEFAULT_REST_REQUEST_SEND_CYCLE_DELAY)
+        self.send_retry_on_decode_error_attempts = _int_option(
+            config, 'jdssc_rest_send_retry_on_decode_error_attempts',
+            DEFAULT_REST_SEND_RETRY_ON_DECODE_ERROR_ATTEMPTS)
 
         urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -111,7 +156,7 @@ class JovianDSSRESTProxy(object):
         :param json_data: data
         """
         out = None
-        for i in range(17):
+        for i in range(self.request_send_cycle_attempts):
 
             for i in range(len(self.hosts)):
                 try:
@@ -131,7 +176,7 @@ class JovianDSSRESTProxy(object):
                         r = requests.Request(request_method, addr)
 
                     pr = self.session.prepare_request(r)
-                    out = self._send(pr)
+                    out = self._send_with_retry(pr)
                 except requests.exceptions.SSLError as sslerr:
                     LOG.warning(sslerr)
                     LOG.error(("SSL certificate error, make sure that you have"
@@ -183,8 +228,9 @@ class JovianDSSRESTProxy(object):
 
                 return out
 
-            # Adding 3 sec sleep delay
-            time.sleep(3)
+            # Sleep between retry rounds; 0 retries without sleeping.
+            if self.request_send_cycle_delay:
+                time.sleep(self.request_send_cycle_delay)
         raise jexc.JDSSCommunicationFailure(self.hosts, req)
 
     def pool_request(self, request_method, req, json_data=None, apiv=4):
@@ -203,8 +249,19 @@ class JovianDSSRESTProxy(object):
                             json_data=json_data,
                             apiv=apiv)
 
-    @retry(json.JSONDecodeError,
-           tries=5)
+    def _send_with_retry(self, pr):
+        """Send a prepared request, retrying an undecodable JSON answer.
+
+        The retry count comes from the configuration, so it cannot be a
+        decorator - those are bound at import time, before any config exists.
+
+        :param pr: prepared request
+        """
+        return retry_call(self._send,
+                          fargs=[pr],
+                          exceptions=json.JSONDecodeError,
+                          tries=self.send_retry_on_decode_error_attempts)
+
     def _send(self, pr):
         """Send prepared request
 
@@ -212,7 +269,8 @@ class JovianDSSRESTProxy(object):
         """
         ret = {}
 
-        response_obj = self.session.send(pr, timeout=self.request_timeout)
+        response_obj = self.session.send(
+            pr, timeout=(self.connect_timeout, self.read_timeout))
 
         ret['code'] = response_obj.status_code
         if ret['code'] == 204:

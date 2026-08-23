@@ -13,6 +13,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
+import argparse
 import logging
 import re
 
@@ -88,3 +89,44 @@ def load_sensitive_file(path):
     except OSError as err:
         LOG.error("Unable to read sensitive file %s: %s", path, err)
     return creds
+
+
+def is_whole_number(value):
+    """argparse type: a whole number, i.e. an integer 0, 1, 2, ...
+
+    Raises argparse.ArgumentTypeError - not JDSSException - so argparse
+    reports 'argument --x: ...' and exits 2 rather than letting a traceback
+    reach the operator.
+
+    Use for a value where zero is meaningful, such as a delay of 0 meaning
+    'retry without sleeping'.
+    """
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError(
+            "'%s' is not a whole number" % value)
+
+    if number < 0:
+        raise argparse.ArgumentTypeError(
+            "'%s' is not a whole number" % value)
+
+    return number
+
+
+def is_natural_number(value):
+    """argparse type: a natural number, i.e. an integer 1, 2, 3, ...
+
+    Use for a count or a timeout, where zero is not meaningful: 0 cycles
+    sends nothing, 0 decode-retry attempts returns without sending, and a
+    0 second timeout cannot be satisfied by a request that necessarily takes
+    time. Negative is worse than useless - the retry library reads a negative
+    attempt count as infinite and re-sends without pause.
+    """
+    number = is_whole_number(value)
+
+    if number < 1:
+        raise argparse.ArgumentTypeError(
+            "'%s' is not a natural number" % value)
+
+    return number

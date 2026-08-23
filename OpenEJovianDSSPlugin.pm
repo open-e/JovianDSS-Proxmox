@@ -187,6 +187,56 @@ sub properties {
             minimum => 10,
             default => OpenEJovianDSS::Common::get_default_jdssc_timeout(),
         },
+        jdssc_rest_connect_timeout => {
+            description =>
+              'Seconds jdssc waits for a TCP connection to a control address '
+              . 'before giving up on it and moving to the next one. This is '
+              . 'what bounds how fast an unreachable controller is abandoned',
+            type    => 'integer',
+            minimum => 1,
+            default =>
+              OpenEJovianDSS::Common::get_default_jdssc_rest_connect_timeout(),
+        },
+        jdssc_rest_read_timeout => {
+            description =>
+              'Seconds jdssc waits between bytes of a REST response before '
+              . 'giving up on it. This is an inactivity timeout, not a '
+              . 'deadline for the whole response: a slow but steady transfer '
+              . 'is never interrupted by it. Total run time is bounded by '
+              . 'jdssc_timeout instead',
+            type    => 'integer',
+            minimum => 1,
+            default =>
+              OpenEJovianDSS::Common::get_default_jdssc_rest_read_timeout(),
+        },
+        jdssc_rest_request_send_cycle_attempts => {
+            description =>
+              'How many times jdssc cycles the control addresses before a REST '
+              . 'request is given up on; each round tries every address and '
+              . 'then sleeps jdssc_rest_request_send_cycle_delay seconds',
+            type    => 'integer',
+            minimum => 1,
+            default =>
+              OpenEJovianDSS::Common::get_default_jdssc_rest_request_send_cycle_attempts(),
+        },
+        jdssc_rest_request_send_cycle_delay => {
+            description =>
+              'Seconds jdssc sleeps between REST request retry rounds; 0 retries '
+              . 'without sleeping',
+            type    => 'integer',
+            minimum => 0,
+            default =>
+              OpenEJovianDSS::Common::get_default_jdssc_rest_request_send_cycle_delay(),
+        },
+        jdssc_rest_send_retry_on_decode_error_attempts => {
+            description =>
+              'How many times jdssc re-sends a single REST request when the '
+              . 'appliance answers with undecodable JSON',
+            type    => 'integer',
+            minimum => 1,
+            default =>
+              OpenEJovianDSS::Common::get_default_jdssc_rest_send_retry_on_decode_error_attempts(),
+        },
         %{ OpenEJovianDSS::Common::lock_properties() },
         ssl_cert_verify => {
             description =>
@@ -282,48 +332,53 @@ sub properties {
 
 sub options {
     return {
-        pool_name          => { fixed    => 1 },
-        config             => { optional => 1 },
-        path               => { optional => 1 },
-        debug              => { optional => 1 },
-        multipath          => { optional => 1 },
-        content            => { optional => 1 },
-        shared             => { optional => 1 },
-        disable            => { optional => 1 },
-        target_prefix      => { optional => 1 },
-        luns_per_target    => { optional => 1 },
-        jdssc_timeout                 => { optional => 1 },
-        jdssc_general_lock_type            => { optional => 1 },
-        jdssc_general_lock_path            => { optional => 1 },
-        jdssc_general_lock_acquire_timeout => { optional => 1 },
-        jdssc_general_lock_hold_timeout    => { optional => 1 },
-        jdssc_info_lock_type               => { optional => 1 },
-        jdssc_info_lock_path               => { optional => 1 },
-        jdssc_info_lock_acquire_timeout    => { optional => 1 },
-        jdssc_info_lock_hold_timeout       => { optional => 1 },
-        multipath_lock_type                => { optional => 1 },
-        multipath_lock_path                => { optional => 1 },
-        multipath_lock_acquire_timeout     => { optional => 1 },
-        multipath_lock_hold_timeout        => { optional => 1 },
-        ssl_cert_verify    => { optional => 1 },
-        delete_timeout     => { optional => 1 },
-        data_copy_bs       => { optional => 1 },
-        user_name          => { },
-        user_password      => { optional => 1 },
-        control_addresses  => { optional => 1 },
-        control_port       => { optional => 1 },
-        data_addresses     => { },
-        data_port          => { optional => 1 },
-        block_size         => { optional => 1 },
-        thin_provisioning  => { optional => 1 },
-        chap_enabled       => { optional => 1 },
-        chap_user_name     => { optional => 1 },
-        chap_user_password => { optional => 1 },
-        cluster_prefix     => { optional => 1, fixed => 1 },
-        log_file           => { optional => 1 },
-        'create-subdirs'   => { optional => 1 },
-        'create-base-path' => { optional => 1 },
-        'content-dirs'     => { optional => 1 },
+        pool_name                                      => { fixed    => 1 },
+        config                                         => { optional => 1 },
+        path                                           => { optional => 1 },
+        debug                                          => { optional => 1 },
+        multipath                                      => { optional => 1 },
+        content                                        => { optional => 1 },
+        shared                                         => { optional => 1 },
+        disable                                        => { optional => 1 },
+        target_prefix                                  => { optional => 1 },
+        luns_per_target                                => { optional => 1 },
+        jdssc_timeout                                  => { optional => 1 },
+        jdssc_rest_connect_timeout                     => { optional => 1 },
+        jdssc_rest_read_timeout                        => { optional => 1 },
+        jdssc_rest_request_send_cycle_attempts         => { optional => 1 },
+        jdssc_rest_request_send_cycle_delay            => { optional => 1 },
+        jdssc_rest_send_retry_on_decode_error_attempts => { optional => 1 },
+        jdssc_general_lock_type                        => { optional => 1 },
+        jdssc_general_lock_path                        => { optional => 1 },
+        jdssc_general_lock_acquire_timeout             => { optional => 1 },
+        jdssc_general_lock_hold_timeout                => { optional => 1 },
+        jdssc_info_lock_type                           => { optional => 1 },
+        jdssc_info_lock_path                           => { optional => 1 },
+        jdssc_info_lock_acquire_timeout                => { optional => 1 },
+        jdssc_info_lock_hold_timeout                   => { optional => 1 },
+        multipath_lock_type                            => { optional => 1 },
+        multipath_lock_path                            => { optional => 1 },
+        multipath_lock_acquire_timeout                 => { optional => 1 },
+        multipath_lock_hold_timeout                    => { optional => 1 },
+        ssl_cert_verify                                => { optional => 1 },
+        delete_timeout                                 => { optional => 1 },
+        data_copy_bs                                   => { optional => 1 },
+        user_name                                      => { },
+        user_password                                  => { optional => 1 },
+        control_addresses                              => { optional => 1 },
+        control_port                                   => { optional => 1 },
+        data_addresses                                 => { },
+        data_port                                      => { optional => 1 },
+        block_size                                     => { optional => 1 },
+        thin_provisioning                              => { optional => 1 },
+        chap_enabled                                   => { optional => 1 },
+        chap_user_name                                 => { optional => 1 },
+        chap_user_password                             => { optional => 1 },
+        cluster_prefix                                 => { optional => 1, fixed => 1 },
+        log_file                                       => { optional => 1 },
+        'create-subdirs'                               => { optional => 1 },
+        'create-base-path'                             => { optional => 1 },
+        'content-dirs'                                 => { optional => 1 },
     };
 }
 

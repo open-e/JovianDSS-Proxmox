@@ -59,6 +59,11 @@ our @EXPORT_OK = qw(
   get_default_data_port
   get_default_debug
   get_default_jdssc_timeout
+  get_default_jdssc_rest_connect_timeout
+  get_default_jdssc_rest_read_timeout
+  get_default_jdssc_rest_request_send_cycle_attempts
+  get_default_jdssc_rest_request_send_cycle_delay
+  get_default_jdssc_rest_send_retry_on_decode_error_attempts
   get_default_luns_per_target
   get_default_multipath
   get_default_path
@@ -100,6 +105,11 @@ our @EXPORT_OK = qw(
   get_multipath
 
   get_jdssc_timeout
+  get_jdssc_rest_connect_timeout
+  get_jdssc_rest_read_timeout
+  get_jdssc_rest_request_send_cycle_attempts
+  get_jdssc_rest_request_send_cycle_delay
+  get_jdssc_rest_send_retry_on_decode_error_attempts
   get_log_level
 
   check_chap_user_password
@@ -282,6 +292,15 @@ use constant {
     DEFAULT_TARGET_PREFIX             => 'iqn.2025-04.proxmox.joviandss.iscsi:',
     DEFAULT_USER_NAME                 => 'admin',
     DEFAULT_SSL_CERT_VERIFY           => 1,
+
+    # jdssc REST resilience, forwarded to the jdssc REST proxy. request()
+    # cycles every control address, sleeps, and repeats; _send() retries a
+    # single request when the appliance answers with undecodable JSON.
+    DEFAULT_JDSSC_REST_CONNECT_TIMEOUT => 5,
+    DEFAULT_JDSSC_REST_READ_TIMEOUT => 570,
+    DEFAULT_JDSSC_REST_REQUEST_SEND_CYCLE_ATTEMPTS => 17,
+    DEFAULT_JDSSC_REST_REQUEST_SEND_CYCLE_DELAY => 3,
+    DEFAULT_JDSSC_REST_SEND_RETRY_ON_DECODE_ERROR_ATTEMPTS => 5,
 };
 
 
@@ -303,6 +322,25 @@ sub get_default_ssl_cert_verify    { return DEFAULT_SSL_CERT_VERIFY }
 sub get_default_control_port     { return DEFAULT_CONTROL_PORT }
 sub get_default_data_port        { return DEFAULT_DATA_PORT }
 sub get_default_user_name        { return DEFAULT_USER_NAME }
+sub get_default_jdssc_rest_connect_timeout {
+    return DEFAULT_JDSSC_REST_CONNECT_TIMEOUT;
+}
+
+sub get_default_jdssc_rest_read_timeout {
+    return DEFAULT_JDSSC_REST_READ_TIMEOUT;
+}
+
+sub get_default_jdssc_rest_request_send_cycle_attempts {
+    return DEFAULT_JDSSC_REST_REQUEST_SEND_CYCLE_ATTEMPTS;
+}
+
+sub get_default_jdssc_rest_request_send_cycle_delay {
+    return DEFAULT_JDSSC_REST_REQUEST_SEND_CYCLE_DELAY;
+}
+
+sub get_default_jdssc_rest_send_retry_on_decode_error_attempts {
+    return DEFAULT_JDSSC_REST_SEND_RETRY_ON_DECODE_ERROR_ATTEMPTS;
+}
 
 sub get_path {
     my ($ctx) = @_;
@@ -373,6 +411,56 @@ sub get_jdssc_timeout {
     my ($ctx) = @_;
     my $scfg = $ctx->{scfg};
     return int( $scfg->{jdssc_timeout} || DEFAULT_JDSSC_TIMEOUT );
+}
+
+# jdssc REST resilience knobs. Each falls back to its constant when the
+# property is absent from storage.cfg, so an entry that never sets them keeps
+# the behaviour these values had when they were hardcoded in the REST proxy.
+#
+# All but the delay use '||', which also maps a configured 0 to the default.
+# That is intended: a 0 second connect or read timeout can never be satisfied
+# by a request that necessarily takes time, and 0 attempts sends nothing at
+# all, so none of those four has a meaningful zero. The schema refuses 0 for
+# them anyway (minimum => 1); the fallback is the second line of defence for a
+# value that reached storage.cfg by some other route. The delay is the one
+# knob where 0 is legal, and its getter tests definedness for exactly that
+# reason.
+sub get_jdssc_rest_connect_timeout {
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
+    return int( $scfg->{jdssc_rest_connect_timeout}
+          || DEFAULT_JDSSC_REST_CONNECT_TIMEOUT );
+}
+
+sub get_jdssc_rest_read_timeout {
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
+    return int( $scfg->{jdssc_rest_read_timeout}
+          || DEFAULT_JDSSC_REST_READ_TIMEOUT );
+}
+
+sub get_jdssc_rest_request_send_cycle_attempts {
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
+    return int( $scfg->{jdssc_rest_request_send_cycle_attempts}
+          || DEFAULT_JDSSC_REST_REQUEST_SEND_CYCLE_ATTEMPTS );
+}
+
+sub get_jdssc_rest_request_send_cycle_delay {
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
+    # 0 is a legal value (retry without sleeping), so test definedness rather
+    # than truth - '||' would silently turn a configured 0 into the default.
+    my $delay = $scfg->{jdssc_rest_request_send_cycle_delay};
+    return DEFAULT_JDSSC_REST_REQUEST_SEND_CYCLE_DELAY if !defined($delay) || $delay eq '';
+    return int($delay);
+}
+
+sub get_jdssc_rest_send_retry_on_decode_error_attempts {
+    my ($ctx) = @_;
+    my $scfg = $ctx->{scfg};
+    return int( $scfg->{jdssc_rest_send_retry_on_decode_error_attempts}
+          || DEFAULT_JDSSC_REST_SEND_RETRY_ON_DECODE_ERROR_ATTEMPTS );
 }
 
 sub get_luns_per_target {
@@ -1241,6 +1329,41 @@ sub joviandss_cmd {
     my $data_port = get_data_port($ctx);
     if ( defined($data_port) ) {
         push @$connection_options, '--data-port', $data_port;
+    }
+
+    # REST resilience knobs; the getters supply the defaults, so these are
+    # always passed and jdssc never has to guess.
+    my $rest_connect_timeout = get_jdssc_rest_connect_timeout($ctx);
+    if ( defined($rest_connect_timeout) ) {
+        push @$connection_options, '--rest-connect-timeout',
+          $rest_connect_timeout;
+    }
+
+    my $rest_read_timeout = get_jdssc_rest_read_timeout($ctx);
+    if ( defined($rest_read_timeout) ) {
+        push @$connection_options, '--rest-read-timeout',
+          $rest_read_timeout;
+    }
+
+    my $rest_request_send_cycle_attempts =
+      get_jdssc_rest_request_send_cycle_attempts($ctx);
+    if ( defined($rest_request_send_cycle_attempts) ) {
+        push @$connection_options, '--rest-request-send-cycle-attempts',
+          $rest_request_send_cycle_attempts;
+    }
+
+    my $rest_request_send_cycle_delay =
+      get_jdssc_rest_request_send_cycle_delay($ctx);
+    if ( defined($rest_request_send_cycle_delay) ) {
+        push @$connection_options, '--rest-request-send-cycle-delay',
+          $rest_request_send_cycle_delay;
+    }
+
+    my $rest_send_retry_on_decode_error_attempts =
+      get_jdssc_rest_send_retry_on_decode_error_attempts($ctx);
+    if ( defined($rest_send_retry_on_decode_error_attempts) ) {
+        push @$connection_options, '--rest-send-retry-on-decode-error-attempts',
+          $rest_send_retry_on_decode_error_attempts;
     }
 
     my $user_name = get_user_name($ctx);
