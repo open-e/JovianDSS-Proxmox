@@ -120,7 +120,7 @@ user_password <rest_api_password>
 Below are explanations for each parameter used in the command above:
 - **storage_pool_name** - Name as it appears in Proxmox VE UI and CLI (choose something concise like `jdss-nfs-01`)
 - `server` with **<nfs_data_vip_or_host>** - NFS data address used by the plugin for storage mount/activation
-- `export` with **/Pools/<pool>/<nas_volume>** - JovianDSS NFS export path in the form `/Pools/<pool>/<dataset>`
+- `export` with **/Pools/\<pool\>/<nas_volume>** - JovianDSS NFS export path in the form `/Pools/<pool>/<dataset>`
 - [path](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#path) with **<directory_path>** - Local mountpoint directory on Proxmox VE (for example `/mnt/pve/jdss-nfs-01`)
 - [user_name](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#user_name)/[user_password](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#user_password) with **<rest_api_username/rest_api_password>** - Credentials configured in JovianDSS REST API settings. Required for snapshot operations.
 - [control_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#control_addresses) with **<rest_api_vips>** - A comma-separated list of VIP addresses used for communication with the JovianDSS REST API

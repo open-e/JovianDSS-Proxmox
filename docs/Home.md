@@ -11,7 +11,7 @@ JovianDSS delivers enterprise-class High Availability with redundant storage con
 
 Combined with Proxmox's own HA capabilities for virtual machines, results in comprehensive protection at both the storage and virtualization layers.
 
-Deployment is [simple](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start), a single install script lets you set up the plugin across all nodes in your cluster with minimal effort.
+Deployment is [simple](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start-iSCSI), a single install script lets you set up the plugin across all nodes in your cluster with minimal effort.
 
 It's actively maintained and continuously improved to work smoothly with the latest Proxmox releases.
 
