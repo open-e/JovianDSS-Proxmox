@@ -10,7 +10,7 @@ This guide uses admin/admin, but choose a stronger password at setup.
 
 By default, the JovianDSS `REST API` listens on port 82, and this guide assumes you retain that setting.
 The `REST API` communicates over `SSL/TLS` only, so changing the port won’t switch to an unencrypted connection.
-If you choose to proceed with an insecure connection because the certificate is self-signed, disable certificate verification by setting the `ssl_cert_verify` property to `0` (see [ssl_cert_verify](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#ssl_cert_verify)).
+If you choose to proceed with an insecure connection because the certificate is self-signed, disable certificate verification by setting the `ssl_cert_verify` property to `0` (see [ssl_cert_verify](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS#ssl_cert_verify)).
 
 ### Create pool
 The JovianDSS NFS plugin uses an existing JovianDSS `Pool` and NAS volume (dataset).
@@ -44,21 +44,14 @@ root@pve-node1:~# ping -c 5 192.168.31.152
 
 Possible source of issues: routing problems. If you encounter connectivity issues, check the [Network Configuration Guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking).
 
-**Ensure that both the REST API and NFS data addresses are accessible from every node in the cluster.**
-
 ### Installation
 
-The NFS plugin is distributed in the same package as the iSCSI plugin. If the iSCSI plugin is already installed, no additional installation steps are required, and you can proceed directly to the [Configuration](#Configuration) section.
+The NFS plugin is distributed in the same package as the iSCSI plugin. If the iSCSI plugin is already installed, no additional installation steps are required, and you can proceed directly to the [Configuration](#configuration) section.
 
 Install latest plugin on all nodes in a cluster by running following command on any Proxmox VE server:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes
-```
-
-To check latest `pre-release` run:
-```bash
-curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --pre --all-nodes
 ```
 
 Restart the Proxmox VE services to load the newly installed plugin:
@@ -79,12 +72,7 @@ curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/insta
 
 It is IMPORTANT to remember that the install.pl script with `--restart` should NOT be called from the Proxmox Web UI as `--restart` will restart the shell interfaces provided by the Proxmox Web UI.
 
-To check the current version of the installed plugin, run the following script:
-```bash
-dpkg-query -W -f='${Version}\n' open-e-joviandss-proxmox-plugin
-```
-
-For downgrade and plugin removal instructions, or for additional information, please refer to the [Installation script](https://github.com/open-e/JovianDSS-Proxmox/wiki/Installation-script).
+For pre-release installs, version checks, downgrade and plugin removal instructions, please refer to the [Installation script](https://github.com/open-e/JovianDSS-Proxmox/wiki/Installation-script) guide.
 
 ## Configuration
 
@@ -93,47 +81,6 @@ Next, make Proxmox aware of the plugin by creating a storage pool configuration.
 The recommended approach is to use the `pvesm` command, which automatically handles secure password storage and configuration validation.
 
 ### Using pvesm command (Recommended)
-
-Create the storage configuration using the `pvesm add` command with this general format:
-
-```bash
-pvesm add joviandss-nfs <storage_pool_name> \
-  --server <nfs_data_vip_or_host> \
-  --export /Pools/<pool>/<nas_volume> \
-  --path <directory_path> \
-  --user_name <rest_api_username> \
-  --user_password <rest_api_password> \
-  --ssl_cert_verify 0 \
-  --content images,rootdir \
-  --shared 1
-```
-
-User password is stored in `password file` located in `/etc/pve/priv/storage/joviandss-nfs/<storage_pool_name>.pw`
-
-In format:
-```
-user_password <rest_api_password>
-```
-
-#### Understanding the parameters
-
-Below are explanations for each parameter used in the command above:
-- **storage_pool_name** - Name as it appears in Proxmox VE UI and CLI (choose something concise like `jdss-nfs-01`)
-- `server` with **<nfs_data_vip_or_host>** - NFS data address used by the plugin for storage mount/activation
-- `export` with **/Pools/\<pool\>/<nas_volume>** - JovianDSS NFS export path in the form `/Pools/<pool>/<dataset>`
-- [path](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#path) with **<directory_path>** - Local mountpoint directory on Proxmox VE (for example `/mnt/pve/jdss-nfs-01`)
-- [user_name](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#user_name)/[user_password](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#user_password) with **<rest_api_username/rest_api_password>** - Credentials configured in JovianDSS REST API settings. Required for snapshot operations.
-- [control_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#control_addresses) with **<rest_api_vips>** - A comma-separated list of VIP addresses used for communication with the JovianDSS REST API
-- [data_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#data_addresses) with **<nfs_data_vips>** - A comma-separated list of NFS data transfer addresses. Proxmox uses these IPs to mount and access the NFS share. Can differ from `control_addresses` in multi-network setups.
-- [ssl_cert_verify](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#ssl_cert_verify) with **0** - Set to `0` to accept self-signed certificates
-- [content](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#content) with **images,rootdir** - Types of data to store (`images` for VM disks, `rootdir` for containers)
-- [shared](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#shared) with **1** - Set to `1` to allow VM migration within the Proxmox cluster
-- [options](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#options) - Optional comma-separated NFS mount options passed directly to the mount command (e.g. `vers=4,nofail,soft`). Useful for tuning NFS behaviour in production environments.
-
-For this plugin type (`joviandss-nfs`), `server`, `export`, and `path` are core properties.
-Pool and dataset are derived from the `export` path.
-
-#### Example configuration
 
 Let's configure a concrete example where:
 - JovianDSS has pool `Pool-1` and NAS volume `datastore-pve-01`
@@ -152,7 +99,22 @@ pvesm add joviandss-nfs jdss-nfs-01 \
   --shared 1
 ```
 
-**Security Note:** The password will be automatically stored securely in `/etc/pve/priv/storage/joviandss-nfs/` and will not appear in the main `storage.cfg` file.
+**Security Note:** The password is stored securely in `/etc/pve/priv/storage/joviandss-nfs/jdss-nfs-01.pw` and does not appear in the main `storage.cfg` file.
+
+#### Understanding the parameters
+
+Below are explanations for the parameters used in the command above, plus optional parameters:
+- **storage_pool_name** (`jdss-nfs-01`) - Name as it appears in Proxmox VE UI and CLI (choose something concise)
+- [server](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS#server) - NFS data address used by the plugin for storage mount/activation
+- [export](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS#export) - JovianDSS NFS export path in the form `/Pools/<pool>/<dataset>`; everything after `/Pools/<pool>/` must be exactly the dataset name
+- [path](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS#path) - Local mountpoint directory on Proxmox VE (for example `/mnt/pve/jdss-nfs-01`)
+- [user_name](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS#user_name)/[user_password](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS#user_password) - Credentials configured in JovianDSS REST API settings. Required for snapshot operations.
+- [control_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS#control_addresses) - A comma-separated list of VIP addresses used for communication with the JovianDSS REST API
+- [data_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS#data_addresses) - Optional. Does not affect the NFS mount — the share is always mounted from `server`; serves only as a fallback source of REST control addresses when `control_addresses` is not set.
+- [ssl_cert_verify](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS#ssl_cert_verify) - Set to `0` to accept self-signed certificates
+- [content](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS#content) - Types of data to store (`images` for VM disks, `rootdir` for containers)
+- [shared](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS#shared) - Set to `1` to allow VM migration within the Proxmox cluster
+- [options](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS#options) - Optional comma-separated NFS mount options passed directly to the mount command (e.g. `vers=4,nofail,soft`)
 
 ### Viewing the configuration
 
@@ -168,34 +130,22 @@ joviandss-nfs: jdss-nfs-01
         content images,rootdir
         shared 1
 ```
-User password should appear in `/etc/pve/priv/storage/joviandss-nfs/jdss-nfs-01.pw`
-
-```
-user_password admin
-```
-
-**Note:** The `user_password` line will not appear in `storage.cfg` as passwords are now stored securely in separate files for enhanced security.
 
 ### Manual configuration (Alternative)
 
-Alternatively, you can manually edit `/etc/pve/storage.cfg` and add the above configuration block, but using `pvesm add` is recommended as it handles password security automatically.
-
-**Note:** The password for storage `jdss-nfs-01` can be found in `/etc/pve/priv/storage/joviandss-nfs/jdss-nfs-01.pw`.
-**Important** The storage name in storage.cfg must match the password file name. `jdss-nfs-01` and `jdss-nfs-01.pw`
-
-Directory for a password file can be created by executing:
+The record can also be created by editing `/etc/pve/storage.cfg` manually. The password must then be placed in a password file yourself — its name must match the storage name (`jdss-nfs-01` → `jdss-nfs-01.pw`):
 
 ```bash
 mkdir -p /etc/pve/priv/storage/joviandss-nfs
 ```
-[More about Proxmox VE storage configuration can be found here](https://pve.proxmox.com/wiki/Storage)
 
-[More about JovianDSS Proxmox plugin configuration can be found here](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
+`/etc/pve/priv/storage/joviandss-nfs/jdss-nfs-01.pw`:
+
+```
+user_password <rest_api_password>
+```
 
 ## Troubleshooting
-
-### Connectivity issues
-Possible source of issues: routing problems. If you encounter connectivity issues, check the [Network Configuration Guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking).
 
 ### NFS mount checks
 Verify that storage mount is active:
@@ -223,29 +173,11 @@ log_file /var/log/joviandss/joviandss-nfs01.log
 ...
 ```
 
-With debugging enabled, the plugin configuration dump will include the debug line, for example:
-
-```ini
-joviandss-nfs: jdss-nfs-01
-        server 192.168.31.152
-        export /Pools/Pool-1/datastore-pve-01
-        path /mnt/pve/jdss-nfs-01
-        user_name admin
-        ssl_cert_verify 0
-        content images,rootdir
-        shared 1
-        debug 1
-        log_file /var/log/joviandss/joviandss-nfs01.log
-```
-
-If all log files are located in `/var/log/joviandss`, the user can create an archive of these logs and send it to the development team.
-
-The following command will create an archive named `jdss-logs.tar.gz` containing the log files in the current working directory:
+To send logs to the development team, create an archive of the `/var/log/joviandss` folder:
 
 ```bash
 tar -cvzf ./jdss-logs.tar.gz /var/log/joviandss
 ```
-
 
 ## Snapshots and rollback
 
@@ -259,7 +191,7 @@ When you roll back Proxmox VM to a snapshot, the plugin uses the JovianDSS REST 
 
 ## Further reading
 
-- [Plugin configuration reference](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
+- [NFS plugin configuration reference](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS)
 - [Network configuration guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking)
 - [Proxmox VE storage documentation](https://pve.proxmox.com/wiki/Storage)
 - [JovianDSS JumpStart Paper](https://www.open-e.com/site_media/download/documents/productguide/JDSS_JumpStart_A4_21112024.pdf)
