@@ -1312,7 +1312,7 @@ sub main {
 
 
         say "";
-        print "\nCheck introduction to configuration guide at https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start#configuration\n";
+        print "\nCheck plugin documentation at https://github.com/open-e/JovianDSS-Proxmox/wiki\n";
     }
 
     if (@WARNING_NODES) {
