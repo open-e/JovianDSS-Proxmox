@@ -1,22 +1,18 @@
 # Plugin networking
 
-## Plugin and Volume DATA
+## Plugin and volume data
 
-The JovianDSS Proxmox plugin integrates JovianDSS with Proxmox VE, giving you unrestricted Proxmox functionality while natively leveraging JovianDSS storage as part of the Proxmox VE ecosystem.
-
-The plugin manages volumes on the JovianDSS side—allocating, deleting, snapshotting, and reverting them—and exposes those volumes to Proxmox VE over iSCSI.
-Volume data travels only over the VIP addresses specified in `data_addresses` within your `storage.cfg` file.
-
-The plugin routes all iSCSI data transfers exclusively through these VIP addresses.
+The plugin manages volumes on the JovianDSS side — allocating, deleting, snapshotting, and reverting them — and exposes those volumes to Proxmox VE over iSCSI.
+All iSCSI data travels exclusively over the VIP addresses specified in `data_addresses` in `storage.cfg`.
 
 ### How it works
 
 #### Configuration
 
-1. VIP addresses allocated (e.g.`192.168.28.102`,`192.168.29.102`, `192.168.30.102`) to the JovianDSS `Pool`, [see the JovianDSS VIPs section for details](#joviandss-vips)
-2. The [control_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#control_addresses) property in `storage.cfg` used to send management requests over the JovianDSS REST API. These addresses are provided as a comma-separated list.
-3. The [data_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#data_addresses) property in storage.cfg specifies the VIPs allocated to the JovianDSS `Pool` for data transfer, also as a comma-separated list (e.g., 192.168.29.102,192.168.30.102). These VIPs must be accessible from the Proxmox VE server. See the Routing example section for details](#routing-example).
-4. The [user_name](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#user_name) and [user_password](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#user_password) properties in `storage.cfg` define the user credentials used to authenticate with the JovianDSS REST API via the [control_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#control_addresses). [user_name](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#user_name) and [user_password](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#user_password) must be consistent across all nodes in the [High Availability Cluster](https://www.open-e.com/products/open-e-joviandss/open-e-joviandss-advanced-metro-high-availability-cluster-feature-pack/) cluster that share the pool.
+1. VIP addresses (e.g. `192.168.28.102`, `192.168.29.102`, `192.168.30.102`) are allocated to the JovianDSS `Pool` — [see the JovianDSS VIPs section](#joviandss-vips).
+2. [control_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#control_addresses) — a comma-separated list of addresses used to send management requests to the JovianDSS REST API.
+3. [data_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#data_addresses) — a comma-separated list of the pool’s VIPs used for data transfer (e.g. `192.168.29.102,192.168.30.102`). These VIPs must be reachable from every Proxmox VE node; see the [Example](#example) section.
+4. [user_name](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#user_name) and [user_password](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#user_password) — REST API credentials; they must be identical across all nodes of a [High Availability cluster](https://www.open-e.com/products/open-e-joviandss/open-e-joviandss-advanced-metro-high-availability-cluster-feature-pack/) that share the pool.
 
 ```
 ...
@@ -29,46 +25,40 @@ data_addresses 192.168.29.102,192.168.30.102
 
 #### Operation
 
-When a virtual machine is created and started (for example, VM 100 with a single disk `vm-100-disk-0`
+When a virtual machine is created and started (for example, VM 100 with a single disk `vm-100-disk-0`):
 
-    1. The plugin creates an iSCSI target on JovianDSS — `iqn.2025-04.proxmox.joviandss.iscsi:vm-100-0` — and assigns the VIP addresses `192.168.29.102` `192.168.30.102` to the target `iqn.2025-04.proxmox.joviandss.iscsi:vm-100-0`.
-    
-    2. The plugin creates the corresponding iSCSI record on the Proxmox VE server that is hosting the virtual machine.
+1. The plugin creates an iSCSI target on JovianDSS — `iqn.2025-04.proxmox.joviandss.iscsi:vm-100-0` — and assigns the VIP addresses `192.168.29.102`, `192.168.30.102` to it.
 
-    ```
-    iscsiadm --mode node -p 192.168.29.102 --targetname iqn.2025-04.proxmox.joviandss.iscsi:vm-100-0 -o new
-    iscsiadm --mode node -p 192.168.30.102 --targetname iqn.2025-04.proxmox.joviandss.iscsi:vm-100-0 -o new
-    ```
-    3. The plugin logs in to the target.
+2. The plugin creates the corresponding iSCSI record on the Proxmox VE server that is hosting the virtual machine.
 
-    ```bash
-    iscsiadm --mode node -p 192.168.29.102 --targetname iqn.2025-04.proxmox.joviandss.iscsi:vm-100-0 --login
-    iscsiadm --mode node -p 192.168.30.102 --targetname iqn.2025-04.proxmox.joviandss.iscsi:vm-100-0 --login
-    ```
+   ```
+   iscsiadm --mode node -p 192.168.29.102 --targetname iqn.2025-04.proxmox.joviandss.iscsi:vm-100-0 -o new
+   iscsiadm --mode node -p 192.168.30.102 --targetname iqn.2025-04.proxmox.joviandss.iscsi:vm-100-0 -o new
+   ```
 
-    Note:
-    The JovianDSS Proxmox plugin does not allocate or assign VIP addresses to the JovianDSS `Pool`.
-    It only assigns VIP addresses already added to the pool to newly created iSCSI targets.
+3. The plugin logs in to the target.
 
-    Specifying VIP addresses in the data_addresses property that have not previously been assigned to the JovianDSS pool does not create additional iSCSI targets or data transfer paths; such addresses are ignored.
+   ```bash
+   iscsiadm --mode node -p 192.168.29.102 --targetname iqn.2025-04.proxmox.joviandss.iscsi:vm-100-0 --login
+   iscsiadm --mode node -p 192.168.30.102 --targetname iqn.2025-04.proxmox.joviandss.iscsi:vm-100-0 --login
+   ```
 
-    If no VIP addresses are assigned to the JovianDSS pool, volume provisioning to the Proxmox VE server over iSCSI fails:
-    ```
-    TASK ERROR: Unable to identify VIP name for ip's: 192.168.29.102,192.168.30.102. Please make sure that VIP are assigned to the Pool 
-    ```
+> **Note:** The plugin does not allocate VIP addresses to the JovianDSS `Pool`; it only assigns VIPs already added to the pool to newly created iSCSI targets.
+>
+> Entries in `data_addresses` that are not VIPs of the pool are ignored — they create no additional targets or data paths. If none of the addresses match a pool VIP, volume provisioning fails:
+>
+> ```
+> TASK ERROR: Unable to identify VIP name for ip's: 192.168.29.102,192.168.30.102. Please make sure that VIP are assigned to the Pool
+> ```
 
 
-If currently active JovianDSS server experiences a critical hardware failure, the `Pool` will automatically migrate to backup node.
+If the active JovianDSS node suffers a critical hardware failure, the `Pool` migrates automatically to the backup node of a [High Availability cluster](https://www.open-e.com/products/open-e-joviandss/open-e-joviandss-advanced-metro-high-availability-cluster-feature-pack/) — together with its VIPs, iSCSI targets, and active connections.
 
-Both [control_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#control_addresses) and [data_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#data_addresses) assigned to the same JovianDSS `Pool` will migrate to the backup node within [High Availability cluster](https://www.open-e.com/products/open-e-joviandss/open-e-joviandss-advanced-metro-high-availability-cluster-feature-pack/), along with the iSCSI targets and active connections.
-
-The Proxmox plugin, along with the virtual machines it supports, will continue to operate using the same VIP addresses.
+The plugin and the virtual machines it serves continue operating over the same VIP addresses.
 
 ## JovianDSS VIPs
 
 ### Adding a VIP to JovianDSS `Pool`
-
-Adding a virtual IP address to the JovianDSS pool is straightforward.
 
 Navigate to `Storage->Pool->Virtual IPs->Add Virtual IP`
 
@@ -79,8 +69,8 @@ Specify the VIP properties - such as its address and netmask - and select the ne
 ![vip_add_pool2](https://github.com/user-attachments/assets/fffb8606-5afa-45d8-9a17-090afae8e786)
 
 For detailed information on JovianDSS network configurations, consult the following resources:
-- [JovianDSS Advanced Metro High Avability Cluster Step by Step](https://www.open-e.com/site_media/download/documents/Open-E-JovianDSS-Advanced-Metro-High-Avability-Cluster-Step-by-Step.pdf) 
-- [JovianDSS Advanced Metro High Avability Cluster Step by Step 2](https://www.open-e.com/site_media/download/documents/Open-E-JovianDSS-Advanced-Metro-High-Avability-Cluster-Step-by-Step-2rings.pdf)
+- [JovianDSS Advanced Metro High Availability Cluster Step-by-Step](https://www.open-e.com/site_media/download/documents/Open-E-JovianDSS-Advanced-Metro-High-Avability-Cluster-Step-by-Step.pdf)
+- [JovianDSS Advanced Metro High Availability Cluster Step-by-Step (2 rings)](https://www.open-e.com/site_media/download/documents/Open-E-JovianDSS-Advanced-Metro-High-Avability-Cluster-Step-by-Step-2rings.pdf)
 - [Open-E Knowledgebase](https://kb.open-e.com/joviandss-121/) 
 - [iSCSI Targets Available Through Specific VIPs](https://www.youtube.com/watch?v=iFF9VPKUdTk)
 - [JovianDSS failover mechanism technologies explained](https://kb.open-e.com/jdss-joviandss-failover-mechanism-technologies-explained_3161.html)
@@ -106,9 +96,9 @@ There are two JovianDSS storage nodes with *Failover* enabled, and `Pool-2` has 
 
 A three-node Proxmox VE cluster in which each node has three network interfaces connected to physical networks:
 
-- *vmbr0* connected to *Net1* associated with virtual bridge vmbr0 with ip 172.28.143.11/16 
-- *ens224* connected to *Net2* associated with interface ens224 with ip 172.29.143.11/16 
-- *ens256* connected to *Net3* associated with interface ens256 with ip 172.30.143.11/16
+- *vmbr0* — bridge on *Net1*, IP 172.28.143.11/16
+- *ens224* — interface on *Net2*, IP 172.29.143.11/16
+- *ens256* — interface on *Net3*, IP 172.30.143.11/16
 
 Data transfers are restricted to the VIPs 192.168.29.102 and 192.168.30.102, while REST commands use only 192.168.28.102.
 
@@ -123,7 +113,7 @@ joviandss: jdss-Pool-2
         ...
 ```
 
-Such a configuration is very complex and it is recommended to check connectivity of each Proxmox VE server in a cluster and JovianDSS VIPs. 
+Verify connectivity from every Proxmox VE node in the cluster to each JovianDSS VIP:
 ```
 root@node1:~# ping -c 5 192.168.28.102
 ```
@@ -132,14 +122,8 @@ If connectivity is good, you’ll see output similar to:
 ```
 PING 192.168.28.102 (192.168.28.102) 56(84) bytes of data.
 64 bytes from 192.168.28.102: icmp_seq=1 ttl=64 time=0.228 ms
-64 bytes from 192.168.28.102: icmp_seq=2 ttl=64 time=0.214 ms
-64 bytes from 192.168.28.102: icmp_seq=3 ttl=64 time=0.186 ms
-64 bytes from 192.168.28.102: icmp_seq=4 ttl=64 time=0.167 ms
-64 bytes from 192.168.28.102: icmp_seq=5 ttl=64 time=0.178 ms
-
---- 192.168.28.102 ping statistics ---
+...
 5 packets transmitted, 5 received, 0% packet loss, time 4075ms
-rtt min/avg/max/mdev = 0.167/0.194/0.228/0.022 ms
 ```
 
 Missing route configuration is a potential cause of connectivity issues.

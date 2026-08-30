@@ -203,7 +203,7 @@ Creates [path](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configura
 **Required**: `False`
 
 A comma-separated list of Virtual IP addresses used for iSCSI data transfer.
-Assigning non-VIP addresses to the `data_addresses` property causes VM/container startup to fail.
+Entries that are not VIPs of the pool are ignored; if none of the entries match a pool VIP, VM/container startup fails.
 
 If `data_addresses` is not specified, the plugin falls back to using [control_addresses](#control_addresses).
 
