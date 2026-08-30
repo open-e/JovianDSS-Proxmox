@@ -2,18 +2,13 @@
 
 ## Overview
 
-The Open-E JovianDSS Proxmox Plugin integrates Proxmox virtualization environment with high-grade enterprise Open-E JovianDSS storage,
-allowing administrator to manage everything from one place.
+The Open-E JovianDSS Proxmox Plugin integrates the Proxmox virtualization environment with enterprise Open-E JovianDSS storage, allowing administrators to manage everything from one place.
 
 Virtual machines and containers gain access to fast, reliable storage with built-in data protection — snapshots take seconds and use minimal space.
 
-JovianDSS delivers enterprise-class High Availability with redundant storage controllers and automatic failover, ensuring data remains accessible even if hardware fails.
+JovianDSS delivers enterprise-class High Availability with redundant storage controllers and automatic failover; combined with Proxmox's own HA for virtual machines, this protects both the storage and virtualization layers.
 
-Combined with Proxmox's own HA capabilities for virtual machines, results in comprehensive protection at both the storage and virtualization layers.
-
-Deployment is [simple](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start-iSCSI), a single install script lets you set up the plugin across all nodes in your cluster with minimal effort.
-
-It's actively maintained and continuously improved to work smoothly with the latest Proxmox releases.
+Deployment is simple — a [single install script](https://github.com/open-e/JovianDSS-Proxmox/wiki/Installation-script) sets up the plugin across all nodes in your cluster, or it can be [installed manually](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-installation-and-updating).
 
 
 ## Documentation
@@ -27,9 +22,15 @@ Start using the plugin by going through the
 For more detailed information:
 * [Plugin-configuration](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
 
+* [Plugin-configuration NFS](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS)
+
+* [Plugin configuration: engineering properties](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-engineering)
+
 * [Plugin Networking](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking)
 
 * [Multipathing](https://github.com/open-e/JovianDSS-Proxmox/wiki/Multipathing)
+
+* [Snapshot Rollback and High Availability](https://github.com/open-e/JovianDSS-Proxmox/wiki/Snapshot-Rollback-and-High-Availability)
 
 For a full list of topics, visit the 
     [JovianDSS Proxmox Wiki](https://github.com/open-e/JovianDSS-Proxmox/wiki)
@@ -37,17 +38,16 @@ For a full list of topics, visit the
 
 ## Plugin features
 
-| Feature                                                                              | iSCSI Plugin                                                             | NFS Plugin |
-|--------------------------------------------------------------------------------------|--------------------------------------------------------------------------| -----------|
-| Proxmox VE Content                 | `images`, `rootdir`  | `images`, `rootdir`,  `vztmpl`, `iso`, `backup`, `snippets`  |
-| `images`(QEMU/KVM VM images)/`rootdir`(container data) to JovianDSS volume relation  | :white_check_mark: Each VM/CT virtual disk is stored on its own dedicated volume | :white_check_mark: A single ZFS dataset is used to store all Proxmox VE resources, including VM images, container volumes, and ISO files. |
-| Snapshots                                                                            | :white_check_mark: Each volume maintains its own set of snapshots. Snapshots are created individually for each volume. **Note**: Proxmox VE's built-in backup functionality does not back up JovianDSS plugin snapshots | :white_check_mark: JovianDSS `dataset` contains snapshots for all resources associated with it |
-| Rollback                                                                             | :white_check_mark:                                                       | :white_check_mark: |
-| Cloning                                                                              | :white_check_mark:                                                       | :white_check_mark: | 
-| Volume movement from one VM to another                                               | :white_check_mark:                                                       | :white_check_mark: |
-| Volume resizing                                                                      | :white_check_mark:                                                       | :white_check_mark: |
-| Supported format of storing VM/CT data                                               | `raw` (with **Snapshots supported**)                                     | `raw` (with **Snapshots supported**)                                                                                                                                    |
-| Thin provisioning                                                                    | :white_check_mark:                                                       | :white_check_mark: Sparse RAW thin allocation supported; physical storage is allocated as data is written. Automatic reclamation of guest-discarded blocks is not supported. Over time, as new blocks are written and deleted, the RAW image may consume storage approaching its full provisioned size. |
+| Feature                                                              | iSCSI Plugin                                                                     | NFS Plugin |
+|----------------------------------------------------------------------|----------------------------------------------------------------------------------| -----------|
+| Proxmox VE Content                                                   | `images`, `rootdir`                                                              | `images`, `rootdir`, `vztmpl`, `iso`, `backup`, `snippets`, `import` |
+| Storage layout                                                       | :white_check_mark: Each VM/CT virtual disk is stored on its own dedicated volume | :white_check_mark: A single ZFS dataset stores all Proxmox VE resources, including VM images, container volumes, and ISO files |
+| Snapshots                                                            | :white_check_mark: Each volume maintains its own set of snapshots                | :white_check_mark: The JovianDSS `dataset` holds snapshots for all resources associated with it |
+| Volume operations (rollback, cloning, move between guests, resizing) | :white_check_mark:                                                               | :white_check_mark: |
+| Supported format of storing VM/CT data                               | `raw`                                                                            | `raw` |
+| Thin provisioning                                                    | :white_check_mark:                                                               | :white_check_mark: Sparse `raw` files — space is allocated as data is written; guest-discarded blocks are not reclaimed automatically |
+
+**Note**: Proxmox VE's built-in backup functionality backs up only the base volume data — it does not back up JovianDSS plugin snapshots.
 
 ## Roadmap
 
