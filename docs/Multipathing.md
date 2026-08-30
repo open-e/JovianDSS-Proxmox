@@ -2,14 +2,9 @@
 
 Multipathing provides redundancy and load balancing for block storage by exposing multiple physical I/O paths to a single logical device.
 
-The JovianDSS Proxmox plugin leverages this by aggregating multiple iSCSI sessions into a single device mapper entry via the host’s `multipathd` (multipath daemon).
+The JovianDSS Proxmox plugin leverages this by aggregating multiple iSCSI sessions into a single device-mapper entry via the host’s `multipathd` (multipath daemon): it enrolls each volume’s SCSI ID (WWID) in the kernel’s multipath subsystem and returns the resulting `/dev/mapper/…` path to Proxmox VE.
 
-The plugin itself adds and removes SCSI IDs from the kernel’s multipath subsystem and returns the resulting `/dev/mapper/…` path to Proxmox VE. 
-
-The plugin declares `multipath-tools` (the package that provides `multipathd`) as a dependency and installs it if it is not already present. However, the daemon must be enabled by the administrator.
-
-
-Because multipathd is critical to cluster stability and to any services already relying on its configuration, its installation and configuration fall under the administrator’s purview.
+The packages providing the daemon (`multipath-tools`, `sg3-utils`) are installed automatically as plugin dependencies, but because `multipathd` is critical to cluster stability — and to any services already relying on its configuration — enabling and configuring it remains the administrator’s responsibility.
 
 ## Operation
 
@@ -58,11 +53,11 @@ The plugin presents multipath block devices to the Proxmox VE virtualization and
 
     The corresponding JSON state file under `/etc/joviandss/state/<STORAGE_ID>/...` is deleted.
 
-## MultipathD
+## multipathd
 
-### Installing
+### Installing and enabling
 
-The `multipath-tools` and `sg3-utils` packages install the multipath daemon on Proxmox VE nodes:
+Both `multipath-tools` and `sg3-utils` are installed automatically with the plugin package. If the plugin was installed from source, install them manually:
 
 ```bash
 apt install multipath-tools sg3-utils
@@ -76,27 +71,21 @@ systemctl start multipathd
 systemctl status multipathd
 ```
 
-Proper `multipathd` configuration — consistent across every node and compliant with the JovianDSS Proxmox plugin requirements — is essential for cluster stability.
-
 ### Configuring
 
-Note: Proxmox VE 8.4.0 ships with `multipath-tools` v0.9.4, which expects configuration snippets in `/etc/multipath/conf.d/`.
+The plugin package installs the recommended configuration below to `/etc/multipath/conf.d/open-e-joviandss.conf` (a reference copy is kept at `/etc/joviandss/multipath-open-e-joviandss.conf.example`). Multipath configuration must be consistent across every node in the cluster.
 
-From multipath-tools v0.9.7 onward, the plugin enrolls volumes by their SCSI WWID. Any WWID-based blacklist rule such as:
+The plugin enrolls volumes by their SCSI ID (WWID). A catch-all WWID blacklist such as:
 
 ```
 blacklist {
     wwid .*
 }
 ```
-Will match every WWID and thus prevent those volumes from being mapped as multipath devices.
 
-Ensure that multipath configuration does not include such catch-all WWID blacklists so that plugin-enrolled devices can appear under `/dev/mapper`.
+matches every WWID and prevents plugin volumes from appearing under `/dev/mapper` — make sure no such rule exists in your multipath configuration.
 
-
-To prevent unrelated devices from being managed by the multipath daemon, it is common to blacklist by vendor.
-
-In environments using the JovianDSS plugin, this approach excludes all devices except those provided by JovianDSS:
+To keep unrelated devices out of the multipath daemon, the recommended configuration blacklists by vendor instead, admitting only JovianDSS devices:
 ```
 defaults {
     uid_attrs                   "sd:ID_SERIAL"
@@ -135,26 +124,12 @@ blacklist_exceptions {
 }
 ```
 - The blacklist block with vendor ".*" excludes every device by default.
-- The blacklist_exceptions block re‐allows devices whose vendor string matches "SCST_BIO", the identifier used by JovianDSS iSCSI targets.
+- The blacklist_exceptions block re-allows devices whose vendor string begins with `SCST_` — the vendor identifier reported by JovianDSS iSCSI targets.
 
-This configuration ensures that only JovianDSS volumes are admitted into the multipath subsystem, avoiding spurious multipath mappings for other storage devices.
+## Enabling multipath for a storage pool
 
+Multipathing is enabled by setting `multipath 1` in the `storage pool` record; volumes activated from then on are presented to Proxmox VE as multipath devices.
 
+Each redundancy path corresponds to one IP in [data_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#data_addresses), so make sure that list matches your intended [network topology](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking).
 
-## Enable multipath for `storage pool`
-
-Multipathing is enabled by setting `multipath 1` in the `storage pool` record.
-When enabled for a given pool, any volume in that `stoarge pool` is exposed to Proxmox VE as a multipath device.
-
-`multipath` is closely related to [data_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#data_addresses) property. As each redundancy path that would be created is based on IP address defined [data_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#data_addresses), check [Networking guide for additional information](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking)
-
-Because each redundancy path corresponds to an IP in [data_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#data_addresses), ensure your [data_address](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#data_addresses) configuration supports the desired [network topology](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking). Changes to `multipath` or to the `data_addresses` list take effect only after a full deactivate–activate cycle of the VM or container:
-
-- Enabling multipath on a running guest
-    Guests started with `multipath 0` retain single-path devices until they are fully deactivated (stopped and iSCSI devices unmapped) and then restarted with `multipath 1`.
-
-- Disabling multipath on a running guest
-    Guests started with `multipath 1` continue using multipath devices until they undergo the same full deactivate-activate cycle with `multipath 0`.
-
-- Updating data paths
-    Adding or removing entries in [data_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#data_addresses) does not alter `multipath` devices for running guests. A full deactivate-activate cycle is required for any new or removed paths to be recognized.
+Changes to `multipath` or to the `data_addresses` list never affect running guests: a guest keeps the paths it was started with — single-path or multipath — until it is fully deactivated (stopped, iSCSI devices unmapped) and started again. This applies equally to enabling multipath, disabling it, and adding or removing addresses.
