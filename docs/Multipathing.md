@@ -11,17 +11,17 @@ The packages providing the daemon (`multipath-tools`, `sg3-utils`) are installed
 The plugin presents multipath block devices to the Proxmox VE virtualization and container services. Its workflow comprises two phases: Activation and Deactivation.
 
 ### Activation
-1. iSCSI Attachment
+1. Publish
 
-    The plugin issues REST calls and [iSCSI login](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking#plugin-and-volume-data) to present the target volume on the host.
+    The plugin creates or verifies the iSCSI target on JovianDSS over REST and attaches the volume to it as a LUN. The reply carries the target name, the LUN number, the portal addresses and the volume's SCSI ID (WWID).
 
-2. SCSI ID Retrieval
+2. iSCSI Attachment
 
-    The plugin invokes the `/lib/udev/scsi_id` utility on the new device node to obtain its unique SCSI identifier.
+    The plugin creates the iscsiadm node records and performs an [iSCSI login](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking#plugin-and-volume-data) for every portal, producing one `/dev/sd*` device per path.
 
 3. Multipath Enrollment
 
-    The retrieved SCSI ID is added to the multipath configuration, causing the kernel’s multipath subsystem to recognize the device.
+    The SCSI ID is added to the multipath configuration, causing the kernel’s multipath subsystem to assemble those paths into a single device.
 
 4. Device Mapping
 
@@ -29,7 +29,7 @@ The plugin presents multipath block devices to the Proxmox VE virtualization and
 
 5. State Persistence
 
-    Attachment details (storage-ID, volume-ID, SCSI ID, and mapper path) are serialized into a JSON file under `/etc/joviandss/state/<STORAGE_ID>/...`
+    Attachment details (target name, LUN, volume name, SCSI ID, size, and hosts) are serialized into a JSON file under `/etc/joviandss/state/<STORAGE_ID>/...`
 
 6. PATH Response
 
@@ -39,15 +39,15 @@ The plugin presents multipath block devices to the Proxmox VE virtualization and
 
 1. State Lookup
 
-    The plugin reads the stored JSON record to retrieve the SCSI ID and mapper path for the volume.
+    The plugin reads the stored JSON record to retrieve the target, LUN and SCSI ID for the volume.
 
-2. Multipath Removal
+2. iSCSI Logout
 
-    The SCSI ID is deregistered from the multipath configuration, and the kernel’s multipath maps are reloaded.
+    The node logs out of the target first, so the underlying paths are gone before multipath removal — otherwise the multipath refresh recreates the device from the still-active paths.
 
-3. Device Flush
+3. Multipath Removal
 
-    The multipath map associated with the SCSI ID is flushed, removing the /dev/mapper entry.
+    The SCSI ID is deregistered from the multipath configuration and the map associated with it is flushed, removing the `/dev/mapper` entry.
 
 4. State Cleanup
 
