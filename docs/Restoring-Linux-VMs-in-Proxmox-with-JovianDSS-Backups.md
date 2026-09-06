@@ -10,7 +10,7 @@ This configuration builds on the setup introduced in the Networking article.
 
 1. *Net1* 172.28.0.0/16 Management/Internet connection
 2. *Net2* 172.29.0.0/16 Data network
-2. *Net2* 172.30.0.0/16 Data network
+3. *Net3* 172.30.0.0/16 Data network
 
 ![backup-3-nodes-1](https://github.com/user-attachments/assets/6df00977-2cc2-422f-849b-c53f1ba9ae59)
 
@@ -57,7 +57,6 @@ joviandss: jdss-Pool-2
         ssl_cert_verify 0
         thin_provisioning 1
         user_name admin
-        user_password admin
         log_file /var/log/joviandss/jdss-Pool-2.log
         disable 0
 
@@ -65,7 +64,6 @@ joviandss: jdss-Pool-1-backup
         pool_name Pool-1-backup
         target_prefix iqn.2025-06.proxmox.pool-1-backup
         user_name admin
-        user_password admin
         path /mnt/pve/jdss-Pool-1-backup
         content images,rootdir
         ssl_cert_verify 0
@@ -74,6 +72,8 @@ joviandss: jdss-Pool-1-backup
         log_file /var/log/joviandss/jdss-Pool-1-backup.log
         shared 1
 ```
+
+**Note**: the REST password is set with `pvesm add` / `pvesm set --user_password <password>` and stored in `/etc/pve/priv/storage/joviandss/<storage-id>.pw` — it does not appear in `storage.cfg`.
 On one of the `node1` hosts, run VM 100, which uses the disk `vm-100-disk-0` residing on the JovianDSS `pool` `Pool-2`.
 
 ![debian-100](https://github.com/user-attachments/assets/91571772-8014-4ca4-baf0-02c8c204200a)
