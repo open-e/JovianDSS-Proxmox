@@ -18,7 +18,7 @@ password applied to all iSCSI targets managed by that storage.
   digit or `_`
 - CHAP password: 12 to 255 characters, made up of letters, digits and
   `-_!@%()+?.:;` — no spaces and no other punctuation
-- Proxmox VE plugin version 0.10.5 or later
+- Proxmox VE plugin version v0.11.4 or later
 
 ---
 
