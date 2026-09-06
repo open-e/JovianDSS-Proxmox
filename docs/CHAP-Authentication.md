@@ -100,7 +100,7 @@ it will challenge every initiator at login.
 **2. Stage** — logs the Proxmox node into the target via `iscsiadm`. The plugin
 writes CHAP credentials to the iscsiadm node database before calling `--login`,
 so the initiator can respond to the challenge. If login fails with an authorization
-error (exit code 24), the plugin performs one automatic recovery:
+error, the plugin performs one automatic recovery:
 
 - Pushes current credentials from the `.pw` file to JovianDSS via `jdssc target update`.
 - Retries `--login` with fresh credentials.
