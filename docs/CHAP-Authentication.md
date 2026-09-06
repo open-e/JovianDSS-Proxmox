@@ -22,25 +22,8 @@ password applied to all iSCSI targets managed by that storage.
 ## Enabling CHAP
 
 CHAP is configured with three properties: `chap_enabled`, `chap_user_name`, and
-`chap_user_password`. All three must be set together.
-
-**When adding a new storage:**
-
-```bash
-pvesm add joviandss jdss-Pool-0 \
-    --ssl_cert_verify 0 \
-    --path /mnt/pve/jdss-Pool-0 \
-    --create-base-path 1 \
-    --shared 1
-    --pool_name Pool-0 \
-    --user_name admin \
-    --user_password <rest-api-password> \
-    --control_addresses 192.168.28.100 \
-    --data_addresses 192.168.29.100 \
-    --chap_enabled 1 \
-    --chap_user_name <chap-user-name> \
-    --chap_user_password <chap-password>
-```
+`chap_user_password`. All three must be set together — if any of them is
+missing, the command fails immediately with an error.
 
 **On an existing storage:**
 
@@ -51,9 +34,12 @@ pvesm set jdss-Pool-0 \
     --chap_user_password <chap-password>
 ```
 
-The plugin validates that `chap_user_name` and `chap_user_password` are both present
-when `chap_enabled` is set to `1`. If either is missing the command fails immediately
-with an error.
+When creating a new storage, include the same three flags in the initial
+`pvesm add` command.
+
+> **Note:** Enabling, disabling, or
+> rotating credentials never affects established sessions — changes take
+> effect at the next VM start or migration.
 
 ### What gets written where
 
@@ -82,9 +68,6 @@ user_password      <rest-api-password>
 pvesm set jdss-Pool-0 --chap_enabled 0
 ```
 
-Active iSCSI sessions are unaffected — CHAP is only checked at login time. The
-change takes effect the next time a VM is started or migrated.
-
 ---
 
 ## Password Rotation
@@ -95,10 +78,9 @@ To change the CHAP password without downtime:
 pvesm set jdss-Pool-0 --chap_user_password <new-password>
 ```
 
-Active sessions continue uninterrupted. On the next VM start, if the new password
-does not yet match what JovianDSS has stored for the target, the plugin detects
-the authentication failure (iscsiadm exit code 24), automatically pushes the new
-password to JovianDSS, and retries the login. No manual intervention is required.
+On the next VM start, if the new password does not yet match what JovianDSS has
+stored for the target, the plugin reconciles it automatically — see
+[How It Works](#how-it-works-during-vm-activation) below.
 
 ---
 
@@ -130,11 +112,6 @@ after credential refresh — check CHAP configuration
 
 ## Troubleshooting
 
-**`chap_user_name is required when chap_enabled is set`**
-
-`pvesm set` was called with `chap_enabled 1` but `chap_user_name` was not provided.
-Set both properties in the same command.
-
 **`chap_user_password is required when chap_enabled is set`**
 
 `chap_user_password` is missing from the `.pw` file. Re-run `pvesm set` with
@@ -149,9 +126,3 @@ target, and the automatic recovery also failed. Check:
    `.pw` file holds the correct password.
 2. On JovianDSS, inspect the target's incoming users via the web UI or REST API
    and verify the username matches `chap_user_name`.
-
-**iscsiadm sessions do not use CHAP after enabling it**
-
-Existing sessions are not affected by a configuration change. Stop the VM,
-which logs out the iSCSI session, then start it again. The new session will be
-established with CHAP.
