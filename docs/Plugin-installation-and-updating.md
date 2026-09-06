@@ -49,7 +49,7 @@ curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/insta
 curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --pre --all-nodes
 
 # Install specific version on all nodes
-curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --version v0.10.12 --all-nodes
+curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --version v1.0.0 --all-nodes
 
 # Test installation without making changes
 curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --dry-run --all-nodes
@@ -114,7 +114,7 @@ curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/insta
 ## Manual Installation for `deb` package
 
 ```bash
-apt install ./open-e-joviandss-proxmox-plugin_0.10.0.deb
+apt install ./open-e-joviandss-proxmox-plugin-1.0.0.deb
 ```
 
 After installation  restart the Proxmox VE services to make them aware of plugin.
@@ -138,7 +138,7 @@ apt remove -y open-e-joviandss-proxmox-plugin
 Installation can be done by `make` inside source code folder:
 
 ```bash
-apt install python3-oslo.utils git
+apt install git python3-oslo.utils python3-yaml python3-requests python3-retry open-iscsi multipath-tools sg3-utils libstring-util-perl
 git clone https://github.com/open-e/JovianDSS-Proxmox.git
 cd ./JovianDSS-Proxmox
 make install
@@ -153,6 +153,6 @@ make uninstall
 
 ## Configuration
 
-For a concise walk-through, see the [Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start).
+For a concise walk-through, see the [iSCSI Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start-iSCSI) or the [NFS Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start-NFS).
 
 For a full listing of all configuration options and their meanings, refer to the [Plugin Configuration guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration).
