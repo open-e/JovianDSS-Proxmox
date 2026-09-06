@@ -98,6 +98,10 @@ See [CHAP Authentication](CHAP-Authentication) for full configuration instructio
 The CHAP initiator username presented to JovianDSS iSCSI targets. Stored in
 `storage.cfg` and replicated to all cluster nodes automatically by Proxmox VE.
 
+Allowed characters are letters, digits, `-` and `_`; the name must start and end
+with a letter, digit or `_`. A name outside that set is rejected at
+`pvesm add`/`pvesm set` time.
+
 Must be set together with `chap_user_password` whenever `chap_enabled` is `1`.
 
 ### chap_user_password
@@ -113,7 +117,11 @@ stored securely in `/etc/pve/priv/storage/joviandss/<storage-id>.pw` instead of
 appearing in `storage.cfg`.
 
 The CHAP initiator password used for iSCSI authentication against JovianDSS targets.
-Minimum length is 12 characters; maximum is 16 characters (iSCSI RFC 3720 limit).
+
+It must be 12 to 255 characters long and may contain only letters, digits and the
+characters `-_!@%()+?.:;` — spaces and any other punctuation are rejected. The
+limits are enforced both by the plugin at configuration time and by `jdssc` before
+the credential reaches JovianDSS.
 
 **Usage**:
 - When using `pvesm add` or `pvesm set`: include `--chap_user_password <password>` and it will be stored securely.

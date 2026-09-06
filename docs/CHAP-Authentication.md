@@ -14,7 +14,10 @@ password applied to all iSCSI targets managed by that storage.
 ## Requirements
 
 - JovianDSS firmware with iSCSI CHAP support
-- CHAP password: minimum 12 characters, maximum 16 characters (iSCSI RFC 3720 limit)
+- CHAP user name: letters, digits, `-` and `_`; must start and end with a letter,
+  digit or `_`
+- CHAP password: 12 to 255 characters, made up of letters, digits and
+  `-_!@%()+?.:;` — no spaces and no other punctuation
 - Proxmox VE plugin version 0.10.5 or later
 
 ---
