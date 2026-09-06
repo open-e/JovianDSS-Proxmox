@@ -17,11 +17,12 @@ All iSCSI data travels exclusively over the VIP addresses specified in `data_add
 ```
 ...
 user_name admin
-user_password <some secret password>
 control_addresses 192.168.28.102
 data_addresses 192.168.29.102,192.168.30.102
 ...
 ```
+
+**Note**: the REST password is set with `pvesm add` / `pvesm set --user_password <password>` and stored in `/etc/pve/priv/storage/joviandss/<storage-id>.pw` — it does not appear in `storage.cfg`.
 
 #### Operation
 
