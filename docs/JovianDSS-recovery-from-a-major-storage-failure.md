@@ -11,7 +11,7 @@ Pool `Pool-0` has 2 virtual IP's: 192.168.21.100, 192.168.31.100
 2. `Backup` node with pool `Pool-0` with virtual IP's 192.168.22.100, 192.168.32.100
 
 
-Make sure to introduce them to your proxmox as [storage pools](https://pve.proxmox.com/pve-docs/chapter-pvesm.html) in `/etc/pve/storage.cfg` according to [configuration guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-installation-and-configuration#configuring)
+Make sure to introduce them to your proxmox as [storage pools](https://pve.proxmox.com/pve-docs/chapter-pvesm.html) in `/etc/pve/storage.cfg` according to [configuration guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
 
 ### Configuration of `Production node`
 
@@ -36,7 +36,6 @@ REST API is ON
 joviandss: jdss-Production-node-Pool-0
         pool_name Pool-0
         user_name admin
-        user_password admin
         content images,rootdir
         ssl_cert_verify 0
         control_addresses 192.168.21.100
@@ -44,6 +43,8 @@ joviandss: jdss-Production-node-Pool-0
         path /mnt/pve/jdss-Pool-0
         shared 1
 ```
+
+**Note**: the REST password is set with `pvesm add` / `pvesm set --user_password <password>` and stored in `/etc/pve/priv/storage/joviandss/<storage-id>.pw` — it does not appear in `storage.cfg`.
 
 ### Configuration of `Backup node`
 
@@ -65,7 +66,6 @@ REST API is ON
 joviandss: jdss-Backup-node-Pool-0
         pool_name Pool-0
         user_name admin
-        user_password admin
         content images,rootdir
         ssl_cert_verify 0
         control_addresses 192.168.22.100
