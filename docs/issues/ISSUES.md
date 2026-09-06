@@ -594,3 +594,151 @@ parameter-fixed testcase passed. The testcase itself needed three
 property fixes (`data_addresses`, `path`, `ssl_cert_verify` — all
 required for a working add) before this finding became visible; those
 fixes are applied to the testcase.
+
+## Issue 10: Activation Retry Ladder Retries Non-Retryable Errors
+
+**Status:** Open — found 2026-08-12 on pve-91-1 (working-tree build with
+the check/apply hooks deployed) while live-running testcase
+`use-time-chap-enforcement-001`; fix planned for the next patch.
+
+### Symptom
+
+A volume activation whose failure is deterministic takes ~92 seconds and
+four full appliance round-trips to report an error the appliance
+delivered completely in its first response. Observed with a CHAP
+password shorter than the appliance minimum (JovianDSS requires 12-255
+characters): every activation cycle creates the target, fails to add the
+chap user with HTTP 400 `opene.exceptions.ValidationError` ("Password is
+allowed to contain from 12 to 255 characters..."), deletes the target it
+just created, waits, and goes again — four times — before dying with
+"Activation of volume ... failed after 4 cycles".
+
+### Root cause
+
+The activation retry ladder (the cycle loop around volume_publish /
+volume_stage_iscsi) is error-blind: it treats every failure as
+transient. The retries exist for good reasons — the chap-credential sync
+race that target_update_chap resolves between attempts, login pacing
+(review F-05), transient REST failures — but validation-class errors are
+deterministic: the same input produces the same 400 forever.
+
+A supporting gap: jdssc's REST layer logs the full truth
+(`{'code': 400, 'error': {'class': 'opene.exceptions.ValidationError'}}`)
+but the driver-level error it reports reads "failed with code: Unknown
+of type: opene.exceptions.ValidationError" — the HTTP code is lost
+between jdssc's REST layer and its error reporting, so the plugin has
+only the class name as free text.
+
+### Impact
+
+- Diagnosis latency: the operator waits ~92 s for a configuration error
+  that was final after ~500 ms.
+- Appliance churn: three redundant create-target/delete-target rounds
+  per activation attempt, with scst state flapping and appliance-side
+  log noise.
+- Stacked timeouts: activation runs under qm start, migration and HA
+  clocks; a deterministic error burning 92 s can trip those and present
+  as a hang two layers up — which is exactly how it presented during
+  the live run.
+
+### Direction
+
+Teach the ladder error classes; do not weaken the retries themselves:
+
+- proper fix: jdssc classifies at its boundary — it sees the HTTP code
+  and exception class — and signals permanent vs transient distinctly
+  (distinct exit code or structured marker); the plugin's cycle loop
+  stops on permanent. Fixing the "code: Unknown" mapping falls out of
+  the same change;
+- minimal plugin-only fix: the cycle loop matches a conservative
+  whitelist of permanent classes (ValidationError, authentication) in
+  the error text and breaks on match; everything unmatched keeps
+  retrying. Conservatism matters: misclassifying a transient error as
+  permanent creates premature failures, which is worse than slow ones.
+
+Fixture for the fix: a chap password shorter than 12 characters is a
+known-invalid input that reproduces the symptom deterministically — the
+regression testcase should assert the first target-needing operation
+fails within one cycle, in seconds, with the ValidationError surfaced.
+
+Live evidence: 2026-08-12 ~01:46 on pve-91-1, storage `chapdiag` with
+chap password `chappass123` (11 characters) — the debug log shows four
+identical create/400/delete cycles; a control run with a valid 13-char
+password exported the same volume in 4 seconds.
+
+## Issue 11: NFS Plugin Notes from the Storage API v15 Review
+
+**Status:** Partially resolved — recorded 2026-08-12 during the storage
+API v15 compatibility review. Note 1 and the NAS half of note 2 were
+fixed the same day and verified live on pve-91-1; the SAN half of
+note 2 and note 3 remain open, folded into the planned NFS plugin
+rework.
+
+### Context
+
+The v15 review found both plugins compliant (the iSCSI plugin refuses
+the new snapshot-targeted `volume_resize` explicitly, the NFS plugin
+through the inherited base guard; neither offers
+`snapshot-as-volume-chain`, so the volume-chain profile of
+`volume_snapshot_info` does not apply). Three marginal findings remain.
+None is a v15 blocker — every consumer that would notice is unreachable
+for joviandss storages today (the chain paths need the option, and
+replication never schedules shared storages) — they are recorded so the
+NFS rework can decide them deliberately instead of inheriting them.
+
+### 1. NFS snapshot_info returns no snapshot id — RESOLVED
+
+`NFSCommon::snapshot_info` (NFSCommon.pm:116) returned per snapshot only
+`name` + `timestamp`; the documented replication profile of
+`volume_snapshot_info` additionally requires `id`, unique per snapshot
+even when names repeat. The iSCSI plugin satisfies this with the ZFS
+guid (`snapshots list --guid`); the NAS listing did not request a guid
+at all. Nothing consumes the missing key today. The extra `name` key
+inside each entry is undocumented but harmless.
+
+**Resolved 2026-08-12**: `nas_volume snapshots list` gained a `--guid`
+flag (jdssc driver exposes the guid from either entry format), and
+`snapshots_info` requests it and returns `id` as `<volname>-<guid>`
+(amended the same day from the initially shipped bare guid). Pinned by
+tests/nfs_snapshot_info_test.pl (15 checks); verified live on pve-91-1
+against the real appliance — the returned id carries the REST record's
+guid verbatim.
+
+### 2. Snapshot listing fallback values are inconsistent (jdssc side)
+
+Two normalization gaps in jdssc, latent for the same reason as above:
+
+- SAN path (iSCSI plugin), **still open**: when an appliance response
+  lacks `guid`, `snapshots.py` prints the Python literal `None`, which
+  the Perl parser stores as the id value; `jcom.time_to_epoch`
+  (jdss_common.py:38) returns `0` for a missing or unparsable creation
+  time instead of omitting the field. Direction: print `-` for a
+  missing guid (the existing volsize convention) so callers can skip
+  it instead of storing `None`.
+- NAS path (NFS plugin), **RESOLVED 2026-08-12**: `list_nas_snapshots`
+  (driver.py) passed `creation` through raw — it never went through
+  `time_to_epoch`, and it read only the properties-nested entry format
+  while the live appliance (probed 2026-08-12) returns flat entries,
+  so NFS snapshots carried no timestamp at all there; on date-form
+  appliances the `/^\d+$/` guard in `NFSCommon::snapshot_info` dropped
+  it silently. Fixed by handling both entry formats (the SAN listing's
+  dual-format pattern) and normalizing through `time_to_epoch`; the
+  CLI prints fixed columns with `-` placeholders, which the Perl
+  guards skip. Verified live: creation `2026-08-12 14:42:35` on the
+  appliance came back as `timestamp` 1786538555, converting back to
+  the exact same date.
+
+### 3. NFS plugindata offers qcow2/vmdk while the snapshot machinery is dataset-based
+
+`OpenEJovianDSSNFSPlugin.pm:85` declares
+`format => [{ raw => 1, qcow2 => 1, vmdk => 1 }, 'raw']`. The plugin's
+snapshot implementation (volume_snapshot, volume_snapshot_info,
+rollback) operates on JovianDSS dataset snapshots regardless of volume
+format, but the inherited `volume_qemu_snapshot_method` returns
+`'qemu'` for qcow2 volumes — qemu-server then takes internal qcow2
+snapshots for running VMs, bypassing (and later mismatching) the
+dataset-snapshot bookkeeping. The interaction is untested. The rework
+should either restrict the offered formats to raw or implement and
+verify the qcow2 snapshot paths, including an own
+`volume_qemu_snapshot_method`. This is an APIVER 14 adjacency the v15
+review surfaced, not a v15 item.
