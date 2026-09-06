@@ -71,12 +71,6 @@ Example:
 
 Install the latest pre-release instead of the latest stable release. Use this flag to test new features before they are officially released.
 
-### version
-
-**Default**: None
-
-Install a specific release tag instead of the latest version. Specify the exact GitHub release tag (e.g., `v0.10.8-2`).
-
 ### reinstall
 
 **Default**: `False`
@@ -99,14 +93,24 @@ Remove the plugin instead of installing it. Can be combined with `--all-nodes` t
 Automatically restart the affected Proxmox VE services after installation or removal (see [Installation](#installation) for the list).
 Must **not** be used from the Proxmox Web UI shell.
 
+
+### version
+
+**Default**: None
+
+Install a specific release tag instead of the latest version. Specify the exact GitHub release tag (e.g., `v0.10.8-2`).
+
 ## Notes
 
 ### Other options
 
-- `--sudo` — use sudo for commands when not running as root
+- `--allow-downgrades` — allow installing an older package version than the one currently installed (apt refuses downgrades by default). Downgrading can cause configuration incompatibilities; make sure you have backups
 - `--dry-run` — show what would be done without executing any commands
-- `--verbose`, `-v` — show detailed output
 - `--help`, `-h` — show usage information
+- `--ssh-flags "<flags>"` — extra SSH flags for remote operations (default: `-o BatchMode=yes -o StrictHostKeyChecking=accept-new`)
+- `--sudo` — use sudo for commands when not running as root
+- `--user <name>` — SSH user for remote operations (default: `root`)
+- `--verbose`, `-v` — show detailed output
 
 ## Verification
 
