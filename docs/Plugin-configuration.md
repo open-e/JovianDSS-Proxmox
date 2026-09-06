@@ -385,15 +385,14 @@ Each target name follows this pattern:
 
 Use a **lowercase** prefix: the appliance stores target names in lowercase, and a mixed-case prefix prevents volume activation.
 
-**IMPORTANT!**
-During the initial VM startup, all assigned volumes are attached to a target defined by the specified prefix.
-Changing the target prefix afterward may result in errors during live migration and when starting the VM on other nodes in the cluster.
+`target_prefix` can be changed on an existing storage. The change is applied per
+volume, the next time that volume is activated:
 
-To apply changes to the target, the user must:
-
-1. Turn off the VM or container
-2. Migrate the VM or container to another Proxmox node in offline mode
-3. Manually remove the iSCSI target through the JovianDSS web UI
+- A volume with no active iSCSI sessions is detached from its old target and
+  re-published under the new prefix automatically; the old target is deleted once
+  its last LUN is gone. No manual cleanup on the JovianDSS side is needed.
+- A volume that still has active sessions is left on its old target, so a running
+  guest is never disturbed. Stop the guest and start it again to move it.
 
 Example: with prefix `iqn.2025-06.proxmox.pool-2`, the first target for VM 102 is `iqn.2025-06.proxmox.pool-2:vm-102-0`.
 
