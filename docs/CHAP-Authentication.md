@@ -92,9 +92,10 @@ stored for the target, the plugin reconciles it automatically — see
 Each `volume_activate` call runs two phases:
 
 **1. Publish** — creates or verifies the iSCSI target on JovianDSS and attaches
-the LUN. When CHAP is enabled, `--chap-user` and `--chap-password` are passed to
-`jdssc targets create`. JovianDSS sets `incoming_users_active: true` on the target,
-meaning it will challenge every initiator at login.
+the LUN. When CHAP is enabled, the plugin passes the user name to
+`jdssc … targets create`; the password comes from the `.pw` file, never from the
+command line. JovianDSS sets `incoming_users_active: true` on the target, meaning
+it will challenge every initiator at login.
 
 **2. Stage** — logs the Proxmox node into the target via `iscsiadm`. The plugin
 writes CHAP credentials to the iscsiadm node database before calling `--login`,
