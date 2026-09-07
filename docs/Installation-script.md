@@ -98,7 +98,7 @@ Must **not** be used from the Proxmox Web UI shell.
 
 **Default**: None
 
-Install a specific release tag instead of the latest version. Specify the exact GitHub release tag (e.g., `v0.10.8-2`).
+Install a specific release tag instead of the latest version. Specify the exact GitHub release tag (e.g., `v1.0.0`).
 
 ## Notes
 
