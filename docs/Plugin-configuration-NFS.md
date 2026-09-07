@@ -346,10 +346,8 @@ The REST-resilience tuning properties (`jdssc_rest_connect_timeout`,
 `jdssc_rest_read_timeout`, `jdssc_rest_request_send_cycle_attempts`,
 `jdssc_rest_request_send_cycle_delay`,
 `jdssc_rest_send_retry_on_decode_error_attempts`) apply to the `joviandss-nfs`
-type as well and are documented on the
-[Plugin Configuration: Engineering Properties](Plugin-configuration-engineering)
-page. The `jdssc_general_lock_*` and `jdssc_info_lock_*` properties are internal
-locking-tuning knobs; leave them unset unless directed by Open-E support.
+type as well. They are internal tuning knobs; leave them unset unless directed
+by Open-E support.
 
 ## Example
 

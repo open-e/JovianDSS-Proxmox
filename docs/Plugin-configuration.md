@@ -171,7 +171,7 @@ To store other content types on JovianDSS (container templates, ISO images, back
 **Required**: `True`
 
 A comma-separated list of IP addresses used to send REST requests to JovianDSS, for example `control_addresses 192.168.27.102,192.168.28.102`.
-The plugin cycles through these addresses, retrying until the configured retry budget is exhausted (see [Plugin configuration: engineering properties](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-engineering)).
+The plugin cycles through these addresses, retrying until the configured retry budget is exhausted.
 
 If no dedicated VIP is available for `control_addresses`, it is recommended to use one or more `data_addresses`.
 

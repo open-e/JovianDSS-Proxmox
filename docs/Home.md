@@ -24,8 +24,6 @@ For more detailed information:
 
 * [Plugin-configuration NFS](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS)
 
-* [Plugin configuration: engineering properties](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-engineering)
-
 * [Plugin Networking](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking)
 
 * [Multipathing](https://github.com/open-e/JovianDSS-Proxmox/wiki/Multipathing)
