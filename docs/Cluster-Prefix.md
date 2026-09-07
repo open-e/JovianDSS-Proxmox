@@ -82,6 +82,7 @@ pvesm add joviandss jdss-Pool-0 \
     --user_password <rest-api-password> \
     --control_addresses 192.168.28.100 \
     --data_addresses 192.168.29.100 \
+    --path /mnt/pve/jdss-Pool-0 \
     --cluster_prefix pveA \
     --target_prefix iqn.2025-04.proxmox.joviandss.pvea: \
     --shared 1

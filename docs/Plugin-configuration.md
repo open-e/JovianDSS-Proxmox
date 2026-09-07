@@ -194,13 +194,13 @@ JovianDSS accepts connections only over SSL/TLS; changing this port does not alt
 
 ### create-base-path
 
-**Default**: None
+**Default**: `1`
 
 **Type**: *bool*
 
 **Required**: `False`
 
-Creates [path](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#path) directory if it does not exists.
+Creates the [path](#path) directory if it does not exist.
 
 ### data_addresses
 
@@ -308,11 +308,10 @@ Ensure the `multipathd` service is enabled on every node in a cluster and its co
 
 **Type**: *string*
 
-**Required**: `False`
+**Required**: `True`
 
-The folder associated with the JovianDSS Proxmox plugin—intended to host disks and resources presented to the Proxmox VE system—remains unused.
-
-Instead, the plugin attaches iSCSI block devices and creates multipath devices as needed; once a block device appears under `/dev/...` on the Proxmox node, the plugin registers it with the Proxmox VE storage subsystem.
+A directory on the Proxmox node associated with this storage. No VM or container
+data is kept in it.
 
 ### pool_name
 
@@ -471,6 +470,7 @@ joviandss: jdss-Pool-0
         data_addresses 192.168.29.100
         luns_per_target 8
         multipath 0
+        path /mnt/pve/jdss-Pool-0
         shared 1
         ssl_cert_verify 0
         thin_provisioning 1
@@ -507,6 +507,7 @@ joviandss: jdss-Pool-0
         control_port 82
         data_addresses 192.168.29.100,192.168.30.100
         luns_per_target 8
+        path /mnt/pve/jdss-Pool-0
         shared 1
         ssl_cert_verify 0
         thin_provisioning 1
