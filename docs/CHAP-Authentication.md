@@ -60,7 +60,7 @@ The file holds both the REST API password and the CHAP password, one per line:
 
 ```
 chap_user_password <chap-password>
-user_password      <rest-api-password>
+user_password <rest-api-password>
 ```
 
 ---
@@ -109,7 +109,7 @@ If the second attempt also fails, the plugin stops and logs:
 
 ```
 CHAP authentication failed for target <targetname> on hosts <hosts>
-after credential refresh — check CHAP configuration
+after credential refresh - check CHAP configuration
 ```
 
 ---

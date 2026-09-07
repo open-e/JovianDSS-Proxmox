@@ -130,7 +130,7 @@ over SSL/TLS; changing this port does not alter the protocol.
 
 **Default**: `1`
 
-**Type**: *bool*
+**Type**: *boolean*
 
 **Required**: `False`
 
@@ -165,7 +165,7 @@ Enables verbose logging of plugin operations to the configured
 
 **Default**: `0`
 
-**Type**: *int*
+**Type**: *boolean*
 
 **Required**: `False`
 
@@ -265,7 +265,7 @@ failover.
 
 **Default**: `0`
 
-**Type**: *int*
+**Type**: *boolean*
 
 **Required**: `False`
 
@@ -277,7 +277,7 @@ Proxmox VE permits live migration of guests on this storage.
 
 **Default**: `1`
 
-**Type**: *int*
+**Type**: *boolean*
 
 **Required**: `False`
 

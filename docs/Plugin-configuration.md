@@ -196,7 +196,7 @@ JovianDSS accepts connections only over SSL/TLS; changing this port does not alt
 
 **Default**: `1`
 
-**Type**: *bool*
+**Type**: *boolean*
 
 **Required**: `False`
 
@@ -230,16 +230,6 @@ For more information, see the [Networking](https://github.com/open-e/JovianDSS-P
 Specifies the TCP port for iSCSI data connections to all entries in [data_addresses](#data_addresses).
 If not set, the default port 3260 is used.
 
-### delete_timeout
-
-**Default**: `600`
-
-**Type**: *int*
-
-**Required**: `False`
-
-Timeout in seconds for volume delete operations. Increase this if the JovianDSS pool has many dependent snapshots and deletion consistently exceeds the default.
-
 ### debug
 
 **Default**: `0`
@@ -251,11 +241,21 @@ Timeout in seconds for volume delete operations. Increase this if the JovianDSS 
 Enables verbose logging of plugin operations to the configured [log_file](#log_file).
 
 
+### delete_timeout
+
+**Default**: `600`
+
+**Type**: *int*
+
+**Required**: `False`
+
+Timeout in seconds for volume delete operations. Increase this if the JovianDSS pool has many dependent snapshots and deletion consistently exceeds the default.
+
 ### disable
 
 **Default**: 0
 
-**Type**: *int*
+**Type**: *boolean*
 
 **Required**: `False`
 
@@ -291,7 +291,7 @@ When a VM or container requires more volumes than `luns_per_target` allows, addi
 
 **Default**: 0
 
-**Type**: *int*
+**Type**: *boolean*
 
 **Required**: `False`
 
@@ -334,7 +334,7 @@ Never create multiple storage `pool` records with the same `pool_name`, as doing
 
 **Default**: 0
 
-**Type**: *int*
+**Type**: *boolean*
 
 **Required**: `False`
 
@@ -351,7 +351,7 @@ To enable the `shared` property, set it to `1`.
 
 **Default**: `1`
 
-**Type**: *int*
+**Type**: *boolean*
 
 **Required**: `False`
 
