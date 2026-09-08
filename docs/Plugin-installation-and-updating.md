@@ -95,7 +95,7 @@ After installation, proceed to the [Configuration](#configuration) section to se
 
 ## Automated Removal
 
-Automated removal from all nodes in the cluster can be accomplished by invoking the installation script with the --remove flag:"
+Automated removal from all nodes in the cluster can be accomplished by invoking the installation script with the `--remove` flag:
 
 **Remove from all cluster nodes**
 
@@ -114,7 +114,7 @@ curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/insta
 ## Manual Installation for `deb` package
 
 ```bash
-apt install ./open-e-joviandss-proxmox-plugin-1.0.0.deb
+apt install ./open-e-joviandss-proxmox-plugin-v1.0.0-0.deb
 ```
 
 After installation  restart the Proxmox VE services to make them aware of plugin.
