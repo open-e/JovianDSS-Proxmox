@@ -6,15 +6,11 @@ They help prevent accidental data loss, service disruption, or inconsistent syst
 
 ## iSCSI Volumes — Important Notes
 
-Do Not Delete Proxmox VE-Managed Volumes via the Open-E JovianDSS UI.
+**Do not delete Proxmox VE-managed volumes via the Open-E JovianDSS UI.**
 
 Volumes created and managed by **Proxmox VE** must not be deleted directly from the **Open-E JovianDSS** Web UI.
 
-**Proxmox VE** maintains its own internal state and metadata for managed volumes,
-
-and removing them outside of **Proxmox VE** can lead to orphaned resources, broken VM/CT configurations,
-
-failed storage operations, and data loss.
+**Proxmox VE** maintains its own internal state and metadata for managed volumes, and removing them outside of **Proxmox VE** can lead to orphaned resources, broken VM/CT configurations, failed storage operations, and data loss.
 
 All **Proxmox VE**-managed volumes should be removed using **Proxmox VE** tools such as the **Web UI** or **CLI**.
 
@@ -28,5 +24,5 @@ Virtual machines or containers assigned to **Proxmox VE High Availability (HA)**
 
 To safely perform such operations:
 
-  - First adjust the Proxmox VE HA state of the VM/CT (for example by disabling HA for that resource or marking it as ignored in HA).
-  - Then perform the desired action once HA will not interfere.
+  - First adjust the Proxmox VE HA state of the VM/CT (for example by setting its HA state to `ignored`; see [Snapshot Rollback and High Availability](Snapshot-Rollback-and-High-Availability)).
+  - Then perform the desired action once HA can no longer interfere.
