@@ -1,4 +1,4 @@
-This guide shows you how to set up the Open-E JovianDSS Proxmox plugin on a ProxmoxVE cluster in just a few steps.
+This guide shows you how to set up the Open-E JovianDSS Proxmox plugin on a Proxmox VE cluster in just a few steps.
 
 ## Open-E JovianDSS preparation
 
@@ -26,8 +26,8 @@ In this guide, we assume that `Pool-0` already exists and that the Proxmox Jovia
 
 ### Assign VIP to Pool
 
-Open-E JovianDSS’s Proxmox plugin creates volumes on the JovianDSS side and exports them over iSCSI.
-It transfers iSCSI data only over `VIP` addresses assigned to a JovianDSS 'Pool'.
+The Open-E JovianDSS Proxmox plugin creates volumes on the JovianDSS side and exports them over iSCSI.
+It transfers iSCSI data only over `VIP` addresses assigned to a JovianDSS `Pool`.
 To use the plugin, assign at least one `VIP` address to the `Pool` you created or referenced earlier.
 
 See this video [iSCSI Targets Available Through Specific VIPs](https://www.youtube.com/watch?v=iFF9VPKUdTk)
@@ -51,23 +51,7 @@ Possible source of issues: routing problems. If you encounter connectivity issue
 
 The iSCSI plugin is distributed in the same package as the NFS plugin. If the NFS plugin is already installed, no additional installation steps are required, and you can proceed directly to the [Configuration](#configuration) section.
 
-Install latest plugin on all nodes in a cluster by running following command on any Proxmox VE server:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes
-```
-
-Restart Proxmox VE services to make them aware of the newly installed plugin:
-
-```bash
-systemctl restart pvedaemon
-systemctl restart pvestatd.service
-systemctl restart pveproxy.service
-systemctl restart pve-ha-lrm.service
-systemctl restart pve-ha-crm.service
-```
-
-Alternatively, user can call installation script *over SSH* with [`--restart`](https://github.com/open-e/JovianDSS-Proxmox/wiki/Installation-script#restart) flag to tell `install` script to restart some Proxmox VE services.
+Install the latest plugin on all nodes in the cluster by running the following command over an SSH connection on any Proxmox VE server in the cluster:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/install.pl | perl - --all-nodes --restart
@@ -75,7 +59,8 @@ curl -fsSL https://raw.githubusercontent.com/open-e/JovianDSS-Proxmox/main/insta
 
 It is IMPORTANT to remember that the install.pl script with `--restart` should NOT be called from the Proxmox Web UI as `--restart` will restart the shell interfaces provided by the Proxmox Web UI.
 
-For pre-release installs, version checks, downgrade and plugin removal instructions, please refer to the [Installation script](https://github.com/open-e/JovianDSS-Proxmox/wiki/Installation-script) guide.
+For `single node` install, `pre-release` installs, version checks, downgrade and plugin removal instructions, please refer to the [plugin installation guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-installation-and-updating) and [installation script](https://github.com/open-e/JovianDSS-Proxmox/wiki/Installation-script) guide.
+
 
 ## Configuration
 
@@ -117,7 +102,7 @@ Below are explanations for each parameter used in the command above:
 - [control_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#control_addresses) - A comma-separated list of VIP addresses used for communication with the JovianDSS REST API.
 It is recommended to have `control_addresses` as VIPs, as this is required for the [High Availability Cluster feature](https://www.open-e.com/products/open-e-joviandss/open-e-joviandss-advanced-metro-high-availability-cluster-feature-pack/) to function properly.
 - [data_addresses](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#data_addresses) - Comma-separated list of VIP addresses used for communication with the JovianDSS iSCSI.
-- [path](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#path) - Directory path for plugin reference (not actually used by the plugin, but required by Proxmox VE)
+- [path](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#path) - Directory on the Proxmox VE node associated with this storage (required by Proxmox VE; no VM or container data is stored in it)
 - [create-base-path](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#create-base-path) - Set to 1 to automatically create `path` directory
 - [shared](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration#shared) - Set to `1` to allow VM migration within the Proxmox cluster
 
