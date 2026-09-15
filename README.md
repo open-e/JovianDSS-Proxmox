@@ -16,9 +16,9 @@ Start using the plugin by going through the
   [NFS plugin Quick Start guide](https://github.com/open-e/JovianDSS-Proxmox/wiki/Quick-Start-NFS)
 
 For more detailed information:
-* [Plugin-configuration](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration)
+* [Plugin configuration iSCSI](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-iSCSI)
 
-* [Plugin-configuration NFS](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS)
+* [Plugin configuration NFS](https://github.com/open-e/JovianDSS-Proxmox/wiki/Plugin-configuration-NFS)
 
 * [Plugin Networking](https://github.com/open-e/JovianDSS-Proxmox/wiki/Networking)
 
