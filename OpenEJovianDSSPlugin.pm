@@ -49,7 +49,7 @@ use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
 use constant BLOCKDEV => '/usr/sbin/blockdev';
 
-my $PLUGIN_VERSION = '1.1.0~pre1-0';
+my $PLUGIN_VERSION = '1.1.1-pre1-0';
 
 #    Open-E JovianDSS Proxmox plugin
 #
@@ -1511,6 +1511,9 @@ sub _volume_snapshot_rollback {
     # (This supersedes the pre-4e6281d "never retry rollback" comment; do
     # not restore retries=0 on the strength of that historical note.)
     my $volname_clustered = OpenEJovianDSS::Common::volume_name_clustered( $ctx, $volname );
+
+    volume_deactivate( $ctx, $vmid, $volname_clustered, undef, undef );
+
     my $deleted_raw = joviandss_cmd(
         $ctx,
         [
