@@ -1,3 +1,11 @@
+open-e-joviandss-proxmox-plugin (1.1.1-0) stable; urgency=medium
+
+    * Fix: iSCSI snapshot rollback deactivates the volume before rolling it
+      back — addresses a TPM state disk issue where a long-running Windows
+      VM could fail to start after rollback
+
+ -- Andrei Perepiolkin <andrei.perepiolkin@open-e.com>, Claude Code (Anthropic AI)  Fri, 09 Oct 2026 00:00:00 +0200
+
 open-e-joviandss-proxmox-plugin (1.1.0-0) stable; urgency=medium
 
     * Change: qcow2 and vmdk removed from the NFS storage type — both plugins
