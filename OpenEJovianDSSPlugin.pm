@@ -49,7 +49,7 @@ use constant COMPRESSOR_RE => 'gz|lzo|zst';
 
 use constant BLOCKDEV => '/usr/sbin/blockdev';
 
-my $PLUGIN_VERSION = '1.1.1-pre1-0';
+my $PLUGIN_VERSION = '1.1.1';
 
 #    Open-E JovianDSS Proxmox plugin
 #
